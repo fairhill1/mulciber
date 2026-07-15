@@ -274,25 +274,36 @@ pub unsafe fn void_object_two_usizes(
     unsafe { function(receiver, selector(name), object, first, second) };
 }
 
-pub unsafe fn void_three_usizes_object_usize(
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn void_two_usizes_object_usize_object_usize(
     receiver: Object,
     name: &CStr,
     first: usize,
     second: usize,
+    first_object: Object,
     third: usize,
-    object: Object,
+    second_object: Object,
     fourth: usize,
 ) {
-    let function: unsafe extern "C" fn(Object, Selector, usize, usize, usize, Object, usize) =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    let function: unsafe extern "C" fn(
+        Object,
+        Selector,
+        usize,
+        usize,
+        Object,
+        usize,
+        Object,
+        usize,
+    ) = unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe {
         function(
             receiver,
             selector(name),
             first,
             second,
+            first_object,
             third,
-            object,
+            second_object,
             fourth,
         );
     };
@@ -382,6 +393,31 @@ pub unsafe fn void_copy_texture_to_buffer(
             destination_offset,
             destination_bytes_per_row,
             destination_bytes_per_image,
+        );
+    };
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn void_copy_buffer(
+    receiver: Object,
+    name: &CStr,
+    source: Object,
+    source_offset: usize,
+    destination: Object,
+    destination_offset: usize,
+    size: usize,
+) {
+    let function: unsafe extern "C" fn(Object, Selector, Object, usize, Object, usize, usize) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            source,
+            source_offset,
+            destination,
+            destination_offset,
+            size,
         );
     };
 }

@@ -43,7 +43,9 @@ Metal evidence completed so far:
 - [x] Compute pipeline writing a private storage texture consumed by the render pipeline.
 - [x] GPU-to-CPU texture readback with byte-for-byte startup validation.
 - [x] Offline MSL-to-metallib build with an embedded runtime library.
-- [ ] Uniform, storage, and indirect buffers.
+- [x] Triple-buffered, CPU-updated uniforms with explicit in-flight slot reuse.
+- [x] Compute-written private storage buffer with verified GPU-to-CPU readback.
+- [x] Indexed-indirect drawing from a native Metal argument buffer.
 - [ ] Mip generation, multisampling, compressed textures, and transient render targets.
 - [ ] Timestamps, labels, and pipeline caching.
 

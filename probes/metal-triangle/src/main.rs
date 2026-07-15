@@ -25,6 +25,7 @@ mod macos {
     const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
     const INDEX_TYPE_UINT16: usize = 0;
     const STORAGE_MODE_PRIVATE: usize = 2;
+    const RESOURCE_STORAGE_MODE_PRIVATE: usize = STORAGE_MODE_PRIVATE << 4;
     const TEXTURE_USAGE_SHADER_READ: usize = 1;
     const TEXTURE_USAGE_SHADER_WRITE: usize = 2;
     const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
@@ -35,6 +36,10 @@ mod macos {
     const CHECKER_WIDTH: usize = 8;
     const CHECKER_HEIGHT: usize = 8;
     const READBACK_BYTES_PER_ROW: usize = 256;
+    const TEXTURE_READBACK_LENGTH: usize = READBACK_BYTES_PER_ROW * CHECKER_HEIGHT;
+    const STORAGE_BUFFER_LENGTH: usize = CHECKER_WIDTH * CHECKER_HEIGHT * size_of::<u32>();
+    const TOTAL_READBACK_LENGTH: usize = TEXTURE_READBACK_LENGTH + STORAGE_BUFFER_LENGTH;
+    const IN_FLIGHT_FRAMES: usize = 3;
     const METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
     #[link(name = "Metal", kind = "framework")]
@@ -66,6 +71,22 @@ mod macos {
         position: [f32; 4],
         color: [f32; 4],
         texture_coordinate: [f32; 4],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct FrameUniforms {
+        offset: [f32; 4],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct IndexedIndirectArguments {
+        index_count: u32,
+        instance_count: u32,
+        index_start: u32,
+        base_vertex: i32,
+        base_instance: u32,
     }
 
     const VERTICES: [Vertex; 8] = [
@@ -112,6 +133,13 @@ mod macos {
     ];
 
     const INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
+    static INDIRECT_ARGUMENTS: IndexedIndirectArguments = IndexedIndirectArguments {
+        index_count: 12,
+        instance_count: 1,
+        index_start: 0,
+        base_vertex: 0,
+        base_instance: 0,
+    };
     const CHECKER_PIXELS: [u8; CHECKER_WIDTH * CHECKER_HEIGHT * 4] = checker_pixels();
 
     const fn checker_pixels() -> [u8; CHECKER_WIDTH * CHECKER_HEIGHT * 4] {
@@ -149,6 +177,22 @@ mod macos {
         compute: Object,
     }
 
+    struct BufferResources {
+        vertices: Object,
+        indices: Object,
+        indirect_arguments: Object,
+        uniforms: [Object; IN_FLIGHT_FRAMES],
+    }
+
+    struct TextureResources {
+        source: Object,
+        output: Object,
+        storage: Object,
+        upload: Object,
+        readback: Object,
+        readback_length: usize,
+    }
+
     struct Probe {
         application: Object,
         window: Object,
@@ -160,6 +204,11 @@ mod macos {
         depth_state: Object,
         vertices: Object,
         indices: Object,
+        indirect_arguments: Object,
+        uniform_buffers: [Object; IN_FLIGHT_FRAMES],
+        in_flight: [Object; IN_FLIGHT_FRAMES],
+        frame_slot: usize,
+        phase: f32,
         texture: Object,
         sampler: Object,
         depth_texture: Object,
@@ -231,26 +280,7 @@ mod macos {
                 )?;
                 let pipelines = create_pipelines(device)?;
                 let depth_state = create_depth_state(device)?;
-                let vertices = required(
-                    objc::object_bytes(
-                        device,
-                        c"newBufferWithBytes:length:options:",
-                        VERTICES.as_ptr().cast::<c_void>(),
-                        size_of_val(&VERTICES),
-                        0,
-                    ),
-                    "Metal vertex buffer",
-                )?;
-                let indices = required(
-                    objc::object_bytes(
-                        device,
-                        c"newBufferWithBytes:length:options:",
-                        INDICES.as_ptr().cast::<c_void>(),
-                        size_of_val(&INDICES),
-                        0,
-                    ),
-                    "Metal index buffer",
-                )?;
+                let buffers = create_buffer_resources(device)?;
                 let texture = create_texture(device, queue, pipelines.compute)?;
                 let sampler = create_sampler(device)?;
 
@@ -267,8 +297,13 @@ mod macos {
                     queue,
                     pipeline: pipelines.render,
                     depth_state,
-                    vertices,
-                    indices,
+                    vertices: buffers.vertices,
+                    indices: buffers.indices,
+                    indirect_arguments: buffers.indirect_arguments,
+                    uniform_buffers: buffers.uniforms,
+                    in_flight: [ptr::null_mut(); IN_FLIGHT_FRAMES],
+                    frame_slot: 0,
+                    phase: 0.0,
                     texture,
                     sampler,
                     depth_texture: ptr::null_mut(),
@@ -359,6 +394,7 @@ mod macos {
                 }
 
                 let pass = self.render_pass(drawable_texture)?;
+                let uniforms = self.prepare_uniforms()?;
 
                 let command_buffer = required(
                     objc::object(self.queue, c"commandBuffer"),
@@ -381,6 +417,13 @@ mod macos {
                     0,
                     0,
                 );
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    uniforms,
+                    0,
+                    1,
+                );
                 objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", self.texture, 0);
                 objc::void_object_usize(
                     encoder,
@@ -388,20 +431,58 @@ mod macos {
                     self.sampler,
                     0,
                 );
-                objc::void_three_usizes_object_usize(
+                objc::void_two_usizes_object_usize_object_usize(
                     encoder,
-                    c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:",
+                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                     PRIMITIVE_TYPE_TRIANGLE,
-                    INDICES.len(),
                     INDEX_TYPE_UINT16,
                     self.indices,
+                    0,
+                    self.indirect_arguments,
                     0,
                 );
                 objc::void(encoder, c"endEncoding");
                 objc::void_object(command_buffer, c"presentDrawable:", drawable);
                 objc::void(command_buffer, c"commit");
+                self.track_submission(command_buffer)?;
                 Ok(true)
             }
+        }
+
+        fn prepare_uniforms(&mut self) -> Result<Object, ProbeError> {
+            let previous = self.in_flight[self.frame_slot];
+            if !previous.is_null() {
+                // SAFETY: This slot retains its command buffer until it completes and is released.
+                unsafe { objc::void(previous, c"waitUntilCompleted") };
+                required_command_buffer_success(previous, "in-flight frame")?;
+                // SAFETY: `track_submission` added exactly one retain for this slot.
+                unsafe { objc::void(previous, c"release") };
+                self.in_flight[self.frame_slot] = ptr::null_mut();
+            }
+
+            let buffer = self.uniform_buffers[self.frame_slot];
+            // SAFETY: This shared buffer is no longer in use by the GPU, has FrameUniforms size, and
+            // remains alive as a Probe field.
+            let contents =
+                unsafe { objc::pointer_value(buffer, c"contents") }.cast::<FrameUniforms>();
+            if contents.is_null() {
+                return Err(ProbeError("uniform buffer has no CPU address".into()));
+            }
+            let uniforms = FrameUniforms {
+                offset: [self.phase.sin() * 0.055, 0.0, 0.0, 0.0],
+            };
+            // SAFETY: `contents` is non-null, aligned by Metal, and points to a full FrameUniforms.
+            unsafe { contents.write(uniforms) };
+            Ok(buffer)
+        }
+
+        fn track_submission(&mut self, command_buffer: Object) -> Result<(), ProbeError> {
+            // SAFETY: Objective-C retain keeps this autoreleased command buffer alive across pools.
+            let retained = unsafe { objc::object(command_buffer, c"retain") };
+            self.in_flight[self.frame_slot] = required(retained, "retained command buffer")?;
+            self.frame_slot = (self.frame_slot + 1) % IN_FLIGHT_FRAMES;
+            self.phase = (self.phase + 0.025) % std::f32::consts::TAU;
+            Ok(())
         }
 
         fn render_pass(&self, drawable_texture: Object) -> Result<Object, ProbeError> {
@@ -445,15 +526,17 @@ mod macos {
             }
         }
 
-        fn finish_gpu(&self) -> Result<(), ProbeError> {
-            // SAFETY: A final empty command buffer drains all earlier work on this serial queue.
-            unsafe {
-                let command_buffer = required(
-                    objc::object(self.queue, c"commandBuffer"),
-                    "shutdown command buffer",
-                )?;
-                objc::void(command_buffer, c"commit");
-                objc::void(command_buffer, c"waitUntilCompleted");
+        fn finish_gpu(&mut self) -> Result<(), ProbeError> {
+            for command_buffer in &mut self.in_flight {
+                if command_buffer.is_null() {
+                    continue;
+                }
+                // SAFETY: Each slot owns one retained, committed command buffer.
+                unsafe { objc::void(*command_buffer, c"waitUntilCompleted") };
+                required_command_buffer_success(*command_buffer, "frame shutdown")?;
+                // SAFETY: The slot's retain is balanced after GPU completion.
+                unsafe { objc::void(*command_buffer, c"release") };
+                *command_buffer = ptr::null_mut();
             }
             Ok(())
         }
@@ -614,24 +697,14 @@ mod macos {
         // SAFETY: Resource creation, compute dispatch, and blits use exact Metal SDK layouts and
         // ABIs. Command-buffer completion makes the shared readback bytes CPU-visible.
         unsafe {
-            let source_texture =
-                create_rgba_texture(device, TEXTURE_USAGE_SHADER_READ, "compute source texture")?;
-            let output_texture = create_rgba_texture(
-                device,
-                TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_SHADER_WRITE,
-                "compute output texture",
-            )?;
-            let upload = required(
-                objc::object_bytes(
-                    device,
-                    c"newBufferWithBytes:length:options:",
-                    CHECKER_PIXELS.as_ptr().cast::<c_void>(),
-                    CHECKER_PIXELS.len(),
-                    0,
-                ),
-                "texture upload buffer",
-            )?;
-            let (readback, readback_length) = create_readback_buffer(device)?;
+            let TextureResources {
+                source: source_texture,
+                output: output_texture,
+                storage: storage_buffer,
+                upload,
+                readback,
+                readback_length,
+            } = create_texture_resources(device)?;
             let command_buffer = required(
                 objc::object(queue, c"commandBuffer"),
                 "texture preparation command buffer",
@@ -666,6 +739,13 @@ mod macos {
             objc::void_object(compute, c"setComputePipelineState:", compute_pipeline);
             objc::void_object_usize(compute, c"setTexture:atIndex:", source_texture, 0);
             objc::void_object_usize(compute, c"setTexture:atIndex:", output_texture, 1);
+            objc::void_object_two_usizes(
+                compute,
+                c"setBuffer:offset:atIndex:",
+                storage_buffer,
+                0,
+                0,
+            );
             objc::void_two_sizes(
                 compute,
                 c"dispatchThreads:threadsPerThreadgroup:",
@@ -701,26 +781,142 @@ mod macos {
                 readback,
                 0,
                 READBACK_BYTES_PER_ROW,
-                readback_length,
+                TEXTURE_READBACK_LENGTH,
+            );
+            objc::void_copy_buffer(
+                readback_blit,
+                c"copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:",
+                storage_buffer,
+                0,
+                readback,
+                TEXTURE_READBACK_LENGTH,
+                STORAGE_BUFFER_LENGTH,
             );
             objc::void(readback_blit, c"endEncoding");
-            objc::void(command_buffer, c"commit");
-            objc::void(command_buffer, c"waitUntilCompleted");
-            required_command_buffer_success(
-                command_buffer,
-                "texture upload, compute, and readback",
-            )?;
-            validate_texture_readback(readback, readback_length)?;
+            finish_texture_preparation(command_buffer, readback, readback_length)?;
             Ok(output_texture)
         }
     }
 
+    fn finish_texture_preparation(
+        command_buffer: Object,
+        readback: Object,
+        readback_length: usize,
+    ) -> Result<(), ProbeError> {
+        // SAFETY: All encoders have ended and the command buffer has not previously been committed.
+        unsafe {
+            objc::void(command_buffer, c"commit");
+            objc::void(command_buffer, c"waitUntilCompleted");
+        }
+        required_command_buffer_success(command_buffer, "texture and buffer preparation")?;
+        validate_texture_readback(readback, readback_length)
+    }
+
+    fn create_texture_resources(device: Object) -> Result<TextureResources, ProbeError> {
+        let source =
+            create_rgba_texture(device, TEXTURE_USAGE_SHADER_READ, "compute source texture")?;
+        let output = create_rgba_texture(
+            device,
+            TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_SHADER_WRITE,
+            "compute output texture",
+        )?;
+        // SAFETY: Buffer constructors accept the given lengths, byte pointers, and options.
+        let storage = unsafe {
+            objc::object_two_usizes(
+                device,
+                c"newBufferWithLength:options:",
+                STORAGE_BUFFER_LENGTH,
+                RESOURCE_STORAGE_MODE_PRIVATE,
+            )
+        };
+        let storage = required(storage, "private compute storage buffer")?;
+        let upload = unsafe {
+            objc::object_bytes(
+                device,
+                c"newBufferWithBytes:length:options:",
+                CHECKER_PIXELS.as_ptr().cast::<c_void>(),
+                CHECKER_PIXELS.len(),
+                0,
+            )
+        };
+        let upload = required(upload, "texture upload buffer")?;
+        let (readback, readback_length) = create_readback_buffer(device)?;
+        Ok(TextureResources {
+            source,
+            output,
+            storage,
+            upload,
+            readback,
+            readback_length,
+        })
+    }
+
     fn create_readback_buffer(device: Object) -> Result<(Object, usize), ProbeError> {
-        let length = READBACK_BYTES_PER_ROW * CHECKER_HEIGHT;
+        let length = TOTAL_READBACK_LENGTH;
         // SAFETY: The selector accepts a byte length and MTLResourceOptions value.
         let buffer =
             unsafe { objc::object_two_usizes(device, c"newBufferWithLength:options:", length, 0) };
         required(buffer, "texture readback buffer").map(|buffer| (buffer, length))
+    }
+
+    fn create_buffer_resources(device: Object) -> Result<BufferResources, ProbeError> {
+        // SAFETY: Each constructor copies the provided bytes into a new Metal buffer.
+        unsafe {
+            let vertices = required(
+                objc::object_bytes(
+                    device,
+                    c"newBufferWithBytes:length:options:",
+                    VERTICES.as_ptr().cast::<c_void>(),
+                    size_of_val(&VERTICES),
+                    0,
+                ),
+                "Metal vertex buffer",
+            )?;
+            let indices = required(
+                objc::object_bytes(
+                    device,
+                    c"newBufferWithBytes:length:options:",
+                    INDICES.as_ptr().cast::<c_void>(),
+                    size_of_val(&INDICES),
+                    0,
+                ),
+                "Metal index buffer",
+            )?;
+            let indirect_arguments = required(
+                objc::object_bytes(
+                    device,
+                    c"newBufferWithBytes:length:options:",
+                    (&raw const INDIRECT_ARGUMENTS).cast::<c_void>(),
+                    size_of::<IndexedIndirectArguments>(),
+                    0,
+                ),
+                "Metal indexed-indirect argument buffer",
+            )?;
+            Ok(BufferResources {
+                vertices,
+                indices,
+                indirect_arguments,
+                uniforms: create_uniform_buffers(device)?,
+            })
+        }
+    }
+
+    fn create_uniform_buffers(device: Object) -> Result<[Object; IN_FLIGHT_FRAMES], ProbeError> {
+        let mut buffers = [ptr::null_mut(); IN_FLIGHT_FRAMES];
+        for buffer in &mut buffers {
+            // SAFETY: The selector accepts a byte length and MTLResourceOptions value. Zero selects
+            // shared storage on Apple silicon, making the contents CPU-updatable.
+            let value = unsafe {
+                objc::object_two_usizes(
+                    device,
+                    c"newBufferWithLength:options:",
+                    size_of::<FrameUniforms>(),
+                    0,
+                )
+            };
+            *buffer = required(value, "per-frame uniform buffer")?;
+        }
+        Ok(buffers)
     }
 
     fn create_rgba_texture(
@@ -776,6 +972,23 @@ mod macos {
                             "texture readback mismatch at ({x}, {y}) channel {channel}: expected {expected}, got {actual}"
                         )));
                     }
+                }
+
+                let storage_offset = TEXTURE_READBACK_LENGTH + expected_offset;
+                let actual_word = u32::from_le_bytes(
+                    bytes[storage_offset..storage_offset + 4]
+                        .try_into()
+                        .expect("four-byte storage word"),
+                );
+                let expected_word = u32::from_le_bytes(
+                    CHECKER_PIXELS[expected_offset..expected_offset + 4]
+                        .try_into()
+                        .expect("four-byte checker texel"),
+                );
+                if actual_word != expected_word {
+                    return Err(ProbeError(format!(
+                        "storage buffer mismatch at ({x}, {y}): expected {expected_word:#010x}, got {actual_word:#010x}"
+                    )));
                 }
             }
         }

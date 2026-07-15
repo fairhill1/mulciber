@@ -4,8 +4,9 @@
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::env;
     use std::ffi::{CStr, c_char, c_void};
-    use std::fmt;
+    use std::fmt::{self, Write as _};
     use std::mem;
     use std::ptr::NonNull;
 
@@ -88,6 +89,208 @@ mod macos {
         }
     }
 
+    struct Family {
+        json_name: &'static str,
+        display_name: &'static str,
+        supported: bool,
+    }
+
+    struct Capability {
+        json_name: &'static str,
+        display_name: &'static str,
+        supported: Option<bool>,
+    }
+
+    struct Report {
+        name: String,
+        registry_id: Option<u64>,
+        unified_memory: Option<bool>,
+        recommended_working_set_size: Option<u64>,
+        maximum_transfer_rate: Option<u64>,
+        maximum_buffer_length: Option<u64>,
+        maximum_threadgroup_memory_length: Option<u64>,
+        argument_buffers_tier: Option<u64>,
+        read_write_texture_tier: Option<u64>,
+        families: [Family; 6],
+        capabilities: [Capability; 5],
+    }
+
+    impl Report {
+        fn collect(device: Device) -> Self {
+            Self {
+                name: device.string(c"name").unwrap_or_else(|| "unknown".into()),
+                registry_id: device.u64(c"registryID"),
+                unified_memory: device.bool(c"hasUnifiedMemory"),
+                recommended_working_set_size: device.u64(c"recommendedMaxWorkingSetSize"),
+                maximum_transfer_rate: device.u64(c"maxTransferRate"),
+                maximum_buffer_length: device.u64(c"maxBufferLength"),
+                maximum_threadgroup_memory_length: device.u64(c"maxThreadgroupMemoryLength"),
+                argument_buffers_tier: device.u64(c"argumentBuffersSupport"),
+                read_write_texture_tier: device.u64(c"readWriteTextureSupport"),
+                families: [
+                    Family::new("apple_7", "Apple 7", device.supports_family(1007)),
+                    Family::new("apple_8", "Apple 8", device.supports_family(1008)),
+                    Family::new("apple_9", "Apple 9", device.supports_family(1009)),
+                    Family::new("mac_2", "Mac 2", device.supports_family(2002)),
+                    Family::new("common_3", "Common 3", device.supports_family(3003)),
+                    Family::new("metal_3", "Metal 3", device.supports_family(5001)),
+                ],
+                capabilities: [
+                    Capability::new(
+                        "ray_tracing",
+                        "ray tracing",
+                        device.bool(c"supportsRaytracing"),
+                    ),
+                    Capability::new(
+                        "ray_tracing_from_render",
+                        "ray tracing in render",
+                        device.bool(c"supportsRaytracingFromRender"),
+                    ),
+                    Capability::new(
+                        "function_pointers",
+                        "function pointers",
+                        device.bool(c"supportsFunctionPointers"),
+                    ),
+                    Capability::new(
+                        "function_pointers_from_render",
+                        "function pointers in render",
+                        device.bool(c"supportsFunctionPointersFromRender"),
+                    ),
+                    Capability::new(
+                        "dynamic_libraries",
+                        "dynamic libraries",
+                        device.bool(c"supportsDynamicLibraries"),
+                    ),
+                ],
+            }
+        }
+
+        fn print_human(&self) {
+            println!("Zinc Metal capability probe");
+            println!("device: {}", self.name);
+            print_u64("registry id", self.registry_id, Unit::Integer);
+            print_bool("unified memory", self.unified_memory);
+            print_u64(
+                "recommended working set",
+                self.recommended_working_set_size,
+                Unit::Bytes,
+            );
+            print_u64(
+                "maximum transfer rate",
+                self.maximum_transfer_rate,
+                Unit::BytesPerSecond,
+            );
+            print_u64(
+                "maximum buffer length",
+                self.maximum_buffer_length,
+                Unit::Bytes,
+            );
+            print_u64(
+                "maximum threadgroup memory",
+                self.maximum_threadgroup_memory_length,
+                Unit::Bytes,
+            );
+            print_tier("argument buffers tier", self.argument_buffers_tier, 1);
+            print_tier("read-write texture tier", self.read_write_texture_tier, 0);
+
+            println!("families:");
+            for family in &self.families {
+                println!("  {:<12} {}", family.display_name, yes_no(family.supported));
+            }
+
+            println!("advanced selectors:");
+            for capability in &self.capabilities {
+                match capability.supported {
+                    Some(value) => println!("  {:<28} {}", capability.display_name, yes_no(value)),
+                    None => println!("  {:<28} unavailable", capability.display_name),
+                }
+            }
+
+            println!("Metal 4 SDK symbols: unavailable in this build (requires a newer Xcode SDK)");
+        }
+
+        fn json(&self) -> String {
+            let mut output = String::new();
+            output.push_str("{\n  \"schema_version\": 1,\n  \"backend\": \"metal\",\n  \"device\": {\n    \"name\": ");
+            push_json_string(&mut output, &self.name);
+            push_field(&mut output, "registry_id", self.registry_id);
+            push_field(&mut output, "unified_memory", self.unified_memory);
+            push_field(
+                &mut output,
+                "recommended_working_set_size_bytes",
+                self.recommended_working_set_size,
+            );
+            push_field(
+                &mut output,
+                "maximum_transfer_rate_bytes_per_second",
+                self.maximum_transfer_rate,
+            );
+            push_field(
+                &mut output,
+                "maximum_buffer_length_bytes",
+                self.maximum_buffer_length,
+            );
+            push_field(
+                &mut output,
+                "maximum_threadgroup_memory_length_bytes",
+                self.maximum_threadgroup_memory_length,
+            );
+            push_field(
+                &mut output,
+                "argument_buffers_tier",
+                self.argument_buffers_tier.map(|tier| tier + 1),
+            );
+            push_field(
+                &mut output,
+                "read_write_texture_tier",
+                self.read_write_texture_tier,
+            );
+            output.push_str("\n  },\n  \"families\": {");
+            for (index, family) in self.families.iter().enumerate() {
+                let separator = if index == 0 { "\n" } else { ",\n" };
+                write!(
+                    output,
+                    "{separator}    \"{}\": {}",
+                    family.json_name, family.supported
+                )
+                .expect("writing to a String cannot fail");
+            }
+            output.push_str("\n  },\n  \"capabilities\": {");
+            for (index, capability) in self.capabilities.iter().enumerate() {
+                let separator = if index == 0 { "\n" } else { ",\n" };
+                write!(output, "{separator}    \"{}\": ", capability.json_name)
+                    .expect("writing to a String cannot fail");
+                push_json_value(&mut output, capability.supported);
+            }
+            output.push_str("\n  },\n  \"build\": {\n    \"metal_4_sdk_symbols\": false\n  }\n}");
+            output
+        }
+    }
+
+    impl Family {
+        const fn new(json_name: &'static str, display_name: &'static str, supported: bool) -> Self {
+            Self {
+                json_name,
+                display_name,
+                supported,
+            }
+        }
+    }
+
+    impl Capability {
+        const fn new(
+            json_name: &'static str,
+            display_name: &'static str,
+            supported: Option<bool>,
+        ) -> Self {
+            Self {
+                json_name,
+                display_name,
+                supported,
+            }
+        }
+    }
+
     #[derive(Debug)]
     pub enum ProbeError {
         NoDevice,
@@ -105,57 +308,12 @@ mod macos {
 
     pub fn run() -> Result<(), ProbeError> {
         let device = Device::system_default()?;
-
-        println!("Zinc Metal capability probe");
-        println!(
-            "device: {}",
-            device.string(c"name").as_deref().unwrap_or("unknown")
-        );
-        print_u64(device, "registry id", c"registryID", Unit::Integer);
-        print_bool(device, "unified memory", c"hasUnifiedMemory");
-        print_u64(
-            device,
-            "recommended working set",
-            c"recommendedMaxWorkingSetSize",
-            Unit::Bytes,
-        );
-        print_u64(
-            device,
-            "maximum transfer rate",
-            c"maxTransferRate",
-            Unit::BytesPerSecond,
-        );
-
-        println!("families:");
-        for (name, value) in [
-            ("Apple 7", 1007),
-            ("Apple 8", 1008),
-            ("Apple 9", 1009),
-            ("Mac 2", 2002),
-            ("Common 3", 3003),
-            ("Metal 3", 5001),
-        ] {
-            println!("  {name:<12} {}", yes_no(device.supports_family(value)));
+        let report = Report::collect(device);
+        if env::args_os().skip(1).any(|argument| argument == "--json") {
+            println!("{}", report.json());
+        } else {
+            report.print_human();
         }
-
-        println!("advanced selectors:");
-        for (name, method) in [
-            ("ray tracing", c"supportsRaytracing"),
-            ("ray tracing in render", c"supportsRaytracingFromRender"),
-            ("function pointers", c"supportsFunctionPointers"),
-            (
-                "function pointers in render",
-                c"supportsFunctionPointersFromRender",
-            ),
-            ("dynamic libraries", c"supportsDynamicLibraries"),
-        ] {
-            match device.bool(method) {
-                Some(value) => println!("  {name:<28} {}", yes_no(value)),
-                None => println!("  {name:<28} unavailable"),
-            }
-        }
-
-        println!("Metal 4 SDK symbols: unavailable in this build (requires a newer Xcode SDK)");
         Ok(())
     }
 
@@ -165,15 +323,15 @@ mod macos {
         BytesPerSecond,
     }
 
-    fn print_bool(device: Device, label: &str, method: &CStr) {
-        match device.bool(method) {
+    fn print_bool(label: &str, value: Option<bool>) {
+        match value {
             Some(value) => println!("{label}: {}", yes_no(value)),
             None => println!("{label}: unavailable"),
         }
     }
 
-    fn print_u64(device: Device, label: &str, method: &CStr, unit: Unit) {
-        match (device.u64(method), unit) {
+    fn print_u64(label: &str, value: Option<u64>, unit: Unit) {
+        match (value, unit) {
             (Some(value), Unit::Integer) => println!("{label}: {value}"),
             (Some(value), Unit::Bytes) => print_gib(label, value, "GiB"),
             (Some(0), Unit::BytesPerSecond) => println!("{label}: not reported"),
@@ -182,8 +340,23 @@ mod macos {
         }
     }
 
+    fn print_tier(label: &str, value: Option<u64>, display_offset: u64) {
+        match value {
+            Some(value) => println!("{label}: {}", value + display_offset),
+            None => println!("{label}: unavailable"),
+        }
+    }
+
     fn print_gib(label: &str, value: u64, unit: &str) {
+        const KIB: u64 = 1 << 10;
+        const MIB: u64 = 1 << 20;
         const GIB: u64 = 1 << 30;
+        if unit == "GiB" && value < MIB {
+            let whole = value / KIB;
+            let hundredths = (value % KIB) * 100 / KIB;
+            println!("{label}: {whole}.{hundredths:02} KiB");
+            return;
+        }
         let whole = value / GIB;
         let hundredths = (value % GIB) * 100 / GIB;
         println!("{label}: {whole}.{hundredths:02} {unit}");
@@ -191,6 +364,39 @@ mod macos {
 
     fn yes_no(value: bool) -> &'static str {
         if value { "yes" } else { "no" }
+    }
+
+    fn push_field<T: fmt::Display>(output: &mut String, name: &str, value: Option<T>) {
+        write!(output, ",\n    \"{name}\": ").expect("writing to a String cannot fail");
+        push_json_value(output, value);
+    }
+
+    fn push_json_value<T: fmt::Display>(output: &mut String, value: Option<T>) {
+        match value {
+            Some(value) => write!(output, "{value}").expect("writing to a String cannot fail"),
+            None => output.push_str("null"),
+        }
+    }
+
+    fn push_json_string(output: &mut String, value: &str) {
+        output.push('"');
+        for character in value.chars() {
+            match character {
+                '"' => output.push_str("\\\""),
+                '\\' => output.push_str("\\\\"),
+                '\u{08}' => output.push_str("\\b"),
+                '\u{0c}' => output.push_str("\\f"),
+                '\n' => output.push_str("\\n"),
+                '\r' => output.push_str("\\r"),
+                '\t' => output.push_str("\\t"),
+                control if control <= '\u{1f}' => {
+                    write!(output, "\\u{:04x}", u32::from(control))
+                        .expect("writing to a String cannot fail");
+                }
+                character => output.push(character),
+            }
+        }
+        output.push('"');
     }
 
     fn selector(name: &CStr) -> Selector {

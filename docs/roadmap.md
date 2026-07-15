@@ -7,7 +7,8 @@ than preceding it.
 
 - [x] Establish the support and dependency contracts.
 - [x] Query the default Metal device without a graphics abstraction dependency.
-- [ ] Emit a machine-readable capability report.
+- [x] Emit a machine-readable Metal capability report.
+- [ ] Emit equivalent Vulkan capability reports on Windows and Linux.
 - [ ] Run the report with the macOS 26 / Metal 4 runtime and compare results.
 - [x] Pin the Vulkan registry, headers, loader, validation, profiles, and SPIR-V toolchain revisions.
 
@@ -32,6 +33,19 @@ Implement independently in Vulkan and Metal:
 - Graphics and compute pipelines with offline shader compilation.
 - GPU timestamps, labels, and pipeline caching.
 - One GPU-driven textured scene with depth, shadows, and post-processing.
+
+Metal evidence completed so far:
+
+- [x] Shared vertex and index buffers with indexed drawing.
+- [x] Private sampled texture populated from a staging buffer through a blit command.
+- [x] Linear filtering, repeating texture coordinates, and fragment texture sampling.
+- [x] Resize-dependent private depth target with depth testing and writes.
+- [x] Compute pipeline writing a private storage texture consumed by the render pipeline.
+- [x] GPU-to-CPU texture readback with byte-for-byte startup validation.
+- [x] Offline MSL-to-metallib build with an embedded runtime library.
+- [ ] Uniform, storage, and indirect buffers.
+- [ ] Mip generation, multisampling, compressed textures, and transient render targets.
+- [ ] Timestamps, labels, and pipeline caching.
 
 ## 3. Extract Zinc APIs
 

@@ -34,6 +34,22 @@ pub struct ClearColor {
     pub alpha: f64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Origin3 {
+    pub x: usize,
+    pub y: usize,
+    pub z: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Size3 {
+    pub width: usize,
+    pub height: usize,
+    pub depth: usize,
+}
+
 #[link(name = "objc")]
 unsafe extern "C" {
     fn objc_getClass(name: *const c_char) -> Object;
@@ -77,6 +93,30 @@ pub unsafe fn object_usize(receiver: Object, name: &CStr, argument: usize) -> Ob
     unsafe { function(receiver, selector(name), argument) }
 }
 
+pub unsafe fn object_two_usizes(
+    receiver: Object,
+    name: &CStr,
+    first: usize,
+    second: usize,
+) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, usize, usize) -> Object =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second) }
+}
+
+pub unsafe fn object_three_usizes_bool(
+    receiver: Object,
+    name: &CStr,
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: bool,
+) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, usize, usize, usize, bool) -> Object =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second, third, fourth) }
+}
+
 pub unsafe fn object_window_init(
     receiver: Object,
     name: &CStr,
@@ -100,18 +140,6 @@ pub unsafe fn object_bytes(
     let function: unsafe extern "C" fn(Object, Selector, *const c_void, usize, usize) -> Object =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), bytes, length, options) }
-}
-
-pub unsafe fn object_two_objects_out(
-    receiver: Object,
-    name: &CStr,
-    first: Object,
-    second: Object,
-    output: *mut Object,
-) -> Object {
-    let function: unsafe extern "C" fn(Object, Selector, Object, Object, *mut Object) -> Object =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), first, second, output) }
 }
 
 pub unsafe fn object_object_out(
@@ -156,6 +184,12 @@ pub unsafe fn usize_value(receiver: Object, name: &CStr) -> usize {
     unsafe { function(receiver, selector(name)) }
 }
 
+pub unsafe fn pointer_value(receiver: Object, name: &CStr) -> *mut c_void {
+    let function: unsafe extern "C" fn(Object, Selector) -> *mut c_void =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name)) }
+}
+
 pub unsafe fn f64_value(receiver: Object, name: &CStr) -> f64 {
     let function: unsafe extern "C" fn(Object, Selector) -> f64 =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
@@ -186,6 +220,12 @@ pub unsafe fn void_object(receiver: Object, name: &CStr, argument: Object) {
     unsafe { function(receiver, selector(name), argument) };
 }
 
+pub unsafe fn void_object_usize(receiver: Object, name: &CStr, object: Object, index: usize) {
+    let function: unsafe extern "C" fn(Object, Selector, Object, usize) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), object, index) };
+}
+
 pub unsafe fn void_bool(receiver: Object, name: &CStr, argument: bool) {
     let function: unsafe extern "C" fn(Object, Selector, bool) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
@@ -210,6 +250,12 @@ pub unsafe fn void_size(receiver: Object, name: &CStr, argument: Size) {
     unsafe { function(receiver, selector(name), argument) };
 }
 
+pub unsafe fn void_two_sizes(receiver: Object, name: &CStr, first: Size3, second: Size3) {
+    let function: unsafe extern "C" fn(Object, Selector, Size3, Size3) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second) };
+}
+
 pub unsafe fn void_clear_color(receiver: Object, name: &CStr, argument: ClearColor) {
     let function: unsafe extern "C" fn(Object, Selector, ClearColor) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
@@ -228,33 +274,121 @@ pub unsafe fn void_object_two_usizes(
     unsafe { function(receiver, selector(name), object, first, second) };
 }
 
-pub unsafe fn void_three_usizes(
+pub unsafe fn void_three_usizes_object_usize(
     receiver: Object,
     name: &CStr,
     first: usize,
     second: usize,
     third: usize,
+    object: Object,
+    fourth: usize,
 ) {
-    let function: unsafe extern "C" fn(Object, Selector, usize, usize, usize) =
+    let function: unsafe extern "C" fn(Object, Selector, usize, usize, usize, Object, usize) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), first, second, third) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            first,
+            second,
+            third,
+            object,
+            fourth,
+        );
+    };
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn void_copy_buffer_to_texture(
+    receiver: Object,
+    name: &CStr,
+    source: Object,
+    source_offset: usize,
+    source_bytes_per_row: usize,
+    source_bytes_per_image: usize,
+    source_size: Size3,
+    destination: Object,
+    destination_slice: usize,
+    destination_level: usize,
+    destination_origin: Origin3,
+) {
+    let function: unsafe extern "C" fn(
+        Object,
+        Selector,
+        Object,
+        usize,
+        usize,
+        usize,
+        Size3,
+        Object,
+        usize,
+        usize,
+        Origin3,
+    ) = unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            source,
+            source_offset,
+            source_bytes_per_row,
+            source_bytes_per_image,
+            source_size,
+            destination,
+            destination_slice,
+            destination_level,
+            destination_origin,
+        );
+    };
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn void_copy_texture_to_buffer(
+    receiver: Object,
+    name: &CStr,
+    source: Object,
+    source_slice: usize,
+    source_level: usize,
+    source_origin: Origin3,
+    source_size: Size3,
+    destination: Object,
+    destination_offset: usize,
+    destination_bytes_per_row: usize,
+    destination_bytes_per_image: usize,
+) {
+    let function: unsafe extern "C" fn(
+        Object,
+        Selector,
+        Object,
+        usize,
+        usize,
+        Origin3,
+        Size3,
+        Object,
+        usize,
+        usize,
+        usize,
+    ) = unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            source,
+            source_slice,
+            source_level,
+            source_origin,
+            source_size,
+            destination,
+            destination_offset,
+            destination_bytes_per_row,
+            destination_bytes_per_image,
+        );
+    };
 }
 
 pub fn ns_string(value: &CStr) -> Object {
     // SAFETY: NSString copies the NUL-terminated bytes into an autoreleased immutable string.
     unsafe { object_c_string(class(c"NSString"), c"stringWithUTF8String:", value.as_ptr()) }
-}
-
-pub fn ns_string_bytes(value: &[u8]) -> Object {
-    assert_eq!(value.last(), Some(&0));
-    // SAFETY: The assertion establishes a NUL-terminated byte string for NSString.
-    unsafe {
-        object_c_string(
-            class(c"NSString"),
-            c"stringWithUTF8String:",
-            value.as_ptr().cast(),
-        )
-    }
 }
 
 pub fn description(value: Object) -> String {

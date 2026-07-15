@@ -28,12 +28,26 @@ cargo run -p zinc-metal-info
 ```
 
 This queries Metal directly through the Objective-C runtime and has no Rust package dependencies.
+Pass `--json` to emit the versioned machine-readable report used for cross-machine comparisons:
 
-Run the native AppKit and Metal presentation probe:
+```sh
+cargo run -q -p zinc-metal-info -- --json
+```
+
+Run the native AppKit and Metal presentation/resource probe:
 
 ```sh
 cargo run -p zinc-metal-triangle
 ```
+
+It uploads a texture through a staging buffer, copies it into a private storage texture with compute,
+verifies the result through a padded GPU-to-CPU readback, then draws indexed geometry with depth
+testing. The historical package name is retained while the probe grows into the representative Metal
+workload.
+
+The build script invokes Xcode's `metal` and `metallib` tools and embeds the result. The running probe
+loads that library directly and never invokes a shader compiler. This adds an SDK build requirement,
+not a shipped package dependency.
 
 For a finite validation run, pass `--frames N`. Enable Apple's validation layer with
 `MTL_DEBUG_LAYER=1`.

@@ -1,0 +1,294 @@
+use std::ffi::{c_int, c_void};
+use std::fmt;
+use std::mem;
+use std::ptr;
+
+pub type Handle = *mut c_void;
+pub type Hinstance = Handle;
+pub type Hwnd = Handle;
+type Hcursor = Handle;
+type Hicon = Handle;
+type Hbrush = Handle;
+type Hmenu = Handle;
+type Lresult = isize;
+type Wparam = usize;
+type Lparam = isize;
+type Atom = u16;
+
+const CS_OWNDC: u32 = 0x0020;
+const CW_USEDEFAULT: c_int = i32::MIN;
+const IDC_ARROW: *const u16 = 32_512_usize as *const u16;
+const PM_REMOVE: u32 = 0x0001;
+const SW_SHOW: c_int = 5;
+const WM_CLOSE: u32 = 0x0010;
+const WM_DESTROY: u32 = 0x0002;
+const WM_QUIT: u32 = 0x0012;
+const WS_CAPTION: u32 = 0x00C0_0000;
+const WS_CLIPCHILDREN: u32 = 0x0200_0000;
+const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
+const WS_MINIMIZEBOX: u32 = 0x0002_0000;
+const WS_OVERLAPPED: u32 = 0;
+const WS_SYSMENU: u32 = 0x0008_0000;
+const WS_THICKFRAME: u32 = 0x0004_0000;
+
+const WINDOW_STYLE: u32 = WS_OVERLAPPED
+    | WS_CAPTION
+    | WS_SYSMENU
+    | WS_THICKFRAME
+    | WS_MINIMIZEBOX
+    | WS_MAXIMIZEBOX
+    | WS_CLIPSIBLINGS
+    | WS_CLIPCHILDREN;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Msg {
+    hwnd: Hwnd,
+    message: u32,
+    w_param: Wparam,
+    l_param: Lparam,
+    time: u32,
+    point: Point,
+    private: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+type WindowProcedure = Option<unsafe extern "system" fn(Hwnd, u32, Wparam, Lparam) -> Lresult>;
+
+#[repr(C)]
+struct WindowClassExW {
+    size: u32,
+    style: u32,
+    window_procedure: WindowProcedure,
+    class_extra: c_int,
+    window_extra: c_int,
+    instance: Hinstance,
+    icon: Hicon,
+    cursor: Hcursor,
+    background: Hbrush,
+    menu_name: *const u16,
+    class_name: *const u16,
+    small_icon: Hicon,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetLastError() -> u32;
+    fn GetModuleHandleW(module_name: *const u16) -> Hinstance;
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn AdjustWindowRectEx(rect: *mut Rect, style: u32, menu: i32, extended_style: u32) -> i32;
+    fn CreateWindowExW(
+        extended_style: u32,
+        class_name: *const u16,
+        window_name: *const u16,
+        style: u32,
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        parent: Hwnd,
+        menu: Hmenu,
+        instance: Hinstance,
+        parameter: *mut c_void,
+    ) -> Hwnd;
+    fn DefWindowProcW(window: Hwnd, message: u32, w_param: Wparam, l_param: Lparam) -> Lresult;
+    fn DestroyWindow(window: Hwnd) -> i32;
+    fn DispatchMessageW(message: *const Msg) -> Lresult;
+    fn GetClientRect(window: Hwnd, rect: *mut Rect) -> i32;
+    fn IsWindow(window: Hwnd) -> i32;
+    fn LoadCursorW(instance: Hinstance, cursor_name: *const u16) -> Hcursor;
+    fn PeekMessageW(message: *mut Msg, window: Hwnd, min: u32, max: u32, remove: u32) -> i32;
+    fn PostQuitMessage(exit_code: c_int);
+    fn RegisterClassExW(class: *const WindowClassExW) -> Atom;
+    fn ShowWindow(window: Hwnd, command: c_int) -> i32;
+    fn TranslateMessage(message: *const Msg) -> i32;
+    fn UnregisterClassW(class_name: *const u16, instance: Hinstance) -> i32;
+}
+
+#[derive(Debug)]
+pub struct WindowError(String);
+
+impl fmt::Display for WindowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WindowError {}
+
+pub struct Window {
+    instance: Hinstance,
+    handle: Hwnd,
+    class_name: Vec<u16>,
+}
+
+impl Window {
+    pub fn new(title: &str, width: u32, height: u32) -> Result<Self, WindowError> {
+        let class_name = wide("ZincVulkanProbe");
+        let title = wide(title);
+
+        // SAFETY: All pointers refer to live, NUL-terminated buffers for the duration of each call.
+        unsafe {
+            let instance = GetModuleHandleW(ptr::null());
+            if instance.is_null() {
+                return Err(last_error("GetModuleHandleW"));
+            }
+            let class = WindowClassExW {
+                size: u32::try_from(mem::size_of::<WindowClassExW>())
+                    .expect("WNDCLASSEXW size fits u32"),
+                style: CS_OWNDC,
+                window_procedure: Some(window_procedure),
+                class_extra: 0,
+                window_extra: 0,
+                instance,
+                icon: ptr::null_mut(),
+                cursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+                background: ptr::null_mut(),
+                menu_name: ptr::null(),
+                class_name: class_name.as_ptr(),
+                small_icon: ptr::null_mut(),
+            };
+            if RegisterClassExW(&raw const class) == 0 {
+                return Err(last_error("RegisterClassExW"));
+            }
+
+            let mut rectangle = Rect {
+                left: 0,
+                top: 0,
+                right: i32::try_from(width)
+                    .map_err(|_| WindowError("width is too large".into()))?,
+                bottom: i32::try_from(height)
+                    .map_err(|_| WindowError("height is too large".into()))?,
+            };
+            if AdjustWindowRectEx(&raw mut rectangle, WINDOW_STYLE, 0, 0) == 0 {
+                UnregisterClassW(class_name.as_ptr(), instance);
+                return Err(last_error("AdjustWindowRectEx"));
+            }
+
+            let handle = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WINDOW_STYLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                rectangle.right - rectangle.left,
+                rectangle.bottom - rectangle.top,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                instance,
+                ptr::null_mut(),
+            );
+            if handle.is_null() {
+                UnregisterClassW(class_name.as_ptr(), instance);
+                return Err(last_error("CreateWindowExW"));
+            }
+            ShowWindow(handle, SW_SHOW);
+
+            Ok(Self {
+                instance,
+                handle,
+                class_name,
+            })
+        }
+    }
+
+    pub fn instance(&self) -> Hinstance {
+        self.instance
+    }
+
+    pub fn handle(&self) -> Hwnd {
+        self.handle
+    }
+
+    pub fn client_extent(&self) -> Result<(u32, u32), WindowError> {
+        let mut rectangle = Rect::default();
+        // SAFETY: The window is live and `rectangle` is writable.
+        if unsafe { GetClientRect(self.handle, &raw mut rectangle) } == 0 {
+            return Err(last_error("GetClientRect"));
+        }
+        let width = u32::try_from(rectangle.right - rectangle.left).unwrap_or(0);
+        let height = u32::try_from(rectangle.bottom - rectangle.top).unwrap_or(0);
+        Ok((width, height))
+    }
+
+    pub fn pump_events(&self) -> bool {
+        debug_assert!(!self.handle.is_null());
+        let mut message = Msg::default();
+        // SAFETY: The message buffer is writable; retrieved messages are initialized by Win32.
+        unsafe {
+            while PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                if message.message == WM_QUIT {
+                    return false;
+                }
+                TranslateMessage(&raw const message);
+                DispatchMessageW(&raw const message);
+            }
+        }
+        true
+    }
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        // SAFETY: These resources were created by this value and are released once.
+        unsafe {
+            if !self.handle.is_null() && IsWindow(self.handle) != 0 {
+                DestroyWindow(self.handle);
+            }
+            UnregisterClassW(self.class_name.as_ptr(), self.instance);
+        }
+    }
+}
+
+unsafe extern "system" fn window_procedure(
+    window: Hwnd,
+    message: u32,
+    w_param: Wparam,
+    l_param: Lparam,
+) -> Lresult {
+    match message {
+        WM_CLOSE => {
+            // SAFETY: Win32 supplied this live window handle.
+            unsafe { DestroyWindow(window) };
+            0
+        }
+        WM_DESTROY => {
+            // SAFETY: Posting the thread's quit message has no pointer preconditions.
+            unsafe { PostQuitMessage(0) };
+            0
+        }
+        // SAFETY: Unknown messages are delegated with their original Win32 values.
+        _ => unsafe { DefWindowProcW(window, message, w_param, l_param) },
+    }
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
+}
+
+fn last_error(operation: &str) -> WindowError {
+    // SAFETY: GetLastError has no preconditions and returns thread-local state.
+    WindowError(format!("{operation} failed with Win32 error {}", unsafe {
+        GetLastError()
+    }))
+}

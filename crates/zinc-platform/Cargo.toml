@@ -1,0 +1,10 @@
+[package]
+name = "zinc-platform"
+description = "Native desktop platform layer for Zinc"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

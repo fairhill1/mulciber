@@ -1,0 +1,29 @@
+# Zinc Vulkan and SPIR-V toolchain pins. Revisions are immutable Git commits.
+
+[vulkan]
+api = "1.4.356"
+specification = "73836865422f9e28e17069a96cceef6d0ece1ff8"
+headers = "8d6039a455a7ecc7d2a592ff97f62db4e59b70bf"
+loader = "9fd87c33d003122d07169230030ed34cc6dd6bca"
+validation_layers = "6906fd94f2f422beb682d43d8b1af872aaff97b0"
+profiles = "8ed59f5f1486673d6463bc21a15cd0e824f5513f"
+
+[spirv]
+# SPIRV-Tools v2026.2 records this compatible SPIRV-Headers revision in DEPS.
+headers = "ad9184e76a66b1001c29db9b0a3e87f646c64de0"
+tools_version = "2026.2"
+tools = "0539c81f69a3daeb706fd3477dca61435b475156"
+glslang_version = "16.4.0"
+glslang = "168d452a4f460d24b588fed08477a81c44ee27a1"
+
+[probe_shaders]
+compiler = "shaderc v2023.8 (2025-09-26 build)"
+target_environment = "vulkan1.4"
+vertex_sha256 = "7c938d7c6974ab9e34dc9d0a30e934b1e4164843dde379f03d21d1484d5aef4b"
+fragment_sha256 = "7cdd2368c4be0846438c5aed4bd6ca3c146bd44c36c14645dcab3edb03f921dd"
+
+[inputs]
+vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"
+vulkan_core_h_sha256 = "682de8fb5d47f9839d62732975e8c7d54f8d2e8c178d79977d698e34ebc64da9"
+vulkan_win32_h_sha256 = "72f0b6de71287d3b04d12235e4f2fef8f343126f85be4963c516d31d5bb4c099"
+vk_platform_h_sha256 = "a2cd9085c66776845d2524c3b0e73ccf4827ba046aa6f676c4b8ddbed47d6552"

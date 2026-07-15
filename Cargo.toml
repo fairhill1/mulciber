@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/zinc-gpu",
+    "crates/zinc-platform",
+    "probes/metal-info",
+    "probes/metal-triangle",
+    "probes/vulkan-win32-triangle",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.97"
+version = "0.0.0"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

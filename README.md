@@ -1,0 +1,49 @@
+# Zinc
+
+Zinc is a native game platform for Vulkan and Metal.
+
+The project is intentionally beginning with small native probes instead of a predesigned graphics
+abstraction. Those probes will establish the real platform contracts from which `zinc-gpu` and
+`zinc-platform` are derived.
+
+## Direction
+
+- Vulkan 1.4 on Windows and Linux.
+- Metal 3 on Apple silicon as the compatibility baseline.
+- Metal 4 as an SDK- and capability-gated path.
+- Native Win32, AppKit, Wayland, and X11 platform implementations.
+- No `wgpu`, `winit`, or Direct3D dependency.
+- Modern features such as mesh shading, bindless resources, ray tracing, and sparse resources are
+  independent capabilities rather than a single linear hardware tier.
+
+See [the support contract](docs/support-contract.md), [architecture decisions](docs/architecture.md),
+[pinned references](docs/references.md), and [the implementation roadmap](docs/roadmap.md).
+
+## Current probes
+
+On macOS:
+
+```sh
+cargo run -p zinc-metal-info
+```
+
+This queries Metal directly through the Objective-C runtime and has no Rust package dependencies.
+
+Run the native AppKit and Metal presentation probe:
+
+```sh
+cargo run -p zinc-metal-triangle
+```
+
+For a finite validation run, pass `--frames N`. Enable Apple's validation layer with
+`MTL_DEBUG_LAYER=1`.
+
+On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
+
+```sh
+cargo run -p zinc-vulkan-win32-triangle -- --frames 600
+```
+
+The probe loads `vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is
+required for the probe and reported through `VK_EXT_debug_utils`. See the
+[Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

@@ -1,0 +1,14 @@
+[package]
+name = "zinc-vulkan-bindgen"
+description = "Reproducible Vulkan ABI binding generator for Zinc"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.97"
+version = "0.0.0"
+
+[dependencies]
+bindgen = "0.72.1"
+
+# Keep build-tool dependencies out of Zinc's runtime workspace and lock file.
+[workspace]

@@ -1,0 +1,10 @@
+[package]
+name = "zinc-gpu"
+description = "Native Vulkan and Metal graphics layer for Zinc"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

@@ -46,7 +46,9 @@ Metal evidence completed so far:
 - [x] Triple-buffered, CPU-updated uniforms with explicit in-flight slot reuse.
 - [x] Compute-written private storage buffer with verified GPU-to-CPU readback.
 - [x] Indexed-indirect drawing from a native Metal argument buffer.
-- [ ] Mip generation, multisampling, compressed textures, and transient render targets.
+- [x] Capability-checked BC1 source texture decompressed through compute.
+- [x] Generated mip chain with exact 1x1 mip-tail readback validation.
+- [x] Memoryless 4x MSAA color and depth attachments resolved into the drawable.
 - [ ] Timestamps, labels, and pipeline caching.
 
 ## 3. Extract Zinc APIs

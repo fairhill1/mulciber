@@ -37,14 +37,15 @@ fragment float4 fragment_main(
 }
 
 kernel void copy_texture(
-    texture2d<float, access::read> source [[texture(0)]],
+    texture2d<float, access::sample> source [[texture(0)]],
     texture2d<float, access::write> destination [[texture(1)]],
     device uint* texel_words [[buffer(0)]],
     uint2 position [[thread_position_in_grid]]) {
     if (position.x >= destination.get_width() || position.y >= destination.get_height()) {
         return;
     }
-    float4 value = source.read(position);
+    constexpr sampler source_sampler(coord::pixel, address::clamp_to_edge, filter::nearest);
+    float4 value = source.sample(source_sampler, float2(position) + 0.5);
     destination.write(value, position);
     uchar4 bytes = uchar4(round(clamp(value, 0.0, 1.0) * 255.0));
     texel_words[position.y * destination.get_width() + position.x] =

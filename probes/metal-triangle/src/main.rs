@@ -18,13 +18,16 @@ mod macos {
 
     const PIXEL_FORMAT_BGRA8_UNORM: usize = 80;
     const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
+    const PIXEL_FORMAT_BC1_RGBA: usize = 130;
     const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
     const LOAD_ACTION_CLEAR: usize = 2;
-    const STORE_ACTION_STORE: usize = 1;
     const STORE_ACTION_DONT_CARE: usize = 0;
+    const STORE_ACTION_MULTISAMPLE_RESOLVE: usize = 2;
     const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
     const INDEX_TYPE_UINT16: usize = 0;
     const STORAGE_MODE_PRIVATE: usize = 2;
+    const STORAGE_MODE_MEMORYLESS: usize = 3;
+    const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
     const RESOURCE_STORAGE_MODE_PRIVATE: usize = STORAGE_MODE_PRIVATE << 4;
     const TEXTURE_USAGE_SHADER_READ: usize = 1;
     const TEXTURE_USAGE_SHADER_WRITE: usize = 2;
@@ -35,11 +38,19 @@ mod macos {
     const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
     const CHECKER_WIDTH: usize = 8;
     const CHECKER_HEIGHT: usize = 8;
+    const BC1_BLOCK_WIDTH: usize = 4;
+    const BC1_BYTES_PER_BLOCK: usize = 8;
+    const BC1_BYTES_PER_ROW: usize = CHECKER_WIDTH / BC1_BLOCK_WIDTH * BC1_BYTES_PER_BLOCK;
     const READBACK_BYTES_PER_ROW: usize = 256;
     const TEXTURE_READBACK_LENGTH: usize = READBACK_BYTES_PER_ROW * CHECKER_HEIGHT;
+    const MIP_READBACK_OFFSET: usize = TEXTURE_READBACK_LENGTH;
+    const MIP_READBACK_LENGTH: usize = READBACK_BYTES_PER_ROW;
+    const STORAGE_READBACK_OFFSET: usize = MIP_READBACK_OFFSET + MIP_READBACK_LENGTH;
     const STORAGE_BUFFER_LENGTH: usize = CHECKER_WIDTH * CHECKER_HEIGHT * size_of::<u32>();
-    const TOTAL_READBACK_LENGTH: usize = TEXTURE_READBACK_LENGTH + STORAGE_BUFFER_LENGTH;
+    const TOTAL_READBACK_LENGTH: usize = STORAGE_READBACK_OFFSET + STORAGE_BUFFER_LENGTH;
+    const EXPECTED_MIP_TAIL: [u8; 4] = [144, 154, 148, 255];
     const IN_FLIGHT_FRAMES: usize = 3;
+    const SAMPLE_COUNT: usize = 4;
     const METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
     #[link(name = "Metal", kind = "framework")]
@@ -140,7 +151,28 @@ mod macos {
         base_vertex: 0,
         base_instance: 0,
     };
+    const BC1_BLOCKS: [u8; 32] = bc1_blocks();
     const CHECKER_PIXELS: [u8; CHECKER_WIDTH * CHECKER_HEIGHT * 4] = checker_pixels();
+
+    const fn bc1_blocks() -> [u8; 32] {
+        const BRIGHT: u16 = (30 << 11) | (60 << 5) | 31;
+        const DARK: u16 = (5 << 11) | (16 << 5) | 5;
+        let mut blocks = [0; 32];
+        let mut block = 0;
+        while block < 4 {
+            let endpoint = if block == 0 || block == 3 {
+                BRIGHT
+            } else {
+                DARK
+            };
+            let offset = block * BC1_BYTES_PER_BLOCK;
+            let bytes = endpoint.to_le_bytes();
+            blocks[offset] = bytes[0];
+            blocks[offset + 1] = bytes[1];
+            block += 1;
+        }
+        blocks
+    }
 
     const fn checker_pixels() -> [u8; CHECKER_WIDTH * CHECKER_HEIGHT * 4] {
         let mut pixels = [0; CHECKER_WIDTH * CHECKER_HEIGHT * 4];
@@ -149,10 +181,10 @@ mod macos {
             let mut x = 0;
             while x < CHECKER_WIDTH {
                 let offset = (y * CHECKER_WIDTH + x) * 4;
-                let bright = (x + y) % 2 == 0;
-                pixels[offset] = if bright { 235 } else { 34 };
-                pixels[offset + 1] = if bright { 242 } else { 42 };
-                pixels[offset + 2] = if bright { 255 } else { 67 };
+                let bright = (x / BC1_BLOCK_WIDTH + y / BC1_BLOCK_WIDTH).is_multiple_of(2);
+                pixels[offset] = if bright { 247 } else { 41 };
+                pixels[offset + 1] = if bright { 243 } else { 65 };
+                pixels[offset + 2] = if bright { 255 } else { 41 };
                 pixels[offset + 3] = 255;
                 x += 1;
             }
@@ -211,6 +243,7 @@ mod macos {
         phase: f32,
         texture: Object,
         sampler: Object,
+        multisample_color: Object,
         depth_texture: Object,
         depth_extent: (usize, usize),
         drawable_size: Size,
@@ -306,6 +339,7 @@ mod macos {
                     phase: 0.0,
                     texture,
                     sampler,
+                    multisample_color: ptr::null_mut(),
                     depth_texture: ptr::null_mut(),
                     depth_extent: (0, 0),
                     drawable_size: Size::default(),
@@ -314,6 +348,12 @@ mod macos {
         }
 
         fn run(mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
+            let render_result = self.render_loop(frame_limit);
+            let cleanup_result = self.finish_gpu();
+            render_result.and(cleanup_result)
+        }
+
+        fn render_loop(&mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
             let mut rendered_frames = 0;
             while self.pump_events() {
                 let _pool = AutoreleasePool::new();
@@ -326,7 +366,7 @@ mod macos {
                     thread::sleep(Duration::from_millis(16));
                 }
             }
-            self.finish_gpu()
+            Ok(())
         }
 
         fn pump_events(&self) -> bool {
@@ -388,8 +428,20 @@ mod macos {
                     objc::usize_value(drawable_texture, c"height"),
                 );
                 if drawable_extent != self.depth_extent {
-                    self.depth_texture =
-                        create_depth_texture(self.device, drawable_extent.0, drawable_extent.1)?;
+                    self.multisample_color = create_multisample_texture(
+                        self.device,
+                        PIXEL_FORMAT_BGRA8_UNORM,
+                        drawable_extent.0,
+                        drawable_extent.1,
+                        "memoryless multisample color texture",
+                    )?;
+                    self.depth_texture = create_multisample_texture(
+                        self.device,
+                        PIXEL_FORMAT_DEPTH32_FLOAT,
+                        drawable_extent.0,
+                        drawable_extent.1,
+                        "memoryless multisample depth texture",
+                    )?;
                     self.depth_extent = drawable_extent;
                 }
 
@@ -454,10 +506,11 @@ mod macos {
             if !previous.is_null() {
                 // SAFETY: This slot retains its command buffer until it completes and is released.
                 unsafe { objc::void(previous, c"waitUntilCompleted") };
-                required_command_buffer_success(previous, "in-flight frame")?;
+                let completion = required_command_buffer_success(previous, "in-flight frame");
                 // SAFETY: `track_submission` added exactly one retain for this slot.
                 unsafe { objc::void(previous, c"release") };
                 self.in_flight[self.frame_slot] = ptr::null_mut();
+                completion?;
             }
 
             let buffer = self.uniform_buffers[self.frame_slot];
@@ -504,9 +557,10 @@ mod macos {
                     objc::object_usize(attachments, c"objectAtIndexedSubscript:", 0),
                     "color attachment",
                 )?;
-                objc::void_object(color, c"setTexture:", drawable_texture);
+                objc::void_object(color, c"setTexture:", self.multisample_color);
+                objc::void_object(color, c"setResolveTexture:", drawable_texture);
                 objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_CLEAR);
-                objc::void_usize(color, c"setStoreAction:", STORE_ACTION_STORE);
+                objc::void_usize(color, c"setStoreAction:", STORE_ACTION_MULTISAMPLE_RESOLVE);
                 objc::void_clear_color(
                     color,
                     c"setClearColor:",
@@ -527,18 +581,24 @@ mod macos {
         }
 
         fn finish_gpu(&mut self) -> Result<(), ProbeError> {
+            let mut first_error = None;
             for command_buffer in &mut self.in_flight {
                 if command_buffer.is_null() {
                     continue;
                 }
                 // SAFETY: Each slot owns one retained, committed command buffer.
                 unsafe { objc::void(*command_buffer, c"waitUntilCompleted") };
-                required_command_buffer_success(*command_buffer, "frame shutdown")?;
+                let completion = required_command_buffer_success(*command_buffer, "frame shutdown");
                 // SAFETY: The slot's retain is balanced after GPU completion.
                 unsafe { objc::void(*command_buffer, c"release") };
                 *command_buffer = ptr::null_mut();
+                if first_error.is_none()
+                    && let Err(error) = completion
+                {
+                    first_error = Some(error);
+                }
             }
-            Ok(())
+            first_error.map_or(Ok(()), Err)
         }
     }
 
@@ -592,6 +652,7 @@ mod macos {
                 c"setDepthAttachmentPixelFormat:",
                 PIXEL_FORMAT_DEPTH32_FLOAT,
             );
+            objc::void_usize(descriptor, c"setRasterSampleCount:", SAMPLE_COUNT);
 
             let mut error = ptr::null_mut();
             let render = objc::object_object_out(
@@ -680,6 +741,7 @@ mod macos {
             )?;
             objc::void_usize(descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
             objc::void_usize(descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
+            objc::void_usize(descriptor, c"setMipFilter:", SAMPLER_FILTER_LINEAR);
             objc::void_usize(descriptor, c"setSAddressMode:", SAMPLER_ADDRESS_REPEAT);
             objc::void_usize(descriptor, c"setTAddressMode:", SAMPLER_ADDRESS_REPEAT);
             required(
@@ -718,8 +780,8 @@ mod macos {
                 c"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
                 upload,
                 0,
-                CHECKER_WIDTH * 4,
-                CHECKER_PIXELS.len(),
+                BC1_BYTES_PER_ROW,
+                BC1_BLOCKS.len(),
                 Size3 {
                     width: CHECKER_WIDTH,
                     height: CHECKER_HEIGHT,
@@ -762,14 +824,30 @@ mod macos {
             );
             objc::void(compute, c"endEncoding");
 
-            let readback_blit = required(
+            encode_texture_readback(command_buffer, output_texture, storage_buffer, readback)?;
+            finish_texture_preparation(command_buffer, readback, readback_length)?;
+            Ok(output_texture)
+        }
+    }
+
+    fn encode_texture_readback(
+        command_buffer: Object,
+        texture: Object,
+        storage: Object,
+        readback: Object,
+    ) -> Result<(), ProbeError> {
+        // SAFETY: All resources remain alive through command completion and copy layouts match their
+        // allocated ranges.
+        unsafe {
+            let blit = required(
                 objc::object(command_buffer, c"blitCommandEncoder"),
                 "texture readback blit encoder",
             )?;
+            objc::void_object(blit, c"generateMipmapsForTexture:", texture);
             objc::void_copy_texture_to_buffer(
-                readback_blit,
+                blit,
                 c"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
-                output_texture,
+                texture,
                 0,
                 0,
                 Origin3::default(),
@@ -783,19 +861,35 @@ mod macos {
                 READBACK_BYTES_PER_ROW,
                 TEXTURE_READBACK_LENGTH,
             );
+            objc::void_copy_texture_to_buffer(
+                blit,
+                c"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+                texture,
+                0,
+                3,
+                Origin3::default(),
+                Size3 {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                },
+                readback,
+                MIP_READBACK_OFFSET,
+                READBACK_BYTES_PER_ROW,
+                MIP_READBACK_LENGTH,
+            );
             objc::void_copy_buffer(
-                readback_blit,
+                blit,
                 c"copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:",
-                storage_buffer,
+                storage,
                 0,
                 readback,
-                TEXTURE_READBACK_LENGTH,
+                STORAGE_READBACK_OFFSET,
                 STORAGE_BUFFER_LENGTH,
             );
-            objc::void(readback_blit, c"endEncoding");
-            finish_texture_preparation(command_buffer, readback, readback_length)?;
-            Ok(output_texture)
+            objc::void(blit, c"endEncoding");
         }
+        Ok(())
     }
 
     fn finish_texture_preparation(
@@ -813,11 +907,17 @@ mod macos {
     }
 
     fn create_texture_resources(device: Object) -> Result<TextureResources, ProbeError> {
-        let source =
-            create_rgba_texture(device, TEXTURE_USAGE_SHADER_READ, "compute source texture")?;
+        // SAFETY: This macOS 11+ device property returns Objective-C BOOL.
+        if !unsafe { objc::bool_value(device, c"supportsBCTextureCompression") } {
+            return Err(ProbeError(
+                "the Metal device does not support required BC texture compression".into(),
+            ));
+        }
+        let source = create_bc1_texture(device)?;
         let output = create_rgba_texture(
             device,
             TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_SHADER_WRITE,
+            true,
             "compute output texture",
         )?;
         // SAFETY: Buffer constructors accept the given lengths, byte pointers, and options.
@@ -834,8 +934,8 @@ mod macos {
             objc::object_bytes(
                 device,
                 c"newBufferWithBytes:length:options:",
-                CHECKER_PIXELS.as_ptr().cast::<c_void>(),
-                CHECKER_PIXELS.len(),
+                BC1_BLOCKS.as_ptr().cast::<c_void>(),
+                BC1_BLOCKS.len(),
                 0,
             )
         };
@@ -922,6 +1022,7 @@ mod macos {
     fn create_rgba_texture(
         device: Object,
         usage: usize,
+        mipmapped: bool,
         label: &str,
     ) -> Result<Object, ProbeError> {
         // SAFETY: The descriptor factory and setters match the Metal SDK ABI.
@@ -933,7 +1034,7 @@ mod macos {
                     PIXEL_FORMAT_RGBA8_UNORM,
                     CHECKER_WIDTH,
                     CHECKER_HEIGHT,
-                    false,
+                    mipmapped,
                 ),
                 "RGBA texture descriptor",
             )?;
@@ -942,6 +1043,29 @@ mod macos {
             required(
                 objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
                 label,
+            )
+        }
+    }
+
+    fn create_bc1_texture(device: Object) -> Result<Object, ProbeError> {
+        // SAFETY: BC1 support is queried before this descriptor is created.
+        unsafe {
+            let descriptor = required(
+                objc::object_three_usizes_bool(
+                    objc::class(c"MTLTextureDescriptor"),
+                    c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+                    PIXEL_FORMAT_BC1_RGBA,
+                    CHECKER_WIDTH,
+                    CHECKER_HEIGHT,
+                    false,
+                ),
+                "BC1 texture descriptor",
+            )?;
+            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
+            objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_SHADER_READ);
+            required(
+                objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
+                "private BC1 source texture",
             )
         }
     }
@@ -974,7 +1098,7 @@ mod macos {
                     }
                 }
 
-                let storage_offset = TEXTURE_READBACK_LENGTH + expected_offset;
+                let storage_offset = STORAGE_READBACK_OFFSET + expected_offset;
                 let actual_word = u32::from_le_bytes(
                     bytes[storage_offset..storage_offset + 4]
                         .try_into()
@@ -992,32 +1116,44 @@ mod macos {
                 }
             }
         }
+
+        let mip_tail = &bytes[MIP_READBACK_OFFSET..MIP_READBACK_OFFSET + 4];
+        if mip_tail != EXPECTED_MIP_TAIL {
+            return Err(ProbeError(format!(
+                "mip-tail readback mismatch: expected {EXPECTED_MIP_TAIL:?}, got {mip_tail:?}"
+            )));
+        }
         Ok(())
     }
 
-    fn create_depth_texture(
+    fn create_multisample_texture(
         device: Object,
+        pixel_format: usize,
         width: usize,
         height: usize,
+        label: &str,
     ) -> Result<Object, ProbeError> {
-        // SAFETY: The descriptor factory and setters match the Metal SDK ABI.
+        // SAFETY: The descriptor factory and setters match the Metal SDK ABI. Memoryless storage is
+        // part of Zinc's Apple-silicon/macOS 13 baseline for transient render attachments.
         unsafe {
             let descriptor = required(
                 objc::object_three_usizes_bool(
                     objc::class(c"MTLTextureDescriptor"),
                     c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-                    PIXEL_FORMAT_DEPTH32_FLOAT,
+                    pixel_format,
                     width,
                     height,
                     false,
                 ),
-                "depth texture descriptor",
+                "multisample texture descriptor",
             )?;
-            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
+            objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_2D_MULTISAMPLE);
+            objc::void_usize(descriptor, c"setSampleCount:", SAMPLE_COUNT);
+            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_MEMORYLESS);
             objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_RENDER_TARGET);
             required(
                 objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
-                "depth texture",
+                label,
             )
         }
     }

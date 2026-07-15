@@ -40,12 +40,13 @@ Run the native AppKit and Metal presentation/resource probe:
 cargo run -p zinc-metal-triangle
 ```
 
-It uploads a texture through a staging buffer, copies it into a private storage texture with compute,
-verifies the result through a padded GPU-to-CPU readback, then draws indexed geometry with depth
-testing. The draw itself is indirect; compute also writes a private storage buffer whose copied-back
-contents are verified. Three per-frame uniform buffers animate the geometry and are updated only
-after their previous command buffers complete. The historical package name is retained while the
-probe grows into the representative Metal workload.
+It uploads a capability-checked BC1 texture through a staging buffer, decompresses it into a private
+mipmapped storage texture with compute, and verifies both the base level and generated mip tail
+through padded GPU-to-CPU readback. Rendering uses indexed-indirect drawing, depth testing, and
+memoryless 4x MSAA color/depth attachments resolved into the drawable. Compute also writes a private
+storage buffer whose copied-back contents are verified. Three per-frame uniform buffers animate the
+geometry and are updated only after their previous command buffers complete. All retained in-flight
+command buffers are drained and released even when rendering or GPU completion fails.
 
 The build script invokes Xcode's `metal` and `metallib` tools and embeds the result. The running probe
 loads that library directly and never invokes a shader compiler. This adds an SDK build requirement,

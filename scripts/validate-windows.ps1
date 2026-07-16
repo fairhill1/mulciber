@@ -25,6 +25,7 @@ function Invoke-NativeLogged {
         [string]$Command,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [string[]]$Arguments,
 
         [Parameter(Mandatory = $true)]
@@ -33,8 +34,19 @@ function Invoke-NativeLogged {
 
     $LogPath = Join-Path $ArtifactDirectory $LogName
     Write-Host "> $Command $($Arguments -join ' ')"
-    & $Command @Arguments 2>&1 | Tee-Object -FilePath $LogPath
-    $ExitCode = $LASTEXITCODE
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 turns a native process's stderr into non-terminating ErrorRecords.
+        # Cargo writes ordinary progress there, so judge native success by its exit code instead.
+        $ErrorActionPreference = "Continue"
+        & $Command @Arguments 2>&1 |
+            ForEach-Object { $_.ToString() } |
+            Tee-Object -FilePath $LogPath
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if ($ExitCode -ne 0) {
         throw "$Command exited with code $ExitCode; see $LogPath"
     }
@@ -80,6 +92,12 @@ try {
     Invoke-NativeLogged "git" @("rev-parse", "HEAD") "git-revision.log"
     Invoke-NativeLogged "git" @("status", "--short", "--branch") "git-status.log"
     Invoke-NativeLogged "rustc" @("--version", "--verbose") "rustc.log"
+
+    # OBS registers a global implicit Vulkan capture layer whose older advertised API version can
+    # produce loader warnings. Its manifest defines this opt-out, which keeps third-party capture
+    # machinery out of validation without asking the loader to force-disable a layer (itself a
+    # warning).
+    $env:DISABLE_VULKAN_OBS_CAPTURE = "1"
 
     # Full output works with Vulkan SDK releases that predate `vulkaninfo --summary` and preserves
     # the device properties/features needed for later capability comparisons.

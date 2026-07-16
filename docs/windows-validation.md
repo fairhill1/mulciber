@@ -103,6 +103,17 @@ proportions across window shapes and the fragment shader uses time for a subtle 
 600-frame run and automated four-extent resize smoke completed without validation or loader
 messages. Evidence: `validation-artifacts/windows-vulkan-20260716-110153.zip`.
 
+The compute storage/readback slice was validated on 2026-07-16. An offline-compiled compute shader
+dispatches 64 invocations into a device-local storage buffer through its own storage descriptor and
+compute pipeline; adapter selection requires the chosen queue family to support graphics, compute,
+and presentation. A synchronization2 buffer barrier makes shader writes visible to transfer, the
+buffer is copied into host-visible coherent memory, and a second barrier makes the transfer writes
+visible to the host. After fenced completion, the probe maps the readback allocation and compares
+all 64 `u32` values against the deterministic expected sequence, failing startup on any mismatch.
+Both the 600-frame run and automated resize smoke reported exact readback and completed without
+validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-111034.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

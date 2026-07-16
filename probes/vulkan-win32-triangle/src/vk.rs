@@ -4193,6 +4193,26 @@ impl Default for VkPipelineShaderStageCreateInfo {
     }
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkComputePipelineCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkPipelineCreateFlags,
+    pub stage: VkPipelineShaderStageCreateInfo,
+    pub layout: VkPipelineLayout,
+    pub basePipelineHandle: VkPipeline,
+    pub basePipelineIndex: i32,
+}
+impl Default for VkComputePipelineCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct VkPushConstantRange {
     pub stageFlags: VkShaderStageFlags,
@@ -5043,6 +5063,16 @@ pub type PFN_vkDestroyShaderModule = ::core::option::Option<
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
+pub type PFN_vkCreateComputePipelines = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pipelineCache: VkPipelineCache,
+        createInfoCount: u32,
+        pCreateInfos: *const VkComputePipelineCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pPipelines: *mut VkPipeline,
+    ) -> VkResult,
+>;
 pub type PFN_vkDestroyPipeline = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
@@ -5143,6 +5173,14 @@ pub type PFN_vkCmdBindDescriptorSets = ::core::option::Option<
         pDescriptorSets: *const VkDescriptorSet,
         dynamicOffsetCount: u32,
         pDynamicOffsets: *const u32,
+    ),
+>;
+pub type PFN_vkCmdDispatch = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        groupCountX: u32,
+        groupCountY: u32,
+        groupCountZ: u32,
     ),
 >;
 pub type PFN_vkCreateGraphicsPipelines = ::core::option::Option<
@@ -5308,6 +5346,8 @@ pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkPipelineStageFlagBits2 = 12
 pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 256;
 pub const VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 512;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkPipelineStageFlagBits2 = 1024;
+pub const VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT: VkPipelineStageFlagBits2 = 2048;
+pub const VK_PIPELINE_STAGE_2_HOST_BIT: VkPipelineStageFlagBits2 = 16384;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkPipelineStageFlagBits2 = 65536;
 pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
 pub type VkAccessFlags2 = VkFlags64;
@@ -5318,8 +5358,11 @@ pub const VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT: VkAccessFlagBits2 = 4;
 pub const VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT: VkAccessFlagBits2 = 256;
 pub const VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT: VkAccessFlagBits2 = 512;
 pub const VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT: VkAccessFlagBits2 = 1024;
+pub const VK_ACCESS_2_TRANSFER_READ_BIT: VkAccessFlagBits2 = 2048;
 pub const VK_ACCESS_2_TRANSFER_WRITE_BIT: VkAccessFlagBits2 = 4096;
+pub const VK_ACCESS_2_HOST_READ_BIT: VkAccessFlagBits2 = 8192;
 pub const VK_ACCESS_2_SHADER_SAMPLED_READ_BIT: VkAccessFlagBits2 = 4294967296;
+pub const VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT: VkAccessFlagBits2 = 17179869184;
 pub type VkSubmitFlags = VkFlags;
 pub type VkRenderingFlags = VkFlags;
 #[repr(C)]

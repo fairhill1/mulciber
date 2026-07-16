@@ -56,6 +56,8 @@ Vulkan evidence completed so far:
   transitions, depth testing/writes, and swapchain-retirement ownership (same machine).
 - [x] Three persistently mapped, host-coherent uniform-buffer frame slots with matching descriptor
   sets, aspect-correct transforms, and shader-visible elapsed time (same machine).
+- [x] Compute-written device-local storage buffer with explicit compute-to-copy and copy-to-host
+  barriers plus exact GPU-to-CPU readback verification (same machine).
 
 Metal evidence completed so far:
 

@@ -21,6 +21,7 @@ compiler = "shaderc v2026.2"
 target_environment = "vulkan1.4"
 vertex_sha256 = "4544daff48f87567eb8c7845fa4d8654887ea9bd23fabd1d7f5a0d175309fe72"
 fragment_sha256 = "62123bb5085d65e8c86b5da71a977215daf2ae39c4d56dc74d26538200608159"
+compute_sha256 = "8479136880bb298cffb21f353ce25992f2716a8301acb474079e727f7387504d"
 
 [inputs]
 vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"

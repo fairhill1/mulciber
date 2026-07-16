@@ -15,6 +15,7 @@ const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
 const FRAME_SLOT_COUNT: usize = 3;
+const STORAGE_VALUE_COUNT: usize = 64;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -677,6 +678,7 @@ struct DeviceFns {
     create_pipeline_layout: vk::PFN_vkCreatePipelineLayout,
     destroy_pipeline_layout: vk::PFN_vkDestroyPipelineLayout,
     create_graphics_pipelines: vk::PFN_vkCreateGraphicsPipelines,
+    create_compute_pipelines: vk::PFN_vkCreateComputePipelines,
     destroy_pipeline: vk::PFN_vkDestroyPipeline,
     create_command_pool: vk::PFN_vkCreateCommandPool,
     destroy_command_pool: vk::PFN_vkDestroyCommandPool,
@@ -693,6 +695,7 @@ struct DeviceFns {
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
+    cmd_dispatch: vk::PFN_vkCmdDispatch,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
     cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
@@ -759,6 +762,7 @@ impl DeviceFns {
             create_pipeline_layout: load!(c"vkCreatePipelineLayout"),
             destroy_pipeline_layout: load!(c"vkDestroyPipelineLayout"),
             create_graphics_pipelines: load!(c"vkCreateGraphicsPipelines"),
+            create_compute_pipelines: load!(c"vkCreateComputePipelines"),
             destroy_pipeline: load!(c"vkDestroyPipeline"),
             create_command_pool: load!(c"vkCreateCommandPool"),
             destroy_command_pool: load!(c"vkDestroyCommandPool"),
@@ -775,6 +779,7 @@ impl DeviceFns {
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
+            cmd_dispatch: load!(c"vkCmdDispatch"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
             cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
@@ -1043,7 +1048,11 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
             );
         }
         for (index, family) in families.iter().enumerate() {
-            if family.queueCount == 0 || family.queueFlags & vk::VK_QUEUE_GRAPHICS_BIT as u32 == 0 {
+            let required_queue_flags =
+                (vk::VK_QUEUE_GRAPHICS_BIT | vk::VK_QUEUE_COMPUTE_BIT) as u32;
+            if family.queueCount == 0
+                || family.queueFlags & required_queue_flags != required_queue_flags
+            {
                 continue;
             }
             let mut supported = vk::VK_FALSE;
@@ -1220,6 +1229,13 @@ struct Renderer {
     uniform_buffers: Vec<UniformBuffer>,
     frame_slot: usize,
     started: Instant,
+    compute_storage: GpuBuffer,
+    compute_readback: GpuBuffer,
+    compute_descriptor_set_layout: vk::VkDescriptorSetLayout,
+    compute_descriptor_pool: vk::VkDescriptorPool,
+    compute_descriptor_set: vk::VkDescriptorSet,
+    compute_pipeline_layout: vk::VkPipelineLayout,
+    compute_pipeline: vk::VkPipeline,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
@@ -1259,6 +1275,13 @@ impl Renderer {
             uniform_buffers: Vec::new(),
             frame_slot: 0,
             started: Instant::now(),
+            compute_storage: GpuBuffer::default(),
+            compute_readback: GpuBuffer::default(),
+            compute_descriptor_set_layout: ptr::null_mut(),
+            compute_descriptor_pool: ptr::null_mut(),
+            compute_descriptor_set: ptr::null_mut(),
+            compute_pipeline_layout: ptr::null_mut(),
+            compute_pipeline: ptr::null_mut(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
             present_fences: Vec::new(),
@@ -1278,6 +1301,7 @@ impl Renderer {
         renderer.create_geometry_buffers()?;
         renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
+        renderer.create_compute_readback_resources()?;
         let (width, height) = window
             .client_extent()
             .map_err(|error| ProbeError(error.to_string()))?;
@@ -1867,6 +1891,361 @@ impl Renderer {
         }
     }
 
+    fn create_compute_readback_resources(&mut self) -> Result<(), ProbeError> {
+        let byte_len = STORAGE_VALUE_COUNT * mem::size_of::<u32>();
+        self.compute_storage = self.create_buffer(
+            byte_len,
+            (vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT) as u32,
+            vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            "compute storage",
+        )?;
+        self.compute_readback = self.create_buffer(
+            byte_len,
+            vk::VK_BUFFER_USAGE_TRANSFER_DST_BIT as u32,
+            (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                as u32,
+            "compute readback",
+        )?;
+        self.create_compute_descriptors()?;
+        self.create_compute_pipeline()?;
+        self.dispatch_compute_and_verify()?;
+        println!(
+            "Compute: device-local storage buffer dispatched and {STORAGE_VALUE_COUNT} values read back exactly"
+        );
+        Ok(())
+    }
+
+    fn create_compute_descriptors(&mut self) -> Result<(), ProbeError> {
+        let binding = vk::VkDescriptorSetLayoutBinding {
+            binding: 0,
+            descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptorCount: 1,
+            stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
+            ..Default::default()
+        };
+        let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            bindingCount: 1,
+            pBindings: &raw const binding,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.compute_descriptor_set_layout,
+                )
+            },
+            "vkCreateDescriptorSetLayout for compute storage",
+        )?;
+        let pool_size = vk::VkDescriptorPoolSize {
+            type_: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            descriptorCount: 1,
+        };
+        let pool_info = vk::VkDescriptorPoolCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            maxSets: 1,
+            poolSizeCount: 1,
+            pPoolSizes: &raw const pool_size,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const pool_info,
+                    ptr::null(),
+                    &raw mut self.compute_descriptor_pool,
+                )
+            },
+            "vkCreateDescriptorPool for compute storage",
+        )?;
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: self.compute_descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const self.compute_descriptor_set_layout,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Pool/layout are live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocate,
+                    &raw mut self.compute_descriptor_set,
+                )
+            },
+            "vkAllocateDescriptorSets for compute storage",
+        )?;
+        let buffer = vk::VkDescriptorBufferInfo {
+            buffer: self.compute_storage.handle,
+            offset: 0,
+            range: u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
+                .expect("storage buffer byte length fits u64"),
+        };
+        let write = vk::VkWriteDescriptorSet {
+            sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet: self.compute_descriptor_set,
+            dstBinding: 0,
+            descriptorCount: 1,
+            descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            pBufferInfo: &raw const buffer,
+            ..Default::default()
+        };
+        // SAFETY: The descriptor set and referenced storage buffer are live.
+        unsafe {
+            self.device
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.device.handle, 1, &raw const write, 0, ptr::null()
+            );
+        }
+        Ok(())
+    }
+
+    fn create_compute_pipeline(&mut self) -> Result<(), ProbeError> {
+        let layout_info = vk::VkPipelineLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            setLayoutCount: 1,
+            pSetLayouts: &raw const self.compute_descriptor_set_layout,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_pipeline_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.compute_pipeline_layout,
+                )
+            },
+            "vkCreatePipelineLayout for compute storage",
+        )?;
+        let shader = self.create_shader_module(include_bytes!("storage.comp.spv"))?;
+        let info = vk::VkComputePipelineCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            stage: shader_stage(vk::VK_SHADER_STAGE_COMPUTE_BIT, shader),
+            layout: self.compute_pipeline_layout,
+            basePipelineIndex: -1,
+            ..Default::default()
+        };
+        let result = check(
+            // SAFETY: Pipeline state and shader module are live; output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_compute_pipelines
+                    .expect("loaded function")(
+                    self.device.handle,
+                    ptr::null_mut(),
+                    1,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.compute_pipeline,
+                )
+            },
+            "vkCreateComputePipelines for storage buffer",
+        );
+        // SAFETY: Pipeline creation has finished reading the shader module.
+        unsafe {
+            self.device
+                .functions
+                .destroy_shader_module
+                .expect("loaded function")(self.device.handle, shader, ptr::null());
+        }
+        result
+    }
+
+    fn dispatch_compute_and_verify(&mut self) -> Result<(), ProbeError> {
+        check(
+            // SAFETY: The texture upload completed and left the frame fence signaled.
+            unsafe {
+                self.device.functions.reset_fences.expect("loaded function")(
+                    self.device.handle,
+                    1,
+                    &raw const self.frame_fence,
+                )
+            },
+            "vkResetFences for compute readback",
+        )?;
+        check(
+            // SAFETY: The previous upload completed, so the command buffer can be reset.
+            unsafe {
+                self.device
+                    .functions
+                    .reset_command_buffer
+                    .expect("loaded function")(self.command_buffer, 0)
+            },
+            "vkResetCommandBuffer for compute readback",
+        )?;
+        self.record_compute_readback()?;
+        self.submit_upload()?;
+        self.wait_for_frame()?;
+        self.verify_compute_readback()
+    }
+
+    fn record_compute_readback(&self) -> Result<(), ProbeError> {
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The reset command buffer is in its initial state.
+            unsafe {
+                self.device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(self.command_buffer, &raw const begin)
+            },
+            "vkBeginCommandBuffer for compute readback",
+        )?;
+        // SAFETY: Command buffer is recording and all compute resources are live.
+        unsafe {
+            self.device
+                .functions
+                .cmd_bind_pipeline
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_COMPUTE,
+                self.compute_pipeline,
+            );
+            self.device
+                .functions
+                .cmd_bind_descriptor_sets
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_COMPUTE,
+                self.compute_pipeline_layout,
+                0,
+                1,
+                &raw const self.compute_descriptor_set,
+                0,
+                ptr::null(),
+            );
+            self.device.functions.cmd_dispatch.expect("loaded function")(
+                self.command_buffer,
+                1,
+                1,
+                1,
+            );
+        }
+        self.compute_to_copy_barrier();
+        self.copy_buffer(
+            self.compute_storage.handle,
+            self.compute_readback.handle,
+            u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
+                .expect("storage buffer byte length fits u64"),
+        );
+        self.copy_to_host_barrier();
+        check(
+            // SAFETY: The command buffer is recording and all commands are complete.
+            unsafe {
+                self.device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.command_buffer)
+            },
+            "vkEndCommandBuffer for compute readback",
+        )
+    }
+
+    fn compute_to_copy_barrier(&self) {
+        let barrier = storage_buffer_barrier(
+            self.compute_storage.handle,
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+        );
+        self.buffer_dependency(&barrier);
+    }
+
+    fn copy_to_host_barrier(&self) {
+        let barrier = storage_buffer_barrier(
+            self.compute_readback.handle,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_PIPELINE_STAGE_2_HOST_BIT,
+            vk::VK_ACCESS_2_HOST_READ_BIT,
+        );
+        self.buffer_dependency(&barrier);
+    }
+
+    fn buffer_dependency(&self, barrier: &vk::VkBufferMemoryBarrier2) {
+        let dependency = vk::VkDependencyInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            bufferMemoryBarrierCount: 1,
+            pBufferMemoryBarriers: barrier,
+            ..Default::default()
+        };
+        // SAFETY: The command buffer is recording and the barrier references a live buffer.
+        unsafe {
+            self.device
+                .functions
+                .cmd_pipeline_barrier2
+                .expect("loaded function")(self.command_buffer, &raw const dependency);
+        }
+    }
+
+    fn verify_compute_readback(&self) -> Result<(), ProbeError> {
+        let byte_len = STORAGE_VALUE_COUNT * mem::size_of::<u32>();
+        let mut mapped = ptr::null_mut();
+        check(
+            // SAFETY: The coherent readback allocation is host-visible and the range is valid.
+            unsafe {
+                self.device.functions.map_memory.expect("loaded function")(
+                    self.device.handle,
+                    self.compute_readback.memory,
+                    0,
+                    u64::try_from(byte_len).expect("readback byte length fits u64"),
+                    0,
+                    &raw mut mapped,
+                )
+            },
+            "vkMapMemory for compute readback",
+        )?;
+        // SAFETY: The completed copy populated `STORAGE_VALUE_COUNT` aligned u32 values.
+        let values = unsafe {
+            std::slice::from_raw_parts(mapped.cast::<u32>(), STORAGE_VALUE_COUNT).to_vec()
+        };
+        // SAFETY: The mapping belongs to this live allocation and is unmapped exactly once.
+        unsafe {
+            self.device.functions.unmap_memory.expect("loaded function")(
+                self.device.handle,
+                self.compute_readback.memory,
+            );
+        }
+        for (index, &actual) in values.iter().enumerate() {
+            let expected = expected_storage_value(index);
+            if actual != expected {
+                return Err(ProbeError(format!(
+                    "compute readback mismatch at index {index}: expected {expected:#010x}, got {actual:#010x}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn create_buffer(
         &self,
         byte_len: usize,
@@ -2249,7 +2628,7 @@ impl Renderer {
                     self.frame_fence,
                 )
             },
-            "vkQueueSubmit2 for geometry upload",
+            "vkQueueSubmit2 for startup resource work",
         )?;
         self.frame_pending = true;
         Ok(())
@@ -2278,6 +2657,54 @@ impl Renderer {
                 );
             }
             buffer.memory = ptr::null_mut();
+        }
+    }
+
+    unsafe fn destroy_compute_resources(&self, storage: &mut GpuBuffer, readback: &mut GpuBuffer) {
+        // SAFETY: Shutdown established that no submitted compute work remains in flight.
+        unsafe {
+            if !self.compute_pipeline.is_null() {
+                self.device
+                    .functions
+                    .destroy_pipeline
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_pipeline,
+                    ptr::null(),
+                );
+            }
+            if !self.compute_pipeline_layout.is_null() {
+                self.device
+                    .functions
+                    .destroy_pipeline_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_pipeline_layout,
+                    ptr::null(),
+                );
+            }
+            if !self.compute_descriptor_pool.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            if !self.compute_descriptor_set_layout.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_descriptor_set_layout,
+                    ptr::null(),
+                );
+            }
+            self.destroy_buffer(storage);
+            self.destroy_buffer(readback);
         }
     }
 
@@ -3668,8 +4095,11 @@ impl Drop for Renderer {
         let mut index_buffer = mem::take(&mut self.index_buffer);
         let mut texture = mem::take(&mut self.texture);
         let mut uniform_buffers = mem::take(&mut self.uniform_buffers);
+        let mut compute_storage = mem::take(&mut self.compute_storage);
+        let mut compute_readback = mem::take(&mut self.compute_readback);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
+            self.destroy_compute_resources(&mut compute_storage, &mut compute_readback);
             if !self.descriptor_pool.is_null() {
                 self.device
                     .functions
@@ -3981,6 +4411,36 @@ fn buffer_barrier(
     }
 }
 
+fn storage_buffer_barrier(
+    buffer: vk::VkBuffer,
+    source_stage: vk::VkPipelineStageFlags2,
+    source_access: vk::VkAccessFlags2,
+    destination_stage: vk::VkPipelineStageFlags2,
+    destination_access: vk::VkAccessFlags2,
+) -> vk::VkBufferMemoryBarrier2 {
+    vk::VkBufferMemoryBarrier2 {
+        sType: vk::VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        srcStageMask: source_stage,
+        srcAccessMask: source_access,
+        dstStageMask: destination_stage,
+        dstAccessMask: destination_access,
+        srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        buffer,
+        offset: 0,
+        size: u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
+            .expect("storage buffer byte length fits u64"),
+        ..Default::default()
+    }
+}
+
+fn expected_storage_value(index: usize) -> u32 {
+    u32::try_from(index)
+        .expect("storage value index fits u32")
+        .wrapping_mul(1_664_525)
+        .wrapping_add(1_013_904_223)
+}
+
 unsafe fn slice_bytes<T>(values: &[T]) -> &[u8] {
     let byte_len = mem::size_of_val(values);
     // SAFETY: The caller guarantees every byte in each value is initialized. The returned byte
@@ -4191,5 +4651,31 @@ mod tests {
         );
         assert_eq!(barrier.offset, 0);
         assert_eq!(barrier.size, 64);
+    }
+
+    #[test]
+    fn compute_storage_pattern_and_barrier_are_deterministic() {
+        assert_eq!(expected_storage_value(0), 1_013_904_223);
+        assert_eq!(expected_storage_value(1), 1_015_568_748);
+        assert_eq!(expected_storage_value(63), 1_118_769_298);
+
+        let barrier = storage_buffer_barrier(
+            ptr::null_mut(),
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+        );
+        assert_eq!(
+            barrier.srcStageMask,
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+        );
+        assert_eq!(
+            barrier.srcAccessMask,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+        );
+        assert_eq!(barrier.dstStageMask, vk::VK_PIPELINE_STAGE_2_COPY_BIT);
+        assert_eq!(barrier.dstAccessMask, vk::VK_ACCESS_2_TRANSFER_READ_BIT);
+        assert_eq!(barrier.size, 256);
     }
 }

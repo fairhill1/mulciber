@@ -22,6 +22,12 @@ The project is intentionally beginning with small native probes instead of a pre
 abstraction. Those probes will establish the real platform contracts from which `mulciber` and
 `mulciber-platform` are derived.
 
+The native evidence now permits a narrow experimental extraction, but not a stable API or first-class
+support claim. The [API extraction and comparison plan](docs/api-extraction-plan.md) defines the first
+unified slice, the design decisions it must settle, and the direct-native, single-backend Rust,
+`wgpu`/`winit`, SDL3 GPU, Vulkano, and scoped raylib comparisons it must survive. Portability receives
+no credit in the Metal-only and Vulkan-only viability evaluations.
+
 ## Direction
 
 - Vulkan 1.4 on Windows and Linux.
@@ -34,6 +40,7 @@ abstraction. Those probes will establish the real platform contracts from which 
 
 See [the project vision](docs/vision.md), [viability gates](docs/viability-gates.md),
 [support contract](docs/support-contract.md), [architecture decisions](docs/architecture.md),
+[API extraction and comparison plan](docs/api-extraction-plan.md),
 [pinned references](docs/references.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Current probes

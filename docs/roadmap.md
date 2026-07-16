@@ -1,7 +1,8 @@
 # Implementation roadmap
 
 Each milestone is a runnable vertical slice. Public abstraction work follows backend evidence rather
-than preceding it.
+than preceding it. Once the extraction-entry evidence is established, an unstable public slice may be
+built to test its design and value; stable support claims still require the applicable viability gates.
 
 Advancing between major milestones is governed by the [viability gates](viability-gates.md). Passing
 more checkboxes is not sufficient if Mulciber is converging on a less mature `wgpu`/`winit` substitute or
@@ -123,12 +124,38 @@ Metal evidence completed so far:
 - [x] Debug labels and command-buffer GPU start/end timing.
 - [x] Strict cold-generation and cross-process loading of a device-specific Metal binary archive.
 
-## 3. Extract Mulciber APIs
+## 3. Extract and test the first Mulciber API slice
 
-- [ ] Extract owned resource and synchronization types into `mulciber`.
-- [ ] Extract event, input, display, and lifecycle types into `mulciber-platform`.
-- [ ] Keep backend-specific capabilities reachable without leaking native object ownership.
-- [ ] Establish baseline and optional capability conformance tests.
+Follow the [API extraction and comparison plan](api-extraction-plan.md). Gate 1's remaining physical
+coverage continues in parallel; this milestone creates an explicitly unstable experiment, not a
+first-class support claim.
+
+- [x] Define the experimental-extraction threshold, unresolved design decisions, comparison targets,
+  tasks, measurements, single-backend scoring, and stop conditions.
+- [ ] Write the complete application-facing flow before committing to public type names, covering
+  window creation, capability requests, device/surface creation, rendering, resize/suspension, frame
+  completion, and fallible shutdown.
+- [ ] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame
+  presentation/non-presentation, resource-use vocabulary, error recovery, and safe native reach.
+- [ ] Extract the minimal event, window, display, and lifecycle spine into `mulciber-platform`, backed
+  by peer AppKit, Win32, Wayland, and X11 modules.
+- [ ] Extract owned device, queue, buffer, texture, pipeline, command, synchronization, and
+  presentation types into `mulciber` with Metal and Vulkan implementations.
+- [ ] Build the same textured depth-tested resize-aware example through both backends without
+  ordinary backend branches or application `unsafe`.
+- [ ] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
+  and shutdown conformance tests.
+- [ ] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
+  and does not add portability-only dispatch to the ordinary frame path.
+- [ ] Implement and preserve the pinned direct-native, practical single-backend Rust, `wgpu`/`winit`,
+  SDL3 GPU, Vulkano, and scoped raylib comparisons.
+- [ ] Record the Gate 2 pass, redesign, narrow, or stop decision from correctness, ergonomics,
+  learnability, control, cost, performance, and single-backend results.
+- [ ] Keep backend-specific capabilities reachable without leaking native object ownership or
+  bypassing presentation-retirement tracking.
+
+Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
+and a successful Gate 2 decision.
 
 ## 4. Recent GPU capabilities
 

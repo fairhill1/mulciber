@@ -6,6 +6,12 @@ The first implementations are intentionally unshared probes for Metal/AppKit, Vu
 Vulkan/Wayland, and Vulkan/X11. Mulciber's public types will be extracted from working call sequences,
 not copied from Vulkan, Metal, WebGPU, or another portability library.
 
+The probes now constrain a narrow experimental slice. Extraction follows the
+[API extraction and comparison plan](api-extraction-plan.md): write the desired application flow first,
+implement it through both native backends, preserve unresolved differences, and compare the result
+before granting stable names or support promises. Remaining Gate 1 physical coverage continues in
+parallel and is not implied by the existence of public Rust items.
+
 ## Project boundaries
 
 - `mulciber-platform` will own native windows, events, input, monitors, and lifecycle.
@@ -13,8 +19,24 @@ not copied from Vulkan, Metal, WebGPU, or another portability library.
 - `mulciber-shader` will eventually own offline compilation, reflection, and binding validation.
 - `mulciber-runtime` will eventually own timing, the game loop, jobs, and platform/GPU coordination.
 
-Only the first two library shells exist today. Their APIs remain empty until the probes establish
-the necessary contracts.
+Only the first two library shells exist today. The probes have established enough of the necessary
+contracts to begin their unstable extraction; the shells remain empty until the first outside-in
+application flow and its ownership decisions are recorded. Extraction does not create a stable API by
+default.
+
+## Unified contract and backend selection
+
+Ordinary game code uses one platform and graphics contract. Metal/AppKit and Vulkan with Win32,
+Wayland, or X11 remain explicitly named backend modules internally, with native ownership and lifecycle
+state machines rather than a forced identical implementation. Shared types express game intent and
+observable outcomes; they do not claim that a Metal drawable and Vulkan swapchain image have identical
+fences, release behavior, or failure modes.
+
+The supported operating-system target determines the applicable graphics backend in the initial
+contract: Metal on Apple-silicon macOS and Vulkan on Windows or Linux. A single-backend build must not
+link or initialize the unused backend, and ordinary frame work must not pay for portability-only
+dispatch. Safe bounded native extensions remain possible when a capability cannot fit the shared
+contract without loss, but they cannot bypass Mulciber's ownership or presentation-retirement tracking.
 
 ## Dependency policy
 

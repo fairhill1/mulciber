@@ -4,6 +4,11 @@ This ledger records the game-facing requirements demonstrated by Mulciber's nati
 those requirements become public API. It is evidence for later design work, not a proposed API and
 not a promise that Metal and Vulkan should expose identical operations.
 
+The [API extraction and comparison plan](api-extraction-plan.md) defines the narrow unstable slice now
+allowed by this evidence, the decisions it must settle, and the comparisons required before that slice
+is treated as a coherent supported contract. Questions below remain open until the extraction records
+and implements an answer through both native backends.
+
 The ledger uses three evidence states:
 
 - **Established**: implemented and physically exercised with native validation where available.
@@ -95,7 +100,11 @@ and hardware breadth remain governed by the viability gates.
 | Drain asynchronous work on ordinary shutdown | Every retained in-flight Metal command buffer is waited, checked, timed when possible, and released even after an earlier completion failure. | Frame work and tracked presentation operations are waited before owned resources are destroyed; the base swapchain path retains an orderly-idle fallback at final shutdown. | Shutdown is an explicit fallible lifecycle operation that attempts to drain all owned work and reports the first or aggregated failure without abandoning remaining cleanup. Drop remains best-effort. | Device loss, out-of-memory, process teardown, and partial-construction cleanup need dedicated evidence. |
 | Keep validation part of the support claim | Metal supports native validation-layer runs and attaches labels to major objects. | The probe requires Khronos validation, counts warning/error callbacks, and records reproducible Windows evidence plus initial native Wayland presentation evidence with zero warning/error callbacks. | Debug configurations enable the strongest native validation and route messages through Mulciber diagnostics. A backend is not first-class solely because it renders. | Broader Linux and AppKit lifecycle evidence, driver diversity, and release-build structural checks remain pending. |
 
-## Questions to resolve before extracting the public API
+## Questions the extraction must resolve before support
+
+These questions must be resolved before the affected portion of the API is treated as a supported
+contract. Experimental types may test a candidate answer under the extraction plan; their existence
+is not a resolution by itself.
 
 1. What is the smallest resource-usage vocabulary that can derive the demonstrated Vulkan barriers
    without hiding meaningful Metal behavior or blocking advanced native paths?

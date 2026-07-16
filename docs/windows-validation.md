@@ -152,6 +152,16 @@ swapchain and its presentation-completion tracking. The validation gate complete
 validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-114427.zip`.
 
+The offscreen/post-processing slice was validated on 2026-07-16. The renderer capability-checks a
+linear-filterable `R8G8B8A8_UNORM` color-attachment format and creates a single-sample offscreen image
+at every swapchain extent. The scene pass renders directly into it on the 1x path or resolves 4x color
+into it, then an explicit color-attachment-write to fragment-sampled-read transition feeds a dedicated
+linear-clamp descriptor and fullscreen-triangle pipeline. A second dynamic-rendering scope applies a
+vignette into the acquired swapchain image. Offscreen targets and both format-dependent pipelines
+participate in tracked swapchain retirement. Native 4x and forced 1x 600-frame runs plus the four-size
+resize smoke completed without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-115422.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

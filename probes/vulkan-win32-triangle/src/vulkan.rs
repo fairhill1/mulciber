@@ -20,6 +20,7 @@ const COMPUTE_IMAGE_WIDTH: u32 = 8;
 const COMPUTE_IMAGE_HEIGHT: u32 = 8;
 const COMPUTE_IMAGE_MIP_LEVELS: u32 = 4;
 const RGBA8_TEXEL_SIZE: usize = 4;
+const OFFSCREEN_FORMAT: vk::VkFormat = vk::VK_FORMAT_R8G8B8A8_UNORM;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -703,6 +704,7 @@ struct DeviceFns {
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
     cmd_copy_image_to_buffer2: vk::PFN_vkCmdCopyImageToBuffer2,
     cmd_dispatch: vk::PFN_vkCmdDispatch,
+    cmd_draw: vk::PFN_vkCmdDraw,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
     cmd_draw_indexed_indirect: vk::PFN_vkCmdDrawIndexedIndirect,
@@ -789,6 +791,7 @@ impl DeviceFns {
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
             cmd_copy_image_to_buffer2: load!(c"vkCmdCopyImageToBuffer2"),
             cmd_dispatch: load!(c"vkCmdDispatch"),
+            cmd_draw: load!(c"vkCmdDraw"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
             cmd_draw_indexed_indirect: load!(c"vkCmdDrawIndexedIndirect"),
@@ -1199,10 +1202,13 @@ unsafe extern "C" fn debug_callback(
 struct RetiredSwapchain {
     handle: vk::VkSwapchainKHR,
     views: Vec<vk::VkImageView>,
+    offscreen: GpuImage,
     msaa_color: GpuImage,
     depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
+    post_pipeline_layout: vk::VkPipelineLayout,
+    post_pipeline: vk::VkPipeline,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
     present_pending: Vec<bool>,
@@ -1234,6 +1240,7 @@ struct Renderer {
     extent: vk::VkExtent2D,
     images: Vec<vk::VkImage>,
     views: Vec<vk::VkImageView>,
+    offscreen: GpuImage,
     msaa_color: GpuImage,
     depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
@@ -1247,6 +1254,12 @@ struct Renderer {
     descriptor_set_layout: vk::VkDescriptorSetLayout,
     descriptor_pool: vk::VkDescriptorPool,
     descriptor_sets: Vec<vk::VkDescriptorSet>,
+    post_sampler: vk::VkSampler,
+    post_descriptor_set_layout: vk::VkDescriptorSetLayout,
+    post_descriptor_pool: vk::VkDescriptorPool,
+    post_descriptor_set: vk::VkDescriptorSet,
+    post_pipeline_layout: vk::VkPipelineLayout,
+    post_pipeline: vk::VkPipeline,
     uniform_buffers: Vec<UniformBuffer>,
     frame_slot: usize,
     started: Instant,
@@ -1276,6 +1289,7 @@ struct Renderer {
 impl Renderer {
     fn new(device: DeviceContext, window: &Window) -> Result<Self, ProbeError> {
         let depth_format = choose_depth_format(&device)?;
+        require_offscreen_format(&device)?;
         let mut renderer = Self {
             device,
             swapchain: ptr::null_mut(),
@@ -1284,6 +1298,7 @@ impl Renderer {
             extent: vk::VkExtent2D::default(),
             images: Vec::new(),
             views: Vec::new(),
+            offscreen: GpuImage::default(),
             msaa_color: GpuImage::default(),
             depth: GpuImage::default(),
             pipeline_layout: ptr::null_mut(),
@@ -1297,6 +1312,12 @@ impl Renderer {
             descriptor_set_layout: ptr::null_mut(),
             descriptor_pool: ptr::null_mut(),
             descriptor_sets: Vec::new(),
+            post_sampler: ptr::null_mut(),
+            post_descriptor_set_layout: ptr::null_mut(),
+            post_descriptor_pool: ptr::null_mut(),
+            post_descriptor_set: ptr::null_mut(),
+            post_pipeline_layout: ptr::null_mut(),
+            post_pipeline: ptr::null_mut(),
             uniform_buffers: Vec::new(),
             frame_slot: 0,
             started: Instant::now(),
@@ -1331,6 +1352,7 @@ impl Renderer {
         renderer.create_texture_resources()?;
         renderer.create_compute_readback_resources()?;
         renderer.create_texture_descriptors()?;
+        renderer.create_postprocess_resources()?;
         let (width, height) = window
             .client_extent()
             .map_err(|error| ProbeError(error.to_string()))?;
@@ -1339,6 +1361,9 @@ impl Renderer {
             println!(
                 "Depth: resize-dependent device-local {} attachment with testing/writes",
                 depth_format_name(renderer.depth_format)
+            );
+            println!(
+                "Post-processing: offscreen RGBA8 scene target sampled by a fullscreen vignette pass"
             );
         }
         Ok(renderer)
@@ -1930,6 +1955,136 @@ impl Renderer {
                     ptr::null(),
                 );
             }
+        }
+    }
+
+    fn create_postprocess_resources(&mut self) -> Result<(), ProbeError> {
+        let sampler_info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: vk::VK_FILTER_LINEAR,
+            minFilter: vk::VK_FILTER_LINEAR,
+            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            maxAnisotropy: 1.0,
+            maxLod: 0.0,
+            borderColor: vk::VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_sampler
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const sampler_info,
+                    ptr::null(),
+                    &raw mut self.post_sampler,
+                )
+            },
+            "vkCreateSampler for post-processing",
+        )?;
+        let binding = descriptor_binding(
+            0,
+            vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+        );
+        let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            bindingCount: 1,
+            pBindings: &raw const binding,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.post_descriptor_set_layout,
+                )
+            },
+            "vkCreateDescriptorSetLayout for post-processing",
+        )?;
+        let pool_size = vk::VkDescriptorPoolSize {
+            type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptorCount: 1,
+        };
+        let pool_info = vk::VkDescriptorPoolCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            maxSets: 1,
+            poolSizeCount: 1,
+            pPoolSizes: &raw const pool_size,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const pool_info,
+                    ptr::null(),
+                    &raw mut self.post_descriptor_pool,
+                )
+            },
+            "vkCreateDescriptorPool for post-processing",
+        )?;
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: self.post_descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const self.post_descriptor_set_layout,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Pool/layout are live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocate,
+                    &raw mut self.post_descriptor_set,
+                )
+            },
+            "vkAllocateDescriptorSets for post-processing",
+        )
+    }
+
+    fn update_postprocess_descriptor(&self) {
+        let image = vk::VkDescriptorImageInfo {
+            sampler: self.post_sampler,
+            imageView: self.offscreen.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        let write = vk::VkWriteDescriptorSet {
+            sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet: self.post_descriptor_set,
+            dstBinding: 0,
+            descriptorCount: 1,
+            descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            pImageInfo: &raw const image,
+            ..Default::default()
+        };
+        // SAFETY: The descriptor set and referenced offscreen image/sampler are live.
+        unsafe {
+            self.device
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.device.handle, 1, &raw const write, 0, ptr::null()
+            );
         }
     }
 
@@ -3256,6 +3411,40 @@ impl Renderer {
         }
     }
 
+    unsafe fn destroy_postprocess_resources(&self) {
+        // SAFETY: Swapchain teardown destroyed post pipelines before these persistent resources.
+        unsafe {
+            if !self.post_descriptor_pool.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.post_descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            if !self.post_sampler.is_null() {
+                self.device
+                    .functions
+                    .destroy_sampler
+                    .expect("loaded function")(
+                    self.device.handle, self.post_sampler, ptr::null()
+                );
+            }
+            if !self.post_descriptor_set_layout.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.post_descriptor_set_layout,
+                    ptr::null(),
+                );
+            }
+        }
+    }
+
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
         self.wait_for_frame()?;
 
@@ -3319,7 +3508,9 @@ impl Renderer {
             },
             "vkCreateSwapchainKHR",
         )?;
-        let reuse_pipeline = !self.pipeline.is_null() && self.format == format.format;
+        let reuse_pipeline = !self.pipeline.is_null()
+            && !self.post_pipeline.is_null()
+            && self.format == format.format;
         self.retire_current_swapchain(!reuse_pipeline);
         self.swapchain = swapchain;
         self.format = format.format;
@@ -3328,8 +3519,10 @@ impl Renderer {
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];
         self.views = self.create_image_views()?;
+        self.create_offscreen_attachment()?;
         self.create_msaa_color_attachment()?;
         self.create_depth_attachment()?;
+        self.update_postprocess_descriptor();
         if !reuse_pipeline {
             self.create_pipeline()?;
         }
@@ -3595,6 +3788,126 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_lines)]
+    fn create_offscreen_attachment(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: OFFSCREEN_FORMAT,
+            extent: vk::VkExtent3D {
+                width: self.extent.width,
+                height: self.extent.height,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT)
+                as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.offscreen.handle,
+                )
+            },
+            "vkCreateImage for offscreen scene color",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The offscreen image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.offscreen.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local offscreen color memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.offscreen.memory,
+                )
+            },
+            "vkAllocateMemory for offscreen scene color",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.offscreen.handle,
+                    self.offscreen.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for offscreen scene color",
+        )?;
+        let view_info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.offscreen.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: OFFSCREEN_FORMAT,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: color_subresource_range(),
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const view_info,
+                    ptr::null(),
+                    &raw mut self.offscreen.view,
+                )
+            },
+            "vkCreateImageView for offscreen scene color",
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn create_msaa_color_attachment(&mut self) -> Result<(), ProbeError> {
         if self.device.adapter.sample_count == vk::VK_SAMPLE_COUNT_1_BIT {
             return Ok(());
@@ -3602,7 +3915,7 @@ impl Renderer {
         let info = vk::VkImageCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             imageType: vk::VK_IMAGE_TYPE_2D,
-            format: self.format,
+            format: OFFSCREEN_FORMAT,
             extent: vk::VkExtent3D {
                 width: self.extent.width,
                 height: self.extent.height,
@@ -3690,7 +4003,7 @@ impl Renderer {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             image: self.msaa_color.handle,
             viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
-            format: self.format,
+            format: OFFSCREEN_FORMAT,
             components: vk::VkComponentMapping {
                 r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
                 g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -3888,7 +4201,8 @@ impl Renderer {
                 );
             }
         }
-        result
+        result?;
+        self.create_post_pipeline()
     }
 
     fn create_shader_module(&self, bytes: &[u8]) -> Result<vk::VkShaderModule, ProbeError> {
@@ -3991,10 +4305,11 @@ impl Renderer {
             pDynamicStates: dynamic_states.as_ptr(),
             ..Default::default()
         };
+        let color_format = OFFSCREEN_FORMAT;
         let rendering = vk::VkPipelineRenderingCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             colorAttachmentCount: 1,
-            pColorAttachmentFormats: &raw const self.format,
+            pColorAttachmentFormats: &raw const color_format,
             depthAttachmentFormat: self.depth_format,
             ..Default::default()
         };
@@ -4031,6 +4346,158 @@ impl Renderer {
                 )
             },
             "vkCreateGraphicsPipelines",
+        )
+    }
+
+    fn create_post_pipeline(&mut self) -> Result<(), ProbeError> {
+        let layout_info = vk::VkPipelineLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            setLayoutCount: 1,
+            pSetLayouts: &raw const self.post_descriptor_set_layout,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_pipeline_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.post_pipeline_layout,
+                )
+            },
+            "vkCreatePipelineLayout for post-processing",
+        )?;
+        let vertex = self.create_shader_module(include_bytes!("post.vert.spv"))?;
+        let fragment = match self.create_shader_module(include_bytes!("post.frag.spv")) {
+            Ok(module) => module,
+            Err(error) => {
+                // SAFETY: Vertex module is live and unused.
+                unsafe {
+                    self.device
+                        .functions
+                        .destroy_shader_module
+                        .expect("loaded function")(
+                        self.device.handle, vertex, ptr::null()
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let result = self.create_post_graphics_pipeline(vertex, fragment);
+        // SAFETY: Pipeline creation has finished reading both modules.
+        unsafe {
+            for module in [vertex, fragment] {
+                self.device
+                    .functions
+                    .destroy_shader_module
+                    .expect("loaded function")(
+                    self.device.handle, module, ptr::null()
+                );
+            }
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_post_graphics_pipeline(
+        &mut self,
+        vertex: vk::VkShaderModule,
+        fragment: vk::VkShaderModule,
+    ) -> Result<(), ProbeError> {
+        let stages = [
+            shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, vertex),
+            shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
+        ];
+        let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            ..Default::default()
+        };
+        let input_assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            ..Default::default()
+        };
+        let viewport = vk::VkPipelineViewportStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            viewportCount: 1,
+            scissorCount: 1,
+            ..Default::default()
+        };
+        let rasterization = vk::VkPipelineRasterizationStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            polygonMode: vk::VK_POLYGON_MODE_FILL,
+            cullMode: vk::VK_CULL_MODE_NONE as u32,
+            frontFace: vk::VK_FRONT_FACE_CLOCKWISE,
+            lineWidth: 1.0,
+            ..Default::default()
+        };
+        let multisample = vk::VkPipelineMultisampleStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
+            ..Default::default()
+        };
+        let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
+            colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
+                | vk::VK_COLOR_COMPONENT_G_BIT
+                | vk::VK_COLOR_COMPONENT_B_BIT
+                | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
+            ..Default::default()
+        };
+        let blend = vk::VkPipelineColorBlendStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            attachmentCount: 1,
+            pAttachments: &raw const blend_attachment,
+            ..Default::default()
+        };
+        let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
+        let dynamic = vk::VkPipelineDynamicStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount: 2,
+            pDynamicStates: dynamic_states.as_ptr(),
+            ..Default::default()
+        };
+        let rendering = vk::VkPipelineRenderingCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            colorAttachmentCount: 1,
+            pColorAttachmentFormats: &raw const self.format,
+            ..Default::default()
+        };
+        let info = vk::VkGraphicsPipelineCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            pNext: (&raw const rendering).cast(),
+            stageCount: 2,
+            pStages: stages.as_ptr(),
+            pVertexInputState: &raw const vertex_input,
+            pInputAssemblyState: &raw const input_assembly,
+            pViewportState: &raw const viewport,
+            pRasterizationState: &raw const rasterization,
+            pMultisampleState: &raw const multisample,
+            pColorBlendState: &raw const blend,
+            pDynamicState: &raw const dynamic,
+            layout: self.post_pipeline_layout,
+            basePipelineIndex: -1,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: All pipeline state pointers remain live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_graphics_pipelines
+                    .expect("loaded function")(
+                    self.device.handle,
+                    ptr::null_mut(),
+                    1,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.post_pipeline,
+                )
+            },
+            "vkCreateGraphicsPipelines for post-processing",
         )
     }
 
@@ -4098,6 +4565,7 @@ impl Renderer {
         self.retired.push(RetiredSwapchain {
             handle: mem::replace(&mut self.swapchain, ptr::null_mut()),
             views: mem::take(&mut self.views),
+            offscreen: mem::take(&mut self.offscreen),
             msaa_color: mem::take(&mut self.msaa_color),
             depth: mem::take(&mut self.depth),
             pipeline_layout: if retire_pipeline {
@@ -4107,6 +4575,16 @@ impl Renderer {
             },
             pipeline: if retire_pipeline {
                 mem::replace(&mut self.pipeline, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            },
+            post_pipeline_layout: if retire_pipeline {
+                mem::replace(&mut self.post_pipeline_layout, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            },
+            post_pipeline: if retire_pipeline {
+                mem::replace(&mut self.post_pipeline, ptr::null_mut())
             } else {
                 ptr::null_mut()
             },
@@ -4157,6 +4635,8 @@ impl Renderer {
     fn destroy_retired_swapchain(device: &DeviceContext, retired: RetiredSwapchain) {
         // SAFETY: Completion was established before this owned resource set reached this helper.
         unsafe {
+            let mut offscreen = retired.offscreen;
+            destroy_gpu_image(device, &mut offscreen);
             let mut msaa_color = retired.msaa_color;
             destroy_gpu_image(device, &mut msaa_color);
             let mut depth = retired.depth;
@@ -4174,6 +4654,23 @@ impl Renderer {
                     .destroy_pipeline_layout
                     .expect("loaded function")(
                     device.handle, retired.pipeline_layout, ptr::null()
+                );
+            }
+            if !retired.post_pipeline.is_null() {
+                device.functions.destroy_pipeline.expect("loaded function")(
+                    device.handle,
+                    retired.post_pipeline,
+                    ptr::null(),
+                );
+            }
+            if !retired.post_pipeline_layout.is_null() {
+                device
+                    .functions
+                    .destroy_pipeline_layout
+                    .expect("loaded function")(
+                    device.handle,
+                    retired.post_pipeline_layout,
+                    ptr::null(),
                 );
             }
             for view in retired.views {
@@ -4438,7 +4935,7 @@ impl Renderer {
         )?;
 
         self.image_barrier(
-            image,
+            self.offscreen.handle,
             vk::VK_PIPELINE_STAGE_2_NONE,
             vk::VK_ACCESS_2_NONE,
             vk::VK_IMAGE_LAYOUT_UNDEFINED,
@@ -4477,7 +4974,7 @@ impl Renderer {
             imageView: if multisampled {
                 self.msaa_color.view
             } else {
-                view
+                self.offscreen.view
             },
             imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             resolveMode: if multisampled {
@@ -4485,7 +4982,11 @@ impl Renderer {
             } else {
                 vk::VK_RESOLVE_MODE_NONE
             },
-            resolveImageView: if multisampled { view } else { ptr::null_mut() },
+            resolveImageView: if multisampled {
+                self.offscreen.view
+            } else {
+                ptr::null_mut()
+            },
             resolveImageLayout: if multisampled {
                 vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
             } else {
@@ -4615,6 +5116,7 @@ impl Renderer {
                 .cmd_end_rendering
                 .expect("loaded function")(self.command_buffer);
         }
+        self.record_postprocess(image, view, &viewport, &render_area);
         self.image_barrier(
             image,
             vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -4635,6 +5137,104 @@ impl Renderer {
             },
             "vkEndCommandBuffer",
         )
+    }
+
+    fn record_postprocess(
+        &self,
+        swapchain_image: vk::VkImage,
+        swapchain_view: vk::VkImageView,
+        viewport: &vk::VkViewport,
+        render_area: &vk::VkRect2D,
+    ) {
+        self.image_barrier(
+            self.offscreen.handle,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            color_subresource_range(),
+        );
+        self.image_barrier(
+            swapchain_image,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            color_subresource_range(),
+        );
+        let attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: swapchain_view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            resolveMode: vk::VK_RESOLVE_MODE_NONE,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                color: vk::VkClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            },
+            ..Default::default()
+        };
+        let rendering = vk::VkRenderingInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
+            renderArea: *render_area,
+            layerCount: 1,
+            colorAttachmentCount: 1,
+            pColorAttachments: &raw const attachment,
+            ..Default::default()
+        };
+        // SAFETY: Both render targets, the sampled offscreen descriptor, and pipelines are live.
+        unsafe {
+            self.device
+                .functions
+                .cmd_begin_rendering
+                .expect("loaded function")(self.command_buffer, &raw const rendering);
+            self.device
+                .functions
+                .cmd_bind_pipeline
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.post_pipeline,
+            );
+            self.device
+                .functions
+                .cmd_bind_descriptor_sets
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.post_pipeline_layout,
+                0,
+                1,
+                &raw const self.post_descriptor_set,
+                0,
+                ptr::null(),
+            );
+            self.device
+                .functions
+                .cmd_set_viewport
+                .expect("loaded function")(self.command_buffer, 0, 1, viewport);
+            self.device
+                .functions
+                .cmd_set_scissor
+                .expect("loaded function")(self.command_buffer, 0, 1, render_area);
+            self.device.functions.cmd_draw.expect("loaded function")(
+                self.command_buffer,
+                3,
+                1,
+                0,
+                0,
+            );
+            self.device
+                .functions
+                .cmd_end_rendering
+                .expect("loaded function")(self.command_buffer);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4808,6 +5408,7 @@ impl Drop for Renderer {
                 &mut compute_indirect,
                 &mut compute_readback,
             );
+            self.destroy_postprocess_resources();
             if !self.descriptor_pool.is_null() {
                 self.device
                     .functions
@@ -4947,6 +5548,33 @@ fn sample_count_name(sample_count: vk::VkSampleCountFlagBits) -> &'static str {
         "4x MSAA color/depth with swapchain resolve"
     } else {
         "1x fallback"
+    }
+}
+
+fn require_offscreen_format(device: &DeviceContext) -> Result<(), ProbeError> {
+    let mut properties = vk::VkFormatProperties::default();
+    // SAFETY: The selected adapter is live and properties storage is writable.
+    unsafe {
+        device
+            .instance
+            .functions
+            .get_physical_device_format_properties
+            .expect("loaded function")(
+            device.adapter.handle,
+            OFFSCREEN_FORMAT,
+            &raw mut properties,
+        );
+    }
+    let required = (vk::VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+        | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+        | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) as u32;
+    if properties.optimalTilingFeatures & required == required {
+        Ok(())
+    } else {
+        Err(ProbeError(
+            "R8G8B8A8_UNORM lacks required offscreen color, sampled, or linear-filter support"
+                .into(),
+        ))
     }
 }
 

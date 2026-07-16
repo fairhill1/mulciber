@@ -5235,6 +5235,15 @@ pub type PFN_vkCmdBindVertexBuffers = ::core::option::Option<
         pOffsets: *const VkDeviceSize,
     ),
 >;
+pub type PFN_vkCmdDraw = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        vertexCount: u32,
+        instanceCount: u32,
+        firstVertex: u32,
+        firstInstance: u32,
+    ),
+>;
 pub type PFN_vkCmdDrawIndexedIndirect = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,

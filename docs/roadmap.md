@@ -67,6 +67,8 @@ Vulkan evidence completed so far:
   with exact 1x1 tail readback and explicit generated-mip fragment sampling (same machine).
 - [x] Capability-selected 4x multisampled transient color/depth attachments resolved into the
   swapchain, with a physically validated 1x fallback and resize-retirement ownership (same machine).
+- [x] Resize-dependent offscreen scene color target consumed by a second dynamic-rendering fullscreen
+  vignette pass, with explicit color-write-to-sampled-read synchronization (same machine).
 
 Metal evidence completed so far:
 

@@ -12,7 +12,8 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [x] Establish the support and dependency contracts.
 - [x] Query the default Metal device without a graphics abstraction dependency.
 - [x] Emit a machine-readable Metal capability report.
-- [ ] Emit equivalent Vulkan capability reports on Windows and Linux.
+- [x] Emit a machine-readable Vulkan capability report with real Win32 presentation data.
+- [ ] Port the Vulkan capability report to Wayland and X11 on Linux.
 - [ ] Run the report with the macOS 26 / Metal 4 runtime and compare results.
 - [x] Pin the Vulkan registry, headers, loader, validation, profiles, and SPIR-V toolchain revisions.
 

@@ -170,7 +170,7 @@ impl LiveResizeTrace {
 pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
     let frame_limit = parse_frame_limit()?;
-    let window = Window::new("Zinc — native Vulkan 1.4", 960, 540)
+    let window = Window::new("Zinc — native Vulkan 1.4", 960, 540, true)
         .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;

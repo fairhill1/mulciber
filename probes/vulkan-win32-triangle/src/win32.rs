@@ -195,7 +195,7 @@ impl Drop for CallbackRegistration<'_> {
 }
 
 impl Window {
-    pub fn new(title: &str, width: u32, height: u32) -> Result<Self, WindowError> {
+    pub fn new(title: &str, width: u32, height: u32, visible: bool) -> Result<Self, WindowError> {
         let class_name = wide("ZincVulkanProbe");
         let title = wide(title);
         let state = Box::new(WindowState::default());
@@ -264,7 +264,9 @@ impl Window {
                     "Win32 did not retain Zinc's window state".into(),
                 ));
             }
-            ShowWindow(handle, SW_SHOW);
+            if visible {
+                ShowWindow(handle, SW_SHOW);
+            }
 
             Ok(Self {
                 instance,

@@ -1,0 +1,11 @@
+[package]
+name = "zinc-vulkan-info"
+description = "Direct Vulkan device and presentation capability report for Zinc"
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

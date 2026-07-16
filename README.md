@@ -91,6 +91,16 @@ For a finite validation run, pass `--frames N`. Enable Apple's validation layer 
 On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
 
 ```sh
+cargo run -p zinc-vulkan-info
+cargo run -q -p zinc-vulkan-info -- --json
+```
+
+The capability probe creates a hidden Win32 surface and reports every Vulkan adapter, memory heaps,
+queue families, core workload features and limits, device extensions, surface formats, present
+modes, and explicit Zinc Vulkan 1.4 baseline failures. The `--json` form emits the versioned report
+used for cross-machine comparisons and adapter-tier evidence.
+
+```sh
 cargo run -p zinc-vulkan-win32-triangle -- --frames 600
 ```
 

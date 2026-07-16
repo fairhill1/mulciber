@@ -3137,6 +3137,25 @@ pub const VK_IMAGE_USAGE_FLAG_BITS_MAX_ENUM: VkImageUsageFlagBits = 2147483647;
 pub type VkImageUsageFlagBits = ::core::ffi::c_int;
 pub type VkImageUsageFlags = VkFlags;
 pub type VkInstanceCreateFlags = VkFlags;
+pub const VK_MEMORY_HEAP_DEVICE_LOCAL_BIT: VkMemoryHeapFlagBits = 1;
+pub const VK_MEMORY_HEAP_MULTI_INSTANCE_BIT: VkMemoryHeapFlagBits = 2;
+pub const VK_MEMORY_HEAP_TILE_MEMORY_BIT_QCOM: VkMemoryHeapFlagBits = 8;
+pub const VK_MEMORY_HEAP_MULTI_INSTANCE_BIT_KHR: VkMemoryHeapFlagBits = 2;
+pub const VK_MEMORY_HEAP_FLAG_BITS_MAX_ENUM: VkMemoryHeapFlagBits = 2147483647;
+pub type VkMemoryHeapFlagBits = ::core::ffi::c_int;
+pub type VkMemoryHeapFlags = VkFlags;
+pub const VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT: VkMemoryPropertyFlagBits = 1;
+pub const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: VkMemoryPropertyFlagBits = 2;
+pub const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: VkMemoryPropertyFlagBits = 4;
+pub const VK_MEMORY_PROPERTY_HOST_CACHED_BIT: VkMemoryPropertyFlagBits = 8;
+pub const VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT: VkMemoryPropertyFlagBits = 16;
+pub const VK_MEMORY_PROPERTY_PROTECTED_BIT: VkMemoryPropertyFlagBits = 32;
+pub const VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD: VkMemoryPropertyFlagBits = 64;
+pub const VK_MEMORY_PROPERTY_DEVICE_UNCACHED_BIT_AMD: VkMemoryPropertyFlagBits = 128;
+pub const VK_MEMORY_PROPERTY_RDMA_CAPABLE_BIT_NV: VkMemoryPropertyFlagBits = 256;
+pub const VK_MEMORY_PROPERTY_FLAG_BITS_MAX_ENUM: VkMemoryPropertyFlagBits = 2147483647;
+pub type VkMemoryPropertyFlagBits = ::core::ffi::c_int;
+pub type VkMemoryPropertyFlags = VkFlags;
 pub const VK_QUEUE_GRAPHICS_BIT: VkQueueFlagBits = 1;
 pub const VK_QUEUE_COMPUTE_BIT: VkQueueFlagBits = 2;
 pub const VK_QUEUE_TRANSFER_BIT: VkQueueFlagBits = 4;
@@ -3372,6 +3391,18 @@ impl Default for VkInstanceCreateInfo {
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
+pub struct VkMemoryHeap {
+    pub size: VkDeviceSize,
+    pub flags: VkMemoryHeapFlags,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkMemoryType {
+    pub propertyFlags: VkMemoryPropertyFlags,
+    pub heapIndex: u32,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct VkPhysicalDeviceFeatures {
     pub robustBufferAccess: VkBool32,
     pub fullDrawIndexUint32: VkBool32,
@@ -3538,6 +3569,14 @@ pub struct VkPhysicalDeviceLimits {
     pub optimalBufferCopyOffsetAlignment: VkDeviceSize,
     pub optimalBufferCopyRowPitchAlignment: VkDeviceSize,
     pub nonCoherentAtomSize: VkDeviceSize,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkPhysicalDeviceMemoryProperties {
+    pub memoryTypeCount: u32,
+    pub memoryTypes: [VkMemoryType; 32usize],
+    pub memoryHeapCount: u32,
+    pub memoryHeaps: [VkMemoryHeap; 16usize],
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -4263,6 +4302,12 @@ pub type PFN_vkGetPhysicalDeviceQueueFamilyProperties = ::core::option::Option<
         pQueueFamilyProperties: *mut VkQueueFamilyProperties,
     ),
 >;
+pub type PFN_vkGetPhysicalDeviceMemoryProperties = ::core::option::Option<
+    unsafe extern "C" fn(
+        physicalDevice: VkPhysicalDevice,
+        pMemoryProperties: *mut VkPhysicalDeviceMemoryProperties,
+    ),
+>;
 pub type PFN_vkGetInstanceProcAddr = ::core::option::Option<
     unsafe extern "C" fn(
         instance: VkInstance,
@@ -4524,6 +4569,68 @@ pub const VK_RESOLVE_MODE_MAX_BIT_KHR: VkResolveModeFlagBits = 8;
 pub const VK_RESOLVE_MODE_EXTERNAL_FORMAT_DOWNSAMPLE_ANDROID: VkResolveModeFlagBits = 16;
 pub const VK_RESOLVE_MODE_FLAG_BITS_MAX_ENUM: VkResolveModeFlagBits = 2147483647;
 pub type VkResolveModeFlagBits = ::core::ffi::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPhysicalDeviceVulkan12Features {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub samplerMirrorClampToEdge: VkBool32,
+    pub drawIndirectCount: VkBool32,
+    pub storageBuffer8BitAccess: VkBool32,
+    pub uniformAndStorageBuffer8BitAccess: VkBool32,
+    pub storagePushConstant8: VkBool32,
+    pub shaderBufferInt64Atomics: VkBool32,
+    pub shaderSharedInt64Atomics: VkBool32,
+    pub shaderFloat16: VkBool32,
+    pub shaderInt8: VkBool32,
+    pub descriptorIndexing: VkBool32,
+    pub shaderInputAttachmentArrayDynamicIndexing: VkBool32,
+    pub shaderUniformTexelBufferArrayDynamicIndexing: VkBool32,
+    pub shaderStorageTexelBufferArrayDynamicIndexing: VkBool32,
+    pub shaderUniformBufferArrayNonUniformIndexing: VkBool32,
+    pub shaderSampledImageArrayNonUniformIndexing: VkBool32,
+    pub shaderStorageBufferArrayNonUniformIndexing: VkBool32,
+    pub shaderStorageImageArrayNonUniformIndexing: VkBool32,
+    pub shaderInputAttachmentArrayNonUniformIndexing: VkBool32,
+    pub shaderUniformTexelBufferArrayNonUniformIndexing: VkBool32,
+    pub shaderStorageTexelBufferArrayNonUniformIndexing: VkBool32,
+    pub descriptorBindingUniformBufferUpdateAfterBind: VkBool32,
+    pub descriptorBindingSampledImageUpdateAfterBind: VkBool32,
+    pub descriptorBindingStorageImageUpdateAfterBind: VkBool32,
+    pub descriptorBindingStorageBufferUpdateAfterBind: VkBool32,
+    pub descriptorBindingUniformTexelBufferUpdateAfterBind: VkBool32,
+    pub descriptorBindingStorageTexelBufferUpdateAfterBind: VkBool32,
+    pub descriptorBindingUpdateUnusedWhilePending: VkBool32,
+    pub descriptorBindingPartiallyBound: VkBool32,
+    pub descriptorBindingVariableDescriptorCount: VkBool32,
+    pub runtimeDescriptorArray: VkBool32,
+    pub samplerFilterMinmax: VkBool32,
+    pub scalarBlockLayout: VkBool32,
+    pub imagelessFramebuffer: VkBool32,
+    pub uniformBufferStandardLayout: VkBool32,
+    pub shaderSubgroupExtendedTypes: VkBool32,
+    pub separateDepthStencilLayouts: VkBool32,
+    pub hostQueryReset: VkBool32,
+    pub timelineSemaphore: VkBool32,
+    pub bufferDeviceAddress: VkBool32,
+    pub bufferDeviceAddressCaptureReplay: VkBool32,
+    pub bufferDeviceAddressMultiDevice: VkBool32,
+    pub vulkanMemoryModel: VkBool32,
+    pub vulkanMemoryModelDeviceScope: VkBool32,
+    pub vulkanMemoryModelAvailabilityVisibilityChains: VkBool32,
+    pub shaderOutputViewportIndex: VkBool32,
+    pub shaderOutputLayer: VkBool32,
+    pub subgroupBroadcastDynamicId: VkBool32,
+}
+impl Default for VkPhysicalDeviceVulkan12Features {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 pub type VkFlags64 = u64;
 pub type VkPipelineStageFlags2 = VkFlags64;
 pub type VkPipelineStageFlagBits2 = VkFlags64;

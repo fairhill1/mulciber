@@ -114,6 +114,22 @@ try {
     Invoke-NativeLogged "cargo" @(
         "test",
         "-p",
+        "zinc-vulkan-info"
+    ) "cargo-test-vulkan-info.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "zinc-vulkan-info"
+    ) "cargo-build-vulkan-info.log"
+    $CapabilityProbe = Join-Path $RepositoryRoot "target\debug\zinc-vulkan-info.exe"
+    $env:VK_LOADER_DEBUG = "error,warn"
+    Invoke-NativeLogged $CapabilityProbe @("--json") "zinc-vulkan-info.json"
+    $CapabilityReportPath = Join-Path $ArtifactDirectory "zinc-vulkan-info.json"
+    Get-Content -Path $CapabilityReportPath -Raw | ConvertFrom-Json | Out-Null
+
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
         "zinc-vulkan-win32-triangle"
     ) "cargo-test.log"
     Invoke-NativeLogged "cargo" @(

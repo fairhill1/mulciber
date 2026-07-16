@@ -55,6 +55,12 @@ and the maximum observed acquisition was 15.547 ms. This physically exercises th
 under rapid resize, but it does not replace future coverage on hardware or a driver that naturally
 lacks `VK_KHR_swapchain_maintenance1`.
 
+The native Vulkan capability report was first recorded on the same machine on 2026-07-16. It found
+one adapter, selected the RTX 3060 Ti as Zinc-baseline-compatible, decoded Nvidia driver 591.86,
+reported Vulkan API 1.4.325, three memory heaps, six queue families, 261 device extensions, five
+Win32 surface formats, and five present modes. Both the human-readable form and the schema-versioned
+JSON form completed successfully; PowerShell parsed the JSON without repair.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -79,9 +85,10 @@ From the repository root, run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-windows.ps1
 ```
 
-The script records the OS, GPU and driver, Git revision/status, Rust version, full Vulkan report,
-Cargo test output, and a 600-frame validation run. It then guides two interactive runs: lifecycle
-testing closed through the title bar, followed by an Alt+F4 shutdown test.
+The script records the OS, GPU and driver, Git revision/status, Rust version, the native Zinc JSON
+capability report, full `vulkaninfo`, Cargo test output, and a 600-frame validation run. It then
+guides two interactive runs: lifecycle testing closed through the title bar, followed by an Alt+F4
+shutdown test.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP
@@ -94,6 +101,7 @@ From the repository root:
 
 ```powershell
 $env:VK_LOADER_DEBUG = "error,warn"
+cargo run -q -p zinc-vulkan-info -- --json
 cargo test -p zinc-vulkan-win32-triangle
 cargo run -p zinc-vulkan-win32-triangle -- --frames 600
 ```

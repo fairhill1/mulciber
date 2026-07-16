@@ -19,5 +19,9 @@ name = "zinc-platform"
 version = "0.0.0"
 
 [[package]]
+name = "zinc-vulkan-info"
+version = "0.0.0"
+
+[[package]]
 name = "zinc-vulkan-win32-triangle"
 version = "0.0.0"

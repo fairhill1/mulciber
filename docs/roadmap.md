@@ -58,6 +58,9 @@ Vulkan evidence completed so far:
   sets, aspect-correct transforms, and shader-visible elapsed time (same machine).
 - [x] Compute-written device-local storage buffer with explicit compute-to-copy and copy-to-host
   barriers plus exact GPU-to-CPU readback verification (same machine).
+- [x] Compute-written device-local indexed-indirect command synchronized for transfer and
+  indirect-command reads, verified through exact readback, and consumed by
+  `vkCmdDrawIndexedIndirect` (same machine).
 
 Metal evidence completed so far:
 

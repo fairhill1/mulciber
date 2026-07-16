@@ -4,8 +4,22 @@ layout(local_size_x = 64) in;
 layout(set = 0, binding = 0, std430) buffer OutputData {
     uint values[];
 } output_data;
+layout(set = 0, binding = 1, std430) buffer IndirectCommand {
+    uint index_count;
+    uint instance_count;
+    uint first_index;
+    int vertex_offset;
+    uint first_instance;
+} draw_command;
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
     output_data.values[index] = index * 1664525u + 1013904223u;
+    if (index == 0) {
+        draw_command.index_count = 3;
+        draw_command.instance_count = 1;
+        draw_command.first_index = 0;
+        draw_command.vertex_offset = 0;
+        draw_command.first_instance = 0;
+    }
 }

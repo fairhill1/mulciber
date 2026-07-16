@@ -698,7 +698,7 @@ struct DeviceFns {
     cmd_dispatch: vk::PFN_vkCmdDispatch,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
-    cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
+    cmd_draw_indexed_indirect: vk::PFN_vkCmdDrawIndexedIndirect,
     create_semaphore: vk::PFN_vkCreateSemaphore,
     destroy_semaphore: vk::PFN_vkDestroySemaphore,
     create_fence: vk::PFN_vkCreateFence,
@@ -782,7 +782,7 @@ impl DeviceFns {
             cmd_dispatch: load!(c"vkCmdDispatch"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
-            cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
+            cmd_draw_indexed_indirect: load!(c"vkCmdDrawIndexedIndirect"),
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
             create_fence: load!(c"vkCreateFence"),
@@ -1230,6 +1230,7 @@ struct Renderer {
     frame_slot: usize,
     started: Instant,
     compute_storage: GpuBuffer,
+    compute_indirect: GpuBuffer,
     compute_readback: GpuBuffer,
     compute_descriptor_set_layout: vk::VkDescriptorSetLayout,
     compute_descriptor_pool: vk::VkDescriptorPool,
@@ -1276,6 +1277,7 @@ impl Renderer {
             frame_slot: 0,
             started: Instant::now(),
             compute_storage: GpuBuffer::default(),
+            compute_indirect: GpuBuffer::default(),
             compute_readback: GpuBuffer::default(),
             compute_descriptor_set_layout: ptr::null_mut(),
             compute_descriptor_pool: ptr::null_mut(),
@@ -1892,15 +1894,22 @@ impl Renderer {
     }
 
     fn create_compute_readback_resources(&mut self) -> Result<(), ProbeError> {
-        let byte_len = STORAGE_VALUE_COUNT * mem::size_of::<u32>();
         self.compute_storage = self.create_buffer(
-            byte_len,
+            storage_buffer_byte_len(),
             (vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT) as u32,
             vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
             "compute storage",
         )?;
+        self.compute_indirect = self.create_buffer(
+            mem::size_of::<vk::VkDrawIndexedIndirectCommand>(),
+            (vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                | vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+                | vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT) as u32,
+            vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            "compute-written indexed-indirect arguments",
+        )?;
         self.compute_readback = self.create_buffer(
-            byte_len,
+            compute_readback_byte_len(),
             vk::VK_BUFFER_USAGE_TRANSFER_DST_BIT as u32,
             (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                 as u32,
@@ -1910,23 +1919,32 @@ impl Renderer {
         self.create_compute_pipeline()?;
         self.dispatch_compute_and_verify()?;
         println!(
-            "Compute: device-local storage buffer dispatched and {STORAGE_VALUE_COUNT} values read back exactly"
+            "Compute: {STORAGE_VALUE_COUNT} storage values and indexed-indirect arguments generated and read back exactly"
         );
         Ok(())
     }
 
     fn create_compute_descriptors(&mut self) -> Result<(), ProbeError> {
-        let binding = vk::VkDescriptorSetLayoutBinding {
-            binding: 0,
-            descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptorCount: 1,
-            stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
-            ..Default::default()
-        };
+        let bindings = [
+            vk::VkDescriptorSetLayoutBinding {
+                binding: 0,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptorCount: 1,
+                stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
+                ..Default::default()
+            },
+            vk::VkDescriptorSetLayoutBinding {
+                binding: 1,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptorCount: 1,
+                stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
+                ..Default::default()
+            },
+        ];
         let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount: 1,
-            pBindings: &raw const binding,
+            bindingCount: u32::try_from(bindings.len()).expect("compute binding count fits u32"),
+            pBindings: bindings.as_ptr(),
             ..Default::default()
         };
         check(
@@ -1946,7 +1964,7 @@ impl Renderer {
         )?;
         let pool_size = vk::VkDescriptorPoolSize {
             type_: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptorCount: 1,
+            descriptorCount: 2,
         };
         let pool_info = vk::VkDescriptorPoolCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1991,31 +2009,58 @@ impl Renderer {
             },
             "vkAllocateDescriptorSets for compute storage",
         )?;
-        let buffer = vk::VkDescriptorBufferInfo {
-            buffer: self.compute_storage.handle,
-            offset: 0,
-            range: u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
-                .expect("storage buffer byte length fits u64"),
-        };
-        let write = vk::VkWriteDescriptorSet {
-            sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet: self.compute_descriptor_set,
-            dstBinding: 0,
-            descriptorCount: 1,
-            descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            pBufferInfo: &raw const buffer,
-            ..Default::default()
-        };
-        // SAFETY: The descriptor set and referenced storage buffer are live.
+        self.update_compute_descriptors();
+        Ok(())
+    }
+
+    fn update_compute_descriptors(&self) {
+        let buffers = [
+            vk::VkDescriptorBufferInfo {
+                buffer: self.compute_storage.handle,
+                offset: 0,
+                range: u64::try_from(storage_buffer_byte_len())
+                    .expect("storage buffer byte length fits u64"),
+            },
+            vk::VkDescriptorBufferInfo {
+                buffer: self.compute_indirect.handle,
+                offset: 0,
+                range: u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indirect command byte length fits u64"),
+            },
+        ];
+        let writes = [
+            vk::VkWriteDescriptorSet {
+                sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                dstSet: self.compute_descriptor_set,
+                dstBinding: 0,
+                descriptorCount: 1,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                pBufferInfo: &raw const buffers[0],
+                ..Default::default()
+            },
+            vk::VkWriteDescriptorSet {
+                sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                dstSet: self.compute_descriptor_set,
+                dstBinding: 1,
+                descriptorCount: 1,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                pBufferInfo: &raw const buffers[1],
+                ..Default::default()
+            },
+        ];
+        // SAFETY: The descriptor set and both referenced storage buffers are live.
         unsafe {
             self.device
                 .functions
                 .update_descriptor_sets
                 .expect("loaded function")(
-                self.device.handle, 1, &raw const write, 0, ptr::null()
+                self.device.handle,
+                u32::try_from(writes.len()).expect("compute descriptor write count fits u32"),
+                writes.as_ptr(),
+                0,
+                ptr::null(),
             );
         }
-        Ok(())
     }
 
     fn create_compute_pipeline(&mut self) -> Result<(), ProbeError> {
@@ -2149,12 +2194,21 @@ impl Renderer {
                 1,
             );
         }
-        self.compute_to_copy_barrier();
-        self.copy_buffer(
+        self.compute_output_barriers();
+        self.copy_buffer_region(
             self.compute_storage.handle,
             self.compute_readback.handle,
-            u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
-                .expect("storage buffer byte length fits u64"),
+            0,
+            0,
+            u64::try_from(storage_buffer_byte_len()).expect("storage buffer byte length fits u64"),
+        );
+        self.copy_buffer_region(
+            self.compute_indirect.handle,
+            self.compute_readback.handle,
+            0,
+            u64::try_from(storage_buffer_byte_len()).expect("storage buffer byte length fits u64"),
+            u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                .expect("indirect command byte length fits u64"),
         );
         self.copy_to_host_barrier();
         check(
@@ -2169,33 +2223,49 @@ impl Renderer {
         )
     }
 
-    fn compute_to_copy_barrier(&self) {
-        let barrier = storage_buffer_barrier(
-            self.compute_storage.handle,
-            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
-            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
-        );
-        self.buffer_dependency(&barrier);
+    fn compute_output_barriers(&self) {
+        let barriers = [
+            storage_buffer_barrier(
+                self.compute_storage.handle,
+                u64::try_from(storage_buffer_byte_len())
+                    .expect("storage buffer byte length fits u64"),
+                vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+                vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+            ),
+            storage_buffer_barrier(
+                self.compute_indirect.handle,
+                u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indirect command byte length fits u64"),
+                vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT | vk::VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                vk::VK_ACCESS_2_TRANSFER_READ_BIT | vk::VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+            ),
+        ];
+        self.buffer_dependencies(&barriers);
     }
 
     fn copy_to_host_barrier(&self) {
         let barrier = storage_buffer_barrier(
             self.compute_readback.handle,
+            u64::try_from(compute_readback_byte_len())
+                .expect("compute readback byte length fits u64"),
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             vk::VK_PIPELINE_STAGE_2_HOST_BIT,
             vk::VK_ACCESS_2_HOST_READ_BIT,
         );
-        self.buffer_dependency(&barrier);
+        self.buffer_dependencies(std::slice::from_ref(&barrier));
     }
 
-    fn buffer_dependency(&self, barrier: &vk::VkBufferMemoryBarrier2) {
+    fn buffer_dependencies(&self, barriers: &[vk::VkBufferMemoryBarrier2]) {
         let dependency = vk::VkDependencyInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            bufferMemoryBarrierCount: 1,
-            pBufferMemoryBarriers: barrier,
+            bufferMemoryBarrierCount: u32::try_from(barriers.len())
+                .expect("buffer barrier count fits u32"),
+            pBufferMemoryBarriers: barriers.as_ptr(),
             ..Default::default()
         };
         // SAFETY: The command buffer is recording and the barrier references a live buffer.
@@ -2208,7 +2278,7 @@ impl Renderer {
     }
 
     fn verify_compute_readback(&self) -> Result<(), ProbeError> {
-        let byte_len = STORAGE_VALUE_COUNT * mem::size_of::<u32>();
+        let byte_len = compute_readback_byte_len();
         let mut mapped = ptr::null_mut();
         check(
             // SAFETY: The coherent readback allocation is host-visible and the range is valid.
@@ -2228,6 +2298,15 @@ impl Renderer {
         let values = unsafe {
             std::slice::from_raw_parts(mapped.cast::<u32>(), STORAGE_VALUE_COUNT).to_vec()
         };
+        // SAFETY: The indirect command immediately follows the storage values in the completed
+        // readback copy. `read_unaligned` avoids depending on the mapped base alignment here.
+        let command = unsafe {
+            mapped
+                .cast::<u8>()
+                .add(storage_buffer_byte_len())
+                .cast::<vk::VkDrawIndexedIndirectCommand>()
+                .read_unaligned()
+        };
         // SAFETY: The mapping belongs to this live allocation and is unmapped exactly once.
         unsafe {
             self.device.functions.unmap_memory.expect("loaded function")(
@@ -2242,6 +2321,22 @@ impl Renderer {
                     "compute readback mismatch at index {index}: expected {expected:#010x}, got {actual:#010x}"
                 )));
             }
+        }
+        let expected = expected_indirect_command();
+        if command.indexCount != expected.indexCount
+            || command.instanceCount != expected.instanceCount
+            || command.firstIndex != expected.firstIndex
+            || command.vertexOffset != expected.vertexOffset
+            || command.firstInstance != expected.firstInstance
+        {
+            return Err(ProbeError(format!(
+                "indexed-indirect readback mismatch: got indexCount={}, instanceCount={}, firstIndex={}, vertexOffset={}, firstInstance={}",
+                command.indexCount,
+                command.instanceCount,
+                command.firstIndex,
+                command.vertexOffset,
+                command.firstInstance,
+            )));
         }
         Ok(())
     }
@@ -2585,8 +2680,21 @@ impl Renderer {
     }
 
     fn copy_buffer(&self, source: vk::VkBuffer, destination: vk::VkBuffer, size: vk::VkDeviceSize) {
+        self.copy_buffer_region(source, destination, 0, 0, size);
+    }
+
+    fn copy_buffer_region(
+        &self,
+        source: vk::VkBuffer,
+        destination: vk::VkBuffer,
+        source_offset: vk::VkDeviceSize,
+        destination_offset: vk::VkDeviceSize,
+        size: vk::VkDeviceSize,
+    ) {
         let region = vk::VkBufferCopy2 {
             sType: vk::VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            srcOffset: source_offset,
+            dstOffset: destination_offset,
             size,
             ..Default::default()
         };
@@ -2660,7 +2768,12 @@ impl Renderer {
         }
     }
 
-    unsafe fn destroy_compute_resources(&self, storage: &mut GpuBuffer, readback: &mut GpuBuffer) {
+    unsafe fn destroy_compute_resources(
+        &self,
+        storage: &mut GpuBuffer,
+        indirect: &mut GpuBuffer,
+        readback: &mut GpuBuffer,
+    ) {
         // SAFETY: Shutdown established that no submitted compute work remains in flight.
         unsafe {
             if !self.compute_pipeline.is_null() {
@@ -2704,6 +2817,7 @@ impl Renderer {
                 );
             }
             self.destroy_buffer(storage);
+            self.destroy_buffer(indirect);
             self.destroy_buffer(readback);
         }
     }
@@ -3899,14 +4013,14 @@ impl Renderer {
             );
             self.device
                 .functions
-                .cmd_draw_indexed
+                .cmd_draw_indexed_indirect
                 .expect("loaded function")(
                 self.command_buffer,
-                u32::try_from(TRIANGLE_INDICES.len()).expect("index count fits u32"),
+                self.compute_indirect.handle,
+                0,
                 1,
-                0,
-                0,
-                0,
+                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indexed-indirect stride fits u32"),
             );
             self.device
                 .functions
@@ -4096,10 +4210,15 @@ impl Drop for Renderer {
         let mut texture = mem::take(&mut self.texture);
         let mut uniform_buffers = mem::take(&mut self.uniform_buffers);
         let mut compute_storage = mem::take(&mut self.compute_storage);
+        let mut compute_indirect = mem::take(&mut self.compute_indirect);
         let mut compute_readback = mem::take(&mut self.compute_readback);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
-            self.destroy_compute_resources(&mut compute_storage, &mut compute_readback);
+            self.destroy_compute_resources(
+                &mut compute_storage,
+                &mut compute_indirect,
+                &mut compute_readback,
+            );
             if !self.descriptor_pool.is_null() {
                 self.device
                     .functions
@@ -4413,6 +4532,7 @@ fn buffer_barrier(
 
 fn storage_buffer_barrier(
     buffer: vk::VkBuffer,
+    size: vk::VkDeviceSize,
     source_stage: vk::VkPipelineStageFlags2,
     source_access: vk::VkAccessFlags2,
     destination_stage: vk::VkPipelineStageFlags2,
@@ -4428,8 +4548,7 @@ fn storage_buffer_barrier(
         dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
         buffer,
         offset: 0,
-        size: u64::try_from(STORAGE_VALUE_COUNT * mem::size_of::<u32>())
-            .expect("storage buffer byte length fits u64"),
+        size,
         ..Default::default()
     }
 }
@@ -4439,6 +4558,24 @@ fn expected_storage_value(index: usize) -> u32 {
         .expect("storage value index fits u32")
         .wrapping_mul(1_664_525)
         .wrapping_add(1_013_904_223)
+}
+
+fn storage_buffer_byte_len() -> usize {
+    STORAGE_VALUE_COUNT * mem::size_of::<u32>()
+}
+
+fn compute_readback_byte_len() -> usize {
+    storage_buffer_byte_len() + mem::size_of::<vk::VkDrawIndexedIndirectCommand>()
+}
+
+fn expected_indirect_command() -> vk::VkDrawIndexedIndirectCommand {
+    vk::VkDrawIndexedIndirectCommand {
+        indexCount: u32::try_from(TRIANGLE_INDICES.len()).expect("triangle index count fits u32"),
+        instanceCount: 1,
+        firstIndex: 0,
+        vertexOffset: 0,
+        firstInstance: 0,
+    }
 }
 
 unsafe fn slice_bytes<T>(values: &[T]) -> &[u8] {
@@ -4661,6 +4798,7 @@ mod tests {
 
         let barrier = storage_buffer_barrier(
             ptr::null_mut(),
+            256,
             vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -4677,5 +4815,32 @@ mod tests {
         assert_eq!(barrier.dstStageMask, vk::VK_PIPELINE_STAGE_2_COPY_BIT);
         assert_eq!(barrier.dstAccessMask, vk::VK_ACCESS_2_TRANSFER_READ_BIT);
         assert_eq!(barrier.size, 256);
+
+        assert_eq!(mem::size_of::<vk::VkDrawIndexedIndirectCommand>(), 20);
+        let command = expected_indirect_command();
+        assert_eq!(command.indexCount, 3);
+        assert_eq!(command.instanceCount, 1);
+        assert_eq!(command.firstIndex, 0);
+        assert_eq!(command.vertexOffset, 0);
+        assert_eq!(command.firstInstance, 0);
+
+        let indirect_barrier = storage_buffer_barrier(
+            ptr::null_mut(),
+            u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                .expect("indirect command size fits u64"),
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT | vk::VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT | vk::VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+        );
+        assert_eq!(
+            indirect_barrier.dstStageMask,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT | vk::VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
+        );
+        assert_eq!(
+            indirect_barrier.dstAccessMask,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT | vk::VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
+        );
+        assert_eq!(indirect_barrier.size, 20);
     }
 }

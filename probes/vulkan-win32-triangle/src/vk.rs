@@ -4452,6 +4452,15 @@ impl Default for VkClearColorValue {
     }
 }
 #[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkDrawIndexedIndirectCommand {
+    pub indexCount: u32,
+    pub instanceCount: u32,
+    pub firstIndex: u32,
+    pub vertexOffset: i32,
+    pub firstInstance: u32,
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VkStencilOpState {
     pub failOp: VkStencilOp,
@@ -5226,14 +5235,13 @@ pub type PFN_vkCmdBindVertexBuffers = ::core::option::Option<
         pOffsets: *const VkDeviceSize,
     ),
 >;
-pub type PFN_vkCmdDrawIndexed = ::core::option::Option<
+pub type PFN_vkCmdDrawIndexedIndirect = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,
-        indexCount: u32,
-        instanceCount: u32,
-        firstIndex: u32,
-        vertexOffset: i32,
-        firstInstance: u32,
+        buffer: VkBuffer,
+        offset: VkDeviceSize,
+        drawCount: u32,
+        stride: u32,
     ),
 >;
 #[repr(C)]
@@ -5341,6 +5349,7 @@ pub type VkFlags64 = u64;
 pub type VkPipelineStageFlags2 = VkFlags64;
 pub type VkPipelineStageFlagBits2 = VkFlags64;
 pub const VK_PIPELINE_STAGE_2_NONE: VkPipelineStageFlagBits2 = 0;
+pub const VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT: VkPipelineStageFlagBits2 = 2;
 pub const VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT: VkPipelineStageFlagBits2 = 4;
 pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkPipelineStageFlagBits2 = 128;
 pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 256;
@@ -5353,6 +5362,7 @@ pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
 pub type VkAccessFlags2 = VkFlags64;
 pub type VkAccessFlagBits2 = VkFlags64;
 pub const VK_ACCESS_2_NONE: VkAccessFlagBits2 = 0;
+pub const VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT: VkAccessFlagBits2 = 1;
 pub const VK_ACCESS_2_INDEX_READ_BIT: VkAccessFlagBits2 = 2;
 pub const VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT: VkAccessFlagBits2 = 4;
 pub const VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT: VkAccessFlagBits2 = 256;

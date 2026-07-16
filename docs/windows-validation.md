@@ -114,6 +114,14 @@ Both the 600-frame run and automated resize smoke reported exact readback and co
 validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-111034.zip`.
 
+The indexed-indirect slice was validated on 2026-07-16. The compute shader also writes a native
+20-byte `VkDrawIndexedIndirectCommand` into a device-local storage/indirect buffer. A synchronization2
+barrier makes that shader write visible both to transfer readback and indirect-command consumption;
+startup compares all five command fields exactly, and rendering consumes the same allocation through
+`vkCmdDrawIndexedIndirect`. The 600-frame run and automated four-extent resize smoke completed on the
+RTX 3060 Ti without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-111925.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

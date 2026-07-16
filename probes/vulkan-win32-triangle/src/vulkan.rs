@@ -73,14 +73,114 @@ const TRIANGLE_VERTICES: [Vertex; 3] = [
     },
 ];
 const TRIANGLE_INDICES: [u16; 3] = [0, 1, 2];
-const TEXTURE_WIDTH: u32 = 4;
-const TEXTURE_HEIGHT: u32 = 4;
-const CHECKERBOARD_TEXELS: [u8; 64] = [
-    255, 255, 255, 255, 72, 72, 72, 255, 255, 255, 255, 255, 72, 72, 72, 255, 72, 72, 72, 255, 255,
-    255, 255, 255, 72, 72, 72, 255, 255, 255, 255, 255, 255, 255, 255, 255, 72, 72, 72, 255, 255,
-    255, 255, 255, 72, 72, 72, 255, 72, 72, 72, 255, 255, 255, 255, 255, 72, 72, 72, 255, 255, 255,
-    255, 255,
-];
+const TEXTURE_WIDTH: u32 = 8;
+const TEXTURE_HEIGHT: u32 = 8;
+const BC1_BLOCK_WIDTH: usize = 4;
+const BC1_BYTES_PER_BLOCK: usize = 8;
+const BC1_REQUIRED_FORMAT_FEATURES: u32 = (vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+    | vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+    | vk::VK_FORMAT_FEATURE_TRANSFER_DST_BIT) as u32;
+const BC1_BLOCKS: [u8; 32] = bc1_blocks();
+const CHECKERBOARD_TEXELS: [u8; TEXTURE_WIDTH as usize
+    * TEXTURE_HEIGHT as usize
+    * RGBA8_TEXEL_SIZE] = checkerboard_texels();
+
+const fn bc1_blocks() -> [u8; 32] {
+    const BRIGHT: u16 = (30 << 11) | (60 << 5) | 31;
+    const DARK: u16 = (5 << 11) | (16 << 5) | 5;
+    let mut blocks = [0; 32];
+    let mut block = 0;
+    while block < 4 {
+        let endpoint = if block == 0 || block == 3 {
+            BRIGHT
+        } else {
+            DARK
+        };
+        let offset = block * BC1_BYTES_PER_BLOCK;
+        let bytes = endpoint.to_le_bytes();
+        blocks[offset] = bytes[0];
+        blocks[offset + 1] = bytes[1];
+        block += 1;
+    }
+    blocks
+}
+
+const fn checkerboard_texels()
+-> [u8; TEXTURE_WIDTH as usize * TEXTURE_HEIGHT as usize * RGBA8_TEXEL_SIZE] {
+    let mut pixels = [0; TEXTURE_WIDTH as usize * TEXTURE_HEIGHT as usize * RGBA8_TEXEL_SIZE];
+    let mut y = 0;
+    while y < TEXTURE_HEIGHT as usize {
+        let mut x = 0;
+        while x < TEXTURE_WIDTH as usize {
+            let offset = (y * TEXTURE_WIDTH as usize + x) * RGBA8_TEXEL_SIZE;
+            let bright = (x / BC1_BLOCK_WIDTH + y / BC1_BLOCK_WIDTH).is_multiple_of(2);
+            pixels[offset] = if bright { 247 } else { 41 };
+            pixels[offset + 1] = if bright { 243 } else { 65 };
+            pixels[offset + 2] = if bright { 255 } else { 41 };
+            pixels[offset + 3] = 255;
+            x += 1;
+        }
+        y += 1;
+    }
+    pixels
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextureMode {
+    Auto,
+    Bc1,
+    Rgba8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TexturePath {
+    Bc1,
+    Rgba8,
+}
+
+impl TexturePath {
+    const fn format(self) -> vk::VkFormat {
+        match self {
+            Self::Bc1 => vk::VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+            Self::Rgba8 => vk::VK_FORMAT_R8G8B8A8_UNORM,
+        }
+    }
+
+    const fn upload_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Bc1 => &BC1_BLOCKS,
+            Self::Rgba8 => &CHECKERBOARD_TEXELS,
+        }
+    }
+
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Bc1 => "BC1_RGBA_UNORM direct sampling",
+            Self::Rgba8 => "RGBA8 fallback",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Bc1Support {
+    core_feature: bool,
+    optimal_tiling_features: u32,
+}
+
+impl Bc1Support {
+    const fn complete(self) -> bool {
+        self.core_feature
+            && self.optimal_tiling_features & BC1_REQUIRED_FORMAT_FEATURES
+                == BC1_REQUIRED_FORMAT_FEATURES
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextureSelection {
+    mode: TextureMode,
+    path: TexturePath,
+    bc1: Bc1Support,
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -854,6 +954,7 @@ struct Adapter {
     sample_count: vk::VkSampleCountFlagBits,
     timestamp_valid_bits: u32,
     timestamp_period: f32,
+    texture: TextureSelection,
 }
 
 struct DeviceFns {
@@ -1073,6 +1174,14 @@ impl DeviceContext {
         if adapter.swapchain_maintenance1 {
             features13.pNext = (&raw mut maintenance1).cast();
         }
+        let enabled_features = vk::VkPhysicalDeviceFeatures {
+            textureCompressionBC: if adapter.texture.path == TexturePath::Bc1 {
+                vk::VK_TRUE
+            } else {
+                vk::VK_FALSE
+            },
+            ..Default::default()
+        };
         let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
         if adapter.swapchain_maintenance1 {
             extensions.push(
@@ -1089,6 +1198,7 @@ impl DeviceContext {
             enabledExtensionCount: u32::try_from(extensions.len())
                 .expect("device extension count fits u32"),
             ppEnabledExtensionNames: extensions.as_ptr(),
+            pEnabledFeatures: &raw const enabled_features,
             ..Default::default()
         };
         let mut handle = ptr::null_mut();
@@ -1192,8 +1302,76 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
     }
 }
 
+fn texture_mode_from_environment() -> Result<TextureMode, ProbeError> {
+    let Some(value) = env::var_os("MULCIBER_VULKAN_TEXTURE_MODE") else {
+        return Ok(TextureMode::Auto);
+    };
+    let value = value.to_str().ok_or_else(|| {
+        ProbeError("MULCIBER_VULKAN_TEXTURE_MODE contains non-Unicode data".into())
+    })?;
+    match value {
+        "auto" => Ok(TextureMode::Auto),
+        "bc1" => Ok(TextureMode::Bc1),
+        "rgba8" => Ok(TextureMode::Rgba8),
+        _ => Err(ProbeError(format!(
+            "invalid MULCIBER_VULKAN_TEXTURE_MODE={value:?}; expected auto, bc1, or rgba8"
+        ))),
+    }
+}
+
+fn missing_bc1_requirements(support: Bc1Support) -> String {
+    let mut missing = Vec::new();
+    if !support.core_feature {
+        missing.push("textureCompressionBC");
+    }
+    for (feature, name) in [
+        (
+            vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT as u32,
+            "SAMPLED_IMAGE",
+        ),
+        (
+            vk::VK_FORMAT_FEATURE_TRANSFER_DST_BIT as u32,
+            "TRANSFER_DST",
+        ),
+        (
+            vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT as u32,
+            "TRANSFER_SRC",
+        ),
+    ] {
+        if support.optimal_tiling_features & feature == 0 {
+            missing.push(name);
+        }
+    }
+    missing.join(", ")
+}
+
+fn select_texture(mode: TextureMode, bc1: Bc1Support) -> Result<TextureSelection, ProbeError> {
+    let path = match mode {
+        TextureMode::Rgba8 => TexturePath::Rgba8,
+        TextureMode::Auto => {
+            if bc1.complete() {
+                TexturePath::Bc1
+            } else {
+                TexturePath::Rgba8
+            }
+        }
+        TextureMode::Bc1 => {
+            if bc1.complete() {
+                TexturePath::Bc1
+            } else {
+                return Err(ProbeError(format!(
+                    "required BC1 texture path is unavailable: {}",
+                    missing_bc1_requirements(bc1)
+                )));
+            }
+        }
+    };
+    Ok(TextureSelection { mode, path, bc1 })
+}
+
 #[allow(clippy::too_many_lines)]
 fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
+    let texture_mode = texture_mode_from_environment()?;
     let force_swapchain_fallback =
         env::var_os("MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
     let force_msaa_1x = env::var_os("MULCIBER_VULKAN_FORCE_MSAA_1X").is_some();
@@ -1216,6 +1394,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
     devices.truncate(count as usize);
 
     let mut candidates = Vec::new();
+    let mut texture_rejections = Vec::new();
     for device in devices {
         let mut properties = vk::VkPhysicalDeviceProperties::default();
         // SAFETY: Device is enumerated from this instance and output storage is writable.
@@ -1272,6 +1451,22 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         {
             continue;
         }
+        let mut bc1_properties = vk::VkFormatProperties::default();
+        // SAFETY: The physical device is live and properties storage is writable.
+        unsafe {
+            instance
+                .functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                device,
+                vk::VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+                &raw mut bc1_properties,
+            );
+        }
+        let bc1 = Bc1Support {
+            core_feature: features.features.textureCompressionBC == vk::VK_TRUE,
+            optimal_tiling_features: bc1_properties.optimalTilingFeatures,
+        };
 
         let mut family_count = 0;
         // SAFETY: Count output is writable.
@@ -1318,6 +1513,16 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                 "vkGetPhysicalDeviceSurfaceSupportKHR",
             )?;
             if supported == vk::VK_TRUE {
+                let texture = match select_texture(texture_mode, bc1) {
+                    Ok(selection) => selection,
+                    Err(error) => {
+                        texture_rejections.push(format!(
+                            "{}: {error}",
+                            String::from_utf8_lossy(&fixed_c_string(&properties.deviceName))
+                        ));
+                        break;
+                    }
+                };
                 let score = match properties.deviceType {
                     vk::VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU => 2,
                     vk::VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU => 1,
@@ -1344,6 +1549,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                         ),
                         timestamp_valid_bits: family.timestampValidBits,
                         timestamp_period: properties.limits.timestampPeriod,
+                        texture,
                     },
                     fixed_c_string(&properties.deviceName),
                 ));
@@ -1354,7 +1560,16 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
 
     candidates.sort_by_key(|candidate| candidate.0);
     let (_, adapter, name) = candidates.pop().ok_or_else(|| {
-        ProbeError("no Vulkan 1.4 graphics/present adapter satisfies Mulciber's baseline".into())
+        if texture_mode == TextureMode::Bc1 && !texture_rejections.is_empty() {
+            ProbeError(format!(
+                "no Vulkan 1.4 graphics/present adapter satisfies required BC1 mode: {}",
+                texture_rejections.join("; ")
+            ))
+        } else {
+            ProbeError(
+                "no Vulkan 1.4 graphics/present adapter satisfies Mulciber's baseline".into(),
+            )
+        }
     })?;
     println!("Vulkan adapter: {}", String::from_utf8_lossy(&name));
     if force_swapchain_fallback {
@@ -1380,6 +1595,26 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
             "unavailable (feedback-only strict proof)"
         }
     );
+    println!(
+        "BC1 capability: textureCompressionBC={}, optimalTilingFeatures=0x{:08x}",
+        if adapter.texture.bc1.core_feature {
+            "yes"
+        } else {
+            "no"
+        },
+        adapter.texture.bc1.optimal_tiling_features
+    );
+    match (adapter.texture.path, adapter.texture.mode) {
+        (TexturePath::Bc1, _) => println!("Texture path: {}", TexturePath::Bc1.diagnostic_name()),
+        (TexturePath::Rgba8, TextureMode::Rgba8) => {
+            println!("Texture path: RGBA8 fallback (forced by MULCIBER_VULKAN_TEXTURE_MODE)");
+        }
+        (TexturePath::Rgba8, TextureMode::Auto) => println!(
+            "Texture path: RGBA8 fallback (missing {})",
+            missing_bc1_requirements(adapter.texture.bc1)
+        ),
+        (TexturePath::Rgba8, TextureMode::Bc1) => unreachable!("required BC1 was rejected"),
+    }
     if adapter.timestamp_valid_bits == 0 {
         println!("GPU timestamps: unavailable on the selected queue family");
     } else {
@@ -2194,11 +2429,28 @@ impl Renderer {
     }
 
     fn create_texture_resources(&mut self) -> Result<(), ProbeError> {
-        let mut staging = self.create_staging_buffer(&CHECKERBOARD_TEXELS, "texture")?;
-        let result = self.create_texture_and_upload(&staging);
+        let texture_path = self.device.adapter.texture.path;
+        let upload_bytes = texture_path.upload_bytes();
+        let mut staging = self.create_staging_buffer(upload_bytes, "texture")?;
+        let readback_result = self.create_buffer(
+            upload_bytes.len(),
+            vk::VK_BUFFER_USAGE_TRANSFER_DST_BIT as u32,
+            (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                as u32,
+            "texture readback",
+        );
+        let mut readback = match readback_result {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                // SAFETY: The staging buffer has not been submitted.
+                unsafe { self.destroy_buffer(&mut staging) };
+                return Err(error);
+            }
+        };
+        let result = self.create_texture_and_upload(&staging, &readback);
         if result.is_err() {
             // SAFETY: If submission started, waiting idle prevents the staging buffer from being
-            // destroyed while referenced by the queue.
+            // destroyed while referenced by the queue. The same applies to the readback buffer.
             let _ = unsafe {
                 self.device
                     .functions
@@ -2207,20 +2459,29 @@ impl Renderer {
             };
         }
         // SAFETY: Successful upload waited for completion; the error path attempted device idle.
-        unsafe { self.destroy_buffer(&mut staging) };
+        unsafe {
+            self.destroy_buffer(&mut staging);
+            self.destroy_buffer(&mut readback);
+        }
         result?;
         self.create_texture_sampler()?;
         println!(
-            "Texture: device-local {TEXTURE_WIDTH}x{TEXTURE_HEIGHT} RGBA8 image uploaded and sampled"
+            "Texture: device-local {TEXTURE_WIDTH}x{TEXTURE_HEIGHT} {} image uploaded and sampled",
+            texture_path.diagnostic_name()
         );
         Ok(())
     }
 
-    fn create_texture_and_upload(&mut self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+    fn create_texture_and_upload(
+        &mut self,
+        staging: &GpuBuffer,
+        readback: &GpuBuffer,
+    ) -> Result<(), ProbeError> {
+        let texture_path = self.device.adapter.texture.path;
         let info = vk::VkImageCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             imageType: vk::VK_IMAGE_TYPE_2D,
-            format: vk::VK_FORMAT_R8G8B8A8_SRGB,
+            format: texture_path.format(),
             extent: vk::VkExtent3D {
                 width: TEXTURE_WIDTH,
                 height: TEXTURE_HEIGHT,
@@ -2230,7 +2491,9 @@ impl Renderer {
             arrayLayers: 1,
             samples: vk::VK_SAMPLE_COUNT_1_BIT,
             tiling: vk::VK_IMAGE_TILING_OPTIMAL,
-            usage: (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            usage: (vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
             sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
             ..Default::default()
@@ -2303,7 +2566,8 @@ impl Renderer {
             },
             "vkBindImageMemory for sampled texture",
         )?;
-        self.upload_texture(staging)?;
+        self.upload_texture(staging, readback)?;
+        self.verify_texture_readback(readback)?;
         self.texture.view = self.create_texture_view()?;
         Ok(())
     }
@@ -2328,7 +2592,7 @@ impl Renderer {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             image: self.texture.handle,
             viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
-            format: vk::VK_FORMAT_R8G8B8A8_SRGB,
+            format: self.device.adapter.texture.path.format(),
             components: vk::VkComponentMapping {
                 r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
                 g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -4008,7 +4272,11 @@ impl Renderer {
         self.wait_for_frame()
     }
 
-    fn upload_texture(&mut self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+    fn upload_texture(
+        &mut self,
+        staging: &GpuBuffer,
+        readback: &GpuBuffer,
+    ) -> Result<(), ProbeError> {
         check(
             // SAFETY: Geometry upload completed and left the fence signaled.
             unsafe {
@@ -4030,12 +4298,16 @@ impl Renderer {
             },
             "vkResetCommandBuffer for texture upload",
         )?;
-        self.record_texture_upload(staging)?;
+        self.record_texture_upload(staging, readback)?;
         self.submit_upload()?;
         self.wait_for_frame()
     }
 
-    fn record_texture_upload(&self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+    fn record_texture_upload(
+        &self,
+        staging: &GpuBuffer,
+        readback: &GpuBuffer,
+    ) -> Result<(), ProbeError> {
         let begin = vk::VkCommandBufferBeginInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
@@ -4092,16 +4364,7 @@ impl Renderer {
                 .cmd_copy_buffer_to_image2
                 .expect("loaded function")(self.command_buffer, &raw const copy);
         }
-        self.image_barrier(
-            self.texture.handle,
-            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
-            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            color_subresource_range(),
-        );
+        self.record_texture_readback(readback);
         check(
             // SAFETY: The command buffer is recording and the upload commands are complete.
             unsafe {
@@ -4112,6 +4375,119 @@ impl Renderer {
             },
             "vkEndCommandBuffer for texture upload",
         )
+    }
+
+    fn record_texture_readback(&self, readback: &GpuBuffer) {
+        self.image_barrier(
+            self.texture.handle,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            color_subresource_range(),
+        );
+        let readback_region = vk::VkBufferImageCopy2 {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            imageSubresource: color_subresource_layers(0),
+            imageExtent: vk::VkExtent3D {
+                width: TEXTURE_WIDTH,
+                height: TEXTURE_HEIGHT,
+                depth: 1,
+            },
+            ..Default::default()
+        };
+        let readback_copy = vk::VkCopyImageToBufferInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+            srcImage: self.texture.handle,
+            srcImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstBuffer: readback.handle,
+            regionCount: 1,
+            pRegions: &raw const readback_region,
+            ..Default::default()
+        };
+        // SAFETY: The image and buffer are live, correctly laid out, and sized for the selected
+        // texture payload.
+        unsafe {
+            self.device
+                .functions
+                .cmd_copy_image_to_buffer2
+                .expect("loaded function")(
+                self.command_buffer, &raw const readback_copy
+            );
+        }
+        self.image_barrier(
+            self.texture.handle,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            color_subresource_range(),
+        );
+        let host_barrier = storage_buffer_barrier(
+            readback.handle,
+            u64::try_from(self.device.adapter.texture.path.upload_bytes().len())
+                .expect("texture readback byte length fits u64"),
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_PIPELINE_STAGE_2_HOST_BIT,
+            vk::VK_ACCESS_2_HOST_READ_BIT,
+        );
+        self.buffer_dependencies(std::slice::from_ref(&host_barrier));
+    }
+
+    fn verify_texture_readback(&self, readback: &GpuBuffer) -> Result<(), ProbeError> {
+        let texture_path = self.device.adapter.texture.path;
+        let expected = texture_path.upload_bytes();
+        let mut mapped = ptr::null_mut();
+        check(
+            // SAFETY: The coherent readback allocation is host-visible and the range is valid.
+            unsafe {
+                self.device.functions.map_memory.expect("loaded function")(
+                    self.device.handle,
+                    readback.memory,
+                    0,
+                    u64::try_from(expected.len()).expect("texture readback byte length fits u64"),
+                    0,
+                    &raw mut mapped,
+                )
+            },
+            "vkMapMemory for texture readback",
+        )?;
+        // SAFETY: The queue fence completed, the host barrier made the coherent copy visible, and
+        // the mapping covers `expected.len()` bytes.
+        let actual = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), expected.len()) };
+        let mismatch = actual
+            .iter()
+            .zip(expected)
+            .position(|(actual, expected)| actual != expected)
+            .map(|offset| (offset, actual[offset], expected[offset]));
+        // SAFETY: The mapping belongs to this live allocation and is unmapped exactly once.
+        unsafe {
+            self.device.functions.unmap_memory.expect("loaded function")(
+                self.device.handle,
+                readback.memory,
+            );
+        }
+        if let Some((offset, actual, expected)) = mismatch {
+            return Err(ProbeError(format!(
+                "{} texture round trip differed at byte {offset}: expected 0x{expected:02x}, got 0x{actual:02x}",
+                texture_path.diagnostic_name()
+            )));
+        }
+        println!(
+            "Texture upload: {} {} bytes round-tripped exactly",
+            expected.len(),
+            if texture_path == TexturePath::Bc1 {
+                "BC1"
+            } else {
+                "RGBA8"
+            }
+        );
+        Ok(())
     }
 
     fn record_geometry_upload(
@@ -7436,6 +7812,68 @@ mod tests {
             choose_sample_count(one | four, one | four, true),
             vk::VK_SAMPLE_COUNT_1_BIT
         );
+    }
+
+    #[test]
+    fn bc1_fixture_matches_the_metal_checkerboard() {
+        assert_eq!(BC1_BLOCKS.len(), 32);
+        assert_eq!(CHECKERBOARD_TEXELS.len(), 256);
+        assert_eq!(&CHECKERBOARD_TEXELS[0..4], &[247, 243, 255, 255]);
+        assert_eq!(&CHECKERBOARD_TEXELS[4 * 4..4 * 5], &[41, 65, 41, 255]);
+        assert_eq!(
+            &CHECKERBOARD_TEXELS[(4 * 8 + 4) * 4..(4 * 8 + 5) * 4],
+            &[247, 243, 255, 255]
+        );
+    }
+
+    #[test]
+    fn texture_selection_requires_core_and_every_used_format_role() {
+        let complete = Bc1Support {
+            core_feature: true,
+            optimal_tiling_features: BC1_REQUIRED_FORMAT_FEATURES,
+        };
+        assert_eq!(
+            select_texture(TextureMode::Auto, complete)
+                .expect("complete BC1 support")
+                .path,
+            TexturePath::Bc1
+        );
+        assert_eq!(
+            select_texture(TextureMode::Rgba8, complete)
+                .expect("forced fallback")
+                .path,
+            TexturePath::Rgba8
+        );
+
+        for missing in [
+            Bc1Support {
+                core_feature: false,
+                ..complete
+            },
+            Bc1Support {
+                optimal_tiling_features: complete.optimal_tiling_features
+                    & !(vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT as u32),
+                ..complete
+            },
+            Bc1Support {
+                optimal_tiling_features: complete.optimal_tiling_features
+                    & !(vk::VK_FORMAT_FEATURE_TRANSFER_DST_BIT as u32),
+                ..complete
+            },
+            Bc1Support {
+                optimal_tiling_features: complete.optimal_tiling_features
+                    & !(vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT as u32),
+                ..complete
+            },
+        ] {
+            assert_eq!(
+                select_texture(TextureMode::Auto, missing)
+                    .expect("auto fallback")
+                    .path,
+                TexturePath::Rgba8
+            );
+            assert!(select_texture(TextureMode::Bc1, missing).is_err());
+        }
     }
 
     #[test]

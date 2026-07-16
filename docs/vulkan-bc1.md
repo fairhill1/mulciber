@@ -44,15 +44,12 @@ capability; it is not a portable implementation prescription.
 
 Adapter inspection should retain both of these facts:
 
-1. `VkPhysicalDeviceFeatures::textureCompressionBC` is true;
+1. `VkPhysicalDeviceFeatures::textureCompressionBC` is true; and
 2. `vkGetPhysicalDeviceFormatProperties` reports all optimal-tiling features required for
    `VK_FORMAT_BC1_RGBA_UNORM_BLOCK`:
    - `VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT`;
    - `VK_FORMAT_FEATURE_TRANSFER_DST_BIT`; and
-   - `VK_FORMAT_FEATURE_TRANSFER_SRC_BIT`; and
-3. `vkGetPhysicalDeviceImageFormatProperties` accepts the exact combination of 2D, optimal tiling,
-   `TRANSFER_DST | TRANSFER_SRC | SAMPLED` usage, and no create flags, with limits covering an 8x8,
-   one-mip, one-layer, single-sampled image.
+   - `VK_FORMAT_FEATURE_TRANSFER_SRC_BIT`.
 
 The sampler is nearest-filtered today, so linear-filter support is not part of this slice's actual
 requirement. Do not demand an unused feature. If the sampler changes to linear filtering later, add
@@ -74,11 +71,11 @@ Reject any other value before device creation. A forced RGBA8 path is needed to 
 fallback behavior on the current BC-capable Windows machine. Required mode makes the failure
 contract observable instead of leaving it as an untested internal branch.
 
-Add the generated `VkImageFormatProperties` and `vkGetPhysicalDeviceImageFormatProperties` ABI if it
-is not already in the probe's symbol set. Treat `VK_ERROR_FORMAT_NOT_SUPPORTED` as an ordinary BC1
-capability miss in `auto` mode and as a named startup error in required mode. Other Vulkan errors
-remain probe failures. Querying the exact creation tuple prevents independent feature bits from
-being mistaken for proof that the requested combination and limits are usable.
+The fixed fixture uses an ordinary 8x8, single-mip, single-layer, single-sampled 2D image. The exact
+format-role query covers the compressed operations added by this slice without expanding the
+generated ABI. If the implementation generalizes dimensions, flags, array layers, mip counts, or
+usage combinations, add `vkGetPhysicalDeviceImageFormatProperties` rather than silently extending
+this fixed probe assumption.
 
 ## Resource shape and descriptor stability
 
@@ -152,9 +149,8 @@ Print one stable selection line before resource creation:
 - `Texture path: RGBA8 fallback (<reason>)`.
 
 The reason should distinguish a forced fallback from missing `textureCompressionBC`, sampled-image,
-transfer-destination, transfer-source, exact image-usage-combination, or required image-limit
-support. Required BC1 mode should return the same facts in its startup error. Do not collapse them
-into `BC1 unsupported`.
+transfer-destination, or transfer-source support. Required BC1 mode should return the same facts in
+its startup error. Do not collapse them into `BC1 unsupported`.
 
 After verification, print the payload size and exact result, for example:
 
@@ -182,9 +178,8 @@ warnings treated as failures:
 5. Exercise fallback with forced 1x and an interactive resize smoke so compression selection cannot
    conceal a sample-count or lifecycle coupling.
 6. Run default `auto` mode and confirm it reports the path selected from actual capability facts.
-7. Exercise the pure selection helper with missing core BC support, each missing exact format bit,
-   rejected image-format properties, and insufficient returned limits; verify `auto` chooses RGBA8
-   while required `bc1` returns the named actionable error.
+7. Exercise the pure selection helper with missing core BC support and each missing exact format bit;
+   verify `auto` chooses RGBA8 while required `bc1` returns the named actionable error.
 8. Relearn the current pipeline-cache artifact if necessary, then run strict cache validation on BC1
    native 4x and forced 1x. Every pre-existing pipeline must still report an application-cache hit;
    no texture-dependent pipeline entry should appear.
@@ -230,8 +225,6 @@ that all BC formats, dimensions, mip layouts, copy shapes, or filtering modes ha
   <https://docs.vulkan.org/spec/latest/chapters/features.html#features-features-textureCompressionBC>
 - Exact format capabilities:
   <https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPhysicalDeviceFormatProperties.html>
-- Exact image-creation tuple and limits:
-  <https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPhysicalDeviceImageFormatProperties.html>
 - Format feature meanings:
   <https://docs.vulkan.org/refpages/latest/refpages/source/VkFormatFeatureFlagBits.html>
 - Buffer-image copy region addressing:
@@ -240,6 +233,6 @@ that all BC formats, dimensions, mip layouts, copy shapes, or filtering modes ha
   <https://docs.vulkan.org/spec/latest/chapters/copies.html#copies-buffers-images-addressing>
 
 The implementation should remain smaller than this plan: one selected texture-path record, one core
-feature enable, two exact capability queries, a 32-byte fixture, a temporary readback buffer, and
-the existing sampled-texture machinery. The detail here exists to prevent a capability bit or a
+feature enable, one exact format-role query, a 32-byte fixture, a temporary readback buffer, and the
+existing sampled-texture machinery. The detail here exists to prevent a capability bit or a
 validation-clean draw from being mistaken for complete compressed-texture evidence.

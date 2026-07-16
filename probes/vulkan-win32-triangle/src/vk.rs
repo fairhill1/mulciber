@@ -2916,6 +2916,11 @@ pub const VK_INDEX_TYPE_UINT8_EXT: VkIndexType = 1000265000;
 pub const VK_INDEX_TYPE_UINT8_KHR: VkIndexType = 1000265000;
 pub const VK_INDEX_TYPE_MAX_ENUM: VkIndexType = 2147483647;
 pub type VkIndexType = ::core::ffi::c_int;
+pub const VK_PIPELINE_CACHE_HEADER_VERSION_ONE: VkPipelineCacheHeaderVersion = 1;
+pub const VK_PIPELINE_CACHE_HEADER_VERSION_DATA_GRAPH_QCOM: VkPipelineCacheHeaderVersion =
+    1000629000;
+pub const VK_PIPELINE_CACHE_HEADER_VERSION_MAX_ENUM: VkPipelineCacheHeaderVersion = 2147483647;
+pub type VkPipelineCacheHeaderVersion = ::core::ffi::c_int;
 pub const VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: VkBorderColor = 0;
 pub const VK_BORDER_COLOR_INT_TRANSPARENT_BLACK: VkBorderColor = 1;
 pub const VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: VkBorderColor = 2;
@@ -3466,6 +3471,66 @@ pub type VkCommandBufferUsageFlagBits = ::core::ffi::c_int;
 pub type VkCommandBufferUsageFlags = VkFlags;
 pub type VkCommandBufferResetFlags = VkFlags;
 pub type VkShaderModuleCreateFlags = VkFlags;
+pub type VkPipelineCacheCreateFlags = VkFlags;
+pub const VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT: VkPipelineCreateFlagBits = 1;
+pub const VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT: VkPipelineCreateFlagBits = 2;
+pub const VK_PIPELINE_CREATE_DERIVATIVE_BIT: VkPipelineCreateFlagBits = 4;
+pub const VK_PIPELINE_CREATE_DISPATCH_BASE_BIT: VkPipelineCreateFlagBits = 16;
+pub const VK_PIPELINE_CREATE_VIEW_INDEX_FROM_DEVICE_INDEX_BIT: VkPipelineCreateFlagBits = 8;
+pub const VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT: VkPipelineCreateFlagBits = 256;
+pub const VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT: VkPipelineCreateFlagBits = 512;
+pub const VK_PIPELINE_CREATE_NO_PROTECTED_ACCESS_BIT: VkPipelineCreateFlagBits = 134217728;
+pub const VK_PIPELINE_CREATE_PROTECTED_ACCESS_ONLY_BIT: VkPipelineCreateFlagBits = 1073741824;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_BIT_KHR: VkPipelineCreateFlagBits =
+    16384;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_BIT_KHR:
+    VkPipelineCreateFlagBits = 32768;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_MISS_SHADERS_BIT_KHR: VkPipelineCreateFlagBits =
+    65536;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_BIT_KHR:
+    VkPipelineCreateFlagBits = 131072;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_SKIP_TRIANGLES_BIT_KHR: VkPipelineCreateFlagBits = 4096;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_SKIP_AABBS_BIT_KHR: VkPipelineCreateFlagBits = 8192;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_SHADER_GROUP_HANDLE_CAPTURE_REPLAY_BIT_KHR:
+    VkPipelineCreateFlagBits = 524288;
+pub const VK_PIPELINE_CREATE_DEFER_COMPILE_BIT_NV: VkPipelineCreateFlagBits = 32;
+pub const VK_PIPELINE_CREATE_RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_BIT_EXT:
+    VkPipelineCreateFlagBits = 4194304;
+pub const VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR:
+    VkPipelineCreateFlagBits = 2097152;
+pub const VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR: VkPipelineCreateFlagBits = 64;
+pub const VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR: VkPipelineCreateFlagBits =
+    128;
+pub const VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV: VkPipelineCreateFlagBits = 262144;
+pub const VK_PIPELINE_CREATE_LIBRARY_BIT_KHR: VkPipelineCreateFlagBits = 2048;
+pub const VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT: VkPipelineCreateFlagBits = 536870912;
+pub const VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT: VkPipelineCreateFlagBits =
+    8388608;
+pub const VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT: VkPipelineCreateFlagBits = 1024;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_ALLOW_MOTION_BIT_NV: VkPipelineCreateFlagBits = 1048576;
+pub const VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT: VkPipelineCreateFlagBits =
+    33554432;
+pub const VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT:
+    VkPipelineCreateFlagBits = 67108864;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR: VkPipelineCreateFlagBits =
+    16777216;
+pub const VK_PIPELINE_CREATE_DISPATCH_BASE: VkPipelineCreateFlagBits = 16;
+pub const VK_PIPELINE_CREATE_VIEW_INDEX_FROM_DEVICE_INDEX_BIT_KHR: VkPipelineCreateFlagBits = 8;
+pub const VK_PIPELINE_CREATE_DISPATCH_BASE_BIT_KHR: VkPipelineCreateFlagBits = 16;
+pub const VK_PIPELINE_CREATE_DISPATCH_BASE_KHR: VkPipelineCreateFlagBits = 16;
+pub const VK_PIPELINE_RASTERIZATION_STATE_CREATE_FRAGMENT_DENSITY_MAP_ATTACHMENT_BIT_EXT:
+    VkPipelineCreateFlagBits = 4194304;
+pub const VK_PIPELINE_RASTERIZATION_STATE_CREATE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR:
+    VkPipelineCreateFlagBits = 2097152;
+pub const VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT: VkPipelineCreateFlagBits =
+    256;
+pub const VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT_EXT: VkPipelineCreateFlagBits = 512;
+pub const VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_EXT: VkPipelineCreateFlagBits =
+    16777216;
+pub const VK_PIPELINE_CREATE_NO_PROTECTED_ACCESS_BIT_EXT: VkPipelineCreateFlagBits = 134217728;
+pub const VK_PIPELINE_CREATE_PROTECTED_ACCESS_ONLY_BIT_EXT: VkPipelineCreateFlagBits = 1073741824;
+pub const VK_PIPELINE_CREATE_FLAG_BITS_MAX_ENUM: VkPipelineCreateFlagBits = 2147483647;
+pub type VkPipelineCreateFlagBits = ::core::ffi::c_int;
 pub type VkPipelineCreateFlags = VkFlags;
 pub type VkPipelineLayoutCreateFlags = VkFlags;
 pub type VkPipelineShaderStageCreateFlags = VkFlags;
@@ -4195,6 +4260,24 @@ pub struct VkShaderModuleCreateInfo {
     pub pCode: *const u32,
 }
 impl Default for VkShaderModuleCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPipelineCacheCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkPipelineCacheCreateFlags,
+    pub initialDataSize: usize,
+    pub pInitialData: *const ::core::ffi::c_void,
+}
+impl Default for VkPipelineCacheCreateInfo {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -5162,6 +5245,29 @@ pub type PFN_vkDestroyShaderModule = ::core::option::Option<
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
+pub type PFN_vkCreatePipelineCache = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkPipelineCacheCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pPipelineCache: *mut VkPipelineCache,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyPipelineCache = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pipelineCache: VkPipelineCache,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkGetPipelineCacheData = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pipelineCache: VkPipelineCache,
+        pDataSize: *mut usize,
+        pData: *mut ::core::ffi::c_void,
+    ) -> VkResult,
+>;
 pub type PFN_vkCreateComputePipelines = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
@@ -5475,6 +5581,20 @@ pub const VK_ACCESS_2_HOST_READ_BIT: VkAccessFlagBits2 = 8192;
 pub const VK_ACCESS_2_SHADER_SAMPLED_READ_BIT: VkAccessFlagBits2 = 4294967296;
 pub const VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT: VkAccessFlagBits2 = 17179869184;
 pub type VkSubmitFlags = VkFlags;
+pub const VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT: VkPipelineCreationFeedbackFlagBits = 1;
+pub const VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT:
+    VkPipelineCreationFeedbackFlagBits = 2;
+pub const VK_PIPELINE_CREATION_FEEDBACK_BASE_PIPELINE_ACCELERATION_BIT:
+    VkPipelineCreationFeedbackFlagBits = 4;
+pub const VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT: VkPipelineCreationFeedbackFlagBits = 1;
+pub const VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT:
+    VkPipelineCreationFeedbackFlagBits = 2;
+pub const VK_PIPELINE_CREATION_FEEDBACK_BASE_PIPELINE_ACCELERATION_BIT_EXT:
+    VkPipelineCreationFeedbackFlagBits = 4;
+pub const VK_PIPELINE_CREATION_FEEDBACK_FLAG_BITS_MAX_ENUM: VkPipelineCreationFeedbackFlagBits =
+    2147483647;
+pub type VkPipelineCreationFeedbackFlagBits = ::core::ffi::c_int;
+pub type VkPipelineCreationFeedbackFlags = VkFlags;
 pub type VkRenderingFlags = VkFlags;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -5744,6 +5864,30 @@ pub struct VkCopyImageToBufferInfo2 {
     pub pRegions: *const VkBufferImageCopy2,
 }
 impl Default for VkCopyImageToBufferInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkPipelineCreationFeedback {
+    pub flags: VkPipelineCreationFeedbackFlags,
+    pub duration: u64,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPipelineCreationFeedbackCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub pPipelineCreationFeedback: *mut VkPipelineCreationFeedback,
+    pub pipelineStageCreationFeedbackCount: u32,
+    pub pPipelineStageCreationFeedbacks: *mut VkPipelineCreationFeedback,
+}
+impl Default for VkPipelineCreationFeedbackCreateInfo {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {

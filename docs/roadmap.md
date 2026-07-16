@@ -75,6 +75,10 @@ Vulkan evidence completed so far:
 - [x] Persistent 1024x1024 sampled depth map rendered by a depth-only light-space pass, synchronized
   for filtered fragment sampling by the main scene, and measured as its own diagnostic region (same
   machine).
+- [x] Device-specific raw Vulkan pipeline cache shared by compute, shadow, native/forced-1x scene,
+  and post pipelines, with header preflight, per-pipeline application-hit feedback, optional
+  compile prohibition, atomic learning-mode persistence, strict read-only cross-process proof,
+  corruption recovery, and a physically validated no-cache correctness control (same machine).
 
 Metal evidence completed so far:
 

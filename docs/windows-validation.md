@@ -187,6 +187,19 @@ averages were 0.073/0.025 ms and 0.026/0.027 ms respectively. Both 600-frame run
 resize smoke completed without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-121826.zip`.
 
+The Vulkan pipeline-cache slice was validated on 2026-07-16. One device-specific raw cache backed
+the startup compute, shadow, scene, and post pipelines. The native 4x cold run produced valid misses
+and atomically stored 48,457 bytes; forced 1x learning and fresh strict 4x/1x processes then reported
+valid application-cache hits for every requested pipeline while compile-required control was
+enabled. Strict four-size resize preserved those hits, and artifact hashes before and after all
+strict runs matched. Truncated and vendor-mismatched copies were rejected by header preflight and
+replaced after clean learning runs. A one-byte opaque-payload mutation caused a detected
+`scene-4x` miss while the other pipelines hit; learning recovered safely and replaced the copy with
+a 56,980-byte artifact. A missing strict artifact failed before pipeline creation, and a subsequent
+120-frame `--disable-pipeline-cache` run established unchanged rendering correctness with valid
+non-hit feedback. The complete cache matrix emitted no validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-125230.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -212,8 +225,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-windows.p
 ```
 
 The script records the OS, GPU and driver, Git revision/status, Rust version, the native Mulciber JSON
-capability report, full `vulkaninfo`, Cargo test output, a normal 600-frame validation run, and a
-forced 1x multisampling-fallback run. It then guides two interactive runs: lifecycle testing closed
+capability report, full `vulkaninfo`, and Cargo test output. Its runtime matrix rebuilds a pipeline
+cache during the normal 600-frame run, expands it on forced 1x, requires read-only cross-process hits
+on native 4x and forced 1x, performs the resize smoke in strict mode, verifies that strict runs do not
+change the artifact, recovers copies with truncated, incompatible, and payload-damaged data, and
+runs once with caching disabled. It then guides two interactive runs: lifecycle testing closed
 through the title bar, followed by an Alt+F4 shutdown test.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a

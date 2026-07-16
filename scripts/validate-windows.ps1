@@ -52,6 +52,40 @@ function Invoke-NativeLogged {
     }
 }
 
+function Invoke-NativeExpectedFailure {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Command,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LogName
+    )
+
+    $LogPath = Join-Path $ArtifactDirectory $LogName
+    Write-Host "> $Command $($Arguments -join ' ') (expected failure)"
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $Command @Arguments 2>&1 |
+            ForEach-Object { $_.ToString() } |
+            Tee-Object -FilePath $LogPath
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    if ($ExitCode -eq 0) {
+        throw "$Command unexpectedly succeeded; see $LogPath"
+    }
+    if (Select-String -Path $LogPath -Pattern "Vulkan validation") {
+        throw "$Command emitted a validation message during expected failure; see $LogPath"
+    }
+}
+
 function Read-Yes {
     param(
         [Parameter(Mandatory = $true)]
@@ -73,7 +107,11 @@ function Read-Yes {
 function Invoke-AutomatedResizeSmoke {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Probe
+        [string]$Probe,
+
+        [string[]]$ProbeArguments = @(),
+
+        [string]$LogPrefix = "resize-smoke"
     )
 
     if (-not ("MulciberValidationWin32" -as [type])) {
@@ -93,10 +131,11 @@ public static class MulciberValidationWin32
 '@
     }
 
-    $StandardOutput = Join-Path $ArtifactDirectory "resize-smoke.log"
-    $StandardError = Join-Path $ArtifactDirectory "resize-smoke.stderr.log"
-    Write-Host "> $Probe (automated resize smoke)"
+    $StandardOutput = Join-Path $ArtifactDirectory "$LogPrefix.log"
+    $StandardError = Join-Path $ArtifactDirectory "$LogPrefix.stderr.log"
+    Write-Host "> $Probe $($ProbeArguments -join ' ') (automated resize smoke)"
     $Process = Start-Process -FilePath $Probe `
+        -ArgumentList $ProbeArguments `
         -RedirectStandardOutput $StandardOutput `
         -RedirectStandardError $StandardError `
         -PassThru
@@ -218,16 +257,90 @@ try {
     # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.
     $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-win32-triangle.exe"
+    $PipelineCachePath = Join-Path $ArtifactDirectory "pipeline-cache.bin"
+    $CacheFrames = [Math]::Min($Frames, 120)
     $env:VK_LOADER_DEBUG = "error,warn"
-    Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "finite-run.log"
+    Invoke-NativeLogged $Probe @(
+        "--frames", $Frames.ToString(),
+        "--pipeline-cache", $PipelineCachePath,
+        "--rebuild-pipeline-cache"
+    ) "finite-run.log"
     $env:MULCIBER_VULKAN_FORCE_MSAA_1X = "1"
     try {
-        Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "msaa-1x-fallback.log"
+        Invoke-NativeLogged $Probe @(
+            "--frames", $Frames.ToString(),
+            "--pipeline-cache", $PipelineCachePath
+        ) "msaa-1x-fallback.log"
     }
     finally {
         Remove-Item Env:MULCIBER_VULKAN_FORCE_MSAA_1X -ErrorAction SilentlyContinue
     }
-    Invoke-AutomatedResizeSmoke $Probe
+    $PipelineCacheHash = (Get-FileHash -Algorithm SHA256 $PipelineCachePath).Hash
+    $MissingCachePath = Join-Path $ArtifactDirectory "pipeline-cache-missing.bin"
+    Invoke-NativeExpectedFailure $Probe @(
+        "--frames", "1",
+        "--pipeline-cache", $MissingCachePath,
+        "--require-pipeline-cache-hits"
+    ) "pipeline-cache-strict-missing.log"
+    Invoke-NativeLogged $Probe @(
+        "--frames", $CacheFrames.ToString(),
+        "--pipeline-cache", $PipelineCachePath,
+        "--require-pipeline-cache-hits"
+    ) "pipeline-cache-strict-4x.log"
+    $env:MULCIBER_VULKAN_FORCE_MSAA_1X = "1"
+    try {
+        Invoke-NativeLogged $Probe @(
+            "--frames", $CacheFrames.ToString(),
+            "--pipeline-cache", $PipelineCachePath,
+            "--require-pipeline-cache-hits"
+        ) "pipeline-cache-strict-1x.log"
+    }
+    finally {
+        Remove-Item Env:MULCIBER_VULKAN_FORCE_MSAA_1X -ErrorAction SilentlyContinue
+    }
+    Invoke-AutomatedResizeSmoke `
+        -Probe $Probe `
+        -ProbeArguments @(
+            "--pipeline-cache", $PipelineCachePath,
+            "--require-pipeline-cache-hits"
+        ) `
+        -LogPrefix "pipeline-cache-strict-resize"
+    if ((Get-FileHash -Algorithm SHA256 $PipelineCachePath).Hash -ne $PipelineCacheHash) {
+        throw "strict pipeline cache runs modified the read-only artifact"
+    }
+
+    [byte[]]$PipelineCacheBytes = [System.IO.File]::ReadAllBytes($PipelineCachePath)
+    $TruncatedCachePath = Join-Path $ArtifactDirectory "pipeline-cache-truncated.bin"
+    [System.IO.File]::WriteAllBytes($TruncatedCachePath, [byte[]]($PipelineCacheBytes[0..15]))
+    Invoke-NativeLogged $Probe @(
+        "--frames", $CacheFrames.ToString(),
+        "--pipeline-cache", $TruncatedCachePath
+    ) "pipeline-cache-truncated-recovery.log"
+
+    $IncompatibleCachePath = Join-Path $ArtifactDirectory "pipeline-cache-incompatible.bin"
+    [byte[]]$IncompatibleBytes = $PipelineCacheBytes.Clone()
+    $IncompatibleBytes[8] = $IncompatibleBytes[8] -bxor 1
+    [System.IO.File]::WriteAllBytes($IncompatibleCachePath, $IncompatibleBytes)
+    Invoke-NativeLogged $Probe @(
+        "--frames", $CacheFrames.ToString(),
+        "--pipeline-cache", $IncompatibleCachePath
+    ) "pipeline-cache-incompatible-recovery.log"
+
+    $CorruptCachePath = Join-Path $ArtifactDirectory "pipeline-cache-corrupt.bin"
+    [byte[]]$CorruptBytes = $PipelineCacheBytes.Clone()
+    if ($CorruptBytes.Length -le 40) {
+        throw "pipeline cache artifact is too small for payload-corruption evidence"
+    }
+    $CorruptBytes[40] = $CorruptBytes[40] -bxor 1
+    [System.IO.File]::WriteAllBytes($CorruptCachePath, $CorruptBytes)
+    Invoke-NativeLogged $Probe @(
+        "--frames", $CacheFrames.ToString(),
+        "--pipeline-cache", $CorruptCachePath
+    ) "pipeline-cache-corrupt-recovery.log"
+    Invoke-NativeLogged $Probe @(
+        "--frames", $CacheFrames.ToString(),
+        "--disable-pipeline-cache"
+    ) "pipeline-cache-disabled.log"
 
     $ManualLines = @()
     if (-not $SkipInteractive) {
@@ -273,8 +386,14 @@ try {
     $RuntimeLogs = @(
         Join-Path $ArtifactDirectory "finite-run.log"
         Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
-        Join-Path $ArtifactDirectory "resize-smoke.log"
-        Join-Path $ArtifactDirectory "resize-smoke.stderr.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-strict-4x.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-strict-1x.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-strict-resize.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-strict-resize.stderr.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-truncated-recovery.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-incompatible-recovery.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-corrupt-recovery.log"
+        Join-Path $ArtifactDirectory "pipeline-cache-disabled.log"
         Join-Path $ArtifactDirectory "interactive-titlebar.log"
         Join-Path $ArtifactDirectory "interactive-alt-f4.log"
     ) | Where-Object { Test-Path $_ }

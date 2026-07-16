@@ -1,8 +1,12 @@
 use std::env;
 use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::mem;
 use std::num::NonZeroU64;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
@@ -31,6 +35,9 @@ const SCENE_QUERY_START: u32 = 4;
 const SCENE_QUERY_END: u32 = 5;
 const POST_QUERY_START: u32 = 6;
 const POST_QUERY_END: u32 = 7;
+const PIPELINE_CACHE_HEADER_SIZE: usize = 32;
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -80,6 +87,7 @@ unsafe extern "system" {
     fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
 }
 
 #[derive(Debug)]
@@ -238,13 +246,14 @@ impl LiveResizeTrace {
 
 pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
-    let frame_limit = parse_frame_limit()?;
+    let options = parse_run_options(env::args().skip(1))?;
+    let frame_limit = options.frame_limit;
     let window = Window::new("Mulciber — native Vulkan 1.4", 960, 540, true)
         .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
     let device = DeviceContext::new(instance)?;
-    let mut renderer = Renderer::new(device, &window)?;
+    let mut renderer = Renderer::new(device, &window, &options.pipeline_cache)?;
 
     let render_result = (|| {
         let mut rendered_frames = 0;
@@ -316,23 +325,198 @@ const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u
     (variant << 29) | (major << 22) | (minor << 12) | patch
 }
 
-fn parse_frame_limit() -> Result<Option<NonZeroU64>, ProbeError> {
-    let mut arguments = env::args().skip(1);
-    let Some(argument) = arguments.next() else {
-        return Ok(None);
-    };
-    if argument != "--frames" {
-        return Err(ProbeError(format!("unknown argument: {argument}")));
+#[derive(Debug, Default)]
+struct RunOptions {
+    frame_limit: Option<NonZeroU64>,
+    pipeline_cache: PipelineCacheOptions,
+}
+
+#[derive(Debug, Default)]
+struct PipelineCacheOptions {
+    path: Option<PathBuf>,
+    rebuild: bool,
+    strict: bool,
+    disabled: bool,
+}
+
+fn parse_run_options(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<RunOptions, ProbeError> {
+    let mut options = RunOptions::default();
+    let mut arguments = arguments.into_iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--frames" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| ProbeError("--frames requires a positive integer".into()))?;
+                options.frame_limit = Some(
+                    value
+                        .parse::<NonZeroU64>()
+                        .map_err(|_| ProbeError("--frames requires a positive integer".into()))?,
+                );
+            }
+            "--pipeline-cache" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| ProbeError("--pipeline-cache requires a file path".into()))?;
+                options.pipeline_cache.path = Some(PathBuf::from(value));
+            }
+            "--rebuild-pipeline-cache" => options.pipeline_cache.rebuild = true,
+            "--require-pipeline-cache-hits" => options.pipeline_cache.strict = true,
+            "--disable-pipeline-cache" => options.pipeline_cache.disabled = true,
+            _ => return Err(ProbeError(format!("unknown argument: {argument}"))),
+        }
     }
-    let count = arguments
-        .next()
-        .ok_or_else(|| ProbeError("--frames requires a positive integer".into()))?
-        .parse::<NonZeroU64>()
-        .map_err(|_| ProbeError("--frames requires a positive integer".into()))?;
-    if let Some(extra) = arguments.next() {
-        return Err(ProbeError(format!("unexpected argument: {extra}")));
+    if options.pipeline_cache.rebuild && options.pipeline_cache.strict {
+        return Err(ProbeError(
+            "--rebuild-pipeline-cache conflicts with --require-pipeline-cache-hits".into(),
+        ));
     }
-    Ok(Some(count))
+    if options.pipeline_cache.disabled
+        && (options.pipeline_cache.path.is_some()
+            || options.pipeline_cache.rebuild
+            || options.pipeline_cache.strict)
+    {
+        return Err(ProbeError(
+            "--disable-pipeline-cache conflicts with all other pipeline-cache controls".into(),
+        ));
+    }
+    Ok(options)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PipelineCacheIdentity {
+    vendor_id: u32,
+    device_id: u32,
+    uuid: [u8; 16],
+}
+
+fn pipeline_cache_uuid_hex(identity: PipelineCacheIdentity) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut uuid = String::with_capacity(32);
+    for byte in identity.uuid {
+        uuid.push(char::from(HEX[usize::from(byte >> 4)]));
+        uuid.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    uuid
+}
+
+fn pipeline_cache_default_path(identity: PipelineCacheIdentity) -> PathBuf {
+    let uuid = pipeline_cache_uuid_hex(identity);
+    PathBuf::from("target").join(format!("mulciber-vulkan-pipeline-{uuid}.bin"))
+}
+
+fn validate_pipeline_cache_header(
+    bytes: &[u8],
+    identity: PipelineCacheIdentity,
+) -> Result<(), String> {
+    if bytes.len() < PIPELINE_CACHE_HEADER_SIZE {
+        return Err(format!(
+            "truncated header: {} bytes, expected at least {PIPELINE_CACHE_HEADER_SIZE}",
+            bytes.len()
+        ));
+    }
+    let field = |offset| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let header_size = usize::try_from(field(0)).expect("u32 fits usize");
+    if header_size != PIPELINE_CACHE_HEADER_SIZE {
+        return Err(format!(
+            "header size {header_size} does not match {PIPELINE_CACHE_HEADER_SIZE}"
+        ));
+    }
+    let header_version = field(4);
+    if header_version != vk::VK_PIPELINE_CACHE_HEADER_VERSION_ONE as u32 {
+        return Err(format!("unsupported header version {header_version}"));
+    }
+    if field(8) != identity.vendor_id {
+        return Err("vendor ID does not match the selected adapter".into());
+    }
+    if field(12) != identity.device_id {
+        return Err("device ID does not match the selected adapter".into());
+    }
+    if bytes[16..32] != identity.uuid {
+        return Err("pipeline cache UUID does not match the selected adapter".into());
+    }
+    Ok(())
+}
+
+fn replace_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), ProbeError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            ProbeError(format!(
+                "could not create pipeline cache directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let file_name = path.file_name().ok_or_else(|| {
+        ProbeError(format!(
+            "pipeline cache path has no file name: {}",
+            path.display()
+        ))
+    })?;
+    let mut temporary_name = file_name.to_os_string();
+    temporary_name.push(format!(".tmp-{}", std::process::id()));
+    let temporary = path.with_file_name(temporary_name);
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| {
+                ProbeError(format!(
+                    "could not open pipeline cache temporary file {}: {error}",
+                    temporary.display()
+                ))
+            })?;
+        file.write_all(bytes).map_err(|error| {
+            ProbeError(format!(
+                "could not write pipeline cache temporary file {}: {error}",
+                temporary.display()
+            ))
+        })?;
+        file.sync_all().map_err(|error| {
+            ProbeError(format!(
+                "could not flush pipeline cache temporary file {}: {error}",
+                temporary.display()
+            ))
+        })?;
+        drop(file);
+        let temporary_wide = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let path_wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        // SAFETY: Both paths are NUL-terminated UTF-16 strings and name sibling files.
+        if unsafe {
+            MoveFileExW(
+                temporary_wide.as_ptr(),
+                path_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(ProbeError(format!(
+                "could not atomically replace pipeline cache {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    write_result
 }
 
 struct Entry {
@@ -665,6 +849,8 @@ struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
     swapchain_maintenance1: bool,
+    pipeline_creation_cache_control: bool,
+    pipeline_cache_identity: PipelineCacheIdentity,
     sample_count: vk::VkSampleCountFlagBits,
     timestamp_valid_bits: u32,
     timestamp_period: f32,
@@ -704,12 +890,15 @@ struct DeviceFns {
     create_shader_module: vk::PFN_vkCreateShaderModule,
     destroy_shader_module: vk::PFN_vkDestroyShaderModule,
     create_pipeline_layout: vk::PFN_vkCreatePipelineLayout,
+    create_pipeline_cache: vk::PFN_vkCreatePipelineCache,
     create_query_pool: vk::PFN_vkCreateQueryPool,
     destroy_pipeline_layout: vk::PFN_vkDestroyPipelineLayout,
     destroy_query_pool: vk::PFN_vkDestroyQueryPool,
     create_graphics_pipelines: vk::PFN_vkCreateGraphicsPipelines,
     create_compute_pipelines: vk::PFN_vkCreateComputePipelines,
     destroy_pipeline: vk::PFN_vkDestroyPipeline,
+    destroy_pipeline_cache: vk::PFN_vkDestroyPipelineCache,
+    get_pipeline_cache_data: vk::PFN_vkGetPipelineCacheData,
     create_command_pool: vk::PFN_vkCreateCommandPool,
     destroy_command_pool: vk::PFN_vkDestroyCommandPool,
     allocate_command_buffers: vk::PFN_vkAllocateCommandBuffers,
@@ -798,12 +987,15 @@ impl DeviceFns {
             create_shader_module: load!(c"vkCreateShaderModule"),
             destroy_shader_module: load!(c"vkDestroyShaderModule"),
             create_pipeline_layout: load!(c"vkCreatePipelineLayout"),
+            create_pipeline_cache: load!(c"vkCreatePipelineCache"),
             create_query_pool: load!(c"vkCreateQueryPool"),
             destroy_pipeline_layout: load!(c"vkDestroyPipelineLayout"),
             destroy_query_pool: load!(c"vkDestroyQueryPool"),
             create_graphics_pipelines: load!(c"vkCreateGraphicsPipelines"),
             create_compute_pipelines: load!(c"vkCreateComputePipelines"),
             destroy_pipeline: load!(c"vkDestroyPipeline"),
+            destroy_pipeline_cache: load!(c"vkDestroyPipelineCache"),
+            get_pipeline_cache_data: load!(c"vkGetPipelineCacheData"),
             create_command_pool: load!(c"vkCreateCommandPool"),
             destroy_command_pool: load!(c"vkDestroyCommandPool"),
             allocate_command_buffers: load!(c"vkAllocateCommandBuffers"),
@@ -866,6 +1058,11 @@ impl DeviceContext {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
             synchronization2: vk::VK_TRUE,
             dynamicRendering: vk::VK_TRUE,
+            pipelineCreationCacheControl: if adapter.pipeline_creation_cache_control {
+                vk::VK_TRUE
+            } else {
+                vk::VK_FALSE
+            },
             ..Default::default()
         };
         let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
@@ -1133,6 +1330,13 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                         queue_family: u32::try_from(index).expect("queue family index fits u32"),
                         swapchain_maintenance1: maintenance_extension
                             && maintenance1.swapchainMaintenance1 == vk::VK_TRUE,
+                        pipeline_creation_cache_control: features13.pipelineCreationCacheControl
+                            == vk::VK_TRUE,
+                        pipeline_cache_identity: PipelineCacheIdentity {
+                            vendor_id: properties.vendorID,
+                            device_id: properties.deviceID,
+                            uuid: properties.pipelineCacheUUID,
+                        },
                         sample_count: choose_sample_count(
                             properties.limits.framebufferColorSampleCounts,
                             properties.limits.framebufferDepthSampleCounts,
@@ -1168,6 +1372,14 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         }
     );
     println!("Multisampling: {}", sample_count_name(adapter.sample_count));
+    println!(
+        "Pipeline compile-required control: {}",
+        if adapter.pipeline_creation_cache_control {
+            "available"
+        } else {
+            "unavailable (feedback-only strict proof)"
+        }
+    );
     if adapter.timestamp_valid_bits == 0 {
         println!("GPU timestamps: unavailable on the selected queue family");
     } else {
@@ -1278,8 +1490,40 @@ struct GpuImage {
     view: vk::VkImageView,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PipelineCacheMode {
+    Learning,
+    Strict,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PipelineCachePersistence {
+    Initializing,
+    Pending,
+    Saved,
+}
+
+struct PipelineCacheState {
+    handle: vk::VkPipelineCache,
+    path: PathBuf,
+    mode: PipelineCacheMode,
+    persistence: PipelineCachePersistence,
+}
+
+impl PipelineCacheState {
+    fn is_strict(&self) -> bool {
+        self.mode == PipelineCacheMode::Strict
+    }
+
+    fn is_disabled(&self) -> bool {
+        self.mode == PipelineCacheMode::Disabled
+    }
+}
+
 struct Renderer {
     device: DeviceContext,
+    pipeline_cache: PipelineCacheState,
     swapchain: vk::VkSwapchainKHR,
     format: vk::VkFormat,
     depth_format: vk::VkFormat,
@@ -1339,11 +1583,32 @@ struct Renderer {
 }
 
 impl Renderer {
-    fn new(device: DeviceContext, window: &Window) -> Result<Self, ProbeError> {
+    #[allow(clippy::too_many_lines)]
+    fn new(
+        device: DeviceContext,
+        window: &Window,
+        pipeline_cache_options: &PipelineCacheOptions,
+    ) -> Result<Self, ProbeError> {
         let depth_format = choose_depth_format(&device)?;
         require_offscreen_format(&device)?;
+        let pipeline_cache_path = pipeline_cache_options
+            .path
+            .clone()
+            .unwrap_or_else(|| pipeline_cache_default_path(device.adapter.pipeline_cache_identity));
         let mut renderer = Self {
             device,
+            pipeline_cache: PipelineCacheState {
+                handle: ptr::null_mut(),
+                path: pipeline_cache_path,
+                mode: if pipeline_cache_options.disabled {
+                    PipelineCacheMode::Disabled
+                } else if pipeline_cache_options.strict {
+                    PipelineCacheMode::Strict
+                } else {
+                    PipelineCacheMode::Learning
+                },
+                persistence: PipelineCachePersistence::Initializing,
+            },
             swapchain: ptr::null_mut(),
             format: vk::VK_FORMAT_UNDEFINED,
             depth_format,
@@ -1404,6 +1669,7 @@ impl Renderer {
         if renderer.live_resize_trace.enabled {
             println!("Live resize timing trace enabled");
         }
+        renderer.create_pipeline_cache(pipeline_cache_options.rebuild)?;
         renderer.create_frame_resources()?;
         renderer.create_gpu_instrumentation()?;
         renderer.create_geometry_buffers()?;
@@ -1429,7 +1695,241 @@ impl Renderer {
                 "Shadows: {SHADOW_MAP_SIZE}x{SHADOW_MAP_SIZE} sampled depth map from a depth-only pass"
             );
         }
+        if renderer.pipeline_cache.mode == PipelineCacheMode::Learning {
+            renderer.pipeline_cache.persistence = PipelineCachePersistence::Pending;
+        }
         Ok(renderer)
+    }
+
+    fn create_pipeline_cache(&mut self, rebuild: bool) -> Result<(), ProbeError> {
+        if self.pipeline_cache.is_disabled() {
+            println!("Pipeline cache mode: disabled (correctness control)");
+            return Ok(());
+        }
+        let identity = self.device.adapter.pipeline_cache_identity;
+        println!(
+            "Pipeline cache identity: vendor=0x{:04x} device=0x{:04x} uuid={}",
+            identity.vendor_id,
+            identity.device_id,
+            pipeline_cache_uuid_hex(identity)
+        );
+        let mut initial_data = Vec::new();
+        if rebuild {
+            println!(
+                "Pipeline cache: rebuilding {} from an empty cache",
+                self.pipeline_cache.path.display()
+            );
+        } else {
+            match fs::read(&self.pipeline_cache.path) {
+                Ok(bytes) => match validate_pipeline_cache_header(&bytes, identity) {
+                    Ok(()) => {
+                        println!(
+                            "Pipeline cache: loaded {} compatible bytes from {}",
+                            bytes.len(),
+                            self.pipeline_cache.path.display()
+                        );
+                        initial_data = bytes;
+                    }
+                    Err(reason) if self.pipeline_cache.is_strict() => {
+                        return Err(ProbeError(format!(
+                            "strict pipeline cache rejected {}: {reason}",
+                            self.pipeline_cache.path.display()
+                        )));
+                    }
+                    Err(reason) => println!(
+                        "Pipeline cache: ignored incompatible artifact {} ({reason})",
+                        self.pipeline_cache.path.display()
+                    ),
+                },
+                Err(error)
+                    if error.kind() != std::io::ErrorKind::NotFound
+                        || self.pipeline_cache.is_strict() =>
+                {
+                    return Err(ProbeError(format!(
+                        "pipeline cache could not read {} in {} mode: {error}",
+                        self.pipeline_cache.path.display(),
+                        if self.pipeline_cache.is_strict() {
+                            "strict"
+                        } else {
+                            "learning"
+                        }
+                    )));
+                }
+                Err(error) => println!(
+                    "Pipeline cache: starting empty because {} could not be read ({error})",
+                    self.pipeline_cache.path.display()
+                ),
+            }
+        }
+
+        let mut result = self.create_pipeline_cache_handle(&initial_data);
+        if result != vk::VK_SUCCESS && !initial_data.is_empty() && !self.pipeline_cache.is_strict()
+        {
+            if !self.pipeline_cache.handle.is_null() {
+                // SAFETY: A failed creation unexpectedly returned a handle; discard it before retry.
+                unsafe {
+                    self.device
+                        .functions
+                        .destroy_pipeline_cache
+                        .expect("loaded function")(
+                        self.device.handle,
+                        self.pipeline_cache.handle,
+                        ptr::null(),
+                    );
+                }
+                self.pipeline_cache.handle = ptr::null_mut();
+            }
+            println!(
+                "Pipeline cache: driver rejected compatible artifact {} with VkResult {result}; retrying empty",
+                self.pipeline_cache.path.display()
+            );
+            initial_data.clear();
+            result = self.create_pipeline_cache_handle(&initial_data);
+        }
+        check(result, "vkCreatePipelineCache")?;
+        println!(
+            "Pipeline cache mode: {} ({})",
+            if self.pipeline_cache.is_strict() {
+                "strict read-only hit proof"
+            } else {
+                "learning with atomic persistence"
+            },
+            self.pipeline_cache.path.display()
+        );
+        Ok(())
+    }
+
+    fn create_pipeline_cache_handle(&mut self, bytes: &[u8]) -> vk::VkResult {
+        let info = vk::VkPipelineCacheCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+            initialDataSize: bytes.len(),
+            pInitialData: if bytes.is_empty() {
+                ptr::null()
+            } else {
+                bytes.as_ptr().cast()
+            },
+            ..Default::default()
+        };
+        self.pipeline_cache.handle = ptr::null_mut();
+        // SAFETY: The device is live, initial bytes outlive the call, and output is writable.
+        unsafe {
+            self.device
+                .functions
+                .create_pipeline_cache
+                .expect("loaded function")(
+                self.device.handle,
+                &raw const info,
+                ptr::null(),
+                &raw mut self.pipeline_cache.handle,
+            )
+        }
+    }
+
+    fn pipeline_create_flags(&self) -> vk::VkPipelineCreateFlags {
+        if self.pipeline_cache.is_strict() && self.device.adapter.pipeline_creation_cache_control {
+            vk::VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT as u32
+        } else {
+            0
+        }
+    }
+
+    fn check_pipeline_feedback(
+        &self,
+        name: &str,
+        result: vk::VkResult,
+        feedback: vk::VkPipelineCreationFeedback,
+        elapsed: Duration,
+    ) -> Result<(), ProbeError> {
+        if result == vk::VK_PIPELINE_COMPILE_REQUIRED {
+            return Err(ProbeError(format!(
+                "pipeline cache miss for {name}: compilation was required in strict mode"
+            )));
+        }
+        check(result, &format!("pipeline creation for {name}"))?;
+        let valid = feedback.flags & vk::VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT as u32 != 0;
+        let hit = feedback.flags
+            & vk::VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT as u32
+            != 0;
+        println!(
+            "Pipeline cache feedback: name={name} valid={valid} app_hit={hit} driver={:.3} ms cpu={:.3} ms",
+            Duration::from_nanos(feedback.duration).as_secs_f64() * 1_000.0,
+            elapsed.as_secs_f64() * 1_000.0
+        );
+        if !valid {
+            return Err(ProbeError(format!(
+                "pipeline creation feedback for {name} was not valid"
+            )));
+        }
+        if self.pipeline_cache.is_strict() && !hit {
+            return Err(ProbeError(format!(
+                "pipeline cache miss for {name}: application cache hit feedback was absent"
+            )));
+        }
+        Ok(())
+    }
+
+    fn save_pipeline_cache(&mut self) -> Result<(), ProbeError> {
+        if self.pipeline_cache.persistence != PipelineCachePersistence::Pending
+            || self.pipeline_cache.is_strict()
+            || self.pipeline_cache.handle.is_null()
+        {
+            return Ok(());
+        }
+        let get_data = self
+            .device
+            .functions
+            .get_pipeline_cache_data
+            .expect("loaded function");
+        let mut complete_bytes = None;
+        for _ in 0..8 {
+            let mut size = 0_usize;
+            // SAFETY: The cache is live and the size output is writable.
+            check(
+                unsafe {
+                    get_data(
+                        self.device.handle,
+                        self.pipeline_cache.handle,
+                        &raw mut size,
+                        ptr::null_mut(),
+                    )
+                },
+                "vkGetPipelineCacheData size query",
+            )?;
+            let mut bytes = vec![0_u8; size];
+            // SAFETY: Storage has `size` writable bytes and the cache remains live.
+            let result = unsafe {
+                get_data(
+                    self.device.handle,
+                    self.pipeline_cache.handle,
+                    &raw mut size,
+                    bytes.as_mut_ptr().cast(),
+                )
+            };
+            if result == vk::VK_INCOMPLETE {
+                continue;
+            }
+            check(result, "vkGetPipelineCacheData payload query")?;
+            bytes.truncate(size);
+            complete_bytes = Some(bytes);
+            break;
+        }
+        let bytes = complete_bytes.ok_or_else(|| {
+            ProbeError("vkGetPipelineCacheData remained incomplete after 8 retries".into())
+        })?;
+        validate_pipeline_cache_header(&bytes, self.device.adapter.pipeline_cache_identity)
+            .map_err(|reason| {
+                ProbeError(format!(
+                    "driver returned an invalid pipeline cache artifact: {reason}"
+                ))
+            })?;
+        replace_file_atomically(&self.pipeline_cache.path, &bytes)?;
+        self.pipeline_cache.persistence = PipelineCachePersistence::Saved;
+        println!(
+            "Pipeline cache: atomically stored {} bytes at {}",
+            bytes.len(),
+            self.pipeline_cache.path.display()
+        );
+        Ok(())
     }
 
     fn create_frame_resources(&mut self) -> Result<(), ProbeError> {
@@ -2739,30 +3239,39 @@ impl Renderer {
             "vkCreatePipelineLayout for compute storage",
         )?;
         let shader = self.create_shader_module(include_bytes!("storage.comp.spv"))?;
+        let mut feedback = vk::VkPipelineCreationFeedback::default();
+        let feedback_info = vk::VkPipelineCreationFeedbackCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+            pPipelineCreationFeedback: &raw mut feedback,
+            ..Default::default()
+        };
         let info = vk::VkComputePipelineCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            pNext: (&raw const feedback_info).cast(),
+            flags: self.pipeline_create_flags(),
             stage: shader_stage(vk::VK_SHADER_STAGE_COMPUTE_BIT, shader),
             layout: self.compute_pipeline_layout,
             basePipelineIndex: -1,
             ..Default::default()
         };
-        let result = check(
-            // SAFETY: Pipeline state and shader module are live; output storage is writable.
-            unsafe {
-                self.device
-                    .functions
-                    .create_compute_pipelines
-                    .expect("loaded function")(
-                    self.device.handle,
-                    ptr::null_mut(),
-                    1,
-                    &raw const info,
-                    ptr::null(),
-                    &raw mut self.compute_pipeline,
-                )
-            },
-            "vkCreateComputePipelines for storage buffer",
-        );
+        let started = Instant::now();
+        let create_pipelines = self
+            .device
+            .functions
+            .create_compute_pipelines
+            .expect("loaded function");
+        // SAFETY: Pipeline state and shader module are live; output storage is writable.
+        let result = unsafe {
+            create_pipelines(
+                self.device.handle,
+                self.pipeline_cache.handle,
+                1,
+                &raw const info,
+                ptr::null(),
+                &raw mut self.compute_pipeline,
+            )
+        };
+        let elapsed = started.elapsed();
         // SAFETY: Pipeline creation has finished reading the shader module.
         unsafe {
             self.device
@@ -2770,7 +3279,7 @@ impl Renderer {
                 .destroy_shader_module
                 .expect("loaded function")(self.device.handle, shader, ptr::null());
         }
-        result
+        self.check_pipeline_feedback("compute", result, feedback, elapsed)
     }
 
     fn reset_gpu_queries(&self, first_query: u32, query_count: u32) {
@@ -4732,9 +5241,17 @@ impl Renderer {
             depthAttachmentFormat: self.depth_format,
             ..Default::default()
         };
+        let mut feedback = vk::VkPipelineCreationFeedback::default();
+        let feedback_info = vk::VkPipelineCreationFeedbackCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+            pNext: (&raw const rendering).cast(),
+            pPipelineCreationFeedback: &raw mut feedback,
+            ..Default::default()
+        };
         let info = vk::VkGraphicsPipelineCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            pNext: (&raw const rendering).cast(),
+            pNext: (&raw const feedback_info).cast(),
+            flags: self.pipeline_create_flags(),
             stageCount: 1,
             pStages: &raw const stage,
             pVertexInputState: &raw const vertex_input,
@@ -4749,23 +5266,24 @@ impl Renderer {
             basePipelineIndex: -1,
             ..Default::default()
         };
-        check(
-            // SAFETY: All pipeline state pointers remain live and output storage is writable.
-            unsafe {
-                self.device
-                    .functions
-                    .create_graphics_pipelines
-                    .expect("loaded function")(
-                    self.device.handle,
-                    ptr::null_mut(),
-                    1,
-                    &raw const info,
-                    ptr::null(),
-                    &raw mut self.shadow_pipeline,
-                )
-            },
-            "vkCreateGraphicsPipelines for shadow pass",
-        )
+        let started = Instant::now();
+        let create_pipelines = self
+            .device
+            .functions
+            .create_graphics_pipelines
+            .expect("loaded function");
+        // SAFETY: All pipeline state pointers remain live and output storage is writable.
+        let result = unsafe {
+            create_pipelines(
+                self.device.handle,
+                self.pipeline_cache.handle,
+                1,
+                &raw const info,
+                ptr::null(),
+                &raw mut self.shadow_pipeline,
+            )
+        };
+        self.check_pipeline_feedback("shadow", result, feedback, started.elapsed())
     }
 
     fn create_pipeline(&mut self) -> Result<(), ProbeError> {
@@ -4931,9 +5449,17 @@ impl Renderer {
             depthAttachmentFormat: self.depth_format,
             ..Default::default()
         };
+        let mut feedback = vk::VkPipelineCreationFeedback::default();
+        let feedback_info = vk::VkPipelineCreationFeedbackCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+            pNext: (&raw const rendering).cast(),
+            pPipelineCreationFeedback: &raw mut feedback,
+            ..Default::default()
+        };
         let info = vk::VkGraphicsPipelineCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            pNext: (&raw const rendering).cast(),
+            pNext: (&raw const feedback_info).cast(),
+            flags: self.pipeline_create_flags(),
             stageCount: 2,
             pStages: stages.as_ptr(),
             pVertexInputState: &raw const vertex_input,
@@ -4948,23 +5474,29 @@ impl Renderer {
             basePipelineIndex: -1,
             ..Default::default()
         };
+        let started = Instant::now();
+        let create_pipelines = self
+            .device
+            .functions
+            .create_graphics_pipelines
+            .expect("loaded function");
         // SAFETY: All pipeline state pointers remain live and output is writable.
-        check(
-            unsafe {
-                self.device
-                    .functions
-                    .create_graphics_pipelines
-                    .expect("loaded function")(
-                    self.device.handle,
-                    ptr::null_mut(),
-                    1,
-                    &raw const info,
-                    ptr::null(),
-                    &raw mut self.pipeline,
-                )
-            },
-            "vkCreateGraphicsPipelines",
-        )
+        let result = unsafe {
+            create_pipelines(
+                self.device.handle,
+                self.pipeline_cache.handle,
+                1,
+                &raw const info,
+                ptr::null(),
+                &raw mut self.pipeline,
+            )
+        };
+        let name = if self.device.adapter.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+            "scene-4x"
+        } else {
+            "scene-1x"
+        };
+        self.check_pipeline_feedback(name, result, feedback, started.elapsed())
     }
 
     fn create_post_pipeline(&mut self) -> Result<(), ProbeError> {
@@ -5084,9 +5616,17 @@ impl Renderer {
             pColorAttachmentFormats: &raw const self.format,
             ..Default::default()
         };
+        let mut feedback = vk::VkPipelineCreationFeedback::default();
+        let feedback_info = vk::VkPipelineCreationFeedbackCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+            pNext: (&raw const rendering).cast(),
+            pPipelineCreationFeedback: &raw mut feedback,
+            ..Default::default()
+        };
         let info = vk::VkGraphicsPipelineCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            pNext: (&raw const rendering).cast(),
+            pNext: (&raw const feedback_info).cast(),
+            flags: self.pipeline_create_flags(),
             stageCount: 2,
             pStages: stages.as_ptr(),
             pVertexInputState: &raw const vertex_input,
@@ -5100,23 +5640,24 @@ impl Renderer {
             basePipelineIndex: -1,
             ..Default::default()
         };
-        check(
-            // SAFETY: All pipeline state pointers remain live and output storage is writable.
-            unsafe {
-                self.device
-                    .functions
-                    .create_graphics_pipelines
-                    .expect("loaded function")(
-                    self.device.handle,
-                    ptr::null_mut(),
-                    1,
-                    &raw const info,
-                    ptr::null(),
-                    &raw mut self.post_pipeline,
-                )
-            },
-            "vkCreateGraphicsPipelines for post-processing",
-        )
+        let started = Instant::now();
+        let create_pipelines = self
+            .device
+            .functions
+            .create_graphics_pipelines
+            .expect("loaded function");
+        // SAFETY: All pipeline state pointers remain live and output storage is writable.
+        let result = unsafe {
+            create_pipelines(
+                self.device.handle,
+                self.pipeline_cache.handle,
+                1,
+                &raw const info,
+                ptr::null(),
+                &raw mut self.post_pipeline,
+            )
+        };
+        self.check_pipeline_feedback("post", result, feedback, started.elapsed())
     }
 
     fn wait_for_frame(&mut self) -> Result<(), ProbeError> {
@@ -6096,7 +6637,7 @@ impl Renderer {
             self.wait_for_frame()?;
             self.collect_frame_gpu_timestamps()?;
             self.report_gpu_timing();
-            return Ok(());
+            return self.save_pipeline_cache();
         }
 
         self.wait_for_frame()?;
@@ -6144,7 +6685,7 @@ impl Renderer {
             }
         }
         self.report_gpu_timing();
-        Ok(())
+        self.save_pipeline_cache()
     }
 
     fn destroy_swapchain_resources(&mut self) {
@@ -6164,6 +6705,23 @@ impl Renderer {
                 );
             }
             self.query_pool = ptr::null_mut();
+        }
+    }
+
+    unsafe fn destroy_owned_pipeline_cache(&mut self) {
+        if !self.pipeline_cache.handle.is_null() {
+            // SAFETY: The cache is owned by this renderer and no creation call is in progress.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_pipeline_cache
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.pipeline_cache.handle,
+                    ptr::null(),
+                );
+            }
+            self.pipeline_cache.handle = ptr::null_mut();
         }
     }
 }
@@ -6261,6 +6819,7 @@ impl Drop for Renderer {
                     self.device.handle, self.command_pool, ptr::null()
                 );
             }
+            self.destroy_owned_pipeline_cache();
         }
     }
 }
@@ -6750,6 +7309,98 @@ unsafe fn load_proc<T: Copy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cache_identity() -> PipelineCacheIdentity {
+        PipelineCacheIdentity {
+            vendor_id: 0x10de,
+            device_id: 0x2489,
+            uuid: *b"0123456789abcdef",
+        }
+    }
+
+    fn cache_header(identity: PipelineCacheIdentity) -> Vec<u8> {
+        let mut bytes = vec![0_u8; PIPELINE_CACHE_HEADER_SIZE];
+        bytes[0..4].copy_from_slice(
+            &u32::try_from(PIPELINE_CACHE_HEADER_SIZE)
+                .expect("header size fits u32")
+                .to_le_bytes(),
+        );
+        bytes[4..8]
+            .copy_from_slice(&(vk::VK_PIPELINE_CACHE_HEADER_VERSION_ONE as u32).to_le_bytes());
+        bytes[8..12].copy_from_slice(&identity.vendor_id.to_le_bytes());
+        bytes[12..16].copy_from_slice(&identity.device_id.to_le_bytes());
+        bytes[16..32].copy_from_slice(&identity.uuid);
+        bytes
+    }
+
+    #[test]
+    fn command_line_combines_frame_and_pipeline_cache_controls() {
+        let options = parse_run_options([
+            "--pipeline-cache".into(),
+            "cache.bin".into(),
+            "--frames".into(),
+            "42".into(),
+            "--require-pipeline-cache-hits".into(),
+        ])
+        .expect("valid options");
+        assert_eq!(options.frame_limit.map(NonZeroU64::get), Some(42));
+        assert_eq!(
+            options.pipeline_cache.path,
+            Some(PathBuf::from("cache.bin"))
+        );
+        assert!(options.pipeline_cache.strict);
+        assert!(!options.pipeline_cache.rebuild);
+    }
+
+    #[test]
+    fn command_line_rejects_rebuild_with_strict_hits() {
+        let error = parse_run_options([
+            "--rebuild-pipeline-cache".into(),
+            "--require-pipeline-cache-hits".into(),
+        ])
+        .expect_err("conflicting modes must fail");
+        assert!(error.to_string().contains("conflicts"));
+    }
+
+    #[test]
+    fn command_line_keeps_disabled_cache_mode_unambiguous() {
+        let options = parse_run_options(["--disable-pipeline-cache".into()])
+            .expect("standalone disabled mode");
+        assert!(options.pipeline_cache.disabled);
+        assert!(
+            parse_run_options([
+                "--disable-pipeline-cache".into(),
+                "--pipeline-cache".into(),
+                "cache.bin".into(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pipeline_cache_header_requires_exact_device_identity() {
+        let identity = cache_identity();
+        let bytes = cache_header(identity);
+        assert_eq!(validate_pipeline_cache_header(&bytes, identity), Ok(()));
+        assert!(validate_pipeline_cache_header(&bytes[..31], identity).is_err());
+
+        let mut wrong_vendor = bytes.clone();
+        wrong_vendor[8] ^= 1;
+        assert!(validate_pipeline_cache_header(&wrong_vendor, identity).is_err());
+
+        let mut wrong_uuid = bytes;
+        wrong_uuid[31] ^= 1;
+        assert!(validate_pipeline_cache_header(&wrong_uuid, identity).is_err());
+    }
+
+    #[test]
+    fn default_pipeline_cache_path_is_uuid_specific() {
+        assert_eq!(
+            pipeline_cache_default_path(cache_identity()),
+            PathBuf::from("target")
+                .join("mulciber-vulkan-pipeline-30313233343536373839616263646566.bin")
+        );
+    }
 
     fn variable_extent_capabilities() -> vk::VkSurfaceCapabilitiesKHR {
         vk::VkSurfaceCapabilitiesKHR {

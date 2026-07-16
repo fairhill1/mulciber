@@ -119,5 +119,13 @@ reported through `VK_EXT_debug_utils`. Colored debug-utils command regions ident
 compute dispatch and each frame's shadow, scene, and post passes. When the selected queue exposes
 timestamp bits, synchronization2 timestamp queries measure those same regions, account for counter
 wraparound, and print fence-safe startup and shutdown timing summaries; zero-bit queues retain labels
-and run without timing. See the
+and run without timing.
+
+Every compute and graphics pipeline uses one device-specific Vulkan pipeline cache by default. The
+probe validates the raw cache header against the selected adapter, reports whole-pipeline creation
+feedback, and atomically persists learning-mode updates under `target`. Use `--pipeline-cache PATH`
+to select an artifact, `--rebuild-pipeline-cache` for a cold learning run,
+`--require-pipeline-cache-hits` for read-only cross-process hit proof, or
+`--disable-pipeline-cache` for the correctness control. Strict mode also forbids compilation when
+the adapter exposes pipeline creation cache control. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

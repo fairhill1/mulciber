@@ -1,8 +1,8 @@
-# Vulkan pipeline-cache evidence plan
+# Vulkan pipeline-cache evidence
 
-This document defines the evidence required before Mulciber marks Vulkan pipeline caching complete.
-It is an implementation plan for the native probe, not the eventual shipping-cache API. The slice
-should begin only after the shadow pipeline stabilizes the probe's initial pipeline set.
+Status: implemented and physically validated on Windows 11 / Nvidia RTX 3060 Ti on 2026-07-16.
+Evidence: `validation-artifacts/windows-vulkan-20260716-125230.zip`. This is native-probe evidence,
+not the eventual shipping-cache API.
 
 ## Goal
 
@@ -58,9 +58,10 @@ count remain stable; a format change may introduce another legitimate variant.
 
 ## Capability and device creation
 
-Adapter selection should query
-`VkPhysicalDevicePipelineCreationCacheControlFeatures::pipelineCreationCacheControl` and record the
-result. Enable the feature in the logical-device `pNext` chain only when supported.
+Adapter selection queries the promoted
+`VkPhysicalDeviceVulkan13Features::pipelineCreationCacheControl` field and records the result. The
+logical device enables that same Vulkan 1.3 field only when supported; chaining the older standalone
+feature struct alongside `VkPhysicalDeviceVulkan13Features` is invalid.
 
 Pipeline creation feedback is core in the Vulkan 1.4 baseline and does not require a separate feature
 bit. Every graphics and compute create info should chain a `VkPipelineCreationFeedbackCreateInfo`
@@ -83,7 +84,9 @@ Recommended probe controls:
 - `--pipeline-cache PATH` selects the artifact;
 - `--rebuild-pipeline-cache` ignores existing data and starts empty;
 - `--require-pipeline-cache-hits` forbids compilation and requires valid application-cache-hit
-  feedback for every requested pipeline; and
+  feedback for every requested pipeline;
+- `--disable-pipeline-cache` passes `VK_NULL_HANDLE`, does not load or save an artifact, and provides
+  the correctness control; and
 - the default path lives under `target`, is device-specific, and is not a source-controlled asset.
 
 Normal mode is a learning mode: it loads compatible data when present, permits missing entries to
@@ -97,7 +100,8 @@ explicit rebuild and strict modes to establish that the current complete pipelin
 
 ## Load and preflight sequence
 
-1. Resolve the requested path before device creation diagnostics are printed.
+1. Resolve the requested or UUID-derived path after adapter selection and before cache or pipeline
+   creation.
 2. If the file is absent, create an empty cache and report a cold start.
 3. Reject unreasonable filesystem objects such as directories and report ordinary read failures
    with the selected path.
@@ -200,6 +204,25 @@ loader warnings treated as failures:
 Record creation-feedback flags and durations for each pipeline, the cache-control feature state, the
 artifact path and byte size, parsed device identity, whether the run learned or required hits, and
 the final replacement result.
+
+## Recorded result
+
+The 2026-07-16 Windows gate found pipeline creation cache control available. A rebuilt native-4x run
+reported valid misses for `compute`, `shadow`, `scene-4x`, and `post`, then atomically stored a
+48,457-byte artifact. Forced 1x learning loaded that artifact and reported valid application hits
+for all four requested pipelines, including `scene-1x`.
+
+Fresh strict 4x and forced-1x processes both succeeded with compile-required control enabled and
+valid application-cache hits for every requested pipeline. The strict four-extent resize smoke also
+succeeded, and SHA-256 comparison proved that all strict runs left the artifact unchanged. A missing
+strict artifact failed before pipeline creation.
+
+Learning mode rejected a 16-byte artifact as truncated and a vendor-ID mutation as incompatible;
+both cases rendered normally from an empty cache and atomically replaced the copy. A one-byte
+mutation beyond the header remained compatible: compute, shadow, and post hit, `scene-4x` reported a
+valid miss, and learning mode safely rebuilt and replaced the artifact, which grew to 56,980 bytes.
+Finally, `--disable-pipeline-cache` passed a null cache to every pipeline creation, produced valid
+non-hit feedback, and rendered 120 frames without validation or loader messages.
 
 ## Deliberate non-goals
 

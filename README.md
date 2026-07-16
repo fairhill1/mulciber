@@ -109,7 +109,8 @@ device-local buffers and an RGBA8 image, then renders through GPU-written indexe
 with fragment texture sampling, a resize-dependent device-local depth attachment, and three
 persistently mapped uniform frame slots for aspect correction and time. A startup compute dispatch
 writes a device-local storage buffer, the indirect draw command, and an RGBA8 storage image. It
-verifies every output through synchronized host readback, then the fragment shader samples the
-compute-generated image. The probe loads `vulkan-1.dll` dynamically and has no Rust package
-dependencies. Validation is required and reported through `VK_EXT_debug_utils`. See the
+generates the image's complete mip chain with synchronized GPU blits, verifies the base and 1x1 tail
+through host readback, then the fragment shader explicitly samples a generated mip. The probe loads
+`vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is required and reported
+through `VK_EXT_debug_utils`. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

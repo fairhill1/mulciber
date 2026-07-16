@@ -18,6 +18,7 @@ const FRAME_SLOT_COUNT: usize = 3;
 const STORAGE_VALUE_COUNT: usize = 64;
 const COMPUTE_IMAGE_WIDTH: u32 = 8;
 const COMPUTE_IMAGE_HEIGHT: u32 = 8;
+const COMPUTE_IMAGE_MIP_LEVELS: u32 = 4;
 const RGBA8_TEXEL_SIZE: usize = 4;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -696,6 +697,7 @@ struct DeviceFns {
     cmd_bind_descriptor_sets: vk::PFN_vkCmdBindDescriptorSets,
     cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
+    cmd_blit_image2: vk::PFN_vkCmdBlitImage2,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
     cmd_copy_image_to_buffer2: vk::PFN_vkCmdCopyImageToBuffer2,
@@ -781,6 +783,7 @@ impl DeviceFns {
             cmd_bind_descriptor_sets: load!(c"vkCmdBindDescriptorSets"),
             cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
+            cmd_blit_image2: load!(c"vkCmdBlitImage2"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
             cmd_copy_image_to_buffer2: load!(c"vkCmdCopyImageToBuffer2"),
@@ -1237,6 +1240,7 @@ struct Renderer {
     compute_storage: GpuBuffer,
     compute_indirect: GpuBuffer,
     compute_image: GpuImage,
+    compute_sampled_view: vk::VkImageView,
     compute_readback: GpuBuffer,
     compute_descriptor_set_layout: vk::VkDescriptorSetLayout,
     compute_descriptor_pool: vk::VkDescriptorPool,
@@ -1285,6 +1289,7 @@ impl Renderer {
             compute_storage: GpuBuffer::default(),
             compute_indirect: GpuBuffer::default(),
             compute_image: GpuImage::default(),
+            compute_sampled_view: ptr::null_mut(),
             compute_readback: GpuBuffer::default(),
             compute_descriptor_set_layout: ptr::null_mut(),
             compute_descriptor_pool: ptr::null_mut(),
@@ -1730,7 +1735,7 @@ impl Renderer {
             addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
             addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
             maxAnisotropy: 1.0,
-            maxLod: 0.0,
+            maxLod: 3.0,
             borderColor: vk::VK_BORDER_COLOR_INT_OPAQUE_BLACK,
             ..Default::default()
         };
@@ -1860,7 +1865,7 @@ impl Renderer {
             };
             let generated_image = vk::VkDescriptorImageInfo {
                 sampler: self.texture_sampler,
-                imageView: self.compute_image.view,
+                imageView: self.compute_sampled_view,
                 imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
             let buffer = vk::VkDescriptorBufferInfo {
@@ -1941,7 +1946,7 @@ impl Renderer {
         self.create_compute_pipeline()?;
         self.dispatch_compute_and_verify()?;
         println!(
-            "Compute: {STORAGE_VALUE_COUNT} storage values, indexed-indirect arguments, and an {COMPUTE_IMAGE_WIDTH}x{COMPUTE_IMAGE_HEIGHT} storage image generated and read back exactly"
+            "Compute: {STORAGE_VALUE_COUNT} storage values, indexed-indirect arguments, and a {COMPUTE_IMAGE_MIP_LEVELS}-level {COMPUTE_IMAGE_WIDTH}x{COMPUTE_IMAGE_HEIGHT} storage image with exact base/tail readback"
         );
         Ok(())
     }
@@ -1963,10 +1968,12 @@ impl Renderer {
         }
         let required_features = (vk::VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
             | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
-            | vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) as u32;
+            | vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+            | vk::VK_FORMAT_FEATURE_BLIT_SRC_BIT
+            | vk::VK_FORMAT_FEATURE_BLIT_DST_BIT) as u32;
         if properties.optimalTilingFeatures & required_features != required_features {
             return Err(ProbeError(
-                "R8G8B8A8_UNORM lacks required optimal-tiled storage, sampled, or transfer-source support"
+                "R8G8B8A8_UNORM lacks required optimal-tiled storage, sampled, transfer-source, or blit support"
                     .into(),
             ));
         }
@@ -1979,13 +1986,14 @@ impl Renderer {
                 height: COMPUTE_IMAGE_HEIGHT,
                 depth: 1,
             },
-            mipLevels: 1,
+            mipLevels: COMPUTE_IMAGE_MIP_LEVELS,
             arrayLayers: 1,
             samples: vk::VK_SAMPLE_COUNT_1_BIT,
             tiling: vk::VK_IMAGE_TILING_OPTIMAL,
             usage: (vk::VK_IMAGE_USAGE_STORAGE_BIT
                 | vk::VK_IMAGE_USAGE_SAMPLED_BIT
-                | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT) as u32,
+                | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                | vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT) as u32,
             sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
             ..Default::default()
@@ -2058,11 +2066,18 @@ impl Renderer {
             },
             "vkBindImageMemory for compute storage image",
         )?;
-        self.compute_image.view = self.create_compute_image_view()?;
+        self.compute_image.view = self.create_compute_image_view(0, 1, "compute storage image")?;
+        self.compute_sampled_view =
+            self.create_compute_image_view(0, COMPUTE_IMAGE_MIP_LEVELS, "compute image mip chain")?;
         Ok(())
     }
 
-    fn create_compute_image_view(&self) -> Result<vk::VkImageView, ProbeError> {
+    fn create_compute_image_view(
+        &self,
+        base_mip_level: u32,
+        level_count: u32,
+        description: &str,
+    ) -> Result<vk::VkImageView, ProbeError> {
         let info = vk::VkImageViewCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             image: self.compute_image.handle,
@@ -2074,7 +2089,7 @@ impl Renderer {
                 b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
                 a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
             },
-            subresourceRange: color_subresource_range(),
+            subresourceRange: color_mip_range(base_mip_level, level_count),
             ..Default::default()
         };
         let mut view = ptr::null_mut();
@@ -2091,7 +2106,7 @@ impl Renderer {
                     &raw mut view,
                 )
             },
-            "vkCreateImageView for compute storage image",
+            &format!("vkCreateImageView for {description}"),
         )?;
         Ok(view)
     }
@@ -2364,16 +2379,7 @@ impl Renderer {
             },
             "vkBeginCommandBuffer for compute readback",
         )?;
-        self.image_barrier(
-            self.compute_image.handle,
-            vk::VK_PIPELINE_STAGE_2_NONE,
-            vk::VK_ACCESS_2_NONE,
-            vk::VK_IMAGE_LAYOUT_UNDEFINED,
-            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            vk::VK_IMAGE_LAYOUT_GENERAL,
-            color_subresource_range(),
-        );
+        self.prepare_compute_image_for_storage();
         // SAFETY: Command buffer is recording and all compute resources are live.
         unsafe {
             self.device
@@ -2415,6 +2421,7 @@ impl Renderer {
             vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             color_subresource_range(),
         );
+        self.generate_compute_image_mips();
         self.copy_buffer_region(
             self.compute_storage.handle,
             self.compute_readback.handle,
@@ -2439,7 +2446,7 @@ impl Renderer {
             vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            color_subresource_range(),
+            color_mip_range(0, COMPUTE_IMAGE_MIP_LEVELS),
         );
         self.copy_to_host_barrier();
         check(
@@ -2454,31 +2461,124 @@ impl Renderer {
         )
     }
 
-    fn copy_compute_image_to_readback(&self) {
-        let region = vk::VkBufferImageCopy2 {
-            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-            bufferOffset: u64::try_from(compute_image_readback_offset())
-                .expect("compute image readback offset fits u64"),
-            imageSubresource: vk::VkImageSubresourceLayers {
-                aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
-                mipLevel: 0,
-                baseArrayLayer: 0,
-                layerCount: 1,
-            },
-            imageExtent: vk::VkExtent3D {
-                width: COMPUTE_IMAGE_WIDTH,
-                height: COMPUTE_IMAGE_HEIGHT,
-                depth: 1,
-            },
+    fn prepare_compute_image_for_storage(&self) {
+        self.image_barrier(
+            self.compute_image.handle,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_GENERAL,
+            color_subresource_range(),
+        );
+    }
+
+    fn generate_compute_image_mips(&self) {
+        for destination_mip in 1..COMPUTE_IMAGE_MIP_LEVELS {
+            self.image_barrier(
+                self.compute_image.handle,
+                vk::VK_PIPELINE_STAGE_2_NONE,
+                vk::VK_ACCESS_2_NONE,
+                vk::VK_IMAGE_LAYOUT_UNDEFINED,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+                vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                color_mip_range(destination_mip, 1),
+            );
+            self.blit_compute_image_mip(destination_mip - 1, destination_mip);
+            self.image_barrier(
+                self.compute_image.handle,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+                vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+                vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+                vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                color_mip_range(destination_mip, 1),
+            );
+        }
+    }
+
+    fn blit_compute_image_mip(&self, source_mip: u32, destination_mip: u32) {
+        let (source_width, source_height) = compute_image_mip_extent(source_mip);
+        let (destination_width, destination_height) = compute_image_mip_extent(destination_mip);
+        let region = vk::VkImageBlit2 {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+            srcSubresource: color_subresource_layers(source_mip),
+            srcOffsets: [
+                vk::VkOffset3D::default(),
+                vk::VkOffset3D {
+                    x: i32::try_from(source_width).expect("source mip width fits i32"),
+                    y: i32::try_from(source_height).expect("source mip height fits i32"),
+                    z: 1,
+                },
+            ],
+            dstSubresource: color_subresource_layers(destination_mip),
+            dstOffsets: [
+                vk::VkOffset3D::default(),
+                vk::VkOffset3D {
+                    x: i32::try_from(destination_width).expect("destination mip width fits i32"),
+                    y: i32::try_from(destination_height).expect("destination mip height fits i32"),
+                    z: 1,
+                },
+            ],
             ..Default::default()
         };
+        let blit = vk::VkBlitImageInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+            srcImage: self.compute_image.handle,
+            srcImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstImage: self.compute_image.handle,
+            dstImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            regionCount: 1,
+            pRegions: &raw const region,
+            filter: vk::VK_FILTER_NEAREST,
+            ..Default::default()
+        };
+        // SAFETY: Source/destination mip ranges are distinct, live, and correctly laid out.
+        unsafe {
+            self.device
+                .functions
+                .cmd_blit_image2
+                .expect("loaded function")(self.command_buffer, &raw const blit);
+        }
+    }
+
+    fn copy_compute_image_to_readback(&self) {
+        let regions = [
+            vk::VkBufferImageCopy2 {
+                sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                bufferOffset: u64::try_from(compute_image_readback_offset())
+                    .expect("compute image readback offset fits u64"),
+                imageSubresource: color_subresource_layers(0),
+                imageExtent: vk::VkExtent3D {
+                    width: COMPUTE_IMAGE_WIDTH,
+                    height: COMPUTE_IMAGE_HEIGHT,
+                    depth: 1,
+                },
+                ..Default::default()
+            },
+            vk::VkBufferImageCopy2 {
+                sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                bufferOffset: u64::try_from(compute_mip_tail_readback_offset())
+                    .expect("compute mip-tail readback offset fits u64"),
+                imageSubresource: color_subresource_layers(COMPUTE_IMAGE_MIP_LEVELS - 1),
+                imageExtent: vk::VkExtent3D {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                },
+                ..Default::default()
+            },
+        ];
         let copy = vk::VkCopyImageToBufferInfo2 {
             sType: vk::VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
             srcImage: self.compute_image.handle,
             srcImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             dstBuffer: self.compute_readback.handle,
-            regionCount: 1,
-            pRegions: &raw const region,
+            regionCount: u32::try_from(regions.len()).expect("image copy region count fits u32"),
+            pRegions: regions.as_ptr(),
             ..Default::default()
         };
         // SAFETY: The image and buffer are live, correctly laid out, and the copy range fits.
@@ -2583,6 +2683,14 @@ impl Renderer {
             )
             .to_vec()
         };
+        // SAFETY: The final tightly packed 1x1 mip copy occupies the last four mapped bytes.
+        let mip_tail = unsafe {
+            std::slice::from_raw_parts(
+                mapped.cast::<u8>().add(compute_mip_tail_readback_offset()),
+                RGBA8_TEXEL_SIZE,
+            )
+            .to_vec()
+        };
         // SAFETY: The mapping belongs to this live allocation and is unmapped exactly once.
         unsafe {
             self.device.functions.unmap_memory.expect("loaded function")(
@@ -2621,6 +2729,12 @@ impl Renderer {
                     "compute image readback mismatch at texel {index}: expected {expected:?}, got {actual:?}"
                 )));
             }
+        }
+        let expected_tail = expected_compute_mip_tail();
+        if mip_tail != expected_tail {
+            return Err(ProbeError(format!(
+                "compute image 1x1 mip-tail mismatch: expected {expected_tail:?}, got {mip_tail:?}"
+            )));
         }
         Ok(())
     }
@@ -3109,6 +3223,23 @@ impl Renderer {
     unsafe fn destroy_image(&self, image: &mut GpuImage) {
         // SAFETY: The caller established that this renderer-owned image is no longer in GPU use.
         unsafe { destroy_gpu_image(&self.device, image) };
+    }
+
+    unsafe fn destroy_compute_sampled_view(&mut self) {
+        if !self.compute_sampled_view.is_null() {
+            // SAFETY: Shutdown established that the sampled view is no longer in GPU use.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_sampled_view,
+                    ptr::null(),
+                );
+            }
+            self.compute_sampled_view = ptr::null_mut();
+        }
     }
 
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
@@ -4524,6 +4655,7 @@ impl Drop for Renderer {
                     ptr::null(),
                 );
             }
+            self.destroy_compute_sampled_view();
             self.destroy_image(&mut texture);
             self.destroy_image(&mut compute_image);
             if !self.descriptor_set_layout.is_null() {
@@ -4779,10 +4911,23 @@ fn vertex_input_descriptions() -> (
 }
 
 fn color_subresource_range() -> vk::VkImageSubresourceRange {
+    color_mip_range(0, 1)
+}
+
+fn color_mip_range(base_mip_level: u32, level_count: u32) -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
-        baseMipLevel: 0,
-        levelCount: 1,
+        baseMipLevel: base_mip_level,
+        levelCount: level_count,
+        baseArrayLayer: 0,
+        layerCount: 1,
+    }
+}
+
+fn color_subresource_layers(mip_level: u32) -> vk::VkImageSubresourceLayers {
+    vk::VkImageSubresourceLayers {
+        aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+        mipLevel: mip_level,
         baseArrayLayer: 0,
         layerCount: 1,
     }
@@ -4874,8 +5019,19 @@ fn compute_image_readback_offset() -> usize {
     storage_buffer_byte_len() + mem::size_of::<vk::VkDrawIndexedIndirectCommand>()
 }
 
-fn compute_readback_byte_len() -> usize {
+fn compute_mip_tail_readback_offset() -> usize {
     compute_image_readback_offset() + compute_image_byte_len()
+}
+
+fn compute_readback_byte_len() -> usize {
+    compute_mip_tail_readback_offset() + RGBA8_TEXEL_SIZE
+}
+
+fn compute_image_mip_extent(mip_level: u32) -> (u32, u32) {
+    (
+        (COMPUTE_IMAGE_WIDTH >> mip_level).max(1),
+        (COMPUTE_IMAGE_HEIGHT >> mip_level).max(1),
+    )
 }
 
 fn expected_indirect_command() -> vk::VkDrawIndexedIndirectCommand {
@@ -4892,11 +5048,15 @@ fn expected_compute_texel(index: usize) -> [u8; RGBA8_TEXEL_SIZE] {
     let width = usize::try_from(COMPUTE_IMAGE_WIDTH).expect("compute image width fits usize");
     let x = index % width;
     let y = index / width;
-    if (x + y).is_multiple_of(2) {
+    if (x / 2 + y / 2).is_multiple_of(2) {
         [255, 0, 255, 255]
     } else {
         [0, 255, 255, 255]
     }
+}
+
+fn expected_compute_mip_tail() -> [u8; RGBA8_TEXEL_SIZE] {
+    [255, 0, 255, 255]
 }
 
 unsafe fn slice_bytes<T>(values: &[T]) -> &[u8] {
@@ -5166,10 +5326,18 @@ mod tests {
 
         assert_eq!(compute_image_byte_len(), 256);
         assert_eq!(compute_image_readback_offset(), 276);
-        assert_eq!(compute_readback_byte_len(), 532);
+        assert_eq!(compute_mip_tail_readback_offset(), 532);
+        assert_eq!(compute_readback_byte_len(), 536);
+        assert_eq!(compute_image_mip_extent(0), (8, 8));
+        assert_eq!(compute_image_mip_extent(1), (4, 4));
+        assert_eq!(compute_image_mip_extent(2), (2, 2));
+        assert_eq!(compute_image_mip_extent(3), (1, 1));
         assert_eq!(expected_compute_texel(0), [255, 0, 255, 255]);
-        assert_eq!(expected_compute_texel(1), [0, 255, 255, 255]);
-        assert_eq!(expected_compute_texel(8), [0, 255, 255, 255]);
+        assert_eq!(expected_compute_texel(1), [255, 0, 255, 255]);
+        assert_eq!(expected_compute_texel(2), [0, 255, 255, 255]);
+        assert_eq!(expected_compute_texel(8), [255, 0, 255, 255]);
+        assert_eq!(expected_compute_texel(16), [0, 255, 255, 255]);
         assert_eq!(expected_compute_texel(63), [255, 0, 255, 255]);
+        assert_eq!(expected_compute_mip_tail(), [255, 0, 255, 255]);
     }
 }

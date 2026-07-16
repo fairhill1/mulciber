@@ -5652,6 +5652,47 @@ impl Default for VkCopyImageToBufferInfo2 {
     }
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkImageBlit2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcSubresource: VkImageSubresourceLayers,
+    pub srcOffsets: [VkOffset3D; 2usize],
+    pub dstSubresource: VkImageSubresourceLayers,
+    pub dstOffsets: [VkOffset3D; 2usize],
+}
+impl Default for VkImageBlit2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkBlitImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkImageBlit2,
+    pub filter: VkFilter,
+}
+impl Default for VkBlitImageInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkRenderingAttachmentInfo {
     pub sType: VkStructureType,
@@ -5742,6 +5783,9 @@ pub type PFN_vkCmdCopyImageToBuffer2 = ::core::option::Option<
         commandBuffer: VkCommandBuffer,
         pCopyImageToBufferInfo: *const VkCopyImageToBufferInfo2,
     ),
+>;
+pub type PFN_vkCmdBlitImage2 = ::core::option::Option<
+    unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pBlitImageInfo: *const VkBlitImageInfo2),
 >;
 pub type PFN_vkCmdBeginRendering = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pRenderingInfo: *const VkRenderingInfo),

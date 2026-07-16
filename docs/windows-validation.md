@@ -132,6 +132,16 @@ the same image. The 600-frame run and automated four-extent resize smoke complet
 without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-112831.zip`.
 
+The mip-generation slice was validated on 2026-07-16. The compute image now owns four mip levels
+covering 8x8, 4x4, 2x2, and 1x1, with separate base-level storage and full-chain sampled views. After
+compute writes mip 0, three nearest-filter `vkCmdBlitImage2` operations generate the remaining levels;
+each destination subresource transitions independently from undefined to transfer destination and
+then transfer source before feeding the next blit. The readback copy verifies all 256 base bytes and
+the exact magenta 1x1 tail, after which the complete chain transitions to shader-read-only and the
+fragment shader explicitly samples mip 1. The 600-frame run and automated four-extent resize smoke
+completed on the RTX 3060 Ti without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-113651.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

@@ -63,6 +63,8 @@ Vulkan evidence completed so far:
   `vkCmdDrawIndexedIndirect` (same machine).
 - [x] Compute-written device-local RGBA8 storage image with capability checks, exact texel
   readback, explicit compute-to-copy-to-fragment transitions, and fragment sampling (same machine).
+- [x] Complete 8x8-to-1x1 storage-image mip chain generated through synchronized nearest blits,
+  with exact 1x1 tail readback and explicit generated-mip fragment sampling (same machine).
 
 Metal evidence completed so far:
 

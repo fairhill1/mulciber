@@ -17,7 +17,7 @@ void main() {
     uvec2 coordinate = gl_GlobalInvocationID.xy;
     uint index = coordinate.y * 8u + coordinate.x;
     output_data.values[index] = index * 1664525u + 1013904223u;
-    bool even = ((coordinate.x + coordinate.y) & 1u) == 0u;
+    bool even = ((coordinate.x / 2u + coordinate.y / 2u) & 1u) == 0u;
     imageStore(
         generated_image,
         ivec2(coordinate),

@@ -110,6 +110,12 @@ pub struct VkFramebuffer_T {
 pub type VkFramebuffer = *mut VkFramebuffer_T;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkBufferView_T {
+    _unused: [u8; 0],
+}
+pub type VkBufferView = *mut VkBufferView_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkShaderModule_T {
     _unused: [u8; 0],
 }
@@ -138,6 +144,24 @@ pub struct VkDescriptorSetLayout_T {
     _unused: [u8; 0],
 }
 pub type VkDescriptorSetLayout = *mut VkDescriptorSetLayout_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSampler_T {
+    _unused: [u8; 0],
+}
+pub type VkSampler = *mut VkSampler_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorSet_T {
+    _unused: [u8; 0],
+}
+pub type VkDescriptorSet = *mut VkDescriptorSet_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorPool_T {
+    _unused: [u8; 0],
+}
+pub type VkDescriptorPool = *mut VkDescriptorPool_T;
 pub const VK_SUCCESS: VkResult = 0;
 pub const VK_NOT_READY: VkResult = 1;
 pub const VK_TIMEOUT: VkResult = 2;
@@ -2767,6 +2791,16 @@ pub const VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR: VkFormat = 1000470000;
 pub const VK_FORMAT_A8_UNORM_KHR: VkFormat = 1000470001;
 pub const VK_FORMAT_MAX_ENUM: VkFormat = 2147483647;
 pub type VkFormat = ::core::ffi::c_int;
+pub const VK_IMAGE_TILING_OPTIMAL: VkImageTiling = 0;
+pub const VK_IMAGE_TILING_LINEAR: VkImageTiling = 1;
+pub const VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT: VkImageTiling = 1000158000;
+pub const VK_IMAGE_TILING_MAX_ENUM: VkImageTiling = 2147483647;
+pub type VkImageTiling = ::core::ffi::c_int;
+pub const VK_IMAGE_TYPE_1D: VkImageType = 0;
+pub const VK_IMAGE_TYPE_2D: VkImageType = 1;
+pub const VK_IMAGE_TYPE_3D: VkImageType = 2;
+pub const VK_IMAGE_TYPE_MAX_ENUM: VkImageType = 2147483647;
+pub type VkImageType = ::core::ffi::c_int;
 pub const VK_PHYSICAL_DEVICE_TYPE_OTHER: VkPhysicalDeviceType = 0;
 pub const VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: VkPhysicalDeviceType = 1;
 pub const VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: VkPhysicalDeviceType = 2;
@@ -2855,6 +2889,30 @@ pub const VK_INDEX_TYPE_UINT8_EXT: VkIndexType = 1000265000;
 pub const VK_INDEX_TYPE_UINT8_KHR: VkIndexType = 1000265000;
 pub const VK_INDEX_TYPE_MAX_ENUM: VkIndexType = 2147483647;
 pub type VkIndexType = ::core::ffi::c_int;
+pub const VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: VkBorderColor = 0;
+pub const VK_BORDER_COLOR_INT_TRANSPARENT_BLACK: VkBorderColor = 1;
+pub const VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: VkBorderColor = 2;
+pub const VK_BORDER_COLOR_INT_OPAQUE_BLACK: VkBorderColor = 3;
+pub const VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE: VkBorderColor = 4;
+pub const VK_BORDER_COLOR_INT_OPAQUE_WHITE: VkBorderColor = 5;
+pub const VK_BORDER_COLOR_FLOAT_CUSTOM_EXT: VkBorderColor = 1000287003;
+pub const VK_BORDER_COLOR_INT_CUSTOM_EXT: VkBorderColor = 1000287004;
+pub const VK_BORDER_COLOR_MAX_ENUM: VkBorderColor = 2147483647;
+pub type VkBorderColor = ::core::ffi::c_int;
+pub const VK_FILTER_NEAREST: VkFilter = 0;
+pub const VK_FILTER_LINEAR: VkFilter = 1;
+pub const VK_FILTER_CUBIC_EXT: VkFilter = 1000015000;
+pub const VK_FILTER_CUBIC_IMG: VkFilter = 1000015000;
+pub const VK_FILTER_MAX_ENUM: VkFilter = 2147483647;
+pub type VkFilter = ::core::ffi::c_int;
+pub const VK_SAMPLER_ADDRESS_MODE_REPEAT: VkSamplerAddressMode = 0;
+pub const VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT: VkSamplerAddressMode = 1;
+pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: VkSamplerAddressMode = 2;
+pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: VkSamplerAddressMode = 3;
+pub const VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE: VkSamplerAddressMode = 4;
+pub const VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE_KHR: VkSamplerAddressMode = 4;
+pub const VK_SAMPLER_ADDRESS_MODE_MAX_ENUM: VkSamplerAddressMode = 2147483647;
+pub type VkSamplerAddressMode = ::core::ffi::c_int;
 pub const VK_COMPARE_OP_NEVER: VkCompareOp = 0;
 pub const VK_COMPARE_OP_LESS: VkCompareOp = 1;
 pub const VK_COMPARE_OP_EQUAL: VkCompareOp = 2;
@@ -2865,6 +2923,33 @@ pub const VK_COMPARE_OP_GREATER_OR_EQUAL: VkCompareOp = 6;
 pub const VK_COMPARE_OP_ALWAYS: VkCompareOp = 7;
 pub const VK_COMPARE_OP_MAX_ENUM: VkCompareOp = 2147483647;
 pub type VkCompareOp = ::core::ffi::c_int;
+pub const VK_SAMPLER_MIPMAP_MODE_NEAREST: VkSamplerMipmapMode = 0;
+pub const VK_SAMPLER_MIPMAP_MODE_LINEAR: VkSamplerMipmapMode = 1;
+pub const VK_SAMPLER_MIPMAP_MODE_MAX_ENUM: VkSamplerMipmapMode = 2147483647;
+pub type VkSamplerMipmapMode = ::core::ffi::c_int;
+pub const VK_DESCRIPTOR_TYPE_SAMPLER: VkDescriptorType = 0;
+pub const VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: VkDescriptorType = 1;
+pub const VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: VkDescriptorType = 2;
+pub const VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: VkDescriptorType = 3;
+pub const VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: VkDescriptorType = 4;
+pub const VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: VkDescriptorType = 5;
+pub const VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: VkDescriptorType = 6;
+pub const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: VkDescriptorType = 7;
+pub const VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: VkDescriptorType = 8;
+pub const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: VkDescriptorType = 9;
+pub const VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: VkDescriptorType = 10;
+pub const VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: VkDescriptorType = 1000138000;
+pub const VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: VkDescriptorType = 1000150000;
+pub const VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV: VkDescriptorType = 1000165000;
+pub const VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM: VkDescriptorType = 1000440000;
+pub const VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM: VkDescriptorType = 1000440001;
+pub const VK_DESCRIPTOR_TYPE_TENSOR_ARM: VkDescriptorType = 1000460000;
+pub const VK_DESCRIPTOR_TYPE_MUTABLE_EXT: VkDescriptorType = 1000351000;
+pub const VK_DESCRIPTOR_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_NV: VkDescriptorType = 1000570000;
+pub const VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT: VkDescriptorType = 1000138000;
+pub const VK_DESCRIPTOR_TYPE_MUTABLE_VALVE: VkDescriptorType = 1000351000;
+pub const VK_DESCRIPTOR_TYPE_MAX_ENUM: VkDescriptorType = 2147483647;
+pub type VkDescriptorType = ::core::ffi::c_int;
 pub const VK_PIPELINE_BIND_POINT_GRAPHICS: VkPipelineBindPoint = 0;
 pub const VK_PIPELINE_BIND_POINT_COMPUTE: VkPipelineBindPoint = 1;
 pub const VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR: VkPipelineBindPoint = 1000165000;
@@ -3110,6 +3195,7 @@ pub const VK_ATTACHMENT_STORE_OP_NONE_QCOM: VkAttachmentStoreOp = 1000301000;
 pub const VK_ATTACHMENT_STORE_OP_NONE_EXT: VkAttachmentStoreOp = 1000301000;
 pub const VK_ATTACHMENT_STORE_OP_MAX_ENUM: VkAttachmentStoreOp = 2147483647;
 pub type VkAttachmentStoreOp = ::core::ffi::c_int;
+pub type VkImageCreateFlags = VkFlags;
 pub const VK_SAMPLE_COUNT_1_BIT: VkSampleCountFlagBits = 1;
 pub const VK_SAMPLE_COUNT_2_BIT: VkSampleCountFlagBits = 2;
 pub const VK_SAMPLE_COUNT_4_BIT: VkSampleCountFlagBits = 4;
@@ -3296,6 +3382,9 @@ pub type VkShaderModuleCreateFlags = VkFlags;
 pub type VkPipelineCreateFlags = VkFlags;
 pub type VkPipelineLayoutCreateFlags = VkFlags;
 pub type VkPipelineShaderStageCreateFlags = VkFlags;
+pub type VkSamplerCreateFlags = VkFlags;
+pub type VkDescriptorPoolCreateFlags = VkFlags;
+pub type VkDescriptorSetLayoutCreateFlags = VkFlags;
 pub const VK_COLOR_COMPONENT_R_BIT: VkColorComponentFlagBits = 1;
 pub const VK_COLOR_COMPONENT_G_BIT: VkColorComponentFlagBits = 2;
 pub const VK_COLOR_COMPONENT_B_BIT: VkColorComponentFlagBits = 4;
@@ -3337,6 +3426,13 @@ pub struct VkExtent3D {
 pub struct VkOffset2D {
     pub x: i32,
     pub y: i32,
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkOffset3D {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
 }
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
@@ -3822,6 +3918,34 @@ impl Default for VkBufferCreateInfo {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkImageCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkImageCreateFlags,
+    pub imageType: VkImageType,
+    pub format: VkFormat,
+    pub extent: VkExtent3D,
+    pub mipLevels: u32,
+    pub arrayLayers: u32,
+    pub samples: VkSampleCountFlagBits,
+    pub tiling: VkImageTiling,
+    pub usage: VkImageUsageFlags,
+    pub sharingMode: VkSharingMode,
+    pub queueFamilyIndexCount: u32,
+    pub pQueueFamilyIndices: *const u32,
+    pub initialLayout: VkImageLayout,
+}
+impl Default for VkImageCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkComponentMapping {
     pub r: VkComponentSwizzle,
     pub g: VkComponentSwizzle,
@@ -3941,6 +4065,14 @@ impl Default for VkCommandBufferBeginInfo {
     }
 }
 #[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkImageSubresourceLayers {
+    pub aspectMask: VkImageAspectFlags,
+    pub mipLevel: u32,
+    pub baseArrayLayer: u32,
+    pub layerCount: u32,
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VkShaderModuleCreateInfo {
     pub sType: VkStructureType,
@@ -4021,6 +4153,202 @@ pub struct VkPipelineLayoutCreateInfo {
     pub pPushConstantRanges: *const VkPushConstantRange,
 }
 impl Default for VkPipelineLayoutCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSamplerCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkSamplerCreateFlags,
+    pub magFilter: VkFilter,
+    pub minFilter: VkFilter,
+    pub mipmapMode: VkSamplerMipmapMode,
+    pub addressModeU: VkSamplerAddressMode,
+    pub addressModeV: VkSamplerAddressMode,
+    pub addressModeW: VkSamplerAddressMode,
+    pub mipLodBias: f32,
+    pub anisotropyEnable: VkBool32,
+    pub maxAnisotropy: f32,
+    pub compareEnable: VkBool32,
+    pub compareOp: VkCompareOp,
+    pub minLod: f32,
+    pub maxLod: f32,
+    pub borderColor: VkBorderColor,
+    pub unnormalizedCoordinates: VkBool32,
+}
+impl Default for VkSamplerCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkCopyDescriptorSet {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcSet: VkDescriptorSet,
+    pub srcBinding: u32,
+    pub srcArrayElement: u32,
+    pub dstSet: VkDescriptorSet,
+    pub dstBinding: u32,
+    pub dstArrayElement: u32,
+    pub descriptorCount: u32,
+}
+impl Default for VkCopyDescriptorSet {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorBufferInfo {
+    pub buffer: VkBuffer,
+    pub offset: VkDeviceSize,
+    pub range: VkDeviceSize,
+}
+impl Default for VkDescriptorBufferInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorImageInfo {
+    pub sampler: VkSampler,
+    pub imageView: VkImageView,
+    pub imageLayout: VkImageLayout,
+}
+impl Default for VkDescriptorImageInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorPoolSize {
+    pub type_: VkDescriptorType,
+    pub descriptorCount: u32,
+}
+impl Default for VkDescriptorPoolSize {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorPoolCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkDescriptorPoolCreateFlags,
+    pub maxSets: u32,
+    pub poolSizeCount: u32,
+    pub pPoolSizes: *const VkDescriptorPoolSize,
+}
+impl Default for VkDescriptorPoolCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorSetAllocateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub descriptorPool: VkDescriptorPool,
+    pub descriptorSetCount: u32,
+    pub pSetLayouts: *const VkDescriptorSetLayout,
+}
+impl Default for VkDescriptorSetAllocateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorSetLayoutBinding {
+    pub binding: u32,
+    pub descriptorType: VkDescriptorType,
+    pub descriptorCount: u32,
+    pub stageFlags: VkShaderStageFlags,
+    pub pImmutableSamplers: *const VkSampler,
+}
+impl Default for VkDescriptorSetLayoutBinding {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkDescriptorSetLayoutCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkDescriptorSetLayoutCreateFlags,
+    pub bindingCount: u32,
+    pub pBindings: *const VkDescriptorSetLayoutBinding,
+}
+impl Default for VkDescriptorSetLayoutCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkWriteDescriptorSet {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub dstSet: VkDescriptorSet,
+    pub dstBinding: u32,
+    pub dstArrayElement: u32,
+    pub descriptorCount: u32,
+    pub descriptorType: VkDescriptorType,
+    pub pImageInfo: *const VkDescriptorImageInfo,
+    pub pBufferInfo: *const VkDescriptorBufferInfo,
+    pub pTexelBufferView: *const VkBufferView,
+}
+impl Default for VkWriteDescriptorSet {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -4488,10 +4816,25 @@ pub type PFN_vkBindBufferMemory = ::core::option::Option<
         memoryOffset: VkDeviceSize,
     ) -> VkResult,
 >;
+pub type PFN_vkBindImageMemory = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        image: VkImage,
+        memory: VkDeviceMemory,
+        memoryOffset: VkDeviceSize,
+    ) -> VkResult,
+>;
 pub type PFN_vkGetBufferMemoryRequirements = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
         buffer: VkBuffer,
+        pMemoryRequirements: *mut VkMemoryRequirements,
+    ),
+>;
+pub type PFN_vkGetImageMemoryRequirements = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        image: VkImage,
         pMemoryRequirements: *mut VkMemoryRequirements,
     ),
 >;
@@ -4551,6 +4894,21 @@ pub type PFN_vkDestroyBuffer = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
         buffer: VkBuffer,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkCreateImage = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkImageCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pImage: *mut VkImage,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyImage = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        image: VkImage,
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
@@ -4642,11 +5000,84 @@ pub type PFN_vkDestroyPipelineLayout = ::core::option::Option<
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
+pub type PFN_vkCreateSampler = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkSamplerCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pSampler: *mut VkSampler,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroySampler = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        sampler: VkSampler,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkCreateDescriptorSetLayout = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkDescriptorSetLayoutCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pSetLayout: *mut VkDescriptorSetLayout,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyDescriptorSetLayout = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        descriptorSetLayout: VkDescriptorSetLayout,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkCreateDescriptorPool = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkDescriptorPoolCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pDescriptorPool: *mut VkDescriptorPool,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyDescriptorPool = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        descriptorPool: VkDescriptorPool,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkAllocateDescriptorSets = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pAllocateInfo: *const VkDescriptorSetAllocateInfo,
+        pDescriptorSets: *mut VkDescriptorSet,
+    ) -> VkResult,
+>;
+pub type PFN_vkUpdateDescriptorSets = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        descriptorWriteCount: u32,
+        pDescriptorWrites: *const VkWriteDescriptorSet,
+        descriptorCopyCount: u32,
+        pDescriptorCopies: *const VkCopyDescriptorSet,
+    ),
+>;
 pub type PFN_vkCmdBindPipeline = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,
         pipelineBindPoint: VkPipelineBindPoint,
         pipeline: VkPipeline,
+    ),
+>;
+pub type PFN_vkCmdBindDescriptorSets = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        pipelineBindPoint: VkPipelineBindPoint,
+        layout: VkPipelineLayout,
+        firstSet: u32,
+        descriptorSetCount: u32,
+        pDescriptorSets: *const VkDescriptorSet,
+        dynamicOffsetCount: u32,
+        pDynamicOffsets: *const u32,
     ),
 >;
 pub type PFN_vkCreateGraphicsPipelines = ::core::option::Option<
@@ -4808,6 +5239,7 @@ pub type VkPipelineStageFlags2 = VkFlags64;
 pub type VkPipelineStageFlagBits2 = VkFlags64;
 pub const VK_PIPELINE_STAGE_2_NONE: VkPipelineStageFlagBits2 = 0;
 pub const VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT: VkPipelineStageFlagBits2 = 4;
+pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkPipelineStageFlagBits2 = 128;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkPipelineStageFlagBits2 = 1024;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkPipelineStageFlagBits2 = 65536;
 pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
@@ -4818,6 +5250,7 @@ pub const VK_ACCESS_2_INDEX_READ_BIT: VkAccessFlagBits2 = 2;
 pub const VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT: VkAccessFlagBits2 = 4;
 pub const VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT: VkAccessFlagBits2 = 256;
 pub const VK_ACCESS_2_TRANSFER_WRITE_BIT: VkAccessFlagBits2 = 4096;
+pub const VK_ACCESS_2_SHADER_SAMPLED_READ_BIT: VkAccessFlagBits2 = 4294967296;
 pub type VkSubmitFlags = VkFlags;
 pub type VkRenderingFlags = VkFlags;
 #[repr(C)]
@@ -5036,6 +5469,47 @@ impl Default for VkCopyBufferInfo2 {
     }
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkBufferImageCopy2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub bufferOffset: VkDeviceSize,
+    pub bufferRowLength: u32,
+    pub bufferImageHeight: u32,
+    pub imageSubresource: VkImageSubresourceLayers,
+    pub imageOffset: VkOffset3D,
+    pub imageExtent: VkExtent3D,
+}
+impl Default for VkBufferImageCopy2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkCopyBufferToImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcBuffer: VkBuffer,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkBufferImageCopy2,
+}
+impl Default for VkCopyBufferToImageInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkRenderingAttachmentInfo {
     pub sType: VkStructureType,
@@ -5114,6 +5588,12 @@ pub type PFN_vkQueueSubmit2 = ::core::option::Option<
 >;
 pub type PFN_vkCmdCopyBuffer2 = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pCopyBufferInfo: *const VkCopyBufferInfo2),
+>;
+pub type PFN_vkCmdCopyBufferToImage2 = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        pCopyBufferToImageInfo: *const VkCopyBufferToImageInfo2,
+    ),
 >;
 pub type PFN_vkCmdBeginRendering = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pRenderingInfo: *const VkRenderingInfo),

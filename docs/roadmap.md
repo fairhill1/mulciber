@@ -50,6 +50,8 @@ Vulkan evidence completed so far:
 
 - [x] Device-local vertex and index buffers populated through host-visible staging uploads, with
   indexed drawing (physically exercised on Windows 11 / RTX 3060 Ti with validation enabled).
+- [x] Device-local RGBA8 sampled texture populated through a host-visible staging upload, explicit
+  layout transitions, a combined image sampler descriptor, and fragment sampling (same machine).
 
 Metal evidence completed so far:
 

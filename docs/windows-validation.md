@@ -73,8 +73,16 @@ host-visible coherent staging buffers are mapped and populated at startup, copie
 `vkCmdCopyBuffer2`, and synchronized with explicit transfer-write to vertex/index-read buffer
 barriers before a fenced upload submission completes. A 600-frame run on the same machine reported
 the device-local staging path and completed without validation or loader output. This establishes
-the first real Vulkan upload path; texture uploads, readback, and reusable upload scheduling remain
-outstanding.
+the first real Vulkan upload path; readback and reusable upload scheduling remain outstanding.
+
+The sampled-texture slice was then validated on 2026-07-16. A 4x4 RGBA8 sRGB checkerboard is copied
+from a host-visible staging buffer into a device-local optimal-tiled image with explicit
+`UNDEFINED` to `TRANSFER_DST_OPTIMAL` and `TRANSFER_DST_OPTIMAL` to
+`SHADER_READ_ONLY_OPTIMAL` synchronization2 transitions. The renderer creates an image view,
+nearest-repeat sampler, combined image sampler descriptor, and descriptor-aware pipeline layout;
+the fragment shader samples the image while drawing the indexed triangle. The complete
+noninteractive Windows gate ran 600 frames on the RTX 3060 Ti without validation or loader
+messages. Evidence: `validation-artifacts/windows-vulkan-20260716-104453.zip`.
 
 ## Setup
 

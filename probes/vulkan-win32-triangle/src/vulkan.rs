@@ -21,23 +21,35 @@ static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 struct Vertex {
     position: [f32; 2],
     color: [f32; 3],
+    uv: [f32; 2],
 }
 
 const TRIANGLE_VERTICES: [Vertex; 3] = [
     Vertex {
         position: [0.00, -0.65],
         color: [1.00, 0.20, 0.15],
+        uv: [0.5, 1.0],
     },
     Vertex {
         position: [-0.62, 0.45],
         color: [0.15, 0.85, 0.35],
+        uv: [0.0, 0.0],
     },
     Vertex {
         position: [0.62, 0.45],
         color: [0.20, 0.40, 1.00],
+        uv: [1.0, 0.0],
     },
 ];
 const TRIANGLE_INDICES: [u16; 3] = [0, 1, 2];
+const TEXTURE_WIDTH: u32 = 4;
+const TEXTURE_HEIGHT: u32 = 4;
+const CHECKERBOARD_TEXELS: [u8; 64] = [
+    255, 255, 255, 255, 72, 72, 72, 255, 255, 255, 255, 255, 72, 72, 72, 255, 72, 72, 72, 255, 255,
+    255, 255, 255, 72, 72, 72, 255, 255, 255, 255, 255, 255, 255, 255, 255, 72, 72, 72, 255, 255,
+    255, 255, 255, 72, 72, 72, 255, 72, 72, 72, 255, 255, 255, 255, 255, 72, 72, 72, 255, 255, 255,
+    255, 255,
+];
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -626,9 +638,13 @@ struct DeviceFns {
     create_buffer: vk::PFN_vkCreateBuffer,
     destroy_buffer: vk::PFN_vkDestroyBuffer,
     get_buffer_memory_requirements: vk::PFN_vkGetBufferMemoryRequirements,
+    create_image: vk::PFN_vkCreateImage,
+    destroy_image: vk::PFN_vkDestroyImage,
+    get_image_memory_requirements: vk::PFN_vkGetImageMemoryRequirements,
     allocate_memory: vk::PFN_vkAllocateMemory,
     free_memory: vk::PFN_vkFreeMemory,
     bind_buffer_memory: vk::PFN_vkBindBufferMemory,
+    bind_image_memory: vk::PFN_vkBindImageMemory,
     map_memory: vk::PFN_vkMapMemory,
     unmap_memory: vk::PFN_vkUnmapMemory,
     create_swapchain: vk::PFN_vkCreateSwapchainKHR,
@@ -638,6 +654,14 @@ struct DeviceFns {
     queue_present: vk::PFN_vkQueuePresentKHR,
     create_image_view: vk::PFN_vkCreateImageView,
     destroy_image_view: vk::PFN_vkDestroyImageView,
+    create_sampler: vk::PFN_vkCreateSampler,
+    destroy_sampler: vk::PFN_vkDestroySampler,
+    create_descriptor_set_layout: vk::PFN_vkCreateDescriptorSetLayout,
+    destroy_descriptor_set_layout: vk::PFN_vkDestroyDescriptorSetLayout,
+    create_descriptor_pool: vk::PFN_vkCreateDescriptorPool,
+    destroy_descriptor_pool: vk::PFN_vkDestroyDescriptorPool,
+    allocate_descriptor_sets: vk::PFN_vkAllocateDescriptorSets,
+    update_descriptor_sets: vk::PFN_vkUpdateDescriptorSets,
     create_shader_module: vk::PFN_vkCreateShaderModule,
     destroy_shader_module: vk::PFN_vkDestroyShaderModule,
     create_pipeline_layout: vk::PFN_vkCreatePipelineLayout,
@@ -654,9 +678,11 @@ struct DeviceFns {
     cmd_begin_rendering: vk::PFN_vkCmdBeginRendering,
     cmd_end_rendering: vk::PFN_vkCmdEndRendering,
     cmd_bind_pipeline: vk::PFN_vkCmdBindPipeline,
+    cmd_bind_descriptor_sets: vk::PFN_vkCmdBindDescriptorSets,
     cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
+    cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
     cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
@@ -694,9 +720,13 @@ impl DeviceFns {
             create_buffer: load!(c"vkCreateBuffer"),
             destroy_buffer: load!(c"vkDestroyBuffer"),
             get_buffer_memory_requirements: load!(c"vkGetBufferMemoryRequirements"),
+            create_image: load!(c"vkCreateImage"),
+            destroy_image: load!(c"vkDestroyImage"),
+            get_image_memory_requirements: load!(c"vkGetImageMemoryRequirements"),
             allocate_memory: load!(c"vkAllocateMemory"),
             free_memory: load!(c"vkFreeMemory"),
             bind_buffer_memory: load!(c"vkBindBufferMemory"),
+            bind_image_memory: load!(c"vkBindImageMemory"),
             map_memory: load!(c"vkMapMemory"),
             unmap_memory: load!(c"vkUnmapMemory"),
             create_swapchain: load!(c"vkCreateSwapchainKHR"),
@@ -706,6 +736,14 @@ impl DeviceFns {
             queue_present: load!(c"vkQueuePresentKHR"),
             create_image_view: load!(c"vkCreateImageView"),
             destroy_image_view: load!(c"vkDestroyImageView"),
+            create_sampler: load!(c"vkCreateSampler"),
+            destroy_sampler: load!(c"vkDestroySampler"),
+            create_descriptor_set_layout: load!(c"vkCreateDescriptorSetLayout"),
+            destroy_descriptor_set_layout: load!(c"vkDestroyDescriptorSetLayout"),
+            create_descriptor_pool: load!(c"vkCreateDescriptorPool"),
+            destroy_descriptor_pool: load!(c"vkDestroyDescriptorPool"),
+            allocate_descriptor_sets: load!(c"vkAllocateDescriptorSets"),
+            update_descriptor_sets: load!(c"vkUpdateDescriptorSets"),
             create_shader_module: load!(c"vkCreateShaderModule"),
             destroy_shader_module: load!(c"vkDestroyShaderModule"),
             create_pipeline_layout: load!(c"vkCreatePipelineLayout"),
@@ -722,9 +760,11 @@ impl DeviceFns {
             cmd_begin_rendering: load!(c"vkCmdBeginRendering"),
             cmd_end_rendering: load!(c"vkCmdEndRendering"),
             cmd_bind_pipeline: load!(c"vkCmdBindPipeline"),
+            cmd_bind_descriptor_sets: load!(c"vkCmdBindDescriptorSets"),
             cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
+            cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
             cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
@@ -1134,6 +1174,13 @@ struct GpuBuffer {
     memory: vk::VkDeviceMemory,
 }
 
+#[derive(Default)]
+struct GpuImage {
+    handle: vk::VkImage,
+    memory: vk::VkDeviceMemory,
+    view: vk::VkImageView,
+}
+
 struct Renderer {
     device: DeviceContext,
     swapchain: vk::VkSwapchainKHR,
@@ -1147,6 +1194,11 @@ struct Renderer {
     command_buffer: vk::VkCommandBuffer,
     vertex_buffer: GpuBuffer,
     index_buffer: GpuBuffer,
+    texture: GpuImage,
+    texture_sampler: vk::VkSampler,
+    descriptor_set_layout: vk::VkDescriptorSetLayout,
+    descriptor_pool: vk::VkDescriptorPool,
+    descriptor_set: vk::VkDescriptorSet,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
@@ -1175,6 +1227,11 @@ impl Renderer {
             command_buffer: ptr::null_mut(),
             vertex_buffer: GpuBuffer::default(),
             index_buffer: GpuBuffer::default(),
+            texture: GpuImage::default(),
+            texture_sampler: ptr::null_mut(),
+            descriptor_set_layout: ptr::null_mut(),
+            descriptor_pool: ptr::null_mut(),
+            descriptor_set: ptr::null_mut(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
             present_fences: Vec::new(),
@@ -1192,6 +1249,7 @@ impl Renderer {
         }
         renderer.create_frame_resources()?;
         renderer.create_geometry_buffers()?;
+        renderer.create_texture_resources()?;
         let (width, height) = window
             .client_extent()
             .map_err(|error| ProbeError(error.to_string()))?;
@@ -1304,7 +1362,7 @@ impl Renderer {
 
     fn create_geometry_buffers(&mut self) -> Result<(), ProbeError> {
         // SAFETY: `Vertex` is `repr(C)`, contains only initialized `f32` arrays, and its tested
-        // 20-byte layout has no padding.
+        // 28-byte layout has no padding.
         let vertex_bytes = unsafe { slice_bytes(&TRIANGLE_VERTICES) };
         // SAFETY: `u16` has no padding and every element is initialized.
         let index_bytes = unsafe { slice_bytes(&TRIANGLE_INDICES) };
@@ -1391,6 +1449,304 @@ impl Renderer {
             index_staging,
             u64::try_from(index_size).expect("index byte length fits u64"),
         )
+    }
+
+    fn create_texture_resources(&mut self) -> Result<(), ProbeError> {
+        let mut staging = self.create_staging_buffer(&CHECKERBOARD_TEXELS, "texture")?;
+        let result = self.create_texture_and_upload(&staging);
+        if result.is_err() {
+            // SAFETY: If submission started, waiting idle prevents the staging buffer from being
+            // destroyed while referenced by the queue.
+            let _ = unsafe {
+                self.device
+                    .functions
+                    .device_wait_idle
+                    .expect("loaded function")(self.device.handle)
+            };
+        }
+        // SAFETY: Successful upload waited for completion; the error path attempted device idle.
+        unsafe { self.destroy_buffer(&mut staging) };
+        result?;
+        self.create_texture_sampler()?;
+        self.create_texture_descriptors()?;
+        println!(
+            "Texture: device-local {TEXTURE_WIDTH}x{TEXTURE_HEIGHT} RGBA8 image uploaded and sampled"
+        );
+        Ok(())
+    }
+
+    fn create_texture_and_upload(&mut self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: vk::VK_FORMAT_R8G8B8A8_SRGB,
+            extent: vk::VkExtent3D {
+                width: TEXTURE_WIDTH,
+                height: TEXTURE_HEIGHT,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and owned output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.texture.handle,
+                )
+            },
+            "vkCreateImage for sampled texture",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.texture.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local texture memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.texture.memory,
+                )
+            },
+            "vkAllocateMemory for sampled texture",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.texture.handle,
+                    self.texture.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for sampled texture",
+        )?;
+        self.upload_texture(staging)?;
+        self.texture.view = self.create_texture_view()?;
+        Ok(())
+    }
+
+    fn find_memory_type(&self, compatible_bits: u32, required_flags: u32) -> Option<u32> {
+        let mut properties = vk::VkPhysicalDeviceMemoryProperties::default();
+        // SAFETY: The selected adapter is live and properties storage is writable.
+        unsafe {
+            self.device
+                .instance
+                .functions
+                .get_physical_device_memory_properties
+                .expect("loaded function")(
+                self.device.adapter.handle, &raw mut properties
+            );
+        }
+        find_memory_type(&properties, compatible_bits, required_flags)
+    }
+
+    fn create_texture_view(&self) -> Result<vk::VkImageView, ProbeError> {
+        let info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.texture.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: vk::VK_FORMAT_R8G8B8A8_SRGB,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: color_subresource_range(),
+            ..Default::default()
+        };
+        let mut view = ptr::null_mut();
+        check(
+            // SAFETY: Image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut view,
+                )
+            },
+            "vkCreateImageView for sampled texture",
+        )?;
+        Ok(view)
+    }
+
+    fn create_texture_sampler(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: vk::VK_FILTER_NEAREST,
+            minFilter: vk::VK_FILTER_NEAREST,
+            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            maxAnisotropy: 1.0,
+            maxLod: 0.0,
+            borderColor: vk::VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_sampler
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.texture_sampler,
+                )
+            },
+            "vkCreateSampler",
+        )
+    }
+
+    fn create_texture_descriptors(&mut self) -> Result<(), ProbeError> {
+        let binding = vk::VkDescriptorSetLayoutBinding {
+            binding: 0,
+            descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptorCount: 1,
+            stageFlags: vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+            ..Default::default()
+        };
+        let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            bindingCount: 1,
+            pBindings: &raw const binding,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.descriptor_set_layout,
+                )
+            },
+            "vkCreateDescriptorSetLayout",
+        )?;
+        let pool_size = vk::VkDescriptorPoolSize {
+            type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptorCount: 1,
+        };
+        let pool_info = vk::VkDescriptorPoolCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            maxSets: 1,
+            poolSizeCount: 1,
+            pPoolSizes: &raw const pool_size,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const pool_info,
+                    ptr::null(),
+                    &raw mut self.descriptor_pool,
+                )
+            },
+            "vkCreateDescriptorPool",
+        )?;
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: self.descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const self.descriptor_set_layout,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Pool/layout are live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocate,
+                    &raw mut self.descriptor_set,
+                )
+            },
+            "vkAllocateDescriptorSets",
+        )?;
+        let image = vk::VkDescriptorImageInfo {
+            sampler: self.texture_sampler,
+            imageView: self.texture.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        let write = vk::VkWriteDescriptorSet {
+            sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet: self.descriptor_set,
+            dstBinding: 0,
+            descriptorCount: 1,
+            descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            pImageInfo: &raw const image,
+            ..Default::default()
+        };
+        // SAFETY: The descriptor set and referenced image/sampler are live.
+        unsafe {
+            self.device
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.device.handle, 1, &raw const write, 0, ptr::null()
+            );
+        }
+        Ok(())
     }
 
     fn create_buffer(
@@ -1558,6 +1914,110 @@ impl Renderer {
         self.wait_for_frame()
     }
 
+    fn upload_texture(&mut self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+        check(
+            // SAFETY: Geometry upload completed and left the fence signaled.
+            unsafe {
+                self.device.functions.reset_fences.expect("loaded function")(
+                    self.device.handle,
+                    1,
+                    &raw const self.frame_fence,
+                )
+            },
+            "vkResetFences for texture upload",
+        )?;
+        check(
+            // SAFETY: The prior upload completed, so the command buffer can be reset.
+            unsafe {
+                self.device
+                    .functions
+                    .reset_command_buffer
+                    .expect("loaded function")(self.command_buffer, 0)
+            },
+            "vkResetCommandBuffer for texture upload",
+        )?;
+        self.record_texture_upload(staging)?;
+        self.submit_upload()?;
+        self.wait_for_frame()
+    }
+
+    fn record_texture_upload(&self, staging: &GpuBuffer) -> Result<(), ProbeError> {
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The reset command buffer is in its initial state.
+            unsafe {
+                self.device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(self.command_buffer, &raw const begin)
+            },
+            "vkBeginCommandBuffer for texture upload",
+        )?;
+        self.image_barrier(
+            self.texture.handle,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        );
+        let region = vk::VkBufferImageCopy2 {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            imageSubresource: vk::VkImageSubresourceLayers {
+                aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                mipLevel: 0,
+                baseArrayLayer: 0,
+                layerCount: 1,
+            },
+            imageExtent: vk::VkExtent3D {
+                width: TEXTURE_WIDTH,
+                height: TEXTURE_HEIGHT,
+                depth: 1,
+            },
+            ..Default::default()
+        };
+        let copy = vk::VkCopyBufferToImageInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+            srcBuffer: staging.handle,
+            dstImage: self.texture.handle,
+            dstImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            regionCount: 1,
+            pRegions: &raw const region,
+            ..Default::default()
+        };
+        // SAFETY: The source buffer and destination image/range are live and correctly laid out.
+        unsafe {
+            self.device
+                .functions
+                .cmd_copy_buffer_to_image2
+                .expect("loaded function")(self.command_buffer, &raw const copy);
+        }
+        self.image_barrier(
+            self.texture.handle,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        );
+        check(
+            // SAFETY: The command buffer is recording and the upload commands are complete.
+            unsafe {
+                self.device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.command_buffer)
+            },
+            "vkEndCommandBuffer for texture upload",
+        )
+    }
+
     fn record_geometry_upload(
         &self,
         vertex_staging: &GpuBuffer,
@@ -1698,6 +2158,44 @@ impl Renderer {
                 );
             }
             buffer.memory = ptr::null_mut();
+        }
+    }
+
+    unsafe fn destroy_image(&self, image: &mut GpuImage) {
+        if !image.view.is_null() {
+            // SAFETY: The view is owned by this renderer and no longer in GPU use.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_image_view
+                    .expect("loaded function")(
+                    self.device.handle, image.view, ptr::null()
+                );
+            }
+            image.view = ptr::null_mut();
+        }
+        if !image.handle.is_null() {
+            // SAFETY: The image is owned by this renderer and no longer in GPU use.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_image
+                    .expect("loaded function")(
+                    self.device.handle, image.handle, ptr::null()
+                );
+            }
+            image.handle = ptr::null_mut();
+        }
+        if !image.memory.is_null() {
+            // SAFETY: The bound image was destroyed before its allocation is freed.
+            unsafe {
+                self.device.functions.free_memory.expect("loaded function")(
+                    self.device.handle,
+                    image.memory,
+                    ptr::null(),
+                );
+            }
+            image.memory = ptr::null_mut();
         }
     }
 
@@ -2040,6 +2538,8 @@ impl Renderer {
     fn create_pipeline(&mut self) -> Result<(), ProbeError> {
         let layout_info = vk::VkPipelineLayoutCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            setLayoutCount: 1,
+            pSetLayouts: &raw const self.descriptor_set_layout,
             ..Default::default()
         };
         // SAFETY: Device/create info are valid and output is writable.
@@ -2631,6 +3131,19 @@ impl Renderer {
             );
             self.device
                 .functions
+                .cmd_bind_descriptor_sets
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.pipeline_layout,
+                0,
+                1,
+                &raw const self.descriptor_set,
+                0,
+                ptr::null(),
+            );
+            self.device
+                .functions
                 .cmd_set_viewport
                 .expect("loaded function")(
                 self.command_buffer, 0, 1, &raw const viewport
@@ -2855,8 +3368,40 @@ impl Drop for Renderer {
         self.destroy_swapchain_resources();
         let mut vertex_buffer = mem::take(&mut self.vertex_buffer);
         let mut index_buffer = mem::take(&mut self.index_buffer);
+        let mut texture = mem::take(&mut self.texture);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
+            if !self.descriptor_pool.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            if !self.texture_sampler.is_null() {
+                self.device
+                    .functions
+                    .destroy_sampler
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.texture_sampler,
+                    ptr::null(),
+                );
+            }
+            self.destroy_image(&mut texture);
+            if !self.descriptor_set_layout.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_set_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.descriptor_set_layout,
+                    ptr::null(),
+                );
+            }
             self.destroy_buffer(&mut vertex_buffer);
             self.destroy_buffer(&mut index_buffer);
         }
@@ -2970,7 +3515,7 @@ fn shader_stage(
 
 fn vertex_input_descriptions() -> (
     vk::VkVertexInputBindingDescription,
-    [vk::VkVertexInputAttributeDescription; 2],
+    [vk::VkVertexInputAttributeDescription; 3],
 ) {
     let binding = vk::VkVertexInputBindingDescription {
         binding: 0,
@@ -2989,6 +3534,13 @@ fn vertex_input_descriptions() -> (
             binding: 0,
             format: vk::VK_FORMAT_R32G32B32_SFLOAT,
             offset: u32::try_from(mem::size_of::<[f32; 2]>())
+                .expect("vertex attribute offset fits u32"),
+        },
+        vk::VkVertexInputAttributeDescription {
+            location: 2,
+            binding: 0,
+            format: vk::VK_FORMAT_R32G32_SFLOAT,
+            offset: u32::try_from(mem::size_of::<[f32; 2]>() + mem::size_of::<[f32; 3]>())
                 .expect("vertex attribute offset fits u32"),
         },
     ];
@@ -3215,10 +3767,11 @@ mod tests {
     #[test]
     fn vertex_layout_matches_pipeline_descriptions() {
         let (binding, attributes) = vertex_input_descriptions();
-        assert_eq!(mem::size_of::<Vertex>(), 20);
-        assert_eq!(binding.stride, 20);
+        assert_eq!(mem::size_of::<Vertex>(), 28);
+        assert_eq!(binding.stride, 28);
         assert_eq!(attributes[0].offset, 0);
         assert_eq!(attributes[1].offset, 8);
+        assert_eq!(attributes[2].offset, 20);
     }
 
     #[test]

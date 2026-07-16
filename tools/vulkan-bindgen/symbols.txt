@@ -4,6 +4,7 @@ PFN_vkAllocateCommandBuffers
 PFN_vkAllocateDescriptorSets
 PFN_vkBeginCommandBuffer
 PFN_vkCmdBeginRendering
+PFN_vkCmdBeginDebugUtilsLabelEXT
 PFN_vkCmdBindIndexBuffer
 PFN_vkCmdBindPipeline
 PFN_vkCmdBindVertexBuffers
@@ -16,9 +17,12 @@ PFN_vkCmdDispatch
 PFN_vkCmdDraw
 PFN_vkCmdDrawIndexedIndirect
 PFN_vkCmdEndRendering
+PFN_vkCmdEndDebugUtilsLabelEXT
 PFN_vkCmdPipelineBarrier2
 PFN_vkCmdSetScissor
 PFN_vkCmdSetViewport
+PFN_vkCmdResetQueryPool
+PFN_vkCmdWriteTimestamp2
 PFN_vkCreateCommandPool
 PFN_vkCreateBuffer
 PFN_vkCreateDescriptorPool
@@ -32,6 +36,7 @@ PFN_vkCreateImageView
 PFN_vkCreateImage
 PFN_vkCreateInstance
 PFN_vkCreatePipelineLayout
+PFN_vkCreateQueryPool
 PFN_vkCreateSemaphore
 PFN_vkCreateSampler
 PFN_vkCreateShaderModule
@@ -49,6 +54,7 @@ PFN_vkDestroyImage
 PFN_vkDestroyInstance
 PFN_vkDestroyPipeline
 PFN_vkDestroyPipelineLayout
+PFN_vkDestroyQueryPool
 PFN_vkDestroySemaphore
 PFN_vkDestroySampler
 PFN_vkDestroyShaderModule
@@ -65,6 +71,7 @@ PFN_vkGetDeviceProcAddr
 PFN_vkGetDeviceQueue
 PFN_vkGetBufferMemoryRequirements
 PFN_vkGetImageMemoryRequirements
+PFN_vkGetQueryPoolResults
 PFN_vkGetInstanceProcAddr
 PFN_vkGetPhysicalDeviceFeatures2
 PFN_vkGetPhysicalDeviceFormatProperties
@@ -202,6 +209,8 @@ VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
 VK_PIPELINE_STAGE_2_HOST_BIT
 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT
 VK_PIPELINE_STAGE_2_NONE
+VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT
+VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
 VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
 VK_POLYGON_MODE_FILL
 VK_PRESENT_MODE_FIFO_KHR
@@ -270,6 +279,7 @@ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO
 VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
 VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO
 VK_STRUCTURE_TYPE_PRESENT_INFO_KHR
+VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO
 VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR
 VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO
 VK_STRUCTURE_TYPE_RENDERING_INFO
@@ -282,6 +292,8 @@ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR
 VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET
 VK_SUBOPTIMAL_KHR
+VK_QUERY_RESULT_64_BIT
+VK_QUERY_TYPE_TIMESTAMP
 VK_SUCCESS
 VK_TRUE
 VK_VERTEX_INPUT_RATE_VERTEX
@@ -393,6 +405,10 @@ VkSwapchainPresentFenceInfoKHR
 VkQueue
 VkQueueFlagBits
 VkQueueFamilyProperties
+VkQueryPool
+VkQueryPoolCreateInfo
+VkQueryResultFlagBits
+VkQueryType
 VkRect2D
 VkSampler
 VkSamplerCreateInfo
@@ -416,5 +432,6 @@ VkVertexInputAttributeDescription
 VkVertexInputBindingDescription
 VkWriteDescriptorSet
 VkWin32SurfaceCreateInfoKHR
+VkDebugUtilsLabelEXT
 PFN_vkGetFenceStatus
 PFN_vkGetPhysicalDeviceMemoryProperties

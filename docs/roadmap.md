@@ -69,6 +69,9 @@ Vulkan evidence completed so far:
   swapchain, with a physically validated 1x fallback and resize-retirement ownership (same machine).
 - [x] Resize-dependent offscreen scene color target consumed by a second dynamic-rendering fullscreen
   vignette pass, with explicit color-write-to-sampled-read synchronization (same machine).
+- [x] Capability-checked timestamp query pool with valid-bit wrap handling, fence-safe startup
+  compute and per-frame scene/post timing, plus colored debug-utils labels for the same command
+  regions (same machine).
 
 Metal evidence completed so far:
 

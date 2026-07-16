@@ -162,6 +162,18 @@ participate in tracked swapchain retirement. Native 4x and forced 1x 600-frame r
 resize smoke completed without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-115422.zip`.
 
+The GPU-instrumentation slice was validated on 2026-07-16. Adapter selection records the selected
+queue family's `timestampValidBits` and the device's nanoseconds-per-tick period. A six-entry
+timestamp query pool measures the startup compute dispatch plus every frame's complete scene and
+post command regions with synchronization2 top/bottom writes; result conversion masks counter
+wraparound to the advertised bit width. Query results are read only after the frame fence signals,
+and shutdown prints aggregate scene/post averages. A queue family with zero valid timestamp bits
+skips query creation while preserving `VK_EXT_debug_utils` labels named `compute`, `scene`, and
+`post`. On the RTX 3060 Ti, the validation gate measured 0.005 ms startup compute, 0.062 ms average
+4x scene and 0.021 ms post, then 0.028 ms average forced-1x scene and 0.029 ms post. Native 4x and
+forced 1x 600-frame runs plus the four-size resize smoke completed without validation or loader
+messages. Evidence: `validation-artifacts/windows-vulkan-20260716-120435.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

@@ -86,6 +86,12 @@ pub struct VkImage_T {
 pub type VkImage = *mut VkImage_T;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkQueryPool_T {
+    _unused: [u8; 0],
+}
+pub type VkQueryPool = *mut VkQueryPool_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkImageView_T {
     _unused: [u8; 0],
 }
@@ -2808,6 +2814,27 @@ pub const VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: VkPhysicalDeviceType = 3;
 pub const VK_PHYSICAL_DEVICE_TYPE_CPU: VkPhysicalDeviceType = 4;
 pub const VK_PHYSICAL_DEVICE_TYPE_MAX_ENUM: VkPhysicalDeviceType = 2147483647;
 pub type VkPhysicalDeviceType = ::core::ffi::c_int;
+pub const VK_QUERY_TYPE_OCCLUSION: VkQueryType = 0;
+pub const VK_QUERY_TYPE_PIPELINE_STATISTICS: VkQueryType = 1;
+pub const VK_QUERY_TYPE_TIMESTAMP: VkQueryType = 2;
+pub const VK_QUERY_TYPE_RESULT_STATUS_ONLY_KHR: VkQueryType = 1000023000;
+pub const VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT: VkQueryType = 1000028004;
+pub const VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: VkQueryType = 1000116000;
+pub const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR: VkQueryType = 1000150000;
+pub const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_SIZE_KHR: VkQueryType = 1000150001;
+pub const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_NV: VkQueryType = 1000165000;
+pub const VK_QUERY_TYPE_TIME_ELAPSED_QCOM: VkQueryType = 1000173000;
+pub const VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL: VkQueryType = 1000210000;
+pub const VK_QUERY_TYPE_VIDEO_ENCODE_FEEDBACK_KHR: VkQueryType = 1000299000;
+pub const VK_QUERY_TYPE_MESH_PRIMITIVES_GENERATED_EXT: VkQueryType = 1000328000;
+pub const VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT: VkQueryType = 1000382000;
+pub const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SERIALIZATION_BOTTOM_LEVEL_POINTERS_KHR:
+    VkQueryType = 1000386000;
+pub const VK_QUERY_TYPE_ACCELERATION_STRUCTURE_SIZE_KHR: VkQueryType = 1000386001;
+pub const VK_QUERY_TYPE_MICROMAP_SERIALIZATION_SIZE_EXT: VkQueryType = 1000396000;
+pub const VK_QUERY_TYPE_MICROMAP_COMPACTED_SIZE_EXT: VkQueryType = 1000396001;
+pub const VK_QUERY_TYPE_MAX_ENUM: VkQueryType = 2147483647;
+pub type VkQueryType = ::core::ffi::c_int;
 pub const VK_SHARING_MODE_EXCLUSIVE: VkSharingMode = 0;
 pub const VK_SHARING_MODE_CONCURRENT: VkSharingMode = 1;
 pub const VK_SHARING_MODE_MAX_ENUM: VkSharingMode = 2147483647;
@@ -3376,7 +3403,16 @@ pub const VK_FENCE_CREATE_FLAG_BITS_MAX_ENUM: VkFenceCreateFlagBits = 2147483647
 pub type VkFenceCreateFlagBits = ::core::ffi::c_int;
 pub type VkFenceCreateFlags = VkFlags;
 pub type VkSemaphoreCreateFlags = VkFlags;
+pub type VkQueryPoolCreateFlags = VkFlags;
 pub type VkQueryPipelineStatisticFlags = VkFlags;
+pub const VK_QUERY_RESULT_64_BIT: VkQueryResultFlagBits = 1;
+pub const VK_QUERY_RESULT_WAIT_BIT: VkQueryResultFlagBits = 2;
+pub const VK_QUERY_RESULT_WITH_AVAILABILITY_BIT: VkQueryResultFlagBits = 4;
+pub const VK_QUERY_RESULT_PARTIAL_BIT: VkQueryResultFlagBits = 8;
+pub const VK_QUERY_RESULT_WITH_STATUS_BIT_KHR: VkQueryResultFlagBits = 16;
+pub const VK_QUERY_RESULT_FLAG_BITS_MAX_ENUM: VkQueryResultFlagBits = 2147483647;
+pub type VkQueryResultFlagBits = ::core::ffi::c_int;
+pub type VkQueryResultFlags = VkFlags;
 pub type VkBufferCreateFlags = VkFlags;
 pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: VkBufferUsageFlagBits = 1;
 pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: VkBufferUsageFlagBits = 2;
@@ -3945,6 +3981,25 @@ pub struct VkSemaphoreCreateInfo {
     pub flags: VkSemaphoreCreateFlags,
 }
 impl Default for VkSemaphoreCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkQueryPoolCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkQueryPoolCreateFlags,
+    pub queryType: VkQueryType,
+    pub queryCount: u32,
+    pub pipelineStatistics: VkQueryPipelineStatisticFlags,
+}
+impl Default for VkQueryPoolCreateInfo {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -4976,6 +5031,33 @@ pub type PFN_vkDestroySemaphore = ::core::option::Option<
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
+pub type PFN_vkCreateQueryPool = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkQueryPoolCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pQueryPool: *mut VkQueryPool,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyQueryPool = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        queryPool: VkQueryPool,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkGetQueryPoolResults = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        queryPool: VkQueryPool,
+        firstQuery: u32,
+        queryCount: u32,
+        dataSize: usize,
+        pData: *mut ::core::ffi::c_void,
+        stride: VkDeviceSize,
+        flags: VkQueryResultFlags,
+    ) -> VkResult,
+>;
 pub type PFN_vkCreateBuffer = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
@@ -5056,6 +5138,14 @@ pub type PFN_vkResetCommandBuffer = ::core::option::Option<
         commandBuffer: VkCommandBuffer,
         flags: VkCommandBufferResetFlags,
     ) -> VkResult,
+>;
+pub type PFN_vkCmdResetQueryPool = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        queryPool: VkQueryPool,
+        firstQuery: u32,
+        queryCount: u32,
+    ),
 >;
 pub type PFN_vkCreateShaderModule = ::core::option::Option<
     unsafe extern "C" fn(
@@ -5358,6 +5448,7 @@ pub type VkFlags64 = u64;
 pub type VkPipelineStageFlags2 = VkFlags64;
 pub type VkPipelineStageFlagBits2 = VkFlags64;
 pub const VK_PIPELINE_STAGE_2_NONE: VkPipelineStageFlagBits2 = 0;
+pub const VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT: VkPipelineStageFlagBits2 = 1;
 pub const VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT: VkPipelineStageFlagBits2 = 2;
 pub const VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT: VkPipelineStageFlagBits2 = 4;
 pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkPipelineStageFlagBits2 = 128;
@@ -5365,6 +5456,7 @@ pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2
 pub const VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 512;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkPipelineStageFlagBits2 = 1024;
 pub const VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT: VkPipelineStageFlagBits2 = 2048;
+pub const VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT: VkPipelineStageFlagBits2 = 8192;
 pub const VK_PIPELINE_STAGE_2_HOST_BIT: VkPipelineStageFlagBits2 = 16384;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkPipelineStageFlagBits2 = 65536;
 pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
@@ -5769,6 +5861,14 @@ impl Default for VkPipelineRenderingCreateInfo {
 }
 pub type PFN_vkCmdPipelineBarrier2 = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pDependencyInfo: *const VkDependencyInfo),
+>;
+pub type PFN_vkCmdWriteTimestamp2 = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        stage: VkPipelineStageFlags2,
+        queryPool: VkQueryPool,
+        query: u32,
+    ),
 >;
 pub type PFN_vkQueueSubmit2 = ::core::option::Option<
     unsafe extern "C" fn(
@@ -6179,6 +6279,11 @@ impl Default for VkDebugUtilsMessengerCreateInfoEXT {
         }
     }
 }
+pub type PFN_vkCmdBeginDebugUtilsLabelEXT = ::core::option::Option<
+    unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pLabelInfo: *const VkDebugUtilsLabelEXT),
+>;
+pub type PFN_vkCmdEndDebugUtilsLabelEXT =
+    ::core::option::Option<unsafe extern "C" fn(commandBuffer: VkCommandBuffer)>;
 pub type PFN_vkCreateDebugUtilsMessengerEXT = ::core::option::Option<
     unsafe extern "C" fn(
         instance: VkInstance,

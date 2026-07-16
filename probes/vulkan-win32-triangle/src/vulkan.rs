@@ -21,6 +21,13 @@ const COMPUTE_IMAGE_HEIGHT: u32 = 8;
 const COMPUTE_IMAGE_MIP_LEVELS: u32 = 4;
 const RGBA8_TEXEL_SIZE: usize = 4;
 const OFFSCREEN_FORMAT: vk::VkFormat = vk::VK_FORMAT_R8G8B8A8_UNORM;
+const GPU_QUERY_COUNT: u32 = 6;
+const COMPUTE_QUERY_START: u32 = 0;
+const COMPUTE_QUERY_END: u32 = 1;
+const SCENE_QUERY_START: u32 = 2;
+const SCENE_QUERY_END: u32 = 3;
+const POST_QUERY_START: u32 = 4;
+const POST_QUERY_END: u32 = 5;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -108,6 +115,15 @@ impl TimingSeries {
     fn maximum_ms(&self) -> f64 {
         self.maximum.as_secs_f64() * 1_000.0
     }
+}
+
+#[derive(Default)]
+struct GpuTimingSummary {
+    frame_query_pending: bool,
+    reported: bool,
+    samples: u64,
+    scene_total_ms: f64,
+    post_total_ms: f64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -646,6 +662,8 @@ struct Adapter {
     queue_family: u32,
     swapchain_maintenance1: bool,
     sample_count: vk::VkSampleCountFlagBits,
+    timestamp_valid_bits: u32,
+    timestamp_period: f32,
 }
 
 struct DeviceFns {
@@ -682,7 +700,9 @@ struct DeviceFns {
     create_shader_module: vk::PFN_vkCreateShaderModule,
     destroy_shader_module: vk::PFN_vkDestroyShaderModule,
     create_pipeline_layout: vk::PFN_vkCreatePipelineLayout,
+    create_query_pool: vk::PFN_vkCreateQueryPool,
     destroy_pipeline_layout: vk::PFN_vkDestroyPipelineLayout,
+    destroy_query_pool: vk::PFN_vkDestroyQueryPool,
     create_graphics_pipelines: vk::PFN_vkCreateGraphicsPipelines,
     create_compute_pipelines: vk::PFN_vkCreateComputePipelines,
     destroy_pipeline: vk::PFN_vkDestroyPipeline,
@@ -695,6 +715,8 @@ struct DeviceFns {
     cmd_pipeline_barrier2: vk::PFN_vkCmdPipelineBarrier2,
     cmd_begin_rendering: vk::PFN_vkCmdBeginRendering,
     cmd_end_rendering: vk::PFN_vkCmdEndRendering,
+    cmd_begin_debug_utils_label: vk::PFN_vkCmdBeginDebugUtilsLabelEXT,
+    cmd_end_debug_utils_label: vk::PFN_vkCmdEndDebugUtilsLabelEXT,
     cmd_bind_pipeline: vk::PFN_vkCmdBindPipeline,
     cmd_bind_descriptor_sets: vk::PFN_vkCmdBindDescriptorSets,
     cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
@@ -707,6 +729,8 @@ struct DeviceFns {
     cmd_draw: vk::PFN_vkCmdDraw,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
+    cmd_reset_query_pool: vk::PFN_vkCmdResetQueryPool,
+    cmd_write_timestamp2: vk::PFN_vkCmdWriteTimestamp2,
     cmd_draw_indexed_indirect: vk::PFN_vkCmdDrawIndexedIndirect,
     create_semaphore: vk::PFN_vkCreateSemaphore,
     destroy_semaphore: vk::PFN_vkDestroySemaphore,
@@ -715,6 +739,7 @@ struct DeviceFns {
     wait_for_fences: vk::PFN_vkWaitForFences,
     reset_fences: vk::PFN_vkResetFences,
     get_fence_status: vk::PFN_vkGetFenceStatus,
+    get_query_pool_results: vk::PFN_vkGetQueryPoolResults,
     queue_submit2: vk::PFN_vkQueueSubmit2,
 }
 
@@ -769,7 +794,9 @@ impl DeviceFns {
             create_shader_module: load!(c"vkCreateShaderModule"),
             destroy_shader_module: load!(c"vkDestroyShaderModule"),
             create_pipeline_layout: load!(c"vkCreatePipelineLayout"),
+            create_query_pool: load!(c"vkCreateQueryPool"),
             destroy_pipeline_layout: load!(c"vkDestroyPipelineLayout"),
+            destroy_query_pool: load!(c"vkDestroyQueryPool"),
             create_graphics_pipelines: load!(c"vkCreateGraphicsPipelines"),
             create_compute_pipelines: load!(c"vkCreateComputePipelines"),
             destroy_pipeline: load!(c"vkDestroyPipeline"),
@@ -782,6 +809,8 @@ impl DeviceFns {
             cmd_pipeline_barrier2: load!(c"vkCmdPipelineBarrier2"),
             cmd_begin_rendering: load!(c"vkCmdBeginRendering"),
             cmd_end_rendering: load!(c"vkCmdEndRendering"),
+            cmd_begin_debug_utils_label: load!(c"vkCmdBeginDebugUtilsLabelEXT"),
+            cmd_end_debug_utils_label: load!(c"vkCmdEndDebugUtilsLabelEXT"),
             cmd_bind_pipeline: load!(c"vkCmdBindPipeline"),
             cmd_bind_descriptor_sets: load!(c"vkCmdBindDescriptorSets"),
             cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
@@ -794,6 +823,8 @@ impl DeviceFns {
             cmd_draw: load!(c"vkCmdDraw"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
+            cmd_reset_query_pool: load!(c"vkCmdResetQueryPool"),
+            cmd_write_timestamp2: load!(c"vkCmdWriteTimestamp2"),
             cmd_draw_indexed_indirect: load!(c"vkCmdDrawIndexedIndirect"),
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
@@ -802,6 +833,7 @@ impl DeviceFns {
             wait_for_fences: load!(c"vkWaitForFences"),
             reset_fences: load!(c"vkResetFences"),
             get_fence_status: load!(c"vkGetFenceStatus"),
+            get_query_pool_results: load!(c"vkGetQueryPoolResults"),
             queue_submit2: load!(c"vkQueueSubmit2"),
         })
     }
@@ -1102,6 +1134,8 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                             properties.limits.framebufferDepthSampleCounts,
                             force_msaa_1x,
                         ),
+                        timestamp_valid_bits: family.timestampValidBits,
+                        timestamp_period: properties.limits.timestampPeriod,
                     },
                     fixed_c_string(&properties.deviceName),
                 ));
@@ -1130,6 +1164,14 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         }
     );
     println!("Multisampling: {}", sample_count_name(adapter.sample_count));
+    if adapter.timestamp_valid_bits == 0 {
+        println!("GPU timestamps: unavailable on the selected queue family");
+    } else {
+        println!(
+            "GPU timestamps: {} valid bits at {:.3} ns/tick",
+            adapter.timestamp_valid_bits, adapter.timestamp_period
+        );
+    }
     Ok(adapter)
 }
 
@@ -1247,6 +1289,8 @@ struct Renderer {
     pipeline: vk::VkPipeline,
     command_pool: vk::VkCommandPool,
     command_buffer: vk::VkCommandBuffer,
+    query_pool: vk::VkQueryPool,
+    gpu_timing: GpuTimingSummary,
     vertex_buffer: GpuBuffer,
     index_buffer: GpuBuffer,
     texture: GpuImage,
@@ -1305,6 +1349,8 @@ impl Renderer {
             pipeline: ptr::null_mut(),
             command_pool: ptr::null_mut(),
             command_buffer: ptr::null_mut(),
+            query_pool: ptr::null_mut(),
+            gpu_timing: GpuTimingSummary::default(),
             vertex_buffer: GpuBuffer::default(),
             index_buffer: GpuBuffer::default(),
             texture: GpuImage::default(),
@@ -1347,6 +1393,7 @@ impl Renderer {
             println!("Live resize timing trace enabled");
         }
         renderer.create_frame_resources()?;
+        renderer.create_gpu_instrumentation()?;
         renderer.create_geometry_buffers()?;
         renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
@@ -1467,6 +1514,36 @@ impl Renderer {
                 "vkCreateFence for image acquisition",
             )?;
         }
+        Ok(())
+    }
+
+    fn create_gpu_instrumentation(&mut self) -> Result<(), ProbeError> {
+        if self.device.adapter.timestamp_valid_bits == 0 {
+            println!("GPU instrumentation: debug labels enabled; timestamp queries disabled");
+            return Ok(());
+        }
+        let info = vk::VkQueryPoolCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            queryType: vk::VK_QUERY_TYPE_TIMESTAMP,
+            queryCount: GPU_QUERY_COUNT,
+            ..Default::default()
+        };
+        // SAFETY: The device and create info are live and the output handle is writable.
+        check(
+            unsafe {
+                self.device
+                    .functions
+                    .create_query_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.query_pool,
+                )
+            },
+            "vkCreateQueryPool for GPU timestamps",
+        )?;
+        println!("GPU instrumentation: timestamp queries and debug labels enabled");
         Ok(())
     }
 
@@ -2504,6 +2581,151 @@ impl Renderer {
         result
     }
 
+    fn reset_gpu_queries(&self, first_query: u32, query_count: u32) {
+        if self.query_pool.is_null() {
+            return;
+        }
+        // SAFETY: The command buffer is recording and the query range is no longer in flight.
+        unsafe {
+            self.device
+                .functions
+                .cmd_reset_query_pool
+                .expect("loaded function")(
+                self.command_buffer,
+                self.query_pool,
+                first_query,
+                query_count,
+            );
+        }
+    }
+
+    fn begin_gpu_region(&self, name: &CStr, color: [f32; 4], start_query: u32) {
+        let label = vk::VkDebugUtilsLabelEXT {
+            sType: vk::VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+            pLabelName: name.as_ptr(),
+            color,
+            ..Default::default()
+        };
+        // SAFETY: Debug utils is enabled, the command buffer is recording, and the label string
+        // and structure remain live for the duration of the call.
+        unsafe {
+            self.device
+                .functions
+                .cmd_begin_debug_utils_label
+                .expect("loaded function")(self.command_buffer, &raw const label);
+            if !self.query_pool.is_null() {
+                self.device
+                    .functions
+                    .cmd_write_timestamp2
+                    .expect("loaded function")(
+                    self.command_buffer,
+                    vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                    self.query_pool,
+                    start_query,
+                );
+            }
+        }
+    }
+
+    fn end_gpu_region(&self, end_query: u32) {
+        // SAFETY: The command buffer is recording and this closes the innermost debug label.
+        unsafe {
+            if !self.query_pool.is_null() {
+                self.device
+                    .functions
+                    .cmd_write_timestamp2
+                    .expect("loaded function")(
+                    self.command_buffer,
+                    vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                    self.query_pool,
+                    end_query,
+                );
+            }
+            self.device
+                .functions
+                .cmd_end_debug_utils_label
+                .expect("loaded function")(self.command_buffer);
+        }
+    }
+
+    fn query_values<const COUNT: usize>(
+        &self,
+        first_query: u32,
+    ) -> Result<[u64; COUNT], ProbeError> {
+        let mut values = [0_u64; COUNT];
+        check(
+            // SAFETY: Fence completion makes every requested query available, and the output
+            // array has one tightly packed u64 slot per query.
+            unsafe {
+                self.device
+                    .functions
+                    .get_query_pool_results
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.query_pool,
+                    first_query,
+                    u32::try_from(COUNT).expect("query result count fits u32"),
+                    mem::size_of_val(&values),
+                    values.as_mut_ptr().cast(),
+                    u64::try_from(mem::size_of::<u64>()).expect("u64 size fits VkDeviceSize"),
+                    vk::VK_QUERY_RESULT_64_BIT.cast_unsigned(),
+                )
+            },
+            "vkGetQueryPoolResults for GPU timestamps",
+        )?;
+        Ok(values)
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn timestamp_elapsed_ms(&self, start: u64, end: u64) -> f64 {
+        let ticks = timestamp_tick_delta(start, end, self.device.adapter.timestamp_valid_bits);
+        ticks as f64 * f64::from(self.device.adapter.timestamp_period) / 1_000_000.0
+    }
+
+    fn collect_compute_gpu_timestamp(&self) -> Result<(), ProbeError> {
+        if self.query_pool.is_null() {
+            return Ok(());
+        }
+        let [start, end] = self.query_values::<2>(COMPUTE_QUERY_START)?;
+        println!(
+            "GPU timing: startup compute dispatch {:.3} ms",
+            self.timestamp_elapsed_ms(start, end)
+        );
+        Ok(())
+    }
+
+    fn collect_frame_gpu_timestamps(&mut self) -> Result<(), ProbeError> {
+        if !self.gpu_timing.frame_query_pending {
+            return Ok(());
+        }
+        let [scene_start, scene_end, post_start, post_end] =
+            self.query_values::<4>(SCENE_QUERY_START)?;
+        self.gpu_timing.frame_query_pending = false;
+        self.gpu_timing.samples += 1;
+        self.gpu_timing.scene_total_ms += self.timestamp_elapsed_ms(scene_start, scene_end);
+        self.gpu_timing.post_total_ms += self.timestamp_elapsed_ms(post_start, post_end);
+        Ok(())
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn report_gpu_timing(&mut self) {
+        if self.gpu_timing.reported || self.query_pool.is_null() {
+            return;
+        }
+        self.gpu_timing.reported = true;
+        if self.gpu_timing.samples == 0 {
+            println!("GPU timing summary: no rendered frame samples");
+            return;
+        }
+        let samples = self.gpu_timing.samples as f64;
+        println!(
+            "GPU timing summary: frames={} scene_avg={:.3} ms post_avg={:.3} ms",
+            self.gpu_timing.samples,
+            self.gpu_timing.scene_total_ms / samples,
+            self.gpu_timing.post_total_ms / samples
+        );
+    }
+
     fn dispatch_compute_and_verify(&mut self) -> Result<(), ProbeError> {
         check(
             // SAFETY: The texture upload completed and left the frame fence signaled.
@@ -2529,6 +2751,7 @@ impl Renderer {
         self.record_compute_readback()?;
         self.submit_upload()?;
         self.wait_for_frame()?;
+        self.collect_compute_gpu_timestamp()?;
         self.verify_compute_readback()
     }
 
@@ -2548,7 +2771,9 @@ impl Renderer {
             },
             "vkBeginCommandBuffer for compute readback",
         )?;
+        self.reset_gpu_queries(COMPUTE_QUERY_START, 2);
         self.prepare_compute_image_for_storage();
+        self.begin_gpu_region(c"compute", [0.20, 0.55, 1.00, 1.00], COMPUTE_QUERY_START);
         // SAFETY: Command buffer is recording and all compute resources are live.
         unsafe {
             self.device
@@ -2579,6 +2804,7 @@ impl Renderer {
                 1,
             );
         }
+        self.end_gpu_region(COMPUTE_QUERY_END);
         self.compute_output_barriers();
         self.image_barrier(
             self.compute_image.handle,
@@ -4713,6 +4939,7 @@ impl Renderer {
         let mut trace_sample = LiveResizeSample::default();
         let operation_started = Instant::now();
         self.wait_for_frame()?;
+        self.collect_frame_gpu_timestamps()?;
         trace_sample.frame_wait = operation_started.elapsed();
         self.collect_retired_swapchains()?;
         if self.swapchain.is_null()
@@ -4934,6 +5161,9 @@ impl Renderer {
             "vkBeginCommandBuffer",
         )?;
 
+        self.reset_gpu_queries(SCENE_QUERY_START, 4);
+        self.begin_gpu_region(c"scene", [0.25, 0.85, 0.35, 1.00], SCENE_QUERY_START);
+
         self.image_barrier(
             self.offscreen.handle,
             vk::VK_PIPELINE_STAGE_2_NONE,
@@ -5116,7 +5346,10 @@ impl Renderer {
                 .cmd_end_rendering
                 .expect("loaded function")(self.command_buffer);
         }
+        self.end_gpu_region(SCENE_QUERY_END);
+        self.begin_gpu_region(c"post", [0.85, 0.30, 0.90, 1.00], POST_QUERY_START);
         self.record_postprocess(image, view, &viewport, &render_area);
+        self.end_gpu_region(POST_QUERY_END);
         self.image_barrier(
             image,
             vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5318,6 +5551,9 @@ impl Renderer {
             "vkQueueSubmit2",
         )?;
         self.frame_pending = true;
+        if !self.query_pool.is_null() {
+            self.gpu_timing.frame_query_pending = true;
+        }
         Ok(())
     }
 
@@ -5326,7 +5562,7 @@ impl Renderer {
         if !self.device.adapter.swapchain_maintenance1 {
             // Base VK_KHR_swapchain lacks a portable fence for presentation completion at final
             // shutdown, so the compatibility path retains the conventional orderly-idle fallback.
-            return check(
+            check(
                 unsafe {
                     self.device
                         .functions
@@ -5334,10 +5570,15 @@ impl Renderer {
                         .expect("loaded function")(self.device.handle)
                 },
                 "vkDeviceWaitIdle",
-            );
+            )?;
+            self.wait_for_frame()?;
+            self.collect_frame_gpu_timestamps()?;
+            self.report_gpu_timing();
+            return Ok(());
         }
 
         self.wait_for_frame()?;
+        self.collect_frame_gpu_timestamps()?;
         for (&fence, &pending) in self.present_fences.iter().zip(&self.present_pending) {
             if pending {
                 // SAFETY: The live fence was attached to an enqueued presentation request.
@@ -5380,12 +5621,28 @@ impl Renderer {
                 }
             }
         }
+        self.report_gpu_timing();
         Ok(())
     }
 
     fn destroy_swapchain_resources(&mut self) {
         self.retire_current_swapchain(true);
         self.destroy_all_retired_swapchains();
+    }
+
+    unsafe fn destroy_gpu_instrumentation(&mut self) {
+        if !self.query_pool.is_null() {
+            // SAFETY: Shutdown completed every command that references this owned query pool.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_query_pool
+                    .expect("loaded function")(
+                    self.device.handle, self.query_pool, ptr::null()
+                );
+            }
+            self.query_pool = ptr::null_mut();
+        }
     }
 }
 
@@ -5457,6 +5714,7 @@ impl Drop for Renderer {
         }
         // SAFETY: Frame resources are owned by this renderer and destroyed once after GPU idle.
         unsafe {
+            self.destroy_gpu_instrumentation();
             if !self.frame_fence.is_null() {
                 self.device
                     .functions
@@ -5541,6 +5799,16 @@ fn choose_sample_count(
     } else {
         vk::VK_SAMPLE_COUNT_1_BIT
     }
+}
+
+fn timestamp_tick_delta(start: u64, end: u64, valid_bits: u32) -> u64 {
+    debug_assert!(valid_bits != 0);
+    let mask = if valid_bits >= u64::BITS {
+        u64::MAX
+    } else {
+        (1_u64 << valid_bits) - 1
+    };
+    end.wrapping_sub(start) & mask
 }
 
 fn sample_count_name(sample_count: vk::VkSampleCountFlagBits) -> &'static str {
@@ -6006,6 +6274,12 @@ mod tests {
             choose_sample_count(one | four, one | four, true),
             vk::VK_SAMPLE_COUNT_1_BIT
         );
+    }
+
+    #[test]
+    fn timestamp_delta_handles_queue_bit_width_wraparound() {
+        assert_eq!(timestamp_tick_delta(1_000, 1_025, 64), 25);
+        assert_eq!(timestamp_tick_delta(250, 7, 8), 13);
     }
 
     #[test]

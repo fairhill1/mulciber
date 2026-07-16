@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-shader-toolchain"
+description = "Offline shader toolchain evaluation harness for Mulciber"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.97"
+version = "0.0.0"
+
+[dependencies]
+naga = { version = "30.0.0", features = ["wgsl-in", "spv-out"] }
+serde_json = "1.0"
+
+# Keep evaluation-tool dependencies out of Mulciber's runtime workspace and lock file.
+[workspace]

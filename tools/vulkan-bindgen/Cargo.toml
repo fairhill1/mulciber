@@ -1,6 +1,6 @@
 [package]
-name = "zinc-vulkan-bindgen"
-description = "Reproducible Vulkan ABI binding generator for Zinc"
+name = "mulciber-vulkan-bindgen"
+description = "Reproducible Vulkan ABI binding generator for Mulciber"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -10,5 +10,5 @@ version = "0.0.0"
 [dependencies]
 bindgen = "0.72.1"
 
-# Keep build-tool dependencies out of Zinc's runtime workspace and lock file.
+# Keep build-tool dependencies out of Mulciber's runtime workspace and lock file.
 [workspace]

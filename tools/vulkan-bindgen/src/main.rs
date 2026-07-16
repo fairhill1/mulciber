@@ -32,7 +32,7 @@ typedef struct SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 "#;
 
     let mut builder = bindgen::Builder::default()
-        .header_contents("zinc_vulkan_wrapper.h", wrapper)
+        .header_contents("mulciber_vulkan_wrapper.h", wrapper)
         .clang_arg(include)
         .clang_arg(include_root)
         .clang_arg("--target=x86_64-pc-windows-msvc")

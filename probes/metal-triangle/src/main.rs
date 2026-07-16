@@ -59,7 +59,7 @@ mod macos {
     const SAMPLE_COUNT: usize = 4;
     const SHADOW_MAP_SIZE: usize = 1024;
     const PIPELINE_OPTION_FAIL_ON_BINARY_ARCHIVE_MISS: usize = 1 << 2;
-    const DEFAULT_BINARY_ARCHIVE_PATH: &str = "target/zinc-metal-pipelines.metalarc";
+    const DEFAULT_BINARY_ARCHIVE_PATH: &str = "target/mulciber-metal-pipelines.metalarc";
     const METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
     #[link(name = "Metal", kind = "framework")]
@@ -335,7 +335,7 @@ mod macos {
                 objc::void_object(
                     window,
                     c"setTitle:",
-                    objc::ns_string(c"Zinc — native Metal"),
+                    objc::ns_string(c"Mulciber — native Metal"),
                 );
                 objc::void_bool(window, c"setReleasedWhenClosed:", false);
 
@@ -359,7 +359,7 @@ mod macos {
                     objc::object(device, c"newCommandQueue"),
                     "Metal command queue",
                 )?;
-                set_label(queue, c"Zinc graphics queue");
+                set_label(queue, c"Mulciber graphics queue");
                 let pipelines = create_pipelines(
                     device,
                     &options.binary_archive_path,
@@ -517,7 +517,7 @@ mod macos {
                     objc::object(self.queue, c"commandBuffer"),
                     "Metal command buffer",
                 )?;
-                set_label(command_buffer, c"Zinc multipass frame");
+                set_label(command_buffer, c"Mulciber multipass frame");
                 self.encode_shadow_pass(command_buffer, uniforms)?;
                 self.encode_main_pass(command_buffer, uniforms)?;
                 self.encode_post_pass(command_buffer, drawable_texture)?;
@@ -586,7 +586,7 @@ mod macos {
                     ),
                     "shadow render encoder",
                 )?;
-                set_label(encoder, c"Zinc shadow pass");
+                set_label(encoder, c"Mulciber shadow pass");
                 objc::void_object(encoder, c"setRenderPipelineState:", self.shadow_pipeline);
                 objc::void_object(encoder, c"setDepthStencilState:", self.depth_state);
                 self.bind_geometry(encoder, uniforms);
@@ -611,7 +611,7 @@ mod macos {
                     ),
                     "main render encoder",
                 )?;
-                set_label(encoder, c"Zinc main pass");
+                set_label(encoder, c"Mulciber main pass");
                 objc::void_object(encoder, c"setRenderPipelineState:", self.main_pipeline);
                 objc::void_object(encoder, c"setDepthStencilState:", self.depth_state);
                 self.bind_geometry(encoder, uniforms);
@@ -649,7 +649,7 @@ mod macos {
                     ),
                     "post render encoder",
                 )?;
-                set_label(encoder, c"Zinc post-process pass");
+                set_label(encoder, c"Mulciber post-process pass");
                 objc::void_object(encoder, c"setRenderPipelineState:", self.post_pipeline);
                 objc::void_object_usize(
                     encoder,
@@ -846,9 +846,10 @@ mod macos {
         }
 
         let start = Instant::now();
-        let shadow = create_render_pipeline(device, descriptors.shadow, c"Zinc shadow pipeline")?;
-        let main = create_render_pipeline(device, descriptors.main, c"Zinc main pipeline")?;
-        let post = create_render_pipeline(device, descriptors.post, c"Zinc post pipeline")?;
+        let shadow =
+            create_render_pipeline(device, descriptors.shadow, c"Mulciber shadow pipeline")?;
+        let main = create_render_pipeline(device, descriptors.main, c"Mulciber main pipeline")?;
+        let post = create_render_pipeline(device, descriptors.post, c"Mulciber post pipeline")?;
         let compute = create_compute_pipeline(device, descriptors.compute)?;
         let pipeline_creation_ms = start.elapsed().as_secs_f64() * 1_000.0;
         let action = if archive.loaded {
@@ -880,7 +881,7 @@ mod macos {
                 color_format: PIXEL_FORMAT_INVALID,
                 depth_format: PIXEL_FORMAT_DEPTH32_FLOAT,
                 sample_count: 1,
-                label: c"Zinc shadow pipeline",
+                label: c"Mulciber shadow pipeline",
             },
             binary_archives,
         )?;
@@ -892,7 +893,7 @@ mod macos {
                 color_format: PIXEL_FORMAT_BGRA8_UNORM,
                 depth_format: PIXEL_FORMAT_DEPTH32_FLOAT,
                 sample_count: SAMPLE_COUNT,
-                label: c"Zinc main pipeline",
+                label: c"Mulciber main pipeline",
             },
             binary_archives,
         )?;
@@ -904,7 +905,7 @@ mod macos {
                 color_format: PIXEL_FORMAT_BGRA8_UNORM,
                 depth_format: PIXEL_FORMAT_INVALID,
                 sample_count: 1,
-                label: c"Zinc post pipeline",
+                label: c"Mulciber post pipeline",
             },
             binary_archives,
         )?;
@@ -915,7 +916,7 @@ mod macos {
                 objc::object(objc::class(c"MTLComputePipelineDescriptor"), c"new"),
                 "compute pipeline descriptor",
             )?;
-            set_label(descriptor, c"Zinc texture compute pipeline");
+            set_label(descriptor, c"Mulciber texture compute pipeline");
             objc::void_object(
                 descriptor,
                 c"setComputeFunction:",
@@ -985,7 +986,7 @@ mod macos {
     ) -> Result<Object, ProbeError> {
         let mut error = ptr::null_mut();
         // SAFETY: The descriptor includes the binary archive and the strict option is available on
-        // Zinc's macOS 13 baseline. Reflection is intentionally not requested.
+        // Mulciber's macOS 13 baseline. Reflection is intentionally not requested.
         let pipeline = unsafe {
             objc::object_object_usize_two_out(
                 device,
@@ -1089,7 +1090,7 @@ mod macos {
                     objc::description(error)
                 )));
             }
-            set_label(object, c"Zinc pipeline binary archive");
+            set_label(object, c"Mulciber pipeline binary archive");
             let array = required(
                 objc::object_object(objc::class(c"NSArray"), c"arrayWithObject:", object),
                 "binary archive array",
@@ -1287,12 +1288,12 @@ mod macos {
                 objc::object(queue, c"commandBuffer"),
                 "texture preparation command buffer",
             )?;
-            set_label(command_buffer, c"Zinc texture preparation");
+            set_label(command_buffer, c"Mulciber texture preparation");
             let upload_blit = required(
                 objc::object(command_buffer, c"blitCommandEncoder"),
                 "texture upload blit encoder",
             )?;
-            set_label(upload_blit, c"Zinc BC1 upload");
+            set_label(upload_blit, c"Mulciber BC1 upload");
             objc::void_copy_buffer_to_texture(
                 upload_blit,
                 c"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
@@ -1316,7 +1317,7 @@ mod macos {
                 objc::object(command_buffer, c"computeCommandEncoder"),
                 "texture compute encoder",
             )?;
-            set_label(compute, c"Zinc texture decompression");
+            set_label(compute, c"Mulciber texture decompression");
             objc::void_object(compute, c"setComputePipelineState:", compute_pipeline);
             objc::void_object_usize(compute, c"setTexture:atIndex:", source_texture, 0);
             objc::void_object_usize(compute, c"setTexture:atIndex:", output_texture, 1);
@@ -1362,7 +1363,7 @@ mod macos {
                 objc::object(command_buffer, c"blitCommandEncoder"),
                 "texture readback blit encoder",
             )?;
-            set_label(blit, c"Zinc mip generation and readback");
+            set_label(blit, c"Mulciber mip generation and readback");
             objc::void_object(blit, c"generateMipmapsForTexture:", texture);
             objc::void_copy_texture_to_buffer(
                 blit,
@@ -1450,7 +1451,7 @@ mod macos {
             )
         };
         let storage = required(storage, "private compute storage buffer")?;
-        set_label(storage, c"Zinc compute storage output");
+        set_label(storage, c"Mulciber compute storage output");
         let upload = unsafe {
             objc::object_bytes(
                 device,
@@ -1461,11 +1462,11 @@ mod macos {
             )
         };
         let upload = required(upload, "texture upload buffer")?;
-        set_label(upload, c"Zinc BC1 staging buffer");
+        set_label(upload, c"Mulciber BC1 staging buffer");
         let (readback, readback_length) = create_readback_buffer(device)?;
-        set_label(readback, c"Zinc texture and storage readback");
-        set_label(source, c"Zinc BC1 source");
-        set_label(output, c"Zinc computed mipmapped texture");
+        set_label(readback, c"Mulciber texture and storage readback");
+        set_label(source, c"Mulciber BC1 source");
+        set_label(output, c"Mulciber computed mipmapped texture");
         Ok(TextureResources {
             source,
             output,
@@ -1517,9 +1518,9 @@ mod macos {
                 ),
                 "Metal indexed-indirect argument buffer",
             )?;
-            set_label(vertices, c"Zinc scene vertices");
-            set_label(indices, c"Zinc scene indices");
-            set_label(indirect_arguments, c"Zinc indexed-indirect arguments");
+            set_label(vertices, c"Mulciber scene vertices");
+            set_label(indices, c"Mulciber scene indices");
+            set_label(indirect_arguments, c"Mulciber indexed-indirect arguments");
             let uniforms = create_uniform_buffers(device)?;
             Ok(BufferResources {
                 vertices,
@@ -1544,7 +1545,7 @@ mod macos {
                 )
             };
             *buffer = required(value, "per-frame uniform buffer")?;
-            set_label(*buffer, c"Zinc per-frame uniforms");
+            set_label(*buffer, c"Mulciber per-frame uniforms");
         }
         Ok(buffers)
     }
@@ -1664,7 +1665,7 @@ mod macos {
         label: &str,
     ) -> Result<Object, ProbeError> {
         // SAFETY: The descriptor factory and setters match the Metal SDK ABI. Memoryless storage is
-        // part of Zinc's Apple-silicon/macOS 13 baseline for transient render attachments.
+        // part of Mulciber's Apple-silicon/macOS 13 baseline for transient render attachments.
         unsafe {
             let descriptor = required(
                 objc::object_three_usizes_bool(
@@ -1686,9 +1687,9 @@ mod macos {
                 label,
             )?;
             if pixel_format == PIXEL_FORMAT_DEPTH32_FLOAT {
-                set_label(texture, c"Zinc transient MSAA depth");
+                set_label(texture, c"Mulciber transient MSAA depth");
             } else {
-                set_label(texture, c"Zinc transient MSAA color");
+                set_label(texture, c"Mulciber transient MSAA color");
             }
             Ok(texture)
         }
@@ -1722,7 +1723,7 @@ mod macos {
                 objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
                 "scene color texture",
             )?;
-            set_label(texture, c"Zinc resolved scene color");
+            set_label(texture, c"Mulciber resolved scene color");
             Ok(texture)
         }
     }
@@ -1751,7 +1752,7 @@ mod macos {
                 objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
                 "shadow depth texture",
             )?;
-            set_label(texture, c"Zinc reusable shadow depth");
+            set_label(texture, c"Mulciber reusable shadow depth");
             Ok(texture)
         }
     }
@@ -1857,5 +1858,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("zinc-metal-triangle is available only on macOS");
+    eprintln!("mulciber-metal-triangle is available only on macOS");
 }

@@ -1,6 +1,6 @@
 [package]
-name = "zinc-metal-info"
-description = "Direct Metal device capability probe for Zinc"
+name = "mulciber-metal-info"
+description = "Direct Metal device capability probe for Mulciber"
 edition.workspace = true
 license.workspace = true
 publish = false

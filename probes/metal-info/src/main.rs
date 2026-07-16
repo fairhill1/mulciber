@@ -1,4 +1,4 @@
-//! Reports the native Metal device capabilities relevant to Zinc's backend design.
+//! Reports the native Metal device capabilities relevant to Mulciber's backend design.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -166,7 +166,7 @@ mod macos {
         }
 
         fn print_human(&self) {
-            println!("Zinc Metal capability probe");
+            println!("Mulciber Metal capability probe");
             println!("device: {}", self.name);
             print_u64("registry id", self.registry_id, Unit::Integer);
             print_bool("unified memory", self.unified_memory);
@@ -460,5 +460,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("zinc-metal-info is available only on macOS");
+    eprintln!("mulciber-metal-info is available only on macOS");
 }

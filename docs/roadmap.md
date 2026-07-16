@@ -4,7 +4,7 @@ Each milestone is a runnable vertical slice. Public abstraction work follows bac
 than preceding it.
 
 Advancing between major milestones is governed by the [viability gates](viability-gates.md). Passing
-more checkboxes is not sufficient if Zinc is converging on a less mature `wgpu`/`winit` substitute or
+more checkboxes is not sufficient if Mulciber is converging on a less mature `wgpu`/`winit` substitute or
 cannot be learned efficiently without pre-existing ecosystem knowledge.
 
 ## 0. Capability inventory
@@ -70,10 +70,10 @@ Metal evidence completed so far:
 - [x] Debug labels and command-buffer GPU start/end timing.
 - [x] Strict cold-generation and cross-process loading of a device-specific Metal binary archive.
 
-## 3. Extract Zinc APIs
+## 3. Extract Mulciber APIs
 
-- [ ] Extract owned resource and synchronization types into `zinc-gpu`.
-- [ ] Extract event, input, display, and lifecycle types into `zinc-platform`.
+- [ ] Extract owned resource and synchronization types into `mulciber`.
+- [ ] Extract event, input, display, and lifecycle types into `mulciber-platform`.
 - [ ] Keep backend-specific capabilities reachable without leaking native object ownership.
 - [ ] Establish baseline and optional capability conformance tests.
 
@@ -91,6 +91,6 @@ Add each as an independent backend feature with a tested fallback:
 
 ## 5. Runtime
 
-Create `zinc-runtime` only after platform and GPU lifecycle contracts stabilize. It will coordinate
+Create `mulciber-runtime` only after platform and GPU lifecycle contracts stabilize. It will coordinate
 the game loop, fixed and variable updates, input snapshots, frame pacing, jobs, suspension, and
 device recovery.

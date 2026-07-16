@@ -114,33 +114,33 @@ try {
     Invoke-NativeLogged "cargo" @(
         "test",
         "-p",
-        "zinc-vulkan-info"
+        "mulciber-vulkan-info"
     ) "cargo-test-vulkan-info.log"
     Invoke-NativeLogged "cargo" @(
         "build",
         "-p",
-        "zinc-vulkan-info"
+        "mulciber-vulkan-info"
     ) "cargo-build-vulkan-info.log"
-    $CapabilityProbe = Join-Path $RepositoryRoot "target\debug\zinc-vulkan-info.exe"
+    $CapabilityProbe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-info.exe"
     $env:VK_LOADER_DEBUG = "error,warn"
-    Invoke-NativeLogged $CapabilityProbe @("--json") "zinc-vulkan-info.json"
-    $CapabilityReportPath = Join-Path $ArtifactDirectory "zinc-vulkan-info.json"
+    Invoke-NativeLogged $CapabilityProbe @("--json") "mulciber-vulkan-info.json"
+    $CapabilityReportPath = Join-Path $ArtifactDirectory "mulciber-vulkan-info.json"
     Get-Content -Path $CapabilityReportPath -Raw | ConvertFrom-Json | Out-Null
 
     Invoke-NativeLogged "cargo" @(
         "test",
         "-p",
-        "zinc-vulkan-win32-triangle"
+        "mulciber-vulkan-win32-triangle"
     ) "cargo-test.log"
     Invoke-NativeLogged "cargo" @(
         "build",
         "-p",
-        "zinc-vulkan-win32-triangle"
+        "mulciber-vulkan-win32-triangle"
     ) "cargo-build.log"
 
-    # Run the executable directly so runtime logs contain only Zinc, Vulkan validation, and loader
+    # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.
-    $Probe = Join-Path $RepositoryRoot "target\debug\zinc-vulkan-win32-triangle.exe"
+    $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-win32-triangle.exe"
     $env:VK_LOADER_DEBUG = "error,warn"
     Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "finite-run.log"
 

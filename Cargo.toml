@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/zinc-gpu",
-    "crates/zinc-platform",
+    "crates/mulciber",
+    "crates/mulciber-platform",
     "probes/metal-info",
     "probes/metal-triangle",
     "probes/vulkan-info",

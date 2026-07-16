@@ -1,11 +1,11 @@
-# Zinc viability gates
+# Mulciber viability gates
 
-Zinc is an experiment until evidence shows that its advantages justify owning native GPU and
+Mulciber is an experiment until evidence shows that its advantages justify owning native GPU and
 platform backends. These gates prevent implementation momentum, dependency minimalism, or attachment
 to the project from becoming substitutes for product value.
 
 A gate is passed only by checked-in code, reproducible validation evidence, and a written decision.
-If a gate fails, the default action is to stop, narrow, or repurpose Zinc—not to move the goalposts.
+If a gate fails, the default action is to stop, narrow, or repurpose Mulciber—not to move the goalposts.
 
 ## Gate 1: native backend credibility
 
@@ -23,8 +23,8 @@ contract proves impractical, or if platform maintenance already exceeds the valu
 
 ## Gate 2: a coherent public slice
 
-Extract only enough `zinc-gpu` and `zinc-platform` API to build a small real game. The game must own
-its architecture while Zinc coordinates the window/GPU lifecycle it claims to improve.
+Extract only enough `mulciber` and `mulciber-platform` API to build a small real game. The game must own
+its architecture while Mulciber coordinates the window/GPU lifecycle it claims to improve.
 
 Pass conditions:
 
@@ -39,7 +39,7 @@ cannot demonstrate a concrete lifecycle advantage.
 
 ## Gate 3: cold-start learnability
 
-Zinc cannot rely on an existing tutorial corpus or LLM training data. It must be easier to learn from
+Mulciber cannot rely on an existing tutorial corpus or LLM training data. It must be easier to learn from
 the repository than established alternatives are to recall from prior knowledge.
 
 Maintain a small cold-start task suite that an unfamiliar Rust developer and current coding models
@@ -49,7 +49,7 @@ attempt using only the checked-out repository. It should cover:
 2. Upload a mesh and texture and render them with depth.
 3. Respond correctly to resize, minimize, and close.
 4. Add an optional capability path with a documented fallback.
-5. Diagnose an intentionally invalid resource or synchronization request from Zinc's error.
+5. Diagnose an intentionally invalid resource or synchronization request from Mulciber's error.
 
 Pass conditions:
 
@@ -60,7 +60,7 @@ Pass conditions:
 - Task completion is at least as reliable and efficient as the equivalent `wgpu`/`winit` tasks when
   prior ecosystem familiarity is allowed.
 
-Stop or redesign if Zinc is only pleasant after extensive project-specific training. Familiarity is
+Stop or redesign if Mulciber is only pleasant after extensive project-specific training. Familiarity is
 a real product advantage, and technical elegance does not cancel it.
 
 ## Gate 4: native-feature differentiation
@@ -69,12 +69,12 @@ Implement one feature that materially motivates native backends—initially a bi
 rendering path is the leading candidate—with capability negotiation and a tested fallback on both
 Vulkan and Metal.
 
-Compare the Zinc implementation with the best practical `wgpu` implementation for feature reach,
-ergonomics, CPU overhead, frame behavior, and backend-specific control. Zinc passes only if the
+Compare the Mulciber implementation with the best practical `wgpu` implementation for feature reach,
+ergonomics, CPU overhead, frame behavior, and backend-specific control. Mulciber passes only if the
 difference matters to a real game; exposing a native enum or producing a synthetic benchmark win is
 not enough.
 
-Stop if the feature requires an escape hatch so invasive that Zinc has no useful portable contract,
+Stop if the feature requires an escape hatch so invasive that Mulciber has no useful portable contract,
 or if established libraries expose the needed path with comparable control by the time this gate is
 reached.
 
@@ -83,15 +83,15 @@ reached.
 Build a dogfood game slice that exercises input snapshots, fixed and variable updates, frame pacing,
 fullscreen/display changes, suspension, and device recovery across the supported platforms.
 
-Zinc passes if coordinating these systems produces simpler game code, more predictable behavior, or
-better diagnostics than composing independent libraries. It fails if `zinc-runtime` merely wraps an
+Mulciber passes if coordinating these systems produces simpler game code, more predictable behavior, or
+better diagnostics than composing independent libraries. It fails if `mulciber-runtime` merely wraps an
 event loop, dictates unrelated engine architecture, or adds no measurable coherence.
 
 ## Gate 6: maintenance reality
 
-Before claiming production readiness, operate Zinc through real game development and at least one
+Before claiming production readiness, operate Mulciber through real game development and at least one
 release cycle. Track backend-specific defects, validation regressions, driver workarounds, platform
-test time, documentation failures, and the delay between new native features and safe Zinc exposure.
+test time, documentation failures, and the delay between new native features and safe Mulciber exposure.
 
 Continue only if the supported target set can be maintained to the promised quality bar by the
 available team. Fewer targets are justified only by stronger native capability reach, lifecycle

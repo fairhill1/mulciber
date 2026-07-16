@@ -196,7 +196,7 @@ impl Drop for CallbackRegistration<'_> {
 
 impl Window {
     pub fn new(title: &str, width: u32, height: u32, visible: bool) -> Result<Self, WindowError> {
-        let class_name = wide("ZincVulkanProbe");
+        let class_name = wide("MulciberVulkanProbe");
         let title = wide(title);
         let state = Box::new(WindowState::default());
         let state_pointer = ptr::from_ref(state.as_ref()).cast_mut().cast::<c_void>();
@@ -261,7 +261,7 @@ impl Window {
                 DestroyWindow(handle);
                 UnregisterClassW(class_name.as_ptr(), instance);
                 return Err(WindowError(
-                    "Win32 did not retain Zinc's window state".into(),
+                    "Win32 did not retain Mulciber's window state".into(),
                 ));
             }
             if visible {

@@ -1,4 +1,4 @@
-# Zinc Vulkan and SPIR-V toolchain pins. Revisions are immutable Git commits.
+# Mulciber Vulkan and SPIR-V toolchain pins. Revisions are immutable Git commits.
 
 [vulkan]
 api = "1.4.356"

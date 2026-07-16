@@ -1,4 +1,4 @@
-//! Reports Vulkan device and Win32 presentation capabilities relevant to Zinc.
+//! Reports Vulkan device and Win32 presentation capabilities relevant to Mulciber.
 
 #![allow(clippy::missing_errors_doc)]
 
@@ -192,7 +192,7 @@ mod windows {
             let loader_version = entry.loader_version()?;
             if loader_version < API_VERSION_1_4 {
                 return Err(ProbeError(format!(
-                    "Vulkan loader exposes {}, but Zinc capability reporting requires 1.4",
+                    "Vulkan loader exposes {}, but Mulciber capability reporting requires 1.4",
                     version_string(loader_version)
                 )));
             }
@@ -207,7 +207,7 @@ mod windows {
             }
             let application = vk::VkApplicationInfo {
                 sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                pApplicationName: c"Zinc Vulkan capability report".as_ptr(),
+                pApplicationName: c"Mulciber Vulkan capability report".as_ptr(),
                 apiVersion: API_VERSION_1_4,
                 ..Default::default()
             };
@@ -382,14 +382,16 @@ mod windows {
 
         #[allow(clippy::too_many_lines)]
         fn print_human(&self) {
-            println!("Zinc Vulkan capability report");
+            println!("Mulciber Vulkan capability report");
             println!("loader API: {}", version_string(self.loader_version));
             println!("adapters: {}", self.adapters.len());
             match self.selected_adapter {
                 Some(index) => {
                     println!("selected adapter: {index} ({})", self.adapters[index].name);
                 }
-                None => println!("selected adapter: none (Zinc Vulkan 1.4 baseline unavailable)"),
+                None => {
+                    println!("selected adapter: none (Mulciber Vulkan 1.4 baseline unavailable)");
+                }
             }
             for (index, adapter) in self.adapters.iter().enumerate() {
                 println!();
@@ -1010,9 +1012,9 @@ mod windows {
         let json = match env::args_os().skip(1).collect::<Vec<_>>().as_slice() {
             [] => false,
             [argument] if argument == "--json" => true,
-            _ => return Err(ProbeError("usage: zinc-vulkan-info [--json]".into())),
+            _ => return Err(ProbeError("usage: mulciber-vulkan-info [--json]".into())),
         };
-        let window = Window::new("Zinc Vulkan capability surface", 64, 64, false)
+        let window = Window::new("Mulciber Vulkan capability surface", 64, 64, false)
             .map_err(|error| ProbeError(error.to_string()))?;
         let context = Context::new(&window)?;
         let report = Report::collect(&context)?;
@@ -1194,5 +1196,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    eprintln!("zinc-vulkan-info is available only on Windows");
+    eprintln!("mulciber-vulkan-info is available only on Windows");
 }

@@ -1,26 +1,26 @@
-# Zinc
+# Mulciber
 
-Zinc is a native game platform for Vulkan and Metal.
+Mulciber is a native game platform for Vulkan and Metal.
 
-## Why Zinc?
+## Why Mulciber?
 
-Zinc is for Rust games that want native-engine control without maintaining separate graphics and
+Mulciber is for Rust games that want native-engine control without maintaining separate graphics and
 window-system stacks for every desktop platform. It combines direct Vulkan and Metal access with
 game-focused platform lifecycle, exposes recent GPU capabilities without forcing them into a WebGPU
 feature model, and keeps the shipped runtime small and auditable.
 
 This is a deliberately narrower goal than `wgpu` plus `winit`, not a claim that those projects are
-bad foundations. Zinc trades their broad portability and maturity for native API reach, coordinated
+bad foundations. Mulciber trades their broad portability and maturity for native API reach, coordinated
 GPU/platform/runtime design, and a first-class support contract limited to modern Windows, Linux,
 and Apple-silicon macOS machines.
 
 Minimal dependencies are a means to predictable ownership, policy, and maintenance—not the reason
 for the project by themselves. Read [the project vision](docs/vision.md) for the intended user,
-non-goals, and the criteria Zinc must meet to justify its existence.
+non-goals, and the criteria Mulciber must meet to justify its existence.
 
 The project is intentionally beginning with small native probes instead of a predesigned graphics
-abstraction. Those probes will establish the real platform contracts from which `zinc-gpu` and
-`zinc-platform` are derived.
+abstraction. Those probes will establish the real platform contracts from which `mulciber` and
+`mulciber-platform` are derived.
 
 ## Direction
 
@@ -41,20 +41,20 @@ See [the project vision](docs/vision.md), [viability gates](docs/viability-gates
 On macOS:
 
 ```sh
-cargo run -p zinc-metal-info
+cargo run -p mulciber-metal-info
 ```
 
 This queries Metal directly through the Objective-C runtime and has no Rust package dependencies.
 Pass `--json` to emit the versioned machine-readable report used for cross-machine comparisons:
 
 ```sh
-cargo run -q -p zinc-metal-info -- --json
+cargo run -q -p mulciber-metal-info -- --json
 ```
 
 Run the native AppKit and Metal presentation/resource probe:
 
 ```sh
-cargo run -p zinc-metal-triangle
+cargo run -p mulciber-metal-triangle
 ```
 
 It uploads a capability-checked BC1 texture through a staging buffer, decompresses it into a private
@@ -74,7 +74,7 @@ The build script invokes Xcode's `metal` and `metallib` tools and embeds the res
 loads that library directly and never invokes a shader compiler. This adds an SDK build requirement,
 not a shipped package dependency.
 
-The first run generates `target/zinc-metal-pipelines.metalarc` from all three render pipelines and
+The first run generates `target/mulciber-metal-pipelines.metalarc` from all three render pipelines and
 the compute pipeline. Later runs load that device-specific Metal binary archive and create every
 pipeline with `MTLPipelineOptionFailOnBinaryArchiveMiss`, proving that the serialized entries are
 actually used. Pass `--binary-archive PATH` to select a different artifact or
@@ -91,17 +91,17 @@ For a finite validation run, pass `--frames N`. Enable Apple's validation layer 
 On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
 
 ```sh
-cargo run -p zinc-vulkan-info
-cargo run -q -p zinc-vulkan-info -- --json
+cargo run -p mulciber-vulkan-info
+cargo run -q -p mulciber-vulkan-info -- --json
 ```
 
 The capability probe creates a hidden Win32 surface and reports every Vulkan adapter, memory heaps,
 queue families, core workload features and limits, device extensions, surface formats, present
-modes, and explicit Zinc Vulkan 1.4 baseline failures. The `--json` form emits the versioned report
+modes, and explicit Mulciber Vulkan 1.4 baseline failures. The `--json` form emits the versioned report
 used for cross-machine comparisons and adapter-tier evidence.
 
 ```sh
-cargo run -p zinc-vulkan-win32-triangle -- --frames 600
+cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
 ```
 
 The probe loads `vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is

@@ -1,6 +1,6 @@
 [package]
-name = "zinc-metal-triangle"
-description = "Native AppKit and Metal presentation probe for Zinc"
+name = "mulciber-metal-triangle"
+description = "Native AppKit and Metal presentation probe for Mulciber"
 edition.workspace = true
 license.workspace = true
 publish = false

@@ -112,7 +112,7 @@ struct LiveResizeTrace {
 impl LiveResizeTrace {
     fn from_environment() -> Self {
         Self {
-            enabled: env::var_os("ZINC_VULKAN_RESIZE_TRACE").is_some(),
+            enabled: env::var_os("MULCIBER_VULKAN_RESIZE_TRACE").is_some(),
             reported: false,
             attempts: 0,
             rendered: 0,
@@ -193,7 +193,7 @@ impl LiveResizeTrace {
 pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
     let frame_limit = parse_frame_limit()?;
-    let window = Window::new("Zinc — native Vulkan 1.4", 960, 540, true)
+    let window = Window::new("Mulciber — native Vulkan 1.4", 960, 540, true)
         .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
@@ -370,7 +370,7 @@ impl Entry {
         )?;
         if version < API_VERSION_1_4 {
             return Err(ProbeError(format!(
-                "Vulkan loader exposes {}.{}.{}, but Zinc requires 1.4",
+                "Vulkan loader exposes {}.{}.{}, but Mulciber requires 1.4",
                 version >> 22,
                 (version >> 12) & 0x3ff,
                 version & 0xfff
@@ -479,9 +479,9 @@ impl InstanceContext {
 
         let application = vk::VkApplicationInfo {
             sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            pApplicationName: c"Zinc Vulkan probe".as_ptr(),
+            pApplicationName: c"Mulciber Vulkan probe".as_ptr(),
             applicationVersion: 0,
-            pEngineName: c"Zinc".as_ptr(),
+            pEngineName: c"Mulciber".as_ptr(),
             engineVersion: 0,
             apiVersion: API_VERSION_1_4,
             ..Default::default()
@@ -892,7 +892,8 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
 
 #[allow(clippy::too_many_lines)]
 fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
-    let force_swapchain_fallback = env::var_os("ZINC_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
+    let force_swapchain_fallback =
+        env::var_os("MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
     let enumerate = instance
         .functions
         .enumerate_physical_devices
@@ -1032,7 +1033,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
 
     candidates.sort_by_key(|candidate| candidate.0);
     let (_, adapter, name) = candidates.pop().ok_or_else(|| {
-        ProbeError("no Vulkan 1.4 graphics/present adapter satisfies Zinc's baseline".into())
+        ProbeError("no Vulkan 1.4 graphics/present adapter satisfies Mulciber's baseline".into())
     })?;
     println!("Vulkan adapter: {}", String::from_utf8_lossy(&name));
     if force_swapchain_fallback {

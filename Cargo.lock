@@ -3,25 +3,25 @@
 version = 4
 
 [[package]]
-name = "zinc-gpu"
+name = "mulciber"
+version = "0.1.0"
+
+[[package]]
+name = "mulciber-metal-info"
 version = "0.0.0"
 
 [[package]]
-name = "zinc-metal-info"
+name = "mulciber-metal-triangle"
 version = "0.0.0"
 
 [[package]]
-name = "zinc-metal-triangle"
+name = "mulciber-platform"
 version = "0.0.0"
 
 [[package]]
-name = "zinc-platform"
+name = "mulciber-vulkan-info"
 version = "0.0.0"
 
 [[package]]
-name = "zinc-vulkan-info"
-version = "0.0.0"
-
-[[package]]
-name = "zinc-vulkan-win32-triangle"
+name = "mulciber-vulkan-win32-triangle"
 version = "0.0.0"

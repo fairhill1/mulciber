@@ -1,0 +1,16 @@
+[package]
+name = "mulciber"
+version = "0.1.0"
+description = "Research-stage native Vulkan and Metal graphics foundation for the Mulciber game platform"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "graphics", "metal", "vulkan"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+categories = ["game-development", "graphics", "rendering"]
+publish = ["crates-io"]
+
+[lints]
+workspace = true

@@ -1,8 +1,8 @@
 # Vulkan binding generation
 
-`zinc-vulkan-bindgen` generates checked-in, dependency-free Rust ABI bindings from the exact
+`mulciber-vulkan-bindgen` generates checked-in, dependency-free Rust ABI bindings from the exact
 Khronos headers recorded in `../../vulkan-toolchain.lock.toml`. It is an isolated workspace so
-libclang and its transitive dependencies never enter Zinc's runtime dependency graph.
+libclang and its transitive dependencies never enter Mulciber's runtime dependency graph.
 
 Place the pinned Vulkan-Headers `include/vulkan` directory and its sibling `include/vk_video`
 directory together under one include root, then run:

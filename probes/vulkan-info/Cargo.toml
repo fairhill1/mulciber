@@ -1,6 +1,6 @@
 [package]
-name = "zinc-vulkan-info"
-description = "Direct Vulkan device and presentation capability report for Zinc"
+name = "mulciber-vulkan-info"
+description = "Direct Vulkan device and presentation capability report for Mulciber"
 edition.workspace = true
 license.workspace = true
 publish = false

@@ -1,8 +1,33 @@
 use std::cell::Cell;
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, c_int, c_void};
 use std::fmt;
 use std::mem;
 use std::ptr;
+use std::time::Duration;
+
+use crate::vk;
+
+pub(crate) type SurfaceFunction = vk::PFN_vkCreateWin32SurfaceKHR;
+
+pub(crate) const fn surface_extension() -> &'static CStr {
+    c"VK_KHR_win32_surface"
+}
+
+pub(crate) const fn surface_description() -> &'static str {
+    "Win32 surface extension"
+}
+
+pub(crate) const fn create_surface_name() -> &'static CStr {
+    c"vkCreateWin32SurfaceKHR"
+}
+
+pub(crate) const fn acquire_timeout() -> u64 {
+    u64::MAX
+}
+
+pub(crate) const fn resize_commit_interval() -> Duration {
+    Duration::ZERO
+}
 
 pub type Handle = *mut c_void;
 pub type Hinstance = Handle;
@@ -330,6 +355,22 @@ impl Window {
             )))
         }
     }
+}
+
+pub(crate) unsafe fn create_surface(
+    function: SurfaceFunction,
+    instance: vk::VkInstance,
+    window: &Window,
+    surface: *mut vk::VkSurfaceKHR,
+) -> vk::VkResult {
+    let info = vk::VkWin32SurfaceCreateInfoKHR {
+        sType: vk::VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+        hinstance: window.instance(),
+        hwnd: window.handle(),
+        ..Default::default()
+    };
+    // SAFETY: The Win32 handles/instance are live, output is writable, and the function matches.
+    unsafe { function.expect("loaded function")(instance, &raw const info, ptr::null(), surface) }
 }
 
 impl Drop for Window {

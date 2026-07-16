@@ -110,13 +110,16 @@ cargo run -q -p mulciber-vulkan-info -- --platform wayland --json
 ```
 
 The X11 path creates a hidden Xlib window. The Wayland capability path discovers `wl_compositor`
-and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface capability queries
-but is not an XDG-shell presentation or lifecycle implementation. Both paths are implemented and
-compile/link-tested on Linux; physical Vulkan 1.4 surface evidence remains pending. See the
-[Linux validation runbook](docs/linux-validation.md) before recording either path as exercised.
+and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface capability queries.
+Both report paths are implemented and physically exercised on a Vulkan 1.4 Nvidia system: Wayland
+ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe now has an
+XDG-shell Wayland window with server-side decorations, Vulkan presentation, resize pacing, and
+orderly shutdown; its initial physical lifecycle evidence is recorded in the
+[Linux validation runbook](docs/linux-validation.md). X11 presentation, native Xorg coverage,
+display changes, input, and broader Linux hardware/driver evidence remain pending.
 
 ```sh
-cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
+cargo run -p mulciber-vulkan-triangle -- --frames 600
 ```
 
 The probe uploads geometry and a deterministic 8x8 checkerboard through temporary staging buffers
@@ -131,8 +134,9 @@ persistently mapped uniform frame slots provide aspect correction and time. A st
 dispatch writes a device-local storage buffer, the indirect draw command, and an RGBA8 storage image.
 It generates the image's complete mip chain with synchronized GPU blits, verifies the base and 1x1
 tail through host readback, then the fragment shader explicitly samples a generated mip. The probe
-loads `vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is required and
-reported through `VK_EXT_debug_utils`. Colored debug-utils command regions identify the startup
+loads the platform Vulkan loader dynamically (`vulkan-1.dll` on Windows or `libvulkan.so.1` on
+Linux) and has no Rust package dependencies. Validation is required and reported through
+`VK_EXT_debug_utils`. Colored debug-utils command regions identify the startup
 compute dispatch and each frame's shadow, scene, and post passes. When the selected queue exposes
 timestamp bits, synchronization2 timestamp queries measure those same regions, account for counter
 wraparound, and print fence-safe startup and shutdown timing summaries; zero-bit queues retain labels
@@ -145,7 +149,8 @@ to select an artifact, `--rebuild-pipeline-cache` for a cold learning run,
 `--require-pipeline-cache-hits` for read-only cross-process hit proof, or
 `--disable-pipeline-cache` for the correctness control. Strict mode also forbids compilation when
 the adapter exposes pipeline creation cache control. See the
-[Windows validation runbook](docs/windows-validation.md) before marking the slice complete.
+[Windows validation runbook](docs/windows-validation.md) or
+[Linux validation runbook](docs/linux-validation.md) before marking a platform slice complete.
 
 Texture selection is independent from the Vulkan baseline. Unset
 `MULCIBER_VULKAN_TEXTURE_MODE` (or set it to `auto`) to prefer BC1 only when the core feature and

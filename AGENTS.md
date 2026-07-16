@@ -42,7 +42,7 @@ multi-display, hardware-tier, or visual evidence.
 ## Vulkan rules
 
 - Vulkan bindings are generated. Update `tools/vulkan-bindgen/symbols.txt`, then regenerate
-  `probes/vulkan-win32-triangle/src/vk.rs`; do not hand-edit generated declarations.
+  `probes/vulkan-triangle/src/vk.rs`; do not hand-edit generated declarations.
 - Shader source and checked-in SPIR-V must change together.
 - Compile shaders for the pinned target environment and update every affected hash in
   `vulkan-toolchain.lock.toml`.

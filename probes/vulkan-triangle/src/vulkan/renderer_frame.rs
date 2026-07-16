@@ -4,6 +4,7 @@ use super::{
     SHADOW_QUERY_START, UINT64_MAX, check, color_subresource_range, command_buffer_submit_info,
     depth_subresource_range, mem, ptr, vk,
 };
+use crate::platform;
 
 impl Renderer {
     #[allow(clippy::too_many_lines)]
@@ -13,10 +14,12 @@ impl Renderer {
         height: u32,
         live_resize: bool,
     ) -> Result<bool, ProbeError> {
+        frame_trace("render begin");
         let trace_started = self.live_resize_trace.begin(live_resize);
         let mut trace_sample = LiveResizeSample::default();
         let operation_started = Instant::now();
         self.wait_for_frame()?;
+        frame_trace("frame fence complete");
         self.collect_frame_gpu_timestamps()?;
         trace_sample.frame_wait = operation_started.elapsed();
         self.collect_retired_swapchains()?;
@@ -45,12 +48,18 @@ impl Renderer {
                 .expect("loaded function")(
                 self.device.handle,
                 self.swapchain,
-                UINT64_MAX,
+                platform::acquire_timeout(),
                 self.image_available,
                 acquire_fence,
                 &raw mut image_index,
             )
         };
+        frame_trace("image acquired");
+        if acquire == vk::VK_NOT_READY || acquire == vk::VK_TIMEOUT {
+            self.live_resize_trace
+                .finish(trace_started, trace_sample, false);
+            return Ok(false);
+        }
         if acquire == vk::VK_ERROR_OUT_OF_DATE_KHR {
             trace_sample.acquire = operation_started.elapsed();
             let operation_started = Instant::now();
@@ -125,6 +134,7 @@ impl Renderer {
         )?;
         self.record(image, view, descriptor_set)?;
         self.submit(render_finished)?;
+        frame_trace("graphics submitted");
         self.frame_slot = (self.frame_slot + 1) % FRAME_SLOT_COUNT;
         trace_sample.record_submit = operation_started.elapsed();
 
@@ -161,6 +171,7 @@ impl Renderer {
                 .queue_present
                 .expect("loaded function")(self.device.queue, &raw const present)
         };
+        frame_trace("presentation queued");
         trace_sample.present = operation_started.elapsed();
         if result == vk::VK_SUCCESS
             || result == vk::VK_ERROR_OUT_OF_DATE_KHR
@@ -766,6 +777,7 @@ impl Renderer {
     }
 
     pub(super) fn finish(&mut self) -> Result<(), ProbeError> {
+        frame_trace("finish begin");
         self.live_resize_trace.report();
         if !self.device.adapter.swapchain_maintenance1 {
             // Base VK_KHR_swapchain lacks a portable fence for presentation completion at final
@@ -786,9 +798,11 @@ impl Renderer {
         }
 
         self.wait_for_frame()?;
+        frame_trace("final frame fence complete");
         self.collect_frame_gpu_timestamps()?;
         for (&fence, &pending) in self.present_fences.iter().zip(&self.present_pending) {
             if pending {
+                frame_trace("waiting for final presentation fence");
                 // SAFETY: The live fence was attached to an enqueued presentation request.
                 check(
                     unsafe {
@@ -805,8 +819,10 @@ impl Renderer {
                     },
                     "vkWaitForFences for presentation at shutdown",
                 )?;
+                frame_trace("final presentation fence complete");
             }
         }
+        self.present_pending.fill(false);
         for retired in &self.retired {
             for (&fence, &pending) in retired.present_fences.iter().zip(&retired.present_pending) {
                 if pending {
@@ -828,6 +844,9 @@ impl Renderer {
                     )?;
                 }
             }
+        }
+        for retired in &mut self.retired {
+            retired.present_pending.fill(false);
         }
         self.report_gpu_timing();
         self.save_pipeline_cache()
@@ -868,5 +887,11 @@ impl Renderer {
             }
             self.pipeline_cache.handle = ptr::null_mut();
         }
+    }
+}
+
+fn frame_trace(message: &str) {
+    if std::env::var_os("MULCIBER_VULKAN_FRAME_TRACE").is_some() {
+        eprintln!("frame trace: {message}");
     }
 }

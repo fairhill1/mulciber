@@ -3,7 +3,7 @@ use std::mem;
 
 use crate::vk;
 
-#[path = "../../vulkan-win32-triangle/src/win32.rs"]
+#[path = "../../vulkan-triangle/src/win32.rs"]
 #[allow(dead_code)]
 mod window;
 

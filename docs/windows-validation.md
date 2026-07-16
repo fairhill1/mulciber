@@ -256,8 +256,8 @@ From the repository root:
 ```powershell
 $env:VK_LOADER_DEBUG = "error,warn"
 cargo run -q -p mulciber-vulkan-info -- --json
-cargo test -p mulciber-vulkan-win32-triangle
-cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
+cargo test -p mulciber-vulkan-triangle
+cargo run -p mulciber-vulkan-triangle -- --frames 600
 ```
 
 Success means exit code zero, a colored triangle was visible, and neither the Mulciber validation

@@ -246,17 +246,17 @@ try {
     Invoke-NativeLogged "cargo" @(
         "test",
         "-p",
-        "mulciber-vulkan-win32-triangle"
+        "mulciber-vulkan-triangle"
     ) "cargo-test.log"
     Invoke-NativeLogged "cargo" @(
         "build",
         "-p",
-        "mulciber-vulkan-win32-triangle"
+        "mulciber-vulkan-triangle"
     ) "cargo-build.log"
 
     # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.
-    $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-win32-triangle.exe"
+    $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-triangle.exe"
     $PipelineCachePath = Join-Path $ArtifactDirectory "pipeline-cache.bin"
     $CacheFrames = [Math]::Min($Frames, 120)
     $env:VK_LOADER_DEBUG = "error,warn"

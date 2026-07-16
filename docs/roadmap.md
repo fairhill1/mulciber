@@ -13,10 +13,10 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [x] Query the default Metal device without a graphics abstraction dependency.
 - [x] Emit a machine-readable Metal capability report.
 - [x] Emit a machine-readable Vulkan capability report with real Win32 presentation data.
-- [ ] Port the Vulkan capability report to X11 on Linux (implemented and Linux-build-verified;
-  physical Vulkan 1.4 surface evidence remains pending).
-- [ ] Port the Vulkan capability report to Wayland on Linux (implemented with a compositor-discovered
-  `wl_surface` and Linux-build-verified; physical Vulkan 1.4 surface evidence remains pending).
+- [x] Port the Vulkan capability report to X11 on Linux (physically exercised through XWayland on
+  KDE Plasma with Vulkan 1.4; native Xorg hardware coverage remains pending).
+- [x] Port the Vulkan capability report to Wayland on Linux (physically exercised natively on KDE
+  Plasma with a compositor-discovered `wl_surface` and Vulkan 1.4).
 - [ ] Run the report with the macOS 26 / Metal 4 runtime and compare results.
 - [x] Pin the Vulkan registry, headers, loader, validation, profiles, and SPIR-V toolchain revisions.
 
@@ -30,7 +30,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   noticeably better; presentation-fence retirement and the forced deferred fallback are physically
   exercised, while a naturally extension-less adapter, multi-display behavior, and the GTX
   1060-class baseline remain outstanding).
-- [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle.
+- [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle (implemented and physically
+  exercised on KDE Plasma/Wayland with server-side decorations, validation-clean rendering,
+  responsive paced resize, minimize/restore, maximize/restore, titlebar close, and clean Vulkan/XDG
+  shutdown; display-change, explicit zero-sized suspension, input, and broader compositor/hardware
+  evidence remain outstanding).
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle.
 - [x] Replace conventional device-idle swapchain retirement with tracked presentation completion
   using presentation fences when available and a deferred-retirement fallback.

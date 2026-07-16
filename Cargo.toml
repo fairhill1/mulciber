@@ -6,7 +6,7 @@ members = [
     "probes/metal-info",
     "probes/metal-triangle",
     "probes/vulkan-info",
-    "probes/vulkan-win32-triangle",
+    "probes/vulkan-triangle",
 ]
 
 [workspace.package]

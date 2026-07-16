@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::platform::{self, Window};
 use crate::vk;
-use crate::win32::Window;
 
 mod options;
 mod pipeline_cache;
@@ -94,11 +94,23 @@ const TRIANGLE_VERTICES: [Vertex; 3] = [
     },
 ];
 const TRIANGLE_INDICES: [u16; 3] = [0, 1, 2];
+#[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn FreeLibrary(module: *mut c_void) -> i32;
     fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     fn LoadLibraryW(name: *const u16) -> *mut c_void;
+}
+
+#[cfg(target_os = "linux")]
+const RTLD_NOW: i32 = 2;
+
+#[cfg(target_os = "linux")]
+#[link(name = "dl")]
+unsafe extern "C" {
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlclose(handle: *mut c_void) -> i32;
 }
 
 #[derive(Debug)]
@@ -132,9 +144,13 @@ pub fn run() -> Result<(), ProbeError> {
     let instance = InstanceContext::new(entry, &window)?;
     let device = DeviceContext::new(instance)?;
     let mut renderer = Renderer::new(device, &window, &options.pipeline_cache)?;
+    let mut rendered_extent = window
+        .client_extent()
+        .map_err(|error| ProbeError(error.to_string()))?;
 
     let render_result = (|| {
         let mut rendered_frames = 0;
+        let mut last_resize_commit = None;
         loop {
             let mut live_resize_error = None;
             let mut frame_limit_reached = false;
@@ -154,6 +170,7 @@ pub fn run() -> Result<(), ProbeError> {
                         });
                     match result {
                         Ok(true) => {
+                            rendered_extent = window.client_extent().unwrap_or(rendered_extent);
                             rendered_frames += 1;
                             frame_limit_reached =
                                 frame_limit.is_some_and(|limit| rendered_frames >= limit.get());
@@ -176,11 +193,30 @@ pub fn run() -> Result<(), ProbeError> {
                 thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            if renderer.render(width, height, false)? {
+            let live_resize = rendered_extent != (width, height);
+            if live_resize
+                && last_resize_commit.is_some_and(|last: Instant| {
+                    last.elapsed() < platform::resize_commit_interval()
+                })
+            {
+                // Wayland swapchain recreation creates fresh images and can otherwise bypass FIFO
+                // backpressure, queuing obsolete surface commits faster than the compositor scans
+                // them out. Keep pumping protocol events and render the newest size at frame pace.
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            let resize_commit_started = live_resize.then(Instant::now);
+            if renderer.render(width, height, live_resize)? {
+                rendered_extent = (width, height);
+                if let Some(started) = resize_commit_started {
+                    last_resize_commit = Some(started);
+                }
                 rendered_frames += 1;
                 if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
                     break;
                 }
+            } else {
+                thread::sleep(Duration::from_millis(1));
             }
         }
         Ok(())
@@ -204,7 +240,7 @@ const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u
 }
 
 struct Entry {
-    library: *mut c_void,
+    _library: VulkanLibrary,
     get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
     enumerate_instance_version: vk::PFN_vkEnumerateInstanceVersion,
     enumerate_instance_layer_properties: vk::PFN_vkEnumerateInstanceLayerProperties,
@@ -214,17 +250,10 @@ struct Entry {
 
 impl Entry {
     fn load() -> Result<Self, ProbeError> {
-        let name: Vec<u16> = "vulkan-1.dll".encode_utf16().chain(Some(0)).collect();
-        // SAFETY: The UTF-16 library name is NUL-terminated.
-        let library = unsafe { LoadLibraryW(name.as_ptr()) };
-        if library.is_null() {
-            return Err(ProbeError(
-                "could not load vulkan-1.dll; install a Vulkan 1.4 driver".into(),
-            ));
-        }
+        let library = VulkanLibrary::open()?;
         // SAFETY: The loaded Vulkan loader exports vkGetInstanceProcAddr with the generated ABI.
         let get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr = unsafe {
-            let address = GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr());
+            let address = library.symbol(c"vkGetInstanceProcAddr");
             cast_address(address, "vkGetInstanceProcAddr")?
         };
         let get = get_instance_proc_addr.expect("required function was checked");
@@ -264,7 +293,7 @@ impl Entry {
         };
 
         let entry = Self {
-            library,
+            _library: library,
             get_instance_proc_addr,
             enumerate_instance_version,
             enumerate_instance_layer_properties,
@@ -309,10 +338,63 @@ impl Entry {
     }
 }
 
-impl Drop for Entry {
+struct VulkanLibrary(*mut c_void);
+
+impl VulkanLibrary {
+    fn open() -> Result<Self, ProbeError> {
+        #[cfg(target_os = "windows")]
+        {
+            let name: Vec<u16> = "vulkan-1.dll".encode_utf16().chain(Some(0)).collect();
+            // SAFETY: The UTF-16 library name is NUL-terminated.
+            let library = unsafe { LoadLibraryW(name.as_ptr()) };
+            if library.is_null() {
+                Err(ProbeError(
+                    "could not load vulkan-1.dll; install a Vulkan 1.4 driver".into(),
+                ))
+            } else {
+                Ok(Self(library))
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: The library name is static and NUL-terminated.
+            let library = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
+            if library.is_null() {
+                Err(ProbeError(
+                    "could not load libvulkan.so.1; install a Vulkan 1.4 loader and driver".into(),
+                ))
+            } else {
+                Ok(Self(library))
+            }
+        }
+    }
+
+    unsafe fn symbol(&self, name: &CStr) -> *mut c_void {
+        #[cfg(target_os = "windows")]
+        {
+            // SAFETY: The module is live and the symbol name is NUL-terminated.
+            unsafe { GetProcAddress(self.0, name.as_ptr()) }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: The loader is live and the symbol name is NUL-terminated.
+            unsafe { dlsym(self.0, name.as_ptr()) }
+        }
+    }
+}
+
+impl Drop for VulkanLibrary {
     fn drop(&mut self) {
-        // SAFETY: The library was loaded by this value and all child Vulkan objects are gone.
-        unsafe { FreeLibrary(self.library) };
+        #[cfg(target_os = "windows")]
+        // SAFETY: The module is owned and every loaded Vulkan child has already been destroyed.
+        unsafe {
+            FreeLibrary(self.0);
+        }
+        #[cfg(target_os = "linux")]
+        // SAFETY: The module is owned and every loaded Vulkan child has already been destroyed.
+        unsafe {
+            dlclose(self.0);
+        }
     }
 }
 
@@ -320,7 +402,7 @@ struct InstanceFns {
     destroy_instance: vk::PFN_vkDestroyInstance,
     create_debug_utils_messenger: vk::PFN_vkCreateDebugUtilsMessengerEXT,
     destroy_debug_utils_messenger: vk::PFN_vkDestroyDebugUtilsMessengerEXT,
-    create_win32_surface: vk::PFN_vkCreateWin32SurfaceKHR,
+    create_surface: platform::SurfaceFunction,
     destroy_surface: vk::PFN_vkDestroySurfaceKHR,
     enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
     get_physical_device_properties: vk::PFN_vkGetPhysicalDeviceProperties,
@@ -348,7 +430,9 @@ impl InstanceFns {
             destroy_instance: load!(c"vkDestroyInstance"),
             create_debug_utils_messenger: load!(c"vkCreateDebugUtilsMessengerEXT"),
             destroy_debug_utils_messenger: load!(c"vkDestroyDebugUtilsMessengerEXT"),
-            create_win32_surface: load!(c"vkCreateWin32SurfaceKHR"),
+            create_surface: unsafe {
+                entry.instance_proc(instance, platform::create_surface_name())
+            }?,
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
@@ -387,7 +471,10 @@ impl InstanceContext {
         let extensions = enumerate_instance_extensions(&entry)?;
         for (name, description) in [
             (c"VK_KHR_surface", "surface extension"),
-            (c"VK_KHR_win32_surface", "Win32 surface extension"),
+            (
+                platform::surface_extension(),
+                platform::surface_description(),
+            ),
             (c"VK_EXT_debug_utils", "debug utilities extension"),
         ] {
             require_name(&extensions, name, description)?;
@@ -413,7 +500,7 @@ impl InstanceContext {
                 && has_extension(vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
         let mut extensions = vec![
             c"VK_KHR_surface".as_ptr(),
-            c"VK_KHR_win32_surface".as_ptr(),
+            platform::surface_extension().as_ptr(),
             c"VK_EXT_debug_utils".as_ptr(),
         ];
         if surface_maintenance1 {
@@ -480,26 +567,19 @@ impl InstanceContext {
             "vkCreateDebugUtilsMessengerEXT",
         )?;
 
-        let surface_info = vk::VkWin32SurfaceCreateInfoKHR {
-            sType: vk::VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-            hinstance: window.instance(),
-            hwnd: window.handle(),
-            ..Default::default()
-        };
-        // SAFETY: Window handles and instance are live; the output is writable.
+        // SAFETY: Native window handles and the Vulkan instance are live; output is writable.
         check(
             unsafe {
-                context
-                    .functions
-                    .create_win32_surface
-                    .expect("loaded function")(
+                platform::create_surface(
+                    context.functions.create_surface,
                     context.handle,
-                    &raw const surface_info,
-                    ptr::null(),
+                    window,
                     &raw mut context.surface,
                 )
             },
-            "vkCreateWin32SurfaceKHR",
+            platform::create_surface_name()
+                .to_str()
+                .expect("Vulkan symbol names are UTF-8"),
         )?;
         Ok(context)
     }

@@ -1,5 +1,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -8,9 +9,12 @@ use crate::vk;
 use super::ProbeError;
 
 const HEADER_SIZE: usize = 32;
+#[cfg(target_os = "windows")]
 const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+#[cfg(target_os = "windows")]
 const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
+#[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
@@ -114,37 +118,66 @@ pub(super) fn replace_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), P
             ))
         })?;
         drop(file);
-        let temporary_wide = temporary
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        let path_wide = path
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        // SAFETY: Both paths are NUL-terminated UTF-16 strings and name sibling files.
-        if unsafe {
-            MoveFileExW(
-                temporary_wide.as_ptr(),
-                path_wide.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        } == 0
-        {
-            return Err(ProbeError(format!(
-                "could not atomically replace pipeline cache {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            )));
-        }
+        replace_temporary(&temporary, path)?;
         Ok(())
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     write_result
+}
+
+#[cfg(target_os = "windows")]
+fn replace_temporary(temporary: &Path, path: &Path) -> Result<(), ProbeError> {
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both paths are NUL-terminated UTF-16 strings and name sibling files.
+    if unsafe {
+        MoveFileExW(
+            temporary_wide.as_ptr(),
+            path_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(ProbeError(format!(
+            "could not atomically replace pipeline cache {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn replace_temporary(temporary: &Path, path: &Path) -> Result<(), ProbeError> {
+    fs::rename(temporary, path).map_err(|error| {
+        ProbeError(format!(
+            "could not atomically replace pipeline cache {}: {error}",
+            path.display()
+        ))
+    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            ProbeError(format!(
+                "could not flush pipeline cache directory {}: {error}",
+                parent.display()
+            ))
+        })
 }
 
 #[cfg(test)]

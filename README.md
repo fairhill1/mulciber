@@ -86,7 +86,8 @@ development and shipping them as assets; Metal maintains its own corruption-resi
 cache for pipelines compiled at runtime.
 
 For a finite validation run, pass `--frames N`. Enable Apple's validation layer with
-`MTL_DEBUG_LAYER=1`.
+`MTL_DEBUG_LAYER=1`. See the [macOS validation runbook](docs/macos-validation.md) before marking
+the platform slice complete; initial physical AppKit lifecycle evidence is recorded there.
 
 On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
 

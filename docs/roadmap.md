@@ -70,8 +70,11 @@ Vulkan evidence completed so far:
 - [x] Resize-dependent offscreen scene color target consumed by a second dynamic-rendering fullscreen
   vignette pass, with explicit color-write-to-sampled-read synchronization (same machine).
 - [x] Capability-checked timestamp query pool with valid-bit wrap handling, fence-safe startup
-  compute and per-frame scene/post timing, plus colored debug-utils labels for the same command
-  regions (same machine).
+  compute and per-frame shadow/scene/post timing, plus colored debug-utils labels for the same
+  command regions (same machine).
+- [x] Persistent 1024x1024 sampled depth map rendered by a depth-only light-space pass, synchronized
+  for filtered fragment sampling by the main scene, and measured as its own diagnostic region (same
+  machine).
 
 Metal evidence completed so far:
 

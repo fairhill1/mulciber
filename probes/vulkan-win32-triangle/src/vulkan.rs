@@ -19,15 +19,18 @@ const STORAGE_VALUE_COUNT: usize = 64;
 const COMPUTE_IMAGE_WIDTH: u32 = 8;
 const COMPUTE_IMAGE_HEIGHT: u32 = 8;
 const COMPUTE_IMAGE_MIP_LEVELS: u32 = 4;
+const SHADOW_MAP_SIZE: u32 = 1024;
 const RGBA8_TEXEL_SIZE: usize = 4;
 const OFFSCREEN_FORMAT: vk::VkFormat = vk::VK_FORMAT_R8G8B8A8_UNORM;
-const GPU_QUERY_COUNT: u32 = 6;
+const GPU_QUERY_COUNT: u32 = 8;
 const COMPUTE_QUERY_START: u32 = 0;
 const COMPUTE_QUERY_END: u32 = 1;
-const SCENE_QUERY_START: u32 = 2;
-const SCENE_QUERY_END: u32 = 3;
-const POST_QUERY_START: u32 = 4;
-const POST_QUERY_END: u32 = 5;
+const SHADOW_QUERY_START: u32 = 2;
+const SHADOW_QUERY_END: u32 = 3;
+const SCENE_QUERY_START: u32 = 4;
+const SCENE_QUERY_END: u32 = 5;
+const POST_QUERY_START: u32 = 6;
+const POST_QUERY_END: u32 = 7;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -122,6 +125,7 @@ struct GpuTimingSummary {
     frame_query_pending: bool,
     reported: bool,
     samples: u64,
+    shadow_total_ms: f64,
     scene_total_ms: f64,
     post_total_ms: f64,
 }
@@ -1295,6 +1299,10 @@ struct Renderer {
     index_buffer: GpuBuffer,
     texture: GpuImage,
     texture_sampler: vk::VkSampler,
+    shadow_map: GpuImage,
+    shadow_sampler: vk::VkSampler,
+    shadow_pipeline_layout: vk::VkPipelineLayout,
+    shadow_pipeline: vk::VkPipeline,
     descriptor_set_layout: vk::VkDescriptorSetLayout,
     descriptor_pool: vk::VkDescriptorPool,
     descriptor_sets: Vec<vk::VkDescriptorSet>,
@@ -1355,6 +1363,10 @@ impl Renderer {
             index_buffer: GpuBuffer::default(),
             texture: GpuImage::default(),
             texture_sampler: ptr::null_mut(),
+            shadow_map: GpuImage::default(),
+            shadow_sampler: ptr::null_mut(),
+            shadow_pipeline_layout: ptr::null_mut(),
+            shadow_pipeline: ptr::null_mut(),
             descriptor_set_layout: ptr::null_mut(),
             descriptor_pool: ptr::null_mut(),
             descriptor_sets: Vec::new(),
@@ -1398,6 +1410,7 @@ impl Renderer {
         renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
         renderer.create_compute_readback_resources()?;
+        renderer.create_shadow_resources()?;
         renderer.create_texture_descriptors()?;
         renderer.create_postprocess_resources()?;
         let (width, height) = window
@@ -1411,6 +1424,9 @@ impl Renderer {
             );
             println!(
                 "Post-processing: offscreen RGBA8 scene target sampled by a fullscreen vignette pass"
+            );
+            println!(
+                "Shadows: {SHADOW_MAP_SIZE}x{SHADOW_MAP_SIZE} sampled depth map from a depth-only pass"
             );
         }
         Ok(renderer)
@@ -1872,6 +1888,163 @@ impl Renderer {
         )
     }
 
+    fn create_shadow_resources(&mut self) -> Result<(), ProbeError> {
+        self.create_shadow_map()?;
+        self.create_shadow_sampler()?;
+        self.create_shadow_pipeline()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_shadow_map(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: self.depth_format,
+            extent: vk::VkExtent3D {
+                width: SHADOW_MAP_SIZE,
+                height: SHADOW_MAP_SIZE,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.shadow_map.handle,
+                )
+            },
+            "vkCreateImage for shadow map",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The shadow image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.shadow_map.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local shadow-map memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.shadow_map.memory,
+                )
+            },
+            "vkAllocateMemory for shadow map",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.shadow_map.handle,
+                    self.shadow_map.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for shadow map",
+        )?;
+        let view_info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.shadow_map.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: self.depth_format,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: depth_subresource_range(),
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The shadow image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const view_info,
+                    ptr::null(),
+                    &raw mut self.shadow_map.view,
+                )
+            },
+            "vkCreateImageView for shadow map",
+        )
+    }
+
+    fn create_shadow_sampler(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: vk::VK_FILTER_NEAREST,
+            minFilter: vk::VK_FILTER_NEAREST,
+            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            maxAnisotropy: 1.0,
+            maxLod: 0.0,
+            borderColor: vk::VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_sampler
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.shadow_sampler,
+                )
+            },
+            "vkCreateSampler for shadow map",
+        )
+    }
+
     fn create_texture_descriptors(&mut self) -> Result<(), ProbeError> {
         let bindings = [
             descriptor_binding(
@@ -1886,6 +2059,11 @@ impl Renderer {
             ),
             descriptor_binding(
                 2,
+                vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+            ),
+            descriptor_binding(
+                3,
                 vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
             ),
@@ -1915,7 +2093,7 @@ impl Renderer {
         let pool_sizes = [
             vk::VkDescriptorPoolSize {
                 type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount: descriptor_count * 2,
+                descriptorCount: descriptor_count * 3,
             },
             vk::VkDescriptorPoolSize {
                 type_: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1984,6 +2162,11 @@ impl Renderer {
                 imageView: self.compute_sampled_view,
                 imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
+            let shadow_map = vk::VkDescriptorImageInfo {
+                sampler: self.shadow_sampler,
+                imageView: self.shadow_map.view,
+                imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
             let buffer = vk::VkDescriptorBufferInfo {
                 buffer: uniform.buffer.handle,
                 offset: 0,
@@ -2016,6 +2199,15 @@ impl Renderer {
                     descriptorCount: 1,
                     descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                     pImageInfo: &raw const generated_image,
+                    ..Default::default()
+                },
+                vk::VkWriteDescriptorSet {
+                    sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    dstSet: descriptor_set,
+                    dstBinding: 3,
+                    descriptorCount: 1,
+                    descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    pImageInfo: &raw const shadow_map,
                     ..Default::default()
                 },
             ];
@@ -2698,10 +2890,17 @@ impl Renderer {
         if !self.gpu_timing.frame_query_pending {
             return Ok(());
         }
-        let [scene_start, scene_end, post_start, post_end] =
-            self.query_values::<4>(SCENE_QUERY_START)?;
+        let [
+            shadow_start,
+            shadow_end,
+            scene_start,
+            scene_end,
+            post_start,
+            post_end,
+        ] = self.query_values::<6>(SHADOW_QUERY_START)?;
         self.gpu_timing.frame_query_pending = false;
         self.gpu_timing.samples += 1;
+        self.gpu_timing.shadow_total_ms += self.timestamp_elapsed_ms(shadow_start, shadow_end);
         self.gpu_timing.scene_total_ms += self.timestamp_elapsed_ms(scene_start, scene_end);
         self.gpu_timing.post_total_ms += self.timestamp_elapsed_ms(post_start, post_end);
         Ok(())
@@ -2719,8 +2918,9 @@ impl Renderer {
         }
         let samples = self.gpu_timing.samples as f64;
         println!(
-            "GPU timing summary: frames={} scene_avg={:.3} ms post_avg={:.3} ms",
+            "GPU timing summary: frames={} shadow_avg={:.3} ms scene_avg={:.3} ms post_avg={:.3} ms",
             self.gpu_timing.samples,
+            self.gpu_timing.shadow_total_ms / samples,
             self.gpu_timing.scene_total_ms / samples,
             self.gpu_timing.post_total_ms / samples
         );
@@ -3671,6 +3871,62 @@ impl Renderer {
         }
     }
 
+    unsafe fn destroy_shadow_resources(&mut self) {
+        let mut shadow_map = mem::take(&mut self.shadow_map);
+        // SAFETY: Shutdown completed all shadow rendering and sampling before teardown.
+        unsafe {
+            if !self.shadow_pipeline.is_null() {
+                self.device
+                    .functions
+                    .destroy_pipeline
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.shadow_pipeline,
+                    ptr::null(),
+                );
+            }
+            if !self.shadow_pipeline_layout.is_null() {
+                self.device
+                    .functions
+                    .destroy_pipeline_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.shadow_pipeline_layout,
+                    ptr::null(),
+                );
+            }
+            if !self.shadow_sampler.is_null() {
+                self.device
+                    .functions
+                    .destroy_sampler
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.shadow_sampler,
+                    ptr::null(),
+                );
+            }
+            self.destroy_image(&mut shadow_map);
+        }
+    }
+
+    unsafe fn destroy_persistent_render_resources(&mut self) {
+        // SAFETY: Shutdown and swapchain teardown completed all descriptor and pipeline use.
+        unsafe {
+            self.destroy_postprocess_resources();
+            if !self.descriptor_pool.is_null() {
+                self.device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            self.destroy_shadow_resources();
+        }
+    }
+
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
         self.wait_for_frame()?;
 
@@ -4373,6 +4629,142 @@ impl Renderer {
                 )
             },
             "vkCreateImageView for depth attachment",
+        )
+    }
+
+    fn create_shadow_pipeline(&mut self) -> Result<(), ProbeError> {
+        let layout_info = vk::VkPipelineLayoutCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_pipeline_layout
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const layout_info,
+                    ptr::null(),
+                    &raw mut self.shadow_pipeline_layout,
+                )
+            },
+            "vkCreatePipelineLayout for shadow pass",
+        )?;
+        let vertex = self.create_shader_module(include_bytes!("shadow.vert.spv"))?;
+        let result = self.create_shadow_graphics_pipeline(vertex);
+        // SAFETY: Pipeline creation has finished reading the shader module.
+        unsafe {
+            self.device
+                .functions
+                .destroy_shader_module
+                .expect("loaded function")(self.device.handle, vertex, ptr::null());
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_shadow_graphics_pipeline(
+        &mut self,
+        vertex: vk::VkShaderModule,
+    ) -> Result<(), ProbeError> {
+        let stage = shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, vertex);
+        let (binding, attributes) = vertex_input_descriptions();
+        let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            vertexBindingDescriptionCount: 1,
+            pVertexBindingDescriptions: &raw const binding,
+            vertexAttributeDescriptionCount: 1,
+            pVertexAttributeDescriptions: attributes.as_ptr(),
+            ..Default::default()
+        };
+        let input_assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            ..Default::default()
+        };
+        let viewport = vk::VkPipelineViewportStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            viewportCount: 1,
+            scissorCount: 1,
+            ..Default::default()
+        };
+        let rasterization = vk::VkPipelineRasterizationStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            polygonMode: vk::VK_POLYGON_MODE_FILL,
+            cullMode: vk::VK_CULL_MODE_NONE as u32,
+            frontFace: vk::VK_FRONT_FACE_CLOCKWISE,
+            depthBiasEnable: vk::VK_TRUE,
+            depthBiasConstantFactor: 1.25,
+            depthBiasSlopeFactor: 1.75,
+            lineWidth: 1.0,
+            ..Default::default()
+        };
+        let multisample = vk::VkPipelineMultisampleStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
+            ..Default::default()
+        };
+        let depth_stencil = vk::VkPipelineDepthStencilStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            depthTestEnable: vk::VK_TRUE,
+            depthWriteEnable: vk::VK_TRUE,
+            depthCompareOp: vk::VK_COMPARE_OP_LESS,
+            minDepthBounds: 0.0,
+            maxDepthBounds: 1.0,
+            ..Default::default()
+        };
+        let blend = vk::VkPipelineColorBlendStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            ..Default::default()
+        };
+        let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
+        let dynamic = vk::VkPipelineDynamicStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount: u32::try_from(dynamic_states.len())
+                .expect("dynamic state count fits u32"),
+            pDynamicStates: dynamic_states.as_ptr(),
+            ..Default::default()
+        };
+        let rendering = vk::VkPipelineRenderingCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            depthAttachmentFormat: self.depth_format,
+            ..Default::default()
+        };
+        let info = vk::VkGraphicsPipelineCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            pNext: (&raw const rendering).cast(),
+            stageCount: 1,
+            pStages: &raw const stage,
+            pVertexInputState: &raw const vertex_input,
+            pInputAssemblyState: &raw const input_assembly,
+            pViewportState: &raw const viewport,
+            pRasterizationState: &raw const rasterization,
+            pMultisampleState: &raw const multisample,
+            pDepthStencilState: &raw const depth_stencil,
+            pColorBlendState: &raw const blend,
+            pDynamicState: &raw const dynamic,
+            layout: self.shadow_pipeline_layout,
+            basePipelineIndex: -1,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: All pipeline state pointers remain live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_graphics_pipelines
+                    .expect("loaded function")(
+                    self.device.handle,
+                    ptr::null_mut(),
+                    1,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.shadow_pipeline,
+                )
+            },
+            "vkCreateGraphicsPipelines for shadow pass",
         )
     }
 
@@ -5139,6 +5531,135 @@ impl Renderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    fn record_shadow_pass(&self) {
+        self.begin_gpu_region(c"shadow", [0.55, 0.35, 0.15, 1.00], SHADOW_QUERY_START);
+        self.image_barrier(
+            self.shadow_map.handle,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            depth_subresource_range(),
+        );
+        let depth_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: self.shadow_map.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            resolveMode: vk::VK_RESOLVE_MODE_NONE,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                depthStencil: vk::VkClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
+        let extent = vk::VkExtent2D {
+            width: SHADOW_MAP_SIZE,
+            height: SHADOW_MAP_SIZE,
+        };
+        let render_area = vk::VkRect2D {
+            offset: vk::VkOffset2D { x: 0, y: 0 },
+            extent,
+        };
+        let rendering = vk::VkRenderingInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
+            renderArea: render_area,
+            layerCount: 1,
+            pDepthAttachment: &raw const depth_attachment,
+            ..Default::default()
+        };
+        let viewport = vk::VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: SHADOW_MAP_SIZE as f32,
+            height: SHADOW_MAP_SIZE as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
+        };
+        let vertex_offset: vk::VkDeviceSize = 0;
+        // SAFETY: The command buffer is recording and all shadow-pass resources are live.
+        unsafe {
+            self.device
+                .functions
+                .cmd_begin_rendering
+                .expect("loaded function")(self.command_buffer, &raw const rendering);
+            self.device
+                .functions
+                .cmd_bind_pipeline
+                .expect("loaded function")(
+                self.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.shadow_pipeline,
+            );
+            self.device
+                .functions
+                .cmd_set_viewport
+                .expect("loaded function")(
+                self.command_buffer, 0, 1, &raw const viewport
+            );
+            self.device
+                .functions
+                .cmd_set_scissor
+                .expect("loaded function")(
+                self.command_buffer, 0, 1, &raw const render_area
+            );
+            self.device
+                .functions
+                .cmd_bind_vertex_buffers
+                .expect("loaded function")(
+                self.command_buffer,
+                0,
+                1,
+                &raw const self.vertex_buffer.handle,
+                &raw const vertex_offset,
+            );
+            self.device
+                .functions
+                .cmd_bind_index_buffer
+                .expect("loaded function")(
+                self.command_buffer,
+                self.index_buffer.handle,
+                0,
+                vk::VK_INDEX_TYPE_UINT16,
+            );
+            self.device
+                .functions
+                .cmd_draw_indexed_indirect
+                .expect("loaded function")(
+                self.command_buffer,
+                self.compute_indirect.handle,
+                0,
+                1,
+                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indexed-indirect stride fits u32"),
+            );
+            self.device
+                .functions
+                .cmd_end_rendering
+                .expect("loaded function")(self.command_buffer);
+        }
+        self.image_barrier(
+            self.shadow_map.handle,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            depth_subresource_range(),
+        );
+        self.end_gpu_region(SHADOW_QUERY_END);
+    }
+
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn record(
         &self,
         image: vk::VkImage,
@@ -5161,7 +5682,8 @@ impl Renderer {
             "vkBeginCommandBuffer",
         )?;
 
-        self.reset_gpu_queries(SCENE_QUERY_START, 4);
+        self.reset_gpu_queries(SHADOW_QUERY_START, 6);
+        self.record_shadow_pass();
         self.begin_gpu_region(c"scene", [0.25, 0.85, 0.35, 1.00], SCENE_QUERY_START);
 
         self.image_barrier(
@@ -5665,17 +6187,7 @@ impl Drop for Renderer {
                 &mut compute_indirect,
                 &mut compute_readback,
             );
-            self.destroy_postprocess_resources();
-            if !self.descriptor_pool.is_null() {
-                self.device
-                    .functions
-                    .destroy_descriptor_pool
-                    .expect("loaded function")(
-                    self.device.handle,
-                    self.descriptor_pool,
-                    ptr::null(),
-                );
-            }
+            self.destroy_persistent_render_resources();
             if !self.texture_sampler.is_null() {
                 self.device
                     .functions
@@ -5863,15 +6375,14 @@ fn choose_depth_format(device: &DeviceContext) -> Result<vk::VkFormat, ProbeErro
                 device.adapter.handle, format, &raw mut properties
             );
         }
-        if properties.optimalTilingFeatures
-            & vk::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT as u32
-            != 0
-        {
+        let required = (vk::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+            | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) as u32;
+        if properties.optimalTilingFeatures & required == required {
             return Ok(format);
         }
     }
     Err(ProbeError(
-        "adapter exposes no supported optimal-tiled depth attachment format".into(),
+        "adapter exposes no supported optimal-tiled sampled depth-attachment format".into(),
     ))
 }
 

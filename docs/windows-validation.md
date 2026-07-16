@@ -174,6 +174,19 @@ skips query creation while preserving `VK_EXT_debug_utils` labels named `compute
 forced 1x 600-frame runs plus the four-size resize smoke completed without validation or loader
 messages. Evidence: `validation-artifacts/windows-vulkan-20260716-120435.zip`.
 
+The shadow-pass slice was validated on 2026-07-16. Depth format selection now requires both
+optimal-tiled depth-attachment and sampled-image support. The renderer creates a persistent
+single-sample 1024x1024 depth image, depth-only dynamic-rendering pipeline, and sampled
+descriptor. Each frame clears and renders an offset light-space triangle projection through the
+same GPU-written indexed-indirect command as the scene, then explicitly transitions depth writes to
+fragment sampled reads. The main fragment shader performs a biased 3x3 depth comparison, while an
+independent `shadow` debug label and timestamp pair feed the shutdown timing summary. The query pool
+expands from six to eight entries to cover that fourth region. The validation
+gate measured 0.020 ms average shadow time on both native 4x and forced 1x paths; their scene/post
+averages were 0.073/0.025 ms and 0.026/0.027 ms respectively. Both 600-frame runs and the four-size
+resize smoke completed without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-121826.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

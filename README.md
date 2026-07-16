@@ -108,14 +108,16 @@ The probe uploads geometry and a checkerboard texture through temporary staging 
 device-local buffers and an RGBA8 image, then renders through GPU-written indexed-indirect drawing
 with fragment texture sampling and capability-selected 4x multisampled color/depth attachments. The
 scene resolves into an offscreen image that a fullscreen vignette pass samples into the swapchain;
-three persistently mapped uniform frame slots provide aspect correction and time. A startup compute
+before that scene pass, a fixed-resolution depth-only pass renders an offset light-space projection
+into a sampled shadow map, and the fragment shader applies a filtered depth comparison. Three
+persistently mapped uniform frame slots provide aspect correction and time. A startup compute
 dispatch writes a device-local storage buffer, the indirect draw command, and an RGBA8 storage image.
 It generates the image's complete mip chain with synchronized GPU blits, verifies the base and 1x1
 tail through host readback, then the fragment shader explicitly samples a generated mip. The probe
 loads `vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is required and
 reported through `VK_EXT_debug_utils`. Colored debug-utils command regions identify the startup
-compute dispatch and each frame's scene and post passes. When the selected queue exposes timestamp
-bits, synchronization2 timestamp queries measure those same regions, account for counter
+compute dispatch and each frame's shadow, scene, and post passes. When the selected queue exposes
+timestamp bits, synchronization2 timestamp queries measure those same regions, account for counter
 wraparound, and print fence-safe startup and shutdown timing summaries; zero-bit queues retain labels
 and run without timing. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

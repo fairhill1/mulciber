@@ -104,9 +104,11 @@ used for cross-machine comparisons and adapter-tier evidence.
 cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
 ```
 
-The probe uploads geometry and a checkerboard texture through temporary staging buffers into
-device-local buffers and an RGBA8 image, then renders through GPU-written indexed-indirect drawing
-with fragment texture sampling and capability-selected 4x multisampled color/depth attachments. The
+The probe uploads geometry and a deterministic 8x8 checkerboard through temporary staging buffers
+into device-local buffers and either a directly sampled BC1 image or an RGBA8 fallback image. It
+copies the selected texture back and verifies every encoded or expanded byte before rendering through
+GPU-written indexed-indirect drawing with fragment texture sampling and capability-selected 4x
+multisampled color/depth attachments. The
 scene resolves into an offscreen image that a fullscreen vignette pass samples into the swapchain;
 before that scene pass, a fixed-resolution depth-only pass renders an offset light-space projection
 into a sampled shadow map, and the fragment shader applies a filtered depth comparison. Three
@@ -129,3 +131,8 @@ to select an artifact, `--rebuild-pipeline-cache` for a cold learning run,
 `--disable-pipeline-cache` for the correctness control. Strict mode also forbids compilation when
 the adapter exposes pipeline creation cache control. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.
+
+Texture selection is independent from the Vulkan baseline. Unset
+`MULCIBER_VULKAN_TEXTURE_MODE` (or set it to `auto`) to prefer BC1 only when the core feature and
+sampled/transfer format roles are all available. Set it to `bc1` for an actionable required-mode
+failure or `rgba8` to force the physically validated fallback.

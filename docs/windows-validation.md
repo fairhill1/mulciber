@@ -200,6 +200,17 @@ a 56,980-byte artifact. A missing strict artifact failed before pipeline creatio
 non-hit feedback. The complete cache matrix emitted no validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-125230.zip`.
 
+The Vulkan BC1 slice was validated on 2026-07-16. The RTX 3060 Ti reported core
+`textureCompressionBC` support and optimal-tiling features `0x0001d401`, satisfying the sampled,
+transfer-destination, and transfer-source roles used by the fixed 8x8 image. Required BC1 mode
+uploaded four blocks, copied all 32 encoded bytes back exactly, and directly sampled the image for
+600 frames on native 4x and forced 1x. Fresh strict 4x/1x processes and the four-size resize smoke
+retained application-cache hits for compute, shadow, scene, and post. Forced RGBA8 mode copied all
+256 expanded bytes back exactly and passed the same 600-frame 4x/1x and resize paths without adding
+a pipeline variant. Captured BC1 and RGBA8 windows showed the same expected repeated checkerboard
+modulation across the triangle. No validation or loader messages were emitted. Evidence:
+`validation-artifacts/windows-vulkan-20260716-130403.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -229,8 +240,9 @@ capability report, full `vulkaninfo`, and Cargo test output. Its runtime matrix 
 cache during the normal 600-frame run, expands it on forced 1x, requires read-only cross-process hits
 on native 4x and forced 1x, performs the resize smoke in strict mode, verifies that strict runs do not
 change the artifact, recovers copies with truncated, incompatible, and payload-damaged data, and
-runs once with caching disabled. It then guides two interactive runs: lifecycle testing closed
-through the title bar, followed by an Alt+F4 shutdown test.
+runs once with caching disabled. It also forces RGBA8 through native 4x, forced 1x, and resize so a
+BC-capable adapter cannot hide fallback regressions. It then guides two interactive runs: lifecycle
+testing closed through the title bar, followed by an Alt+F4 shutdown test.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP
@@ -265,6 +277,12 @@ a diagnostic override, not a normal runtime recommendation.
 Set `MULCIBER_VULKAN_FORCE_MSAA_1X=1` to bypass supported 4x multisampling and exercise the 1x color
 and depth path. The automated validation script runs this finite fallback check in addition to the
 adapter-selected path.
+
+Set `MULCIBER_VULKAN_TEXTURE_MODE` to `auto`, `bc1`, or `rgba8` to select the sampled-texture policy.
+Auto prefers BC1 only when the core compression feature and every sampled/transfer role used by the
+probe are supported. Required BC1 fails with the missing feature names; RGBA8 deliberately bypasses
+compression. The validation script always forces and exercises RGBA8, and it validates required BC1
+when launched with `MULCIBER_VULKAN_TEXTURE_MODE=bc1`.
 
 ## Interactive lifecycle pass
 

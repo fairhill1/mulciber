@@ -305,6 +305,42 @@ try {
             "--require-pipeline-cache-hits"
         ) `
         -LogPrefix "pipeline-cache-strict-resize"
+
+    $PreviousTextureMode = $env:MULCIBER_VULKAN_TEXTURE_MODE
+    $env:MULCIBER_VULKAN_TEXTURE_MODE = "rgba8"
+    try {
+        Invoke-NativeLogged $Probe @(
+            "--frames", $Frames.ToString(),
+            "--pipeline-cache", $PipelineCachePath,
+            "--require-pipeline-cache-hits"
+        ) "texture-rgba8-fallback-4x.log"
+        $env:MULCIBER_VULKAN_FORCE_MSAA_1X = "1"
+        try {
+            Invoke-NativeLogged $Probe @(
+                "--frames", $Frames.ToString(),
+                "--pipeline-cache", $PipelineCachePath,
+                "--require-pipeline-cache-hits"
+            ) "texture-rgba8-fallback-1x.log"
+        }
+        finally {
+            Remove-Item Env:MULCIBER_VULKAN_FORCE_MSAA_1X -ErrorAction SilentlyContinue
+        }
+        Invoke-AutomatedResizeSmoke `
+            -Probe $Probe `
+            -ProbeArguments @(
+                "--pipeline-cache", $PipelineCachePath,
+                "--require-pipeline-cache-hits"
+            ) `
+            -LogPrefix "texture-rgba8-fallback-resize"
+    }
+    finally {
+        if ($null -eq $PreviousTextureMode) {
+            Remove-Item Env:MULCIBER_VULKAN_TEXTURE_MODE -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:MULCIBER_VULKAN_TEXTURE_MODE = $PreviousTextureMode
+        }
+    }
     if ((Get-FileHash -Algorithm SHA256 $PipelineCachePath).Hash -ne $PipelineCacheHash) {
         throw "strict pipeline cache runs modified the read-only artifact"
     }
@@ -390,6 +426,10 @@ try {
         Join-Path $ArtifactDirectory "pipeline-cache-strict-1x.log"
         Join-Path $ArtifactDirectory "pipeline-cache-strict-resize.log"
         Join-Path $ArtifactDirectory "pipeline-cache-strict-resize.stderr.log"
+        Join-Path $ArtifactDirectory "texture-rgba8-fallback-4x.log"
+        Join-Path $ArtifactDirectory "texture-rgba8-fallback-1x.log"
+        Join-Path $ArtifactDirectory "texture-rgba8-fallback-resize.log"
+        Join-Path $ArtifactDirectory "texture-rgba8-fallback-resize.stderr.log"
         Join-Path $ArtifactDirectory "pipeline-cache-truncated-recovery.log"
         Join-Path $ArtifactDirectory "pipeline-cache-incompatible-recovery.log"
         Join-Path $ArtifactDirectory "pipeline-cache-corrupt-recovery.log"

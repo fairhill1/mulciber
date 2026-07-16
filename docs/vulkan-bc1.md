@@ -1,9 +1,8 @@
-# Vulkan BC1 compressed-texture evidence plan
+# Vulkan BC1 compressed-texture evidence
 
-This document defines the evidence required before Mulciber marks Vulkan compressed-texture support
-complete. It is an implementation plan for the native probe, not the eventual public texture-format
-API. The pipeline-cache slice should land first so this work can verify that changing the sampled
-texture path does not silently weaken the cache evidence.
+Status: implemented and physically validated on Windows 11 / Nvidia RTX 3060 Ti on 2026-07-16.
+Evidence: `validation-artifacts/windows-vulkan-20260716-130403.zip`. This is native-probe evidence,
+not the eventual public texture-format API.
 
 ## Goal
 
@@ -189,18 +188,37 @@ feature mask, payload/readback result, MSAA path, resize result where applicable
 feedback, and validation/loader output. Passing Rust tests or validation layers without checking the
 rendered pattern is not visual evidence.
 
-## Documentation updates after evidence lands
+## Recorded result
 
-Only after the matrix is physically recorded:
+The RTX 3060 Ti reported `textureCompressionBC=yes` and BC1 optimal-tiling features `0x0001d401`,
+which include every sampled, transfer-destination, and transfer-source role used by this probe.
+Required BC1 mode uploaded four blocks, round-tripped all 32 encoded bytes exactly, and directly
+sampled the image for 600 frames at native 4x and forced 1x. Fresh strict cache processes reported
+valid application hits for compute, shadow, `scene-4x`/`scene-1x`, and post; the four-extent resize
+smoke retained the same hits. A separate `auto` run selected BC1 from those recorded capability
+facts and retained strict hits.
 
-- add the Vulkan compressed-texture item to `docs/roadmap.md` with the machine and paths exercised;
-- update the resource row and remaining-evidence list in `docs/backend-contracts.md`;
-- add commands, selection diagnostics, exact readback output, and physical results to
-  `docs/windows-validation.md`; and
-- keep `probes/vulkan-info` reporting raw `textureCompressionBC` independently from the triangle
+Forced RGBA8 mode round-tripped all 256 expanded bytes exactly and completed 600-frame native 4x,
+600-frame forced 1x, and automated resize under the same strict cache artifact. Captured BC1 and
+RGBA8 application windows showed the same expected repeated checkerboard modulation across the
+triangle. The complete gate emitted no validation or loader messages.
+
+Pure selection tests cover missing core compression support and each missing used format role:
+`auto` selects RGBA8 and required `bc1` names every missing requirement. No shader, descriptor, or
+pipeline variant was added for the selected texture format.
+
+## Documentation consequences
+
+The recorded matrix supports these repository claims:
+
+- `docs/roadmap.md` records the Vulkan compressed-texture item and exercised paths;
+- `docs/backend-contracts.md` records the established fixed-BC1 invariant and remaining breadth;
+- `docs/windows-validation.md` records controls, diagnostics, exact readback, and physical results;
+  and
+- `probes/vulkan-info` keeps reporting raw `textureCompressionBC` independently from the triangle
   probe's exact BC1 role decision.
 
-The capability ledger should say that Vulkan has direct BC1 sampling evidence. It should not imply
+The capability ledger records direct Vulkan BC1 sampling evidence. It does not imply
 that all BC formats, dimensions, mip layouts, copy shapes, or filtering modes have been exercised.
 
 ## Deliberate non-goals

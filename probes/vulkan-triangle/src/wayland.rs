@@ -2,7 +2,6 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fmt;
 use std::ptr;
-use std::time::Duration;
 
 use crate::vk;
 
@@ -30,28 +29,6 @@ const POLLIN: i16 = 0x0001;
 const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
-
-pub(crate) type SurfaceFunction = vk::PFN_vkCreateWaylandSurfaceKHR;
-
-pub(crate) const fn surface_extension() -> &'static CStr {
-    c"VK_KHR_wayland_surface"
-}
-
-pub(crate) const fn surface_description() -> &'static str {
-    "Wayland surface extension"
-}
-
-pub(crate) const fn create_surface_name() -> &'static CStr {
-    c"vkCreateWaylandSurfaceKHR"
-}
-
-pub(crate) const fn acquire_timeout() -> u64 {
-    0
-}
-
-pub(crate) const fn resize_commit_interval() -> Duration {
-    Duration::from_millis(16)
-}
 
 #[repr(C)]
 struct WlInterface {
@@ -760,7 +737,7 @@ impl Window {
 }
 
 pub(crate) unsafe fn create_surface(
-    function: SurfaceFunction,
+    function: vk::PFN_vkCreateWaylandSurfaceKHR,
     instance: vk::VkInstance,
     window: &Window,
     surface: *mut vk::VkSurfaceKHR,

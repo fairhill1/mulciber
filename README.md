@@ -112,15 +112,21 @@ cargo run -q -p mulciber-vulkan-info -- --platform wayland --json
 The X11 path creates a hidden Xlib window. The Wayland capability path discovers `wl_compositor`
 and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface capability queries.
 Both report paths are implemented and physically exercised on a Vulkan 1.4 Nvidia system: Wayland
-ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe now has an
-XDG-shell Wayland window with server-side decorations, Vulkan presentation, resize pacing, and
-orderly shutdown; its initial physical lifecycle evidence is recorded in the
-[Linux validation runbook](docs/linux-validation.md). X11 presentation, native Xorg coverage,
-display changes, input, and broader Linux hardware/driver evidence remain pending.
+ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe has peer
+Wayland and X11 platform modules selected at runtime: an XDG-shell Wayland window with server-side
+decorations and paced resize commits, and an Xlib window with `WM_DELETE_WINDOW` handling and
+structure-notification resize tracking. Initial physical Wayland lifecycle evidence and initial
+automated XWayland X11 presentation evidence are recorded in the
+[Linux validation runbook](docs/linux-validation.md). Physical X11 lifecycle interaction, native
+Xorg coverage, display changes, input, and broader Linux hardware/driver evidence remain pending.
 
 ```sh
 cargo run -p mulciber-vulkan-triangle -- --frames 600
+cargo run -p mulciber-vulkan-triangle -- --platform x11 --frames 600
 ```
+
+Without `--platform`, the Linux triangle probe selects Wayland when `WAYLAND_DISPLAY` is set and
+X11 when only `DISPLAY` is set.
 
 The probe uploads geometry and a deterministic 8x8 checkerboard through temporary staging buffers
 into device-local buffers and either a directly sampled BC1 image or an RGBA8 fallback image. It

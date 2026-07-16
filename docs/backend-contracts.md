@@ -121,7 +121,9 @@ and hardware breadth remain governed by the viability gates.
 - Physical AppKit resize, minimize/restore, maximize/zoom, display-change, and shutdown evidence.
 - Complete Wayland XDG-shell evidence for display changes, explicit zero-sized suspension, input,
   and broader compositors/hardware; the initial KDE Plasma presentation/resize/lifecycle path is
-  physically established. X11 presentation and native Xorg coverage remain pending.
+  physically established. X11 presentation is implemented as a runtime-selected peer module and has
+  initial automated validation-clean XWayland runs from a locked session; physical X11 lifecycle
+  interaction, unlocked-session pacing, and native Xorg coverage remain pending.
 - Windows baseline hardware and broader driver coverage, including a naturally
   swapchain-maintenance-less adapter.
 - Device-loss, out-of-memory, memory-pressure, suspend/resume, and recovery evidence on every claimed

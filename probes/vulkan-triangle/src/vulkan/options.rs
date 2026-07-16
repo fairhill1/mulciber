@@ -6,6 +6,7 @@ use super::ProbeError;
 #[derive(Debug, Default)]
 pub(super) struct RunOptions {
     pub(super) frame_limit: Option<NonZeroU64>,
+    pub(super) platform: Option<String>,
     pub(super) pipeline_cache: PipelineCacheOptions,
 }
 
@@ -33,6 +34,12 @@ pub(super) fn parse_run_options(
                         .parse::<NonZeroU64>()
                         .map_err(|_| ProbeError("--frames requires a positive integer".into()))?,
                 );
+            }
+            "--platform" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| ProbeError("--platform requires a platform name".into()))?;
+                options.platform = Some(value);
             }
             "--pipeline-cache" => {
                 let value = arguments
@@ -84,6 +91,19 @@ mod tests {
         );
         assert!(options.pipeline_cache.strict);
         assert!(!options.pipeline_cache.rebuild);
+    }
+
+    #[test]
+    fn parses_platform_selection() {
+        let options = parse_run_options(["--platform".into(), "x11".into()])
+            .expect("valid platform selection");
+        assert_eq!(options.platform.as_deref(), Some("x11"));
+        assert!(
+            parse_run_options(["--platform".into()])
+                .expect_err("missing platform name must fail")
+                .to_string()
+                .contains("--platform")
+        );
     }
 
     #[test]

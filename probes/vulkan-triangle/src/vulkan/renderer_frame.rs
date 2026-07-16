@@ -4,7 +4,6 @@ use super::{
     SHADOW_QUERY_START, UINT64_MAX, check, color_subresource_range, command_buffer_submit_info,
     depth_subresource_range, mem, ptr, vk,
 };
-use crate::platform;
 
 impl Renderer {
     #[allow(clippy::too_many_lines)]
@@ -48,7 +47,7 @@ impl Renderer {
                 .expect("loaded function")(
                 self.device.handle,
                 self.swapchain,
-                platform::acquire_timeout(),
+                self.acquire_timeout,
                 self.image_available,
                 acquire_fence,
                 &raw mut image_index,

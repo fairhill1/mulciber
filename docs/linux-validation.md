@@ -11,14 +11,27 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 - Native Wayland and X11-through-XWayland Vulkan 1.4 capability results were recorded on physical
   Linux on 2026-07-16. Native Xorg and broader driver/hardware coverage remain pending.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
-- The peer Vulkan triangle probe now creates a real XDG-shell toplevel, requests server-side
-  decorations, presents through `VK_KHR_wayland_surface`, coalesces configure events, and paces
-  resize swapchain commits. Initial physical presentation and lifecycle evidence was recorded on
-  the same KDE Plasma system. X11 presentation is not implemented.
+- The peer Vulkan triangle probe has runtime-selected Wayland and X11 platform modules behind a
+  `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection. The Wayland module creates a
+  real XDG-shell toplevel, requests server-side decorations, presents through
+  `VK_KHR_wayland_surface`, coalesces configure events, and paces resize swapchain commits.
+  Initial physical presentation and lifecycle evidence was recorded on the same KDE Plasma system
+  before the runtime-dispatch refactor that added the X11 peer; a Wayland re-run through the
+  refactored dispatch path is pending because KDE suspends FIFO presentation entirely on an
+  idle or locked session, which repeatedly prevented remote completion. The physically validated
+  pre-refactor revision stalls identically under the same idle conditions (including against a
+  nested `kwin_wayland --virtual` instance), so the stall is compositor frame starvation rather
+  than a dispatch-refactor regression.
+- The X11 triangle module creates a real Xlib toplevel with `WM_DELETE_WINDOW` registration and
+  structure-notification tracking, waits for the initial `MapNotify`, and presents through
+  `VK_KHR_xlib_surface`. Initial automated presentation evidence was recorded through XWayland on
+  the same system; physical lifecycle interaction and native Xorg coverage remain pending.
 
 The capability results complete the two capability-inventory ports. The Wayland presentation item
 remains incomplete pending display-change, explicit zero-sized suspension, input, and broader
-compositor/hardware evidence.
+compositor/hardware evidence. The X11 presentation item remains incomplete pending physical
+resize/minimize/close interaction, unlocked-session frame pacing, display changes, input, native
+Xorg, and broader hardware evidence.
 
 ## Recorded evidence
 
@@ -59,6 +72,31 @@ resize commits to one frame start per 16 ms. Its physically accepted trace rende
 198 generations, averaged 16.522 ms between callbacks (17.054 ms maximum), and averaged 9.374 ms per
 resize frame (12.536 ms maximum), including 9.121 ms average swapchain recreation. This trace does
 not establish other compositor, refresh-rate, display, GPU, or driver behavior.
+
+### Initial X11 presentation evidence
+
+The X11 presentation implementation was exercised from an uncommitted working tree based on
+revision `f332e15a4b5875b3f71004aeaf3cdf00245b1041`; it is therefore development evidence, not a
+clean revision archive. The environment matched the Wayland presentation runs above (CachyOS,
+Linux 7.1.3, KDE Plasma Wayland session, XWayland 24.1.13, Nvidia RTX 3060 Ti with driver
+610.43.03, Rust 1.97.0), with the X11 path reaching the compositor through XWayland via
+`--platform x11`.
+
+Two automated finite runs completed with exit code zero and no Vulkan validation warnings or
+errors: a 300-frame learning-mode run and a 60-frame `--require-pipeline-cache-hits` run in which
+all four pipelines reported read-only application-cache hits. Both runs exercised the full
+workload — BC1 direct sampling with exact readback, compute-written storage/indirect/image
+resources, mip generation, 4x MSAA, shadow and post passes, GPU timestamps — and the
+`VK_KHR_swapchain_maintenance1` presentation-fence retirement path, then drained rendering and
+presentation work before destroying Vulkan and Xlib objects.
+
+Both runs executed while the desktop session was locked (`loginctl` reported `LockedHint=yes`), so
+the compositor consumed frames at a heavily throttled pace and the non-blocking acquire path
+returned `VK_NOT_READY` for most iterations. This establishes that compositor-suspended
+presentation retries without deadlock or validation noise, but it establishes nothing about
+interactive frame pacing. No window was physically resized, minimized, or closed; shutdown came
+from the `--frames` limit. Physical lifecycle interaction, unlocked pacing, display changes,
+input, multi-display, native Xorg, and broader hardware/driver coverage all remain outstanding.
 
 ## Machine requirements
 
@@ -152,6 +190,27 @@ extent-dependent attachments, continue rendering after restore, and drain both G
 ownership during shutdown. These checks do not substitute for display-change, explicit zero-sized
 suspension, input, multi-display, or broader compositor/hardware coverage.
 
+## X11 presentation run
+
+Run with a reachable X server after installing the Khronos validation layer. From a Wayland
+session, `DISPLAY` reaches XWayland; record that the run is XWayland-provided rather than native
+Xorg:
+
+```sh
+cargo run -p mulciber-vulkan-triangle -- --platform x11
+MULCIBER_VULKAN_RESIZE_TRACE=1 cargo run -p mulciber-vulkan-triangle -- --platform x11
+```
+
+Confirm that the window-manager chrome and the rendered workload are visible and that the session
+is unlocked while pacing is measured. Physically exercise drag resize, minimize/restore,
+maximize/restore, and window-manager close (which must arrive as `WM_DELETE_WINDOW`). Preserve the
+full trace and every validation message. A passing run must remain responsive during resize,
+recreate all extent-dependent attachments, continue rendering after restore, and drain both GPU
+and presentation ownership during shutdown. Xlib routes fatal connection errors through its
+process-exiting default handlers instead of recoverable returns; record any such exit verbatim.
+These checks do not substitute for native Xorg, display-change, input, multi-display, or broader
+compositor/hardware coverage.
+
 ## Success criteria
 
 For each native path:
@@ -177,5 +236,7 @@ Wayland path explicitly rather than inferring it from the desktop session.
 - Any native display or Vulkan error verbatim.
 
 Capability-report evidence alone does not establish swapchain rendering or lifecycle behavior. The
-initial Wayland presentation evidence above establishes only the explicitly listed KDE Plasma run;
-X11 presentation and the remaining Wayland cases are still required.
+initial Wayland presentation evidence above establishes only the explicitly listed KDE Plasma run,
+and the initial X11 presentation evidence establishes only automated locked-session XWayland runs;
+physical X11 lifecycle interaction, native Xorg, and the remaining Wayland cases are still
+required.

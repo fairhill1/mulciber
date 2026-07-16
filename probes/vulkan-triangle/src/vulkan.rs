@@ -138,8 +138,14 @@ pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
     let options = parse_run_options(env::args().skip(1))?;
     let frame_limit = options.frame_limit;
-    let window = Window::new("Mulciber — native Vulkan 1.4", 960, 540, true)
-        .map_err(|error| ProbeError(error.to_string()))?;
+    let window = platform::create_window(
+        "Mulciber — native Vulkan 1.4",
+        960,
+        540,
+        true,
+        options.platform.as_deref(),
+    )
+    .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
     let device = DeviceContext::new(instance)?;
@@ -196,7 +202,7 @@ pub fn run() -> Result<(), ProbeError> {
             let live_resize = rendered_extent != (width, height);
             if live_resize
                 && last_resize_commit.is_some_and(|last: Instant| {
-                    last.elapsed() < platform::resize_commit_interval()
+                    last.elapsed() < platform::resize_commit_interval(&window)
                 })
             {
                 // Wayland swapchain recreation creates fresh images and can otherwise bypass FIFO
@@ -420,7 +426,11 @@ struct InstanceFns {
 }
 
 impl InstanceFns {
-    unsafe fn load(entry: &Entry, instance: vk::VkInstance) -> Result<Self, ProbeError> {
+    unsafe fn load(
+        entry: &Entry,
+        instance: vk::VkInstance,
+        window: &Window,
+    ) -> Result<Self, ProbeError> {
         macro_rules! load {
             ($name:literal) => {
                 unsafe { entry.instance_proc(instance, $name) }?
@@ -431,7 +441,7 @@ impl InstanceFns {
             create_debug_utils_messenger: load!(c"vkCreateDebugUtilsMessengerEXT"),
             destroy_debug_utils_messenger: load!(c"vkDestroyDebugUtilsMessengerEXT"),
             create_surface: unsafe {
-                entry.instance_proc(instance, platform::create_surface_name())
+                entry.instance_proc(instance, platform::create_surface_name(window))
             }?,
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
@@ -472,8 +482,8 @@ impl InstanceContext {
         for (name, description) in [
             (c"VK_KHR_surface", "surface extension"),
             (
-                platform::surface_extension(),
-                platform::surface_description(),
+                platform::surface_extension(window),
+                platform::surface_description(window),
             ),
             (c"VK_EXT_debug_utils", "debug utilities extension"),
         ] {
@@ -500,7 +510,7 @@ impl InstanceContext {
                 && has_extension(vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
         let mut extensions = vec![
             c"VK_KHR_surface".as_ptr(),
-            platform::surface_extension().as_ptr(),
+            platform::surface_extension(window).as_ptr(),
             c"VK_EXT_debug_utils".as_ptr(),
         ];
         if surface_maintenance1 {
@@ -541,7 +551,7 @@ impl InstanceContext {
         )?;
 
         // SAFETY: `handle` is a live instance and names/types are paired in `load`.
-        let functions = unsafe { InstanceFns::load(&entry, handle) }?;
+        let functions = unsafe { InstanceFns::load(&entry, handle, window) }?;
         let mut context = Self {
             _entry: entry,
             functions,
@@ -577,7 +587,7 @@ impl InstanceContext {
                     &raw mut context.surface,
                 )
             },
-            platform::create_surface_name()
+            platform::create_surface_name(window)
                 .to_str()
                 .expect("Vulkan symbol names are UTF-8"),
         )?;
@@ -1411,6 +1421,7 @@ struct Renderer {
     acquire_fence: vk::VkFence,
     retired: Vec<RetiredSwapchain>,
     recreate_after_present: bool,
+    acquire_timeout: u64,
     live_resize_trace: LiveResizeTrace,
 }
 
@@ -1496,6 +1507,7 @@ impl Renderer {
             acquire_fence: ptr::null_mut(),
             retired: Vec::new(),
             recreate_after_present: false,
+            acquire_timeout: platform::acquire_timeout(window),
             live_resize_trace: LiveResizeTrace::from_environment(),
         };
         if renderer.live_resize_trace.is_enabled() {

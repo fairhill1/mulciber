@@ -9,23 +9,23 @@ use crate::vk;
 
 pub(crate) type SurfaceFunction = vk::PFN_vkCreateWin32SurfaceKHR;
 
-pub(crate) const fn surface_extension() -> &'static CStr {
+pub(crate) const fn surface_extension(_window: &Window) -> &'static CStr {
     c"VK_KHR_win32_surface"
 }
 
-pub(crate) const fn surface_description() -> &'static str {
+pub(crate) const fn surface_description(_window: &Window) -> &'static str {
     "Win32 surface extension"
 }
 
-pub(crate) const fn create_surface_name() -> &'static CStr {
+pub(crate) const fn create_surface_name(_window: &Window) -> &'static CStr {
     c"vkCreateWin32SurfaceKHR"
 }
 
-pub(crate) const fn acquire_timeout() -> u64 {
+pub(crate) const fn acquire_timeout(_window: &Window) -> u64 {
     u64::MAX
 }
 
-pub(crate) const fn resize_commit_interval() -> Duration {
+pub(crate) const fn resize_commit_interval(_window: &Window) -> Duration {
     Duration::ZERO
 }
 
@@ -217,6 +217,21 @@ impl Drop for CallbackRegistration<'_> {
         self.state.live_resize_callback.set(None);
         self.state.live_resize_context.set(ptr::null_mut());
     }
+}
+
+pub(crate) fn create_window(
+    title: &str,
+    width: u32,
+    height: u32,
+    visible: bool,
+    requested_platform: Option<&str>,
+) -> Result<Window, WindowError> {
+    if requested_platform.is_some_and(|platform| platform != "windows") {
+        return Err(WindowError(
+            "Windows supports only --platform windows".into(),
+        ));
+    }
+    Window::new(title, width, height, visible)
 }
 
 impl Window {

@@ -4,7 +4,7 @@
 #[path = "win32.rs"]
 mod platform;
 #[cfg(target_os = "linux")]
-#[path = "wayland.rs"]
+#[path = "linux.rs"]
 mod platform;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod vk;

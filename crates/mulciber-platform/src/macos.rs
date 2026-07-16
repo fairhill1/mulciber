@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::{
     PhysicalExtent, PlatformError, PumpStatus, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -14,7 +15,9 @@ type Object = *mut c_void;
 type Selector = *mut c_void;
 
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
+const ASSOCIATION_ASSIGN: usize = 0;
 const UTF8_STRING_ENCODING: usize = 4;
+static CLOSE_STATE_KEY: u8 = 0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -39,8 +42,23 @@ struct Rect {
 
 #[link(name = "objc")]
 unsafe extern "C" {
+    fn class_addMethod(
+        class: Object,
+        name: Selector,
+        implementation: *const c_void,
+        types: *const c_char,
+    ) -> bool;
+    fn objc_allocateClassPair(
+        superclass: Object,
+        name: *const c_char,
+        extra_bytes: usize,
+    ) -> Object;
+    fn objc_disposeClassPair(class: Object);
     fn objc_getClass(name: *const c_char) -> Object;
+    fn objc_getAssociatedObject(object: Object, key: *const c_void) -> Object;
     fn objc_msgSend();
+    fn objc_registerClassPair(class: Object);
+    fn objc_setAssociatedObject(object: Object, key: *const c_void, value: Object, policy: usize);
     fn sel_registerName(name: *const c_char) -> Selector;
 }
 
@@ -145,6 +163,10 @@ impl Application {
             let view = required(object(window.as_ptr(), c"contentView"), "NSView")?;
             void_bool(view.as_ptr(), c"setWantsLayer:", true);
 
+            let close_requested = Rc::new(Cell::new(false));
+            let delegate = create_window_delegate(&close_requested)?;
+            void_object(window.as_ptr(), c"setDelegate:", delegate.as_ptr());
+
             void(window.as_ptr(), c"center");
             void_object(
                 window.as_ptr(),
@@ -160,7 +182,9 @@ impl Application {
                 last_extent: Cell::new(PhysicalExtent::default()),
                 last_scale_factor: Cell::new(0.0),
                 last_metrics: Cell::new(None),
+                close_requested,
                 close_reported: Cell::new(false),
+                delegate,
                 _window_lease: window_lease,
                 _main_thread: PhantomData,
             };
@@ -231,7 +255,9 @@ pub struct Window {
     last_extent: Cell<PhysicalExtent>,
     last_scale_factor: Cell<f64>,
     last_metrics: Cell<Option<WindowMetrics>>,
+    close_requested: Rc<Cell<bool>>,
     close_reported: Cell<bool>,
+    delegate: NonNull<c_void>,
     _window_lease: WindowLease,
     _main_thread: PhantomData<Rc<()>>,
 }
@@ -253,11 +279,7 @@ impl Window {
     }
 
     fn is_open(&self) -> bool {
-        // SAFETY: The window is alive and queried on its creating main thread.
-        unsafe {
-            bool_value(self.raw.as_ptr(), c"isVisible")
-                || bool_value(self.raw.as_ptr(), c"isMiniaturized")
-        }
+        !self.close_requested.get()
     }
 
     fn current_window_metrics(&self) -> Option<WindowMetrics> {
@@ -302,13 +324,17 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        if let Ok(_pool) = AutoreleasePool::new() {
-            // SAFETY: This value owns the `alloc`/`init` window retain and drops on the creating main
-            // thread because its `Rc` marker prevents transfer. Closing twice is permitted by AppKit.
-            unsafe {
-                void(self.raw.as_ptr(), c"close");
-                void(self.raw.as_ptr(), c"release");
-            }
+        // Best-effort pool creation must not guard ownership cleanup: the delegate association
+        // borrows close_requested, so leaving it attached while Rust fields drop would be unsound.
+        let _pool = AutoreleasePool::new().ok();
+        // SAFETY: This value owns the `alloc`/`init` window and delegate retains and drops on the
+        // creating main thread because its `Rc` marker prevents transfer. The delegate is detached
+        // and released before its borrowed state drops. Closing twice is permitted by AppKit.
+        unsafe {
+            void_object(self.raw.as_ptr(), c"setDelegate:", core::ptr::null_mut());
+            void(self.raw.as_ptr(), c"close");
+            void(self.raw.as_ptr(), c"release");
+            void(self.delegate.as_ptr(), c"release");
         }
     }
 }
@@ -350,6 +376,102 @@ struct WindowLease {
 impl Drop for WindowLease {
     fn drop(&mut self) {
         self.live.set(false);
+    }
+}
+
+fn create_window_delegate(
+    close_requested: &Rc<Cell<bool>>,
+) -> Result<NonNull<c_void>, PlatformError> {
+    let delegate_class = window_delegate_class()?;
+    // SAFETY: The dynamically registered class inherits NSObject initialization. The association is
+    // non-owning and remains valid because Window retains both the delegate and the Rc allocation.
+    unsafe {
+        let delegate = required(
+            object(object(delegate_class, c"alloc"), c"init"),
+            "Mulciber AppKit window delegate",
+        )?;
+        objc_setAssociatedObject(
+            delegate.as_ptr(),
+            (&raw const CLOSE_STATE_KEY).cast(),
+            Rc::as_ptr(close_requested).cast_mut().cast(),
+            ASSOCIATION_ASSIGN,
+        );
+        Ok(delegate)
+    }
+}
+
+fn window_delegate_class() -> Result<Object, PlatformError> {
+    static CLASS: OnceLock<Result<usize, PlatformError>> = OnceLock::new();
+    CLASS
+        .get_or_init(|| {
+            // SAFETY: Registration runs once. The superclass and selectors have process lifetime,
+            // and each method implementation matches the registered Objective-C type encoding.
+            unsafe {
+                let existing = objc_getClass(c"MulciberPlatformWindowDelegate_v1".as_ptr());
+                if !existing.is_null() {
+                    return Ok(existing as usize);
+                }
+                let delegate = objc_allocateClassPair(
+                    class(c"NSObject")?,
+                    c"MulciberPlatformWindowDelegate_v1".as_ptr(),
+                    0,
+                );
+                if delegate.is_null() {
+                    return Err(PlatformError::new(
+                        "could not allocate the AppKit window delegate class",
+                    ));
+                }
+                let should_close_added = class_addMethod(
+                    delegate,
+                    selector(c"windowShouldClose:"),
+                    window_should_close as *const c_void,
+                    c"B@:@".as_ptr(),
+                );
+                let will_close_added = class_addMethod(
+                    delegate,
+                    selector(c"windowWillClose:"),
+                    window_will_close as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                if !should_close_added || !will_close_added {
+                    objc_disposeClassPair(delegate);
+                    return Err(PlatformError::new(
+                        "could not install AppKit window delegate methods",
+                    ));
+                }
+                objc_registerClassPair(delegate);
+                Ok(delegate as usize)
+            }
+        })
+        .clone()
+        .map(|class| class as Object)
+}
+
+unsafe extern "C" fn window_should_close(
+    delegate: Object,
+    _selector: Selector,
+    _window: Object,
+) -> bool {
+    unsafe { mark_close_requested(delegate) };
+    true
+}
+
+unsafe extern "C" fn window_will_close(
+    delegate: Object,
+    _selector: Selector,
+    _notification: Object,
+) {
+    unsafe { mark_close_requested(delegate) };
+}
+
+unsafe fn mark_close_requested(delegate: Object) {
+    let state = unsafe {
+        objc_getAssociatedObject(delegate, (&raw const CLOSE_STATE_KEY).cast()).cast::<Cell<bool>>()
+    };
+    if let Some(state) = NonNull::new(state) {
+        // SAFETY: create_window_delegate associates Rc::as_ptr while Window keeps that allocation
+        // alive and detaches the delegate before releasing its final reference.
+        unsafe { state.as_ref() }.set(true);
     }
 }
 
@@ -471,6 +593,13 @@ unsafe fn bool_isize(receiver: Object, name: &CStr, value: isize) -> bool {
     unsafe { function(receiver, selector(name), value) }
 }
 
+#[cfg(test)]
+unsafe fn bool_object(receiver: Object, name: &CStr, value: Object) -> bool {
+    let function: unsafe extern "C" fn(Object, Selector, Object) -> bool =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), value) }
+}
+
 unsafe fn usize_value(receiver: Object, name: &CStr) -> usize {
     let function: unsafe extern "C" fn(Object, Selector) -> usize =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
@@ -558,9 +687,15 @@ fn physical_dimension(value: f64) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use crate::{PhysicalExtent, WindowEvent, WindowMetrics, WindowRevision};
 
-    use super::{WindowSlot, metrics_transition, physical_dimension};
+    use super::{
+        WindowSlot, bool_object, create_window_delegate, metrics_transition, physical_dimension,
+        void,
+    };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
         WindowMetrics::new(PhysicalExtent::new(1920, 1080), 2.0, revision)
@@ -604,5 +739,25 @@ mod tests {
         assert!(slot.claim().is_err());
         drop(lease);
         assert!(slot.claim().is_ok());
+    }
+
+    #[test]
+    fn window_delegate_records_a_close_request() {
+        let close_requested = Rc::new(Cell::new(false));
+        let delegate =
+            create_window_delegate(&close_requested).expect("delegate creation should succeed");
+
+        // SAFETY: The dynamically registered method accepts an unused object argument. The test then
+        // balances the delegate's owned allocation.
+        unsafe {
+            assert!(bool_object(
+                delegate.as_ptr(),
+                c"windowShouldClose:",
+                core::ptr::null_mut(),
+            ));
+            void(delegate.as_ptr(), c"release");
+        }
+
+        assert!(close_requested.get());
     }
 }

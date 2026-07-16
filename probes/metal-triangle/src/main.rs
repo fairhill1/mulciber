@@ -17,7 +17,7 @@ mod macos {
 
     use mulciber_platform::{
         Application, LogicalSize, PhysicalExtent, PumpStatus, Window, WindowDescriptor,
-        WindowEvent, integration,
+        WindowEvent, WindowMetrics, integration,
     };
 
     use crate::objc::{self, AutoreleasePool, ClearColor, Object, Origin3, Size, Size3};
@@ -402,12 +402,17 @@ mod macos {
         fn render_loop(&mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
             let mut rendered_frames = 0;
             loop {
-                let (status, redraw_requested) = self.pump_events()?;
+                let (status, redraw_metrics) = self.pump_events()?;
                 if status == PumpStatus::Exit {
                     break;
                 }
                 let _pool = AutoreleasePool::new();
-                if redraw_requested && self.render()? {
+                let rendered = if let Some(metrics) = redraw_metrics {
+                    self.render(metrics)?
+                } else {
+                    false
+                };
+                if rendered {
                     rendered_frames += 1;
                     if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
                         break;
@@ -419,23 +424,22 @@ mod macos {
             Ok(())
         }
 
-        fn pump_events(&mut self) -> Result<(PumpStatus, bool), ProbeError> {
-            let mut redraw_requested = false;
+        fn pump_events(&mut self) -> Result<(PumpStatus, Option<WindowMetrics>), ProbeError> {
+            let mut redraw_metrics = None;
             let status = self
                 .application
                 .pump_events(&self.window, |event| {
-                    redraw_requested |= matches!(event, WindowEvent::RedrawRequested(_));
+                    if let WindowEvent::RedrawRequested(metrics) = event {
+                        redraw_metrics = Some(metrics);
+                    }
                 })
                 .map_err(|error| ProbeError(format!("pump platform events: {error}")))?;
-            Ok((status, redraw_requested))
+            Ok((status, redraw_metrics))
         }
 
-        fn render(&mut self) -> Result<bool, ProbeError> {
+        fn render(&mut self, metrics: WindowMetrics) -> Result<bool, ProbeError> {
             // SAFETY: Metal and AppKit objects are alive and each selector matches the SDK ABI.
             unsafe {
-                let Some(metrics) = self.window.rendering_metrics() else {
-                    return Ok(false);
-                };
                 let extent = metrics.extent();
                 if extent != self.drawable_size {
                     self.drawable_size = extent;

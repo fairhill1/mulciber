@@ -138,6 +138,17 @@ repeats the physical lifecycle pass through the extracted boundary on the single
 not establish display-change or multi-display behavior, and the console output was observed during
 development rather than preserved in a new validation archive.
 
+A later development tree based on `d68817b0635af3d5bdd634a6b0d215190603b317` replaced the initial
+visibility-based closure check with an owned AppKit delegate, allowing hidden or ordered-out windows
+to suspend rather than terminate. It also made the metrics delivered with `RedrawRequested` the Metal
+probe's direct render input. A validation-enabled `--frames 3` smoke run loaded four strict
+binary-archive hits, submitted three frames at 0.879 ms average GPU frame time, and exited zero. A
+targeted validation-enabled run then abandoned one acquired drawable, recovered, submitted 120 later
+frames at 0.951 ms average GPU frame time, and exited zero. Neither emitted validation output beyond
+the enabled banner. This is automated construction, rendering, and exceptional non-submission evidence
+only; hide/restore and titlebar close must be repeated physically before claiming those behaviors for
+the delegate-backed revision.
+
 ### macOS 26 / Metal 4 capability comparison
 
 On 2026-07-16 the capability report ran on a second machine: a MacBook Air with an Apple M5

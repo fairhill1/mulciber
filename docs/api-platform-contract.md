@@ -41,6 +41,9 @@ during nested or modal event processing. The current AppKit path emits `RedrawRe
 events are dispatched whenever the surface is drawable. A later Win32 implementation must prove that
 the same callback shape can preserve the already validated live-resize redraw behavior.
 
+The metrics carried by `RedrawRequested` are the authoritative input for that render opportunity. The
+Metal probe consumes them directly rather than querying the window a second time after event delivery.
+
 This is not yet a commitment that polling is the final runtime API. Gate 5 may add an owning runtime
 loop above this layer, but it must not invalidate the lower-level game-controlled path without a
 written comparison.
@@ -68,9 +71,10 @@ only the graphics backend knows when presentation-dependent resources have actua
 generation. The future graphics surface will consume window revisions alongside native acquisition
 results and report its own generation to the game.
 
-Minimized, fully occluded, and zero-sized AppKit windows currently produce `RenderingSuspended` and
-no redraw request. Returning to a drawable state produces `RenderingResumed` with current window
-metrics.
+Minimized, hidden/ordered-out, fully occluded, and zero-sized AppKit windows currently produce
+`RenderingSuspended` and no redraw request. Returning to a drawable state produces
+`RenderingResumed` with current window metrics. AppKit delegate callbacks track an actual close
+request separately, so temporary invisibility is not interpreted as termination.
 This encodes the policy already exercised by the Metal probe; the Wayland explicit-zero-size case and
 other compositors may refine the vocabulary before support.
 
@@ -88,9 +92,11 @@ API will accept the opaque target directly.
 ### Failure and destruction
 
 Creation and event pumping return contextual `PlatformError` values. `Window` owns the retain returned
-by `NSWindow` initialization, closes the window, and releases that retain on its creating thread.
-Graphics shutdown still occurs explicitly before the probe and window are dropped. Stable recovery
-categories remain open until the error model is extracted across both graphics backends.
+by `NSWindow` initialization and an owned delegate whose non-owning close-state association remains
+bounded by the window. Destruction detaches and releases the delegate, closes the window, and releases
+the window retain on its creating thread. Graphics shutdown still occurs explicitly before the probe
+and window are dropped. Stable recovery categories remain open until the error model is extracted
+across both graphics backends.
 
 ## Initial validation
 
@@ -115,6 +121,15 @@ reported 0.917 ms average GPU frame time and exited zero with no Metal validatio
 enabled banner; no visual artifacts or lag were reported. This is single-display development-tree
 evidence, not display-change or multi-display coverage, and its console output was not archived.
 
+A later development tree based on the extracted revision replaced visibility-based closure detection
+with delegate-backed close tracking and made event-delivered metrics authoritative in the Metal
+consumer. A three-frame validation-enabled smoke run loaded four strict binary-archive hits, reported
+0.879 ms average GPU frame time, and exited zero. A targeted run then abandoned one acquired drawable,
+recovered, submitted 120 later frames at 0.951 ms average GPU frame time, and exited zero. Both runs
+loaded four strict hits and emitted no Metal validation output beyond the enabled banner. They validate
+construction, rendering, and the exceptional non-submission path after the change; they are not
+physical hide/restore or titlebar-close evidence for the new delegate path.
+
 ## Required next evidence
 
 1. Implement the same public types with peer Win32, Wayland, and X11 modules and migrate the Vulkan
@@ -123,7 +138,8 @@ evidence, not display-change or multi-display coverage, and its console output w
    once the runtime contract is tested.
 3. Prove scale/display changes advance window revisions correctly on hardware with the necessary
    displays.
-4. Define the graphics-owned presentation generation and replace the hidden AppKit bridge's probe use
+4. Physically repeat hide/restore and titlebar close after the delegate-backed close-tracking change.
+5. Define the graphics-owned presentation generation and replace the hidden AppKit bridge's probe use
    with safe `mulciber` surface creation when the graphics extraction begins.
-5. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
+6. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
    other Gate 2 targets in the extraction plan.

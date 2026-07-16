@@ -31,7 +31,9 @@ no credit in the Metal-only and Vulkan-only viability evaluations.
 The first extracted boundary moves AppKit application, window, event, and drawable-metrics ownership
 into `mulciber-platform`; the existing full Metal probe is its first executable consumer. The
 [experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
-peer-platform work. `mulciber`'s graphics API remains empty.
+peer-platform work. The [first graphics-slice flow](docs/api-first-slice.md) reviews the intended
+outside-in application experience against both native call sequences without committing graphics
+type names. `mulciber`'s graphics API remains empty.
 
 ## Direction
 

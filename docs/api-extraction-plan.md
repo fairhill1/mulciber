@@ -15,6 +15,10 @@ The first implementation record is the
 application/window lifecycle into `mulciber-platform` and keeps the full Metal probe as its initial
 executable consumer while peer platform and graphics extraction continue.
 
+The complete application-facing ownership and frame flow is sketched separately in the
+[first graphics slice](api-first-slice.md). Its graphics names are intentionally non-compiling
+placeholders; the object relationships and observable lifecycle outcomes are the review target.
+
 ## Objective
 
 Extract one unified game-facing path through `mulciber-platform` and `mulciber` that can:

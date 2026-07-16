@@ -132,7 +132,7 @@ first-class support claim.
 
 - [x] Define the experimental-extraction threshold, unresolved design decisions, comparison targets,
   tasks, measurements, single-backend scoring, and stop conditions.
-- [ ] Write the complete application-facing flow before committing to public type names, covering
+- [x] Write the complete application-facing flow before committing to public type names, covering
   window creation, capability requests, device/surface creation, rendering, resize/suspension, frame
   completion, and fallible shutdown.
 - [ ] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame

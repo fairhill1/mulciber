@@ -299,9 +299,11 @@ struct InstanceContext {
     handle: vk::VkInstance,
     debug_messenger: vk::VkDebugUtilsMessengerEXT,
     surface: vk::VkSurfaceKHR,
+    surface_maintenance1: bool,
 }
 
 impl InstanceContext {
+    #[allow(clippy::too_many_lines)]
     fn new(entry: Entry, window: &Window) -> Result<Self, ProbeError> {
         require_name(
             &enumerate_instance_layers(&entry)?,
@@ -327,11 +329,31 @@ impl InstanceContext {
             ..Default::default()
         };
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
-        let extensions = [
+        let has_extension = |name: &'static [u8]| {
+            extensions
+                .iter()
+                .any(|candidate| candidate == name.strip_suffix(&[0]).unwrap())
+        };
+        let surface_maintenance1 =
+            has_extension(vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)
+                && has_extension(vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+        let mut extensions = vec![
             c"VK_KHR_surface".as_ptr(),
             c"VK_KHR_win32_surface".as_ptr(),
             c"VK_EXT_debug_utils".as_ptr(),
         ];
+        if surface_maintenance1 {
+            extensions.push(
+                vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+            extensions.push(
+                vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+        }
         let debug_info = debug_messenger_info();
         let create_info = vk::VkInstanceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -365,6 +387,7 @@ impl InstanceContext {
             handle,
             debug_messenger: ptr::null_mut(),
             surface: ptr::null_mut(),
+            surface_maintenance1,
         };
 
         // SAFETY: The callback and create info live for the duration of the call.
@@ -435,6 +458,7 @@ impl Drop for InstanceContext {
 struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
+    swapchain_maintenance1: bool,
 }
 
 struct DeviceFns {
@@ -473,6 +497,7 @@ struct DeviceFns {
     destroy_fence: vk::PFN_vkDestroyFence,
     wait_for_fences: vk::PFN_vkWaitForFences,
     reset_fences: vk::PFN_vkResetFences,
+    get_fence_status: vk::PFN_vkGetFenceStatus,
     queue_submit2: vk::PFN_vkQueueSubmit2,
 }
 
@@ -529,6 +554,7 @@ impl DeviceFns {
             destroy_fence: load!(c"vkDestroyFence"),
             wait_for_fences: load!(c"vkWaitForFences"),
             reset_fences: load!(c"vkResetFences"),
+            get_fence_status: load!(c"vkGetFenceStatus"),
             queue_submit2: load!(c"vkQueueSubmit2"),
         })
     }
@@ -559,13 +585,29 @@ impl DeviceContext {
             dynamicRendering: vk::VK_TRUE,
             ..Default::default()
         };
-        let extensions = [vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
+        let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+            swapchainMaintenance1: vk::VK_TRUE,
+            ..Default::default()
+        };
+        if adapter.swapchain_maintenance1 {
+            features13.pNext = (&raw mut maintenance1).cast();
+        }
+        let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
+        if adapter.swapchain_maintenance1 {
+            extensions.push(
+                vk::VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+        }
         let device_info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             pNext: (&raw mut features13).cast(),
             queueCreateInfoCount: 1,
             pQueueCreateInfos: &raw const queue_info,
-            enabledExtensionCount: 1,
+            enabledExtensionCount: u32::try_from(extensions.len())
+                .expect("device extension count fits u32"),
             ppEnabledExtensionNames: extensions.as_ptr(),
             ..Default::default()
         };
@@ -700,14 +742,35 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                 .get_physical_device_properties
                 .expect("loaded function")(device, &raw mut properties);
         }
-        if properties.apiVersion < API_VERSION_1_4 || !supports_swapchain(instance, device)? {
+        let extensions = device_extensions(instance, device)?;
+        if properties.apiVersion < API_VERSION_1_4
+            || !extensions.iter().any(|name| {
+                name == vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME
+                    .strip_suffix(&[0])
+                    .unwrap()
+            })
+        {
             continue;
         }
+
+        let maintenance_extension = instance.surface_maintenance1
+            && extensions.iter().any(|name| {
+                name == vk::VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+                    .strip_suffix(&[0])
+                    .unwrap()
+            });
+        let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+            ..Default::default()
+        };
 
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
             ..Default::default()
         };
+        if maintenance_extension {
+            features13.pNext = (&raw mut maintenance1).cast();
+        }
         let mut features = vk::VkPhysicalDeviceFeatures2 {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
             pNext: (&raw mut features13).cast(),
@@ -777,6 +840,8 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                     Adapter {
                         handle: device,
                         queue_family: u32::try_from(index).expect("queue family index fits u32"),
+                        swapchain_maintenance1: maintenance_extension
+                            && maintenance1.swapchainMaintenance1 == vk::VK_TRUE,
                     },
                     fixed_c_string(&properties.deviceName),
                 ));
@@ -790,13 +855,21 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         ProbeError("no Vulkan 1.4 graphics/present adapter satisfies Zinc's baseline".into())
     })?;
     println!("Vulkan adapter: {}", String::from_utf8_lossy(&name));
+    println!(
+        "Swapchain retirement: {}",
+        if adapter.swapchain_maintenance1 {
+            "VK_KHR_swapchain_maintenance1 presentation fences"
+        } else {
+            "deferred reacquisition fallback"
+        }
+    );
     Ok(adapter)
 }
 
-fn supports_swapchain(
+fn device_extensions(
     instance: &InstanceContext,
     device: vk::VkPhysicalDevice,
-) -> Result<bool, ProbeError> {
+) -> Result<Vec<Vec<u8>>, ProbeError> {
     let enumerate = instance
         .functions
         .enumerate_device_extensions
@@ -815,7 +888,8 @@ fn supports_swapchain(
     )?;
     Ok(properties
         .iter()
-        .any(|property| fixed_c_string(&property.extensionName) == c"VK_KHR_swapchain".to_bytes()))
+        .map(|property| fixed_c_string(&property.extensionName))
+        .collect())
 }
 
 fn debug_messenger_info() -> vk::VkDebugUtilsMessengerCreateInfoEXT {
@@ -858,6 +932,16 @@ unsafe extern "C" fn debug_callback(
     vk::VK_FALSE
 }
 
+struct RetiredSwapchain {
+    handle: vk::VkSwapchainKHR,
+    views: Vec<vk::VkImageView>,
+    pipeline_layout: vk::VkPipelineLayout,
+    pipeline: vk::VkPipeline,
+    render_finished: Vec<vk::VkSemaphore>,
+    present_fences: Vec<vk::VkFence>,
+    present_pending: Vec<bool>,
+}
+
 struct Renderer {
     device: DeviceContext,
     swapchain: vk::VkSwapchainKHR,
@@ -871,7 +955,13 @@ struct Renderer {
     command_buffer: vk::VkCommandBuffer,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
+    present_fences: Vec<vk::VkFence>,
+    present_pending: Vec<bool>,
+    presented: Vec<bool>,
     frame_fence: vk::VkFence,
+    frame_pending: bool,
+    acquire_fence: vk::VkFence,
+    retired: Vec<RetiredSwapchain>,
     recreate_after_present: bool,
 }
 
@@ -890,7 +980,13 @@ impl Renderer {
             command_buffer: ptr::null_mut(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
+            present_fences: Vec::new(),
+            present_pending: Vec::new(),
+            presented: Vec::new(),
             frame_fence: ptr::null_mut(),
+            frame_pending: false,
+            acquire_fence: ptr::null_mut(),
+            retired: Vec::new(),
             recreate_after_present: false,
         };
         renderer.create_frame_resources()?;
@@ -982,21 +1078,30 @@ impl Renderer {
                 )
             },
             "vkCreateFence",
-        )
+        )?;
+        if !self.device.adapter.swapchain_maintenance1 {
+            let acquire_fence_info = vk::VkFenceCreateInfo {
+                sType: vk::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                ..Default::default()
+            };
+            // SAFETY: Device/create info are valid; output is writable.
+            check(
+                unsafe {
+                    self.device.functions.create_fence.expect("loaded function")(
+                        self.device.handle,
+                        &raw const acquire_fence_info,
+                        ptr::null(),
+                        &raw mut self.acquire_fence,
+                    )
+                },
+                "vkCreateFence for image acquisition",
+            )?;
+        }
+        Ok(())
     }
 
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
-        // SAFETY: Waiting makes all swapchain-dependent resources idle before destruction.
-        check(
-            unsafe {
-                self.device
-                    .functions
-                    .device_wait_idle
-                    .expect("loaded function")(self.device.handle)
-            },
-            "vkDeviceWaitIdle",
-        )?;
-        self.destroy_swapchain_resources();
+        self.wait_for_frame()?;
 
         let mut capabilities = vk::VkSurfaceCapabilitiesKHR::default();
         // SAFETY: Adapter/surface are live and output storage is writable.
@@ -1039,8 +1144,10 @@ impl Renderer {
             compositeAlpha: composite_alpha,
             presentMode: vk::VK_PRESENT_MODE_FIFO_KHR,
             clipped: vk::VK_TRUE,
+            oldSwapchain: self.swapchain,
             ..Default::default()
         };
+        let mut swapchain = ptr::null_mut();
         // SAFETY: Device, surface, and create info are valid; output is writable.
         check(
             unsafe {
@@ -1051,22 +1158,26 @@ impl Renderer {
                     self.device.handle,
                     &raw const create_info,
                     ptr::null(),
-                    &raw mut self.swapchain,
+                    &raw mut swapchain,
                 )
             },
             "vkCreateSwapchainKHR",
         )?;
+        self.retire_current_swapchain();
+        self.swapchain = swapchain;
         self.format = format.format;
         self.extent = extent;
         self.images = self.swapchain_images()?;
-        self.create_present_semaphores()?;
+        self.create_present_resources()?;
+        self.presented = vec![false; self.images.len()];
         self.views = self.create_image_views()?;
         self.create_pipeline()?;
+        self.collect_retired_swapchains()?;
         self.recreate_after_present = false;
         Ok(())
     }
 
-    fn create_present_semaphores(&mut self) -> Result<(), ProbeError> {
+    fn create_present_resources(&mut self) -> Result<(), ProbeError> {
         let info = vk::VkSemaphoreCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
             ..Default::default()
@@ -1105,6 +1216,53 @@ impl Renderer {
                 return Err(error);
             }
             self.render_finished.push(semaphore);
+        }
+        if self.device.adapter.swapchain_maintenance1 {
+            let fence_info = vk::VkFenceCreateInfo {
+                sType: vk::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                ..Default::default()
+            };
+            self.present_fences.reserve(self.images.len());
+            for _ in &self.images {
+                let mut fence = ptr::null_mut();
+                // SAFETY: Device/create info are valid and the output handle is writable.
+                if let Err(error) = check(
+                    unsafe {
+                        self.device.functions.create_fence.expect("loaded function")(
+                            self.device.handle,
+                            &raw const fence_info,
+                            ptr::null(),
+                            &raw mut fence,
+                        )
+                    },
+                    "vkCreateFence for presentation",
+                ) {
+                    // SAFETY: The new swapchain has not been used, so these objects are idle.
+                    unsafe {
+                        for fence in self.present_fences.drain(..) {
+                            self.device
+                                .functions
+                                .destroy_fence
+                                .expect("loaded function")(
+                                self.device.handle, fence, ptr::null()
+                            );
+                        }
+                        for semaphore in self.render_finished.drain(..) {
+                            self.device
+                                .functions
+                                .destroy_semaphore
+                                .expect("loaded function")(
+                                self.device.handle,
+                                semaphore,
+                                ptr::null(),
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
+                self.present_fences.push(fence);
+            }
+            self.present_pending = vec![false; self.images.len()];
         }
         Ok(())
     }
@@ -1452,15 +1610,10 @@ impl Renderer {
         )
     }
 
-    fn render(&mut self, width: u32, height: u32) -> Result<bool, ProbeError> {
-        if self.swapchain.is_null()
-            || self.extent.width != width
-            || self.extent.height != height
-            || self.recreate_after_present
-        {
-            self.recreate_swapchain(width, height)?;
+    fn wait_for_frame(&mut self) -> Result<(), ProbeError> {
+        if !self.frame_pending {
+            return Ok(());
         }
-
         // SAFETY: The fence is live and belongs to this device.
         check(
             unsafe {
@@ -1475,9 +1628,168 @@ impl Renderer {
                     UINT64_MAX,
                 )
             },
-            "vkWaitForFences",
+            "vkWaitForFences for frame",
         )?;
+        self.frame_pending = false;
+        Ok(())
+    }
+
+    fn wait_and_reset_fence(
+        &self,
+        fence: vk::VkFence,
+        description: &str,
+    ) -> Result<(), ProbeError> {
+        // SAFETY: The fence is live, and the caller only resets it after its signal was observed.
+        check(
+            unsafe {
+                self.device
+                    .functions
+                    .wait_for_fences
+                    .expect("loaded function")(
+                    self.device.handle,
+                    1,
+                    &raw const fence,
+                    vk::VK_TRUE,
+                    UINT64_MAX,
+                )
+            },
+            &format!("vkWaitForFences for {description}"),
+        )?;
+        check(
+            unsafe {
+                self.device.functions.reset_fences.expect("loaded function")(
+                    self.device.handle,
+                    1,
+                    &raw const fence,
+                )
+            },
+            &format!("vkResetFences for {description}"),
+        )
+    }
+
+    fn retire_current_swapchain(&mut self) {
+        if self.swapchain.is_null() {
+            return;
+        }
+        self.retired.push(RetiredSwapchain {
+            handle: mem::replace(&mut self.swapchain, ptr::null_mut()),
+            views: mem::take(&mut self.views),
+            pipeline_layout: mem::replace(&mut self.pipeline_layout, ptr::null_mut()),
+            pipeline: mem::replace(&mut self.pipeline, ptr::null_mut()),
+            render_finished: mem::take(&mut self.render_finished),
+            present_fences: mem::take(&mut self.present_fences),
+            present_pending: mem::take(&mut self.present_pending),
+        });
+        self.images.clear();
+        self.presented.clear();
+    }
+
+    fn retired_swapchain_ready(&self, retired: &RetiredSwapchain) -> Result<bool, ProbeError> {
+        for (&fence, &pending) in retired.present_fences.iter().zip(&retired.present_pending) {
+            if !pending {
+                continue;
+            }
+            // SAFETY: The presentation fence remains live while its status is queried.
+            let result = unsafe {
+                self.device
+                    .functions
+                    .get_fence_status
+                    .expect("loaded function")(self.device.handle, fence)
+            };
+            if result == vk::VK_NOT_READY {
+                return Ok(false);
+            }
+            check(result, "vkGetFenceStatus for retired swapchain")?;
+        }
+        Ok(true)
+    }
+
+    fn collect_retired_swapchains(&mut self) -> Result<(), ProbeError> {
+        if !self.device.adapter.swapchain_maintenance1 {
+            return Ok(());
+        }
+        let mut index = 0;
+        while index < self.retired.len() {
+            if self.retired_swapchain_ready(&self.retired[index])? {
+                let retired = self.retired.remove(index);
+                Self::destroy_retired_swapchain(&self.device, retired);
+            } else {
+                index += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn destroy_retired_swapchain(device: &DeviceContext, retired: RetiredSwapchain) {
+        // SAFETY: Completion was established before this owned resource set reached this helper.
+        unsafe {
+            if !retired.pipeline.is_null() {
+                device.functions.destroy_pipeline.expect("loaded function")(
+                    device.handle,
+                    retired.pipeline,
+                    ptr::null(),
+                );
+            }
+            if !retired.pipeline_layout.is_null() {
+                device
+                    .functions
+                    .destroy_pipeline_layout
+                    .expect("loaded function")(
+                    device.handle, retired.pipeline_layout, ptr::null()
+                );
+            }
+            for view in retired.views {
+                device
+                    .functions
+                    .destroy_image_view
+                    .expect("loaded function")(device.handle, view, ptr::null());
+            }
+            for semaphore in retired.render_finished {
+                device.functions.destroy_semaphore.expect("loaded function")(
+                    device.handle,
+                    semaphore,
+                    ptr::null(),
+                );
+            }
+            for fence in retired.present_fences {
+                device.functions.destroy_fence.expect("loaded function")(
+                    device.handle,
+                    fence,
+                    ptr::null(),
+                );
+            }
+            device.functions.destroy_swapchain.expect("loaded function")(
+                device.handle,
+                retired.handle,
+                ptr::null(),
+            );
+        }
+    }
+
+    fn destroy_all_retired_swapchains(&mut self) {
+        for retired in self.retired.drain(..) {
+            Self::destroy_retired_swapchain(&self.device, retired);
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn render(&mut self, width: u32, height: u32) -> Result<bool, ProbeError> {
+        self.wait_for_frame()?;
+        self.collect_retired_swapchains()?;
+        if self.swapchain.is_null()
+            || self.extent.width != width
+            || self.extent.height != height
+            || self.recreate_after_present
+        {
+            self.recreate_swapchain(width, height)?;
+        }
+
         let mut image_index = 0;
+        let acquire_fence = if self.device.adapter.swapchain_maintenance1 {
+            ptr::null_mut()
+        } else {
+            self.acquire_fence
+        };
         // SAFETY: Swapchain and semaphore are live; output is writable.
         let acquire = unsafe {
             self.device
@@ -1488,7 +1800,7 @@ impl Renderer {
                 self.swapchain,
                 UINT64_MAX,
                 self.image_available,
-                ptr::null_mut(),
+                acquire_fence,
                 &raw mut image_index,
             )
         };
@@ -1502,14 +1814,30 @@ impl Renderer {
             check(acquire, "vkAcquireNextImageKHR")?;
         }
 
+        let image_slot = image_index as usize;
+        if self.device.adapter.swapchain_maintenance1 {
+            if self.present_pending[image_slot] {
+                self.wait_and_reset_fence(
+                    self.present_fences[image_slot],
+                    "presentation fence for reacquired image",
+                )?;
+                self.present_pending[image_slot] = false;
+            }
+        } else {
+            self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
+            if self.presented[image_slot] {
+                self.destroy_all_retired_swapchains();
+            }
+        }
+
         let view = *self
             .views
-            .get(image_index as usize)
+            .get(image_slot)
             .ok_or_else(|| ProbeError("driver returned an invalid swapchain image index".into()))?;
-        let image = self.images[image_index as usize];
+        let image = self.images[image_slot];
         let render_finished = *self
             .render_finished
-            .get(image_index as usize)
+            .get(image_slot)
             .ok_or_else(|| ProbeError("swapchain image has no presentation semaphore".into()))?;
         // SAFETY: Fence is signaled and command buffer is no longer executing.
         check(
@@ -1534,8 +1862,24 @@ impl Renderer {
         self.record(image, view)?;
         self.submit(render_finished)?;
 
+        let present_fence = self
+            .present_fences
+            .get(image_slot)
+            .copied()
+            .unwrap_or(ptr::null_mut());
+        let present_fence_info = vk::VkSwapchainPresentFenceInfoKHR {
+            sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR,
+            swapchainCount: 1,
+            pFences: &raw const present_fence,
+            ..Default::default()
+        };
         let present = vk::VkPresentInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            pNext: if present_fence.is_null() {
+                ptr::null()
+            } else {
+                (&raw const present_fence_info).cast()
+            },
             waitSemaphoreCount: 1,
             pWaitSemaphores: &raw const render_finished,
             swapchainCount: 1,
@@ -1550,6 +1894,16 @@ impl Renderer {
                 .queue_present
                 .expect("loaded function")(self.device.queue, &raw const present)
         };
+        if result == vk::VK_SUCCESS
+            || result == vk::VK_ERROR_OUT_OF_DATE_KHR
+            || result == vk::VK_SUBOPTIMAL_KHR
+        {
+            if self.device.adapter.swapchain_maintenance1 {
+                self.present_pending[image_slot] = true;
+            } else {
+                self.presented[image_slot] = true;
+            }
+        }
         if result == vk::VK_ERROR_OUT_OF_DATE_KHR || result == vk::VK_SUBOPTIMAL_KHR {
             self.recreate_after_present = true;
         } else {
@@ -1718,7 +2072,7 @@ impl Renderer {
         }
     }
 
-    fn submit(&self, render_finished: vk::VkSemaphore) -> Result<(), ProbeError> {
+    fn submit(&mut self, render_finished: vk::VkSemaphore) -> Result<(), ProbeError> {
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             semaphore: self.image_available,
@@ -1762,89 +2116,81 @@ impl Renderer {
                 )
             },
             "vkQueueSubmit2",
-        )
+        )?;
+        self.frame_pending = true;
+        Ok(())
     }
 
-    fn finish(&self) -> Result<(), ProbeError> {
-        // SAFETY: Waiting on the owned device is valid during orderly shutdown.
-        check(
-            unsafe {
-                self.device
-                    .functions
-                    .device_wait_idle
-                    .expect("loaded function")(self.device.handle)
-            },
-            "vkDeviceWaitIdle",
-        )
+    fn finish(&mut self) -> Result<(), ProbeError> {
+        if !self.device.adapter.swapchain_maintenance1 {
+            // Base VK_KHR_swapchain lacks a portable fence for presentation completion at final
+            // shutdown, so the compatibility path retains the conventional orderly-idle fallback.
+            return check(
+                unsafe {
+                    self.device
+                        .functions
+                        .device_wait_idle
+                        .expect("loaded function")(self.device.handle)
+                },
+                "vkDeviceWaitIdle",
+            );
+        }
+
+        self.wait_for_frame()?;
+        for (&fence, &pending) in self.present_fences.iter().zip(&self.present_pending) {
+            if pending {
+                // SAFETY: The live fence was attached to an enqueued presentation request.
+                check(
+                    unsafe {
+                        self.device
+                            .functions
+                            .wait_for_fences
+                            .expect("loaded function")(
+                            self.device.handle,
+                            1,
+                            &raw const fence,
+                            vk::VK_TRUE,
+                            UINT64_MAX,
+                        )
+                    },
+                    "vkWaitForFences for presentation at shutdown",
+                )?;
+            }
+        }
+        for retired in &self.retired {
+            for (&fence, &pending) in retired.present_fences.iter().zip(&retired.present_pending) {
+                if pending {
+                    // SAFETY: The retired swapchain owns this live presentation fence.
+                    check(
+                        unsafe {
+                            self.device
+                                .functions
+                                .wait_for_fences
+                                .expect("loaded function")(
+                                self.device.handle,
+                                1,
+                                &raw const fence,
+                                vk::VK_TRUE,
+                                UINT64_MAX,
+                            )
+                        },
+                        "vkWaitForFences for retired presentation at shutdown",
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn destroy_swapchain_resources(&mut self) {
-        // SAFETY: Handles here are owned and reset after use, and submitted device work is idle.
-        // Base VK_KHR_swapchain has no portable present-completion fence, so this probe follows the
-        // conventional device-idle retirement path. Zinc's production path must use presentation
-        // fences when available or defer destruction until reacquisition proves presentation ended.
-        unsafe {
-            if !self.pipeline.is_null() {
-                self.device
-                    .functions
-                    .destroy_pipeline
-                    .expect("loaded function")(
-                    self.device.handle, self.pipeline, ptr::null()
-                );
-                self.pipeline = ptr::null_mut();
-            }
-            if !self.pipeline_layout.is_null() {
-                self.device
-                    .functions
-                    .destroy_pipeline_layout
-                    .expect("loaded function")(
-                    self.device.handle,
-                    self.pipeline_layout,
-                    ptr::null(),
-                );
-                self.pipeline_layout = ptr::null_mut();
-            }
-            for view in self.views.drain(..) {
-                self.device
-                    .functions
-                    .destroy_image_view
-                    .expect("loaded function")(
-                    self.device.handle, view, ptr::null()
-                );
-            }
-            for semaphore in self.render_finished.drain(..) {
-                self.device
-                    .functions
-                    .destroy_semaphore
-                    .expect("loaded function")(
-                    self.device.handle, semaphore, ptr::null()
-                );
-            }
-            self.images.clear();
-            if !self.swapchain.is_null() {
-                self.device
-                    .functions
-                    .destroy_swapchain
-                    .expect("loaded function")(
-                    self.device.handle, self.swapchain, ptr::null()
-                );
-                self.swapchain = ptr::null_mut();
-            }
-        }
+        self.retire_current_swapchain();
+        self.destroy_all_retired_swapchains();
     }
 }
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        // SAFETY: Best-effort wait ensures resource destruction does not race submitted GPU work.
-        // See `destroy_swapchain_resources` for the separate presentation-completion limitation.
-        unsafe {
-            let _ = self
-                .device
-                .functions
-                .device_wait_idle
-                .expect("loaded function")(self.device.handle);
-        }
+        let _ = self.finish();
         self.destroy_swapchain_resources();
         // SAFETY: Frame resources are owned by this renderer and destroyed once after GPU idle.
         unsafe {
@@ -1854,6 +2200,14 @@ impl Drop for Renderer {
                     .destroy_fence
                     .expect("loaded function")(
                     self.device.handle, self.frame_fence, ptr::null()
+                );
+            }
+            if !self.acquire_fence.is_null() {
+                self.device
+                    .functions
+                    .destroy_fence
+                    .expect("loaded function")(
+                    self.device.handle, self.acquire_fence, ptr::null()
                 );
             }
             if !self.image_available.is_null() {

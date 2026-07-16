@@ -131,8 +131,10 @@ Zinc is presently a research foundation, not a consumable game platform. The Met
 substantial rendering evidence, but AppKit resize, minimize/restore, maximize/zoom, display-change,
 and shutdown behavior has not yet been recorded through a physical lifecycle run. The initial
 Vulkan/Win32 presentation path has been physically exercised on one Windows 11 and Nvidia hardware
-tier; live resize is functional there but appears low-frame-rate or delayed, and its cadence has not
-been measured. Swapchain recreation still waits for the device to become idle. Wayland, X11, the
-documented Windows baseline tier, and a representative Vulkan workload still need comparable
-evidence. The public `zinc-gpu` and `zinc-platform` APIs remain empty until that evidence exists. The
-[implementation roadmap](roadmap.md) tracks that progression.
+tier; the window resizes smoothly and rendering remains functional, but the triangle's resizing
+looks slightly choppy or delayed and its cadence has not been measured. Swapchain recreation now
+tracks presentation completion with maintenance-extension fences when available and deferred
+reacquisition otherwise; the fence path has physical evidence, while the fallback does not.
+Wayland, X11, the documented Windows baseline tier, and a representative Vulkan workload still need
+comparable evidence. The public `zinc-gpu` and `zinc-platform` APIs remain empty until that evidence
+exists. The [implementation roadmap](roadmap.md) tracks that progression.

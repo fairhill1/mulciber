@@ -17,9 +17,24 @@ Nvidia tier; it does not replace the required GTX 1060-class baseline or multi-d
 A follow-up physical run on the same machine exercised the live-resize implementation committed as
 `656863a`. The triangle continued updating during the drag, and resize recovery, minimize/restore,
 maximize/restore, title-bar shutdown, and Alt+F4 shutdown worked without Vulkan validation or loader
-messages. Live resize was functional but appeared low-frame-rate or delayed; its cadence was not
-measured. Swapchain recreation continued to wait for the device to become idle. Multi-display
-behavior was not tested because only one display was available.
+messages. Live resize was functional: the window itself resized smoothly, while the triangle's
+resizing looked slightly choppy or delayed; its rendering cadence was not measured. Swapchain
+recreation continued to wait for the device to become idle. Multi-display behavior was not tested
+because only one display was available.
+
+A second follow-up on 2026-07-16 replaced device-idle swapchain recreation with tracked retirement.
+On the same RTX 3060 Ti, the probe selected `VK_KHR_swapchain_maintenance1`, completed an automated
+600-frame run, and completed a focused manual drag-resize run without validation or loader output.
+Each queued presentation now carries a presentation fence, and old swapchains are destroyed only
+after all of their pending presentation fences signal. Adapters without the extension use a
+deferred fallback: old swapchains remain alive until reacquiring a previously presented image from
+the replacement swapchain proves the earlier presentation queue has drained. That fallback is not
+yet physically exercised on an adapter lacking the extension. Final shutdown retains a
+device-idle compatibility fallback only when presentation fences are unavailable. The focused
+drag-resize runs felt the same or slightly better than before and were considered good enough for
+now. The window resizing itself was smooth; only the triangle's resizing looked a little choppy or
+delayed, and it was noticeably choppier than the Vulkan cube demo. Rendered resize cadence therefore
+remains the open question and has not been measured.
 
 ## Setup
 

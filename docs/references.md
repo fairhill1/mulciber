@@ -13,6 +13,10 @@ documentation to identify later capabilities.
 - Conformance products: <https://www.khronos.org/conformance/adopters/conformant-products>
 - Presentation-semaphore reuse guidance:
   <https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html>
+- Swapchain-maintenance presentation fences:
+  <https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainPresentFenceInfoKHR.html>
+- Swapchain recreation sample and deferred-retirement fallback:
+  <https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html>
 
 Compatible revisions of Vulkan-Headers, Vulkan-Loader, Vulkan-ValidationLayers, Vulkan-Profiles,
 SPIRV-Headers, SPIRV-Tools, and glslang are recorded in the machine-readable

@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::vk;
 use crate::win32::Window;
@@ -33,6 +33,139 @@ impl fmt::Display for ProbeError {
 }
 
 impl std::error::Error for ProbeError {}
+
+#[derive(Default)]
+struct TimingSeries {
+    samples: u32,
+    total: Duration,
+    maximum: Duration,
+}
+
+impl TimingSeries {
+    fn record(&mut self, duration: Duration) {
+        self.samples += 1;
+        self.total += duration;
+        self.maximum = self.maximum.max(duration);
+    }
+
+    fn average_ms(&self) -> f64 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.total.as_secs_f64() * 1_000.0 / f64::from(self.samples)
+        }
+    }
+
+    fn maximum_ms(&self) -> f64 {
+        self.maximum.as_secs_f64() * 1_000.0
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct LiveResizeSample {
+    frame_wait: Duration,
+    recreate: Option<Duration>,
+    acquire: Duration,
+    record_submit: Duration,
+    present: Duration,
+}
+
+struct LiveResizeTrace {
+    enabled: bool,
+    reported: bool,
+    attempts: u64,
+    rendered: u64,
+    recreations: u64,
+    last_attempt: Option<Instant>,
+    callback_interval: TimingSeries,
+    frame_total: TimingSeries,
+    frame_wait: TimingSeries,
+    recreate: TimingSeries,
+    acquire: TimingSeries,
+    record_submit: TimingSeries,
+    present: TimingSeries,
+}
+
+impl LiveResizeTrace {
+    fn from_environment() -> Self {
+        Self {
+            enabled: env::var_os("ZINC_VULKAN_RESIZE_TRACE").is_some(),
+            reported: false,
+            attempts: 0,
+            rendered: 0,
+            recreations: 0,
+            last_attempt: None,
+            callback_interval: TimingSeries::default(),
+            frame_total: TimingSeries::default(),
+            frame_wait: TimingSeries::default(),
+            recreate: TimingSeries::default(),
+            acquire: TimingSeries::default(),
+            record_submit: TimingSeries::default(),
+            present: TimingSeries::default(),
+        }
+    }
+
+    fn begin(&mut self, live_resize: bool) -> Option<Instant> {
+        if !self.enabled {
+            return None;
+        }
+        if !live_resize {
+            self.last_attempt = None;
+            return None;
+        }
+        let now = Instant::now();
+        if let Some(previous) = self.last_attempt.replace(now) {
+            self.callback_interval.record(now.duration_since(previous));
+        }
+        self.attempts += 1;
+        Some(now)
+    }
+
+    fn finish(&mut self, started: Option<Instant>, sample: LiveResizeSample, rendered: bool) {
+        let Some(started) = started else {
+            return;
+        };
+        if rendered {
+            self.rendered += 1;
+        }
+        self.frame_total.record(started.elapsed());
+        self.frame_wait.record(sample.frame_wait);
+        if let Some(recreate) = sample.recreate {
+            self.recreations += 1;
+            self.recreate.record(recreate);
+        }
+        self.acquire.record(sample.acquire);
+        self.record_submit.record(sample.record_submit);
+        self.present.record(sample.present);
+    }
+
+    fn report(&mut self) {
+        if !self.enabled || self.reported {
+            return;
+        }
+        self.reported = true;
+        println!(
+            "Live resize trace: attempts={} rendered={} recreations={}",
+            self.attempts, self.rendered, self.recreations
+        );
+        for (name, series) in [
+            ("callback interval", &self.callback_interval),
+            ("frame total", &self.frame_total),
+            ("frame-fence wait", &self.frame_wait),
+            ("swapchain recreation", &self.recreate),
+            ("image acquisition", &self.acquire),
+            ("record + submit", &self.record_submit),
+            ("queue present", &self.present),
+        ] {
+            println!(
+                "  {name}: samples={} avg={:.3} ms max={:.3} ms",
+                series.samples,
+                series.average_ms(),
+                series.maximum_ms()
+            );
+        }
+    }
+}
 
 pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
@@ -61,7 +194,7 @@ pub fn run() -> Result<(), ProbeError> {
                             if width == 0 || height == 0 {
                                 return Ok(false);
                             }
-                            renderer.render(width, height)
+                            renderer.render(width, height, true)
                         });
                     match result {
                         Ok(true) => {
@@ -87,7 +220,7 @@ pub fn run() -> Result<(), ProbeError> {
                 thread::sleep(Duration::from_millis(16));
                 continue;
             }
-            if renderer.render(width, height)? {
+            if renderer.render(width, height, false)? {
                 rendered_frames += 1;
                 if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
                     break;
@@ -963,6 +1096,7 @@ struct Renderer {
     acquire_fence: vk::VkFence,
     retired: Vec<RetiredSwapchain>,
     recreate_after_present: bool,
+    live_resize_trace: LiveResizeTrace,
 }
 
 impl Renderer {
@@ -988,7 +1122,11 @@ impl Renderer {
             acquire_fence: ptr::null_mut(),
             retired: Vec::new(),
             recreate_after_present: false,
+            live_resize_trace: LiveResizeTrace::from_environment(),
         };
+        if renderer.live_resize_trace.enabled {
+            println!("Live resize timing trace enabled");
+        }
         renderer.create_frame_resources()?;
         let (width, height) = window
             .client_extent()
@@ -1163,7 +1301,8 @@ impl Renderer {
             },
             "vkCreateSwapchainKHR",
         )?;
-        self.retire_current_swapchain();
+        let reuse_pipeline = !self.pipeline.is_null() && self.format == format.format;
+        self.retire_current_swapchain(!reuse_pipeline);
         self.swapchain = swapchain;
         self.format = format.format;
         self.extent = extent;
@@ -1171,7 +1310,9 @@ impl Renderer {
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];
         self.views = self.create_image_views()?;
-        self.create_pipeline()?;
+        if !reuse_pipeline {
+            self.create_pipeline()?;
+        }
         self.collect_retired_swapchains()?;
         self.recreate_after_present = false;
         Ok(())
@@ -1667,15 +1808,23 @@ impl Renderer {
         )
     }
 
-    fn retire_current_swapchain(&mut self) {
+    fn retire_current_swapchain(&mut self, retire_pipeline: bool) {
         if self.swapchain.is_null() {
             return;
         }
         self.retired.push(RetiredSwapchain {
             handle: mem::replace(&mut self.swapchain, ptr::null_mut()),
             views: mem::take(&mut self.views),
-            pipeline_layout: mem::replace(&mut self.pipeline_layout, ptr::null_mut()),
-            pipeline: mem::replace(&mut self.pipeline, ptr::null_mut()),
+            pipeline_layout: if retire_pipeline {
+                mem::replace(&mut self.pipeline_layout, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            },
+            pipeline: if retire_pipeline {
+                mem::replace(&mut self.pipeline, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            },
             render_finished: mem::take(&mut self.render_finished),
             present_fences: mem::take(&mut self.present_fences),
             present_pending: mem::take(&mut self.present_pending),
@@ -1773,15 +1922,21 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render(&mut self, width: u32, height: u32) -> Result<bool, ProbeError> {
+    fn render(&mut self, width: u32, height: u32, live_resize: bool) -> Result<bool, ProbeError> {
+        let trace_started = self.live_resize_trace.begin(live_resize);
+        let mut trace_sample = LiveResizeSample::default();
+        let operation_started = Instant::now();
         self.wait_for_frame()?;
+        trace_sample.frame_wait = operation_started.elapsed();
         self.collect_retired_swapchains()?;
         if self.swapchain.is_null()
             || self.extent.width != width
             || self.extent.height != height
             || self.recreate_after_present
         {
+            let operation_started = Instant::now();
             self.recreate_swapchain(width, height)?;
+            trace_sample.recreate = Some(operation_started.elapsed());
         }
 
         let mut image_index = 0;
@@ -1790,6 +1945,7 @@ impl Renderer {
         } else {
             self.acquire_fence
         };
+        let operation_started = Instant::now();
         // SAFETY: Swapchain and semaphore are live; output is writable.
         let acquire = unsafe {
             self.device
@@ -1805,7 +1961,17 @@ impl Renderer {
             )
         };
         if acquire == vk::VK_ERROR_OUT_OF_DATE_KHR {
+            trace_sample.acquire = operation_started.elapsed();
+            let operation_started = Instant::now();
             self.recreate_swapchain(width, height)?;
+            let recreate = operation_started.elapsed();
+            trace_sample.recreate = Some(
+                trace_sample
+                    .recreate
+                    .map_or(recreate, |previous| previous + recreate),
+            );
+            self.live_resize_trace
+                .finish(trace_started, trace_sample, false);
             return Ok(false);
         }
         if acquire == vk::VK_SUBOPTIMAL_KHR {
@@ -1829,6 +1995,7 @@ impl Renderer {
                 self.destroy_all_retired_swapchains();
             }
         }
+        trace_sample.acquire = operation_started.elapsed();
 
         let view = *self
             .views
@@ -1839,6 +2006,7 @@ impl Renderer {
             .render_finished
             .get(image_slot)
             .ok_or_else(|| ProbeError("swapchain image has no presentation semaphore".into()))?;
+        let operation_started = Instant::now();
         // SAFETY: Fence is signaled and command buffer is no longer executing.
         check(
             unsafe {
@@ -1861,6 +2029,7 @@ impl Renderer {
         )?;
         self.record(image, view)?;
         self.submit(render_finished)?;
+        trace_sample.record_submit = operation_started.elapsed();
 
         let present_fence = self
             .present_fences
@@ -1887,6 +2056,7 @@ impl Renderer {
             pImageIndices: &raw const image_index,
             ..Default::default()
         };
+        let operation_started = Instant::now();
         // SAFETY: Queue, swapchain, index, and wait semaphore are valid for this submission.
         let result = unsafe {
             self.device
@@ -1894,6 +2064,7 @@ impl Renderer {
                 .queue_present
                 .expect("loaded function")(self.device.queue, &raw const present)
         };
+        trace_sample.present = operation_started.elapsed();
         if result == vk::VK_SUCCESS
             || result == vk::VK_ERROR_OUT_OF_DATE_KHR
             || result == vk::VK_SUBOPTIMAL_KHR
@@ -1909,6 +2080,8 @@ impl Renderer {
         } else {
             check(result, "vkQueuePresentKHR")?;
         }
+        self.live_resize_trace
+            .finish(trace_started, trace_sample, true);
         Ok(true)
     }
 
@@ -2122,6 +2295,7 @@ impl Renderer {
     }
 
     fn finish(&mut self) -> Result<(), ProbeError> {
+        self.live_resize_trace.report();
         if !self.device.adapter.swapchain_maintenance1 {
             // Base VK_KHR_swapchain lacks a portable fence for presentation completion at final
             // shutdown, so the compatibility path retains the conventional orderly-idle fallback.
@@ -2183,7 +2357,7 @@ impl Renderer {
     }
 
     fn destroy_swapchain_resources(&mut self) {
-        self.retire_current_swapchain();
+        self.retire_current_swapchain(true);
         self.destroy_all_retired_swapchains();
     }
 }

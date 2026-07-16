@@ -36,6 +36,17 @@ now. The window resizing itself was smooth; only the triangle's resizing looked 
 delayed, and it was noticeably choppier than the Vulkan cube demo. Rendered resize cadence therefore
 remains the open question and has not been measured.
 
+A measured follow-up instrumented the live-resize path and separated callback spacing, frame-fence
+wait, swapchain recreation, image acquisition, command recording/submission, and presentation. With
+timer-only redraw, 558 attempts averaged 27.154 ms between callbacks; frames averaged 7.652 ms, of
+which swapchain recreation averaged 7.555 ms. Reusing the format-compatible graphics pipeline
+reduced recreation only modestly, showing that pipeline compilation was not the main bottleneck.
+Driving redraw directly from `WM_SIZE`, with the timer retained as a fallback, reduced callback
+spacing to 9.004 ms over 1,151 attempts and produced roughly 80 size-changing frames per second in
+that run. The user reported that the triangle resizing looked noticeably better. Swapchain creation
+still averaged 10.493 ms under the faster churn and reached 21.247 ms in the worst observed sample;
+parity with the Vulkan cube demo has not been established.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -82,6 +93,10 @@ cargo run -p zinc-vulkan-win32-triangle -- --frames 600
 Success means exit code zero, a colored triangle was visible, and neither the Zinc validation
 callback nor the loader printed a warning or error. Preserve the full output with the capability
 report for the machine.
+
+For an opt-in live-resize timing summary, set `ZINC_VULKAN_RESIZE_TRACE=1` before launching without a
+frame limit. Drag-resize, close the window, and preserve the printed callback, recreation, acquire,
+submit, and present timings.
 
 ## Interactive lifecycle pass
 

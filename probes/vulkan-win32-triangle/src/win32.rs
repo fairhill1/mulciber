@@ -28,6 +28,7 @@ const WM_EXITSIZEMOVE: u32 = 0x0232;
 const WM_NCCREATE: u32 = 0x0081;
 const WM_NCDESTROY: u32 = 0x0082;
 const WM_QUIT: u32 = 0x0012;
+const WM_SIZE: u32 = 0x0005;
 const WM_TIMER: u32 = 0x0113;
 const GWLP_USERDATA: c_int = -21;
 const LIVE_RESIZE_TIMER: usize = 1;
@@ -178,6 +179,7 @@ struct WindowState {
     live_resize_callback: Cell<Option<LiveResizeCallback>>,
     live_resize_context: Cell<*mut c_void>,
     callback_active: Cell<bool>,
+    in_size_move: Cell<bool>,
     timer_error: Cell<u32>,
 }
 
@@ -356,6 +358,9 @@ unsafe extern "system" fn window_procedure(
             1
         }
         WM_ENTERSIZEMOVE => {
+            if let Some(state) = unsafe { state_for_window(window) } {
+                state.in_size_move.set(true);
+            }
             // SAFETY: Win32 supplied this live window handle. A window-owned timer delivers ticks
             // through this same procedure while DefWindowProc runs its nested sizing loop.
             if unsafe {
@@ -373,6 +378,9 @@ unsafe extern "system" fn window_procedure(
             0
         }
         WM_EXITSIZEMOVE => {
+            if let Some(state) = unsafe { state_for_window(window) } {
+                state.in_size_move.set(false);
+            }
             // SAFETY: The timer belongs to this live window and fixed identifier.
             if unsafe { KillTimer(window, LIVE_RESIZE_TIMER) } == 0
                 && let Some(state) = unsafe { state_for_window(window) }
@@ -381,15 +389,21 @@ unsafe extern "system" fn window_procedure(
             }
             0
         }
+        WM_SIZE => {
+            // SAFETY: Size notifications are synchronous on this thread, and callback registration
+            // remains live throughout the nested Win32 sizing loop.
+            if let Some(state) = unsafe { state_for_window(window) }
+                && state.in_size_move.get()
+            {
+                unsafe { invoke_live_resize(state) };
+            }
+            0
+        }
         WM_TIMER if w_param == LIVE_RESIZE_TIMER => {
             // SAFETY: Callback registration is scoped around DispatchMessageW. Timer messages run
             // synchronously on this thread, and the reentrancy flag prevents nested mutable calls.
-            if let Some(state) = unsafe { state_for_window(window) }
-                && let Some(callback) = state.live_resize_callback.get()
-                && !state.callback_active.replace(true)
-            {
-                unsafe { callback(state.live_resize_context.get()) };
-                state.callback_active.set(false);
+            if let Some(state) = unsafe { state_for_window(window) } {
+                unsafe { invoke_live_resize(state) };
             }
             0
         }
@@ -421,6 +435,16 @@ unsafe fn state_for_window(window: Hwnd) -> Option<&'static WindowState> {
     // during WM_NCDESTROY before that box can be dropped.
     let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const WindowState;
     unsafe { pointer.as_ref() }
+}
+
+unsafe fn invoke_live_resize(state: &WindowState) {
+    if let Some(callback) = state.live_resize_callback.get()
+        && !state.callback_active.replace(true)
+    {
+        // SAFETY: The registration owns a live exclusive callback borrow on this thread.
+        unsafe { callback(state.live_resize_context.get()) };
+        state.callback_active.set(false);
+    }
 }
 
 unsafe fn invoke_callback<F>(context: *mut c_void)

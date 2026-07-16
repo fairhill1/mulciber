@@ -133,8 +133,13 @@ try {
         Invoke-NativeLogged -Command $Probe -Arguments @() -LogName "interactive-titlebar.log"
         $TitleBarPassed = Read-Yes "Did resize recovery, minimize/restore, maximize/restore, and title-bar close work? [yes/no]"
         $LiveResizePassed = Read-Yes "Did the triangle keep rendering and resize during the drag? [yes/no]"
+        $LiveResizeNotes = Read-Host "Live-resize/frame-pacing notes (or 'none')"
+        if ([string]::IsNullOrWhiteSpace($LiveResizeNotes)) {
+            $LiveResizeNotes = "not recorded"
+        }
         $ManualLines += "titlebar_lifecycle_passed=$TitleBarPassed"
         $ManualLines += "live_resize_passed=$LiveResizePassed"
+        $ManualLines += "live_resize_notes=$LiveResizeNotes"
 
         Write-Host ""
         Write-Host "Interactive lifecycle run 2: close the window with Alt+F4."

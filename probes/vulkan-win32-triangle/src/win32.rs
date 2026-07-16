@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::fmt;
 use std::mem;
@@ -22,7 +23,15 @@ const PM_REMOVE: u32 = 0x0001;
 const SW_SHOW: c_int = 5;
 const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
+const WM_ENTERSIZEMOVE: u32 = 0x0231;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
+const WM_NCCREATE: u32 = 0x0081;
+const WM_NCDESTROY: u32 = 0x0082;
 const WM_QUIT: u32 = 0x0012;
+const WM_TIMER: u32 = 0x0113;
+const GWLP_USERDATA: c_int = -21;
+const LIVE_RESIZE_TIMER: usize = 1;
+const LIVE_RESIZE_INTERVAL_MS: u32 = 16;
 const WS_CAPTION: u32 = 0x00C0_0000;
 const WS_CLIPCHILDREN: u32 = 0x0200_0000;
 const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
@@ -87,6 +96,22 @@ struct WindowClassExW {
     small_icon: Hicon,
 }
 
+#[repr(C)]
+struct CreateStructW {
+    create_parameters: *mut c_void,
+    instance: Hinstance,
+    menu: Hmenu,
+    parent: Hwnd,
+    height: c_int,
+    width: c_int,
+    y: c_int,
+    x: c_int,
+    style: i32,
+    name: *const u16,
+    class_name: *const u16,
+    extended_style: u32,
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLastError() -> u32;
@@ -114,12 +139,16 @@ unsafe extern "system" {
     fn DestroyWindow(window: Hwnd) -> i32;
     fn DispatchMessageW(message: *const Msg) -> Lresult;
     fn GetClientRect(window: Hwnd, rect: *mut Rect) -> i32;
+    fn GetWindowLongPtrW(window: Hwnd, index: c_int) -> isize;
     fn IsWindow(window: Hwnd) -> i32;
+    fn KillTimer(window: Hwnd, event: usize) -> i32;
     fn LoadCursorW(instance: Hinstance, cursor_name: *const u16) -> Hcursor;
     fn PeekMessageW(message: *mut Msg, window: Hwnd, min: u32, max: u32, remove: u32) -> i32;
     fn PostQuitMessage(exit_code: c_int);
     fn RegisterClassExW(class: *const WindowClassExW) -> Atom;
     fn ShowWindow(window: Hwnd, command: c_int) -> i32;
+    fn SetTimer(window: Hwnd, event: usize, milliseconds: u32, callback: *const c_void) -> usize;
+    fn SetWindowLongPtrW(window: Hwnd, index: c_int, value: isize) -> isize;
     fn TranslateMessage(message: *const Msg) -> i32;
     fn UnregisterClassW(class_name: *const u16, instance: Hinstance) -> i32;
 }
@@ -139,12 +168,36 @@ pub struct Window {
     instance: Hinstance,
     handle: Hwnd,
     class_name: Vec<u16>,
+    state: Box<WindowState>,
+}
+
+type LiveResizeCallback = unsafe fn(*mut c_void);
+
+#[derive(Default)]
+struct WindowState {
+    live_resize_callback: Cell<Option<LiveResizeCallback>>,
+    live_resize_context: Cell<*mut c_void>,
+    callback_active: Cell<bool>,
+    timer_error: Cell<u32>,
+}
+
+struct CallbackRegistration<'a> {
+    state: &'a WindowState,
+}
+
+impl Drop for CallbackRegistration<'_> {
+    fn drop(&mut self) {
+        self.state.live_resize_callback.set(None);
+        self.state.live_resize_context.set(ptr::null_mut());
+    }
 }
 
 impl Window {
     pub fn new(title: &str, width: u32, height: u32) -> Result<Self, WindowError> {
         let class_name = wide("ZincVulkanProbe");
         let title = wide(title);
+        let state = Box::new(WindowState::default());
+        let state_pointer = ptr::from_ref(state.as_ref()).cast_mut().cast::<c_void>();
 
         // SAFETY: All pointers refer to live, NUL-terminated buffers for the duration of each call.
         unsafe {
@@ -196,11 +249,18 @@ impl Window {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 instance,
-                ptr::null_mut(),
+                state_pointer,
             );
             if handle.is_null() {
                 UnregisterClassW(class_name.as_ptr(), instance);
                 return Err(last_error("CreateWindowExW"));
+            }
+            if GetWindowLongPtrW(handle, GWLP_USERDATA) != state_pointer as isize {
+                DestroyWindow(handle);
+                UnregisterClassW(class_name.as_ptr(), instance);
+                return Err(WindowError(
+                    "Win32 did not retain Zinc's window state".into(),
+                ));
             }
             ShowWindow(handle, SW_SHOW);
 
@@ -208,6 +268,7 @@ impl Window {
                 instance,
                 handle,
                 class_name,
+                state,
             })
         }
     }
@@ -231,20 +292,39 @@ impl Window {
         Ok((width, height))
     }
 
-    pub fn pump_events(&self) -> bool {
+    pub fn pump_events<F>(&self, live_resize: &mut F) -> Result<bool, WindowError>
+    where
+        F: FnMut(),
+    {
         debug_assert!(!self.handle.is_null());
+        debug_assert!(self.state.live_resize_callback.get().is_none());
+        self.state.timer_error.set(0);
+        self.state
+            .live_resize_context
+            .set(ptr::from_mut(live_resize).cast());
+        self.state
+            .live_resize_callback
+            .set(Some(invoke_callback::<F>));
+        let _registration = CallbackRegistration { state: &self.state };
         let mut message = Msg::default();
         // SAFETY: The message buffer is writable; retrieved messages are initialized by Win32.
         unsafe {
             while PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                 if message.message == WM_QUIT {
-                    return false;
+                    return Ok(false);
                 }
                 TranslateMessage(&raw const message);
                 DispatchMessageW(&raw const message);
             }
         }
-        true
+        let timer_error = self.state.timer_error.get();
+        if timer_error == 0 {
+            Ok(true)
+        } else {
+            Err(WindowError(format!(
+                "live-resize timer failed with Win32 error {timer_error}"
+            )))
+        }
     }
 }
 
@@ -267,6 +347,52 @@ unsafe extern "system" fn window_procedure(
     l_param: Lparam,
 ) -> Lresult {
     match message {
+        WM_NCCREATE => {
+            // SAFETY: Win32 supplies a live CREATESTRUCTW for WM_NCCREATE. The creation parameter
+            // points to the boxed state that remains stable for the lifetime of the window.
+            let state = unsafe { (*(l_param as *const CreateStructW)).create_parameters };
+            // SAFETY: This stores the application-owned pointer without dereferencing it.
+            unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, state as isize) };
+            1
+        }
+        WM_ENTERSIZEMOVE => {
+            // SAFETY: Win32 supplied this live window handle. A window-owned timer delivers ticks
+            // through this same procedure while DefWindowProc runs its nested sizing loop.
+            if unsafe {
+                SetTimer(
+                    window,
+                    LIVE_RESIZE_TIMER,
+                    LIVE_RESIZE_INTERVAL_MS,
+                    ptr::null(),
+                )
+            } == 0
+                && let Some(state) = unsafe { state_for_window(window) }
+            {
+                state.timer_error.set(unsafe { GetLastError() });
+            }
+            0
+        }
+        WM_EXITSIZEMOVE => {
+            // SAFETY: The timer belongs to this live window and fixed identifier.
+            if unsafe { KillTimer(window, LIVE_RESIZE_TIMER) } == 0
+                && let Some(state) = unsafe { state_for_window(window) }
+            {
+                state.timer_error.set(unsafe { GetLastError() });
+            }
+            0
+        }
+        WM_TIMER if w_param == LIVE_RESIZE_TIMER => {
+            // SAFETY: Callback registration is scoped around DispatchMessageW. Timer messages run
+            // synchronously on this thread, and the reentrancy flag prevents nested mutable calls.
+            if let Some(state) = unsafe { state_for_window(window) }
+                && let Some(callback) = state.live_resize_callback.get()
+                && !state.callback_active.replace(true)
+            {
+                unsafe { callback(state.live_resize_context.get()) };
+                state.callback_active.set(false);
+            }
+            0
+        }
         WM_CLOSE => {
             // SAFETY: Win32 supplied this live window handle.
             unsafe { DestroyWindow(window) };
@@ -277,9 +403,33 @@ unsafe extern "system" fn window_procedure(
             unsafe { PostQuitMessage(0) };
             0
         }
+        WM_NCDESTROY => {
+            // SAFETY: Stop any outstanding sizing timer before clearing the borrowed state pointer.
+            unsafe {
+                KillTimer(window, LIVE_RESIZE_TIMER);
+                SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+                DefWindowProcW(window, message, w_param, l_param)
+            }
+        }
         // SAFETY: Unknown messages are delegated with their original Win32 values.
         _ => unsafe { DefWindowProcW(window, message, w_param, l_param) },
     }
+}
+
+unsafe fn state_for_window(window: Hwnd) -> Option<&'static WindowState> {
+    // SAFETY: The value was installed from a boxed WindowState during WM_NCCREATE and is cleared
+    // during WM_NCDESTROY before that box can be dropped.
+    let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const WindowState;
+    unsafe { pointer.as_ref() }
+}
+
+unsafe fn invoke_callback<F>(context: *mut c_void)
+where
+    F: FnMut(),
+{
+    // SAFETY: `pump_events` installed this pointer from a live exclusive borrow of F and clears the
+    // callback before that borrow expires. Window callbacks execute synchronously on this thread.
+    unsafe { (&mut *context.cast::<F>())() };
 }
 
 fn wide(value: &str) -> Vec<u16> {

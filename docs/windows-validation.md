@@ -72,7 +72,8 @@ Run without `--frames`, then:
 5. Close with both the title-bar button and Alt+F4 on separate runs.
 
 The triangle must remain stable, resize without stale frames, resume after minimize, remain
-VSync-limited, and shut down without validation output.
+VSync-limited, and shut down without validation output. Record uneven live-resize pacing even when
+the functional live-resize check passes.
 
 ## Evidence to return
 

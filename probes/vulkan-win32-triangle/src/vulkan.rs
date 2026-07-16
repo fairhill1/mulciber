@@ -46,7 +46,40 @@ pub fn run() -> Result<(), ProbeError> {
 
     let render_result = (|| {
         let mut rendered_frames = 0;
-        while window.pump_events() {
+        loop {
+            let mut live_resize_error = None;
+            let mut frame_limit_reached = false;
+            let keep_running = window
+                .pump_events(&mut || {
+                    if live_resize_error.is_some() || frame_limit_reached {
+                        return;
+                    }
+                    let result = window
+                        .client_extent()
+                        .map_err(|error| ProbeError(error.to_string()))
+                        .and_then(|(width, height)| {
+                            if width == 0 || height == 0 {
+                                return Ok(false);
+                            }
+                            renderer.render(width, height)
+                        });
+                    match result {
+                        Ok(true) => {
+                            rendered_frames += 1;
+                            frame_limit_reached =
+                                frame_limit.is_some_and(|limit| rendered_frames >= limit.get());
+                        }
+                        Ok(false) => {}
+                        Err(error) => live_resize_error = Some(error),
+                    }
+                })
+                .map_err(|error| ProbeError(error.to_string()))?;
+            if let Some(error) = live_resize_error {
+                return Err(error);
+            }
+            if !keep_running || frame_limit_reached {
+                break;
+            }
             let (width, height) = window
                 .client_extent()
                 .map_err(|error| ProbeError(error.to_string()))?;

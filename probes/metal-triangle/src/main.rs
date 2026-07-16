@@ -239,6 +239,25 @@ mod macos {
         frame_limit: Option<NonZeroU64>,
         binary_archive_path: PathBuf,
         rebuild_binary_archive: bool,
+        abandon_acquired_frame_once: bool,
+    }
+
+    struct FrameAbandonment {
+        requested: bool,
+        pending: bool,
+        abandoned_drawables: u32,
+        submitted_after: bool,
+    }
+
+    impl FrameAbandonment {
+        const fn new(requested: bool) -> Self {
+            Self {
+                requested,
+                pending: requested,
+                abandoned_drawables: 0,
+                submitted_after: false,
+            }
+        }
     }
 
     #[derive(Clone, Copy)]
@@ -295,6 +314,7 @@ mod macos {
         drawable_size: Size,
         gpu_time_seconds: f64,
         gpu_timed_frames: u32,
+        frame_abandonment: FrameAbandonment,
     }
 
     impl Probe {
@@ -403,15 +423,17 @@ mod macos {
                     drawable_size: Size::default(),
                     gpu_time_seconds: 0.0,
                     gpu_timed_frames: 0,
+                    frame_abandonment: FrameAbandonment::new(options.abandon_acquired_frame_once),
                 })
             }
         }
 
         fn run(mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
             let render_result = self.render_loop(frame_limit);
+            let lifecycle_result = render_result.and_then(|()| self.validate_frame_abandonment());
             let cleanup_result = self.finish_gpu();
             self.print_gpu_timing();
-            render_result.and(cleanup_result)
+            lifecycle_result.and(cleanup_result)
         }
 
         fn render_loop(&mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
@@ -484,6 +506,16 @@ mod macos {
                 }
                 let drawable_texture =
                     required(objc::object(drawable, c"texture"), "drawable texture")?;
+                if self.frame_abandonment.pending {
+                    self.frame_abandonment.pending = false;
+                    self.frame_abandonment.abandoned_drawables += 1;
+                    println!(
+                        "abandoned one acquired Metal drawable before command-buffer submission"
+                    );
+                    // The drawable is autoreleased. Returning to `render_loop` drains the
+                    // iteration's pool before another drawable is requested.
+                    return Ok(false);
+                }
                 let drawable_extent = (
                     objc::usize_value(drawable_texture, c"width"),
                     objc::usize_value(drawable_texture, c"height"),
@@ -524,6 +556,9 @@ mod macos {
                 objc::void_object(command_buffer, c"presentDrawable:", drawable);
                 objc::void(command_buffer, c"commit");
                 self.track_submission(command_buffer)?;
+                if self.frame_abandonment.abandoned_drawables != 0 {
+                    self.frame_abandonment.submitted_after = true;
+                }
                 Ok(true)
             }
         }
@@ -829,6 +864,27 @@ mod macos {
                 "GPU frame time: {average_ms:.3} ms average over {} frames",
                 self.gpu_timed_frames
             );
+        }
+
+        fn validate_frame_abandonment(&self) -> Result<(), ProbeError> {
+            if !self.frame_abandonment.requested {
+                return Ok(());
+            }
+            if self.frame_abandonment.abandoned_drawables != 1 {
+                return Err(ProbeError(format!(
+                    "requested one acquired-frame abandonment, observed {}",
+                    self.frame_abandonment.abandoned_drawables
+                )));
+            }
+            if !self.frame_abandonment.submitted_after {
+                return Err(ProbeError(
+                    "no frame was submitted after the acquired drawable was abandoned".into(),
+                ));
+            }
+            println!(
+                "acquired-frame abandonment recovered: one drawable abandoned and later rendering submitted"
+            );
+            Ok(())
         }
     }
 
@@ -1806,6 +1862,7 @@ mod macos {
         let mut frame_limit = None;
         let mut binary_archive_path = None;
         let mut rebuild_binary_archive = false;
+        let mut abandon_acquired_frame_once = false;
         let mut arguments = env::args_os().skip(1);
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
@@ -1834,6 +1891,14 @@ mod macos {
                         })?));
                 }
                 Some("--rebuild-binary-archive") => rebuild_binary_archive = true,
+                Some("--abandon-acquired-frame-once") => {
+                    if abandon_acquired_frame_once {
+                        return Err(ProbeError(
+                            "--abandon-acquired-frame-once was provided more than once".into(),
+                        ));
+                    }
+                    abandon_acquired_frame_once = true;
+                }
                 _ => {
                     return Err(ProbeError(format!(
                         "unknown argument: {}",
@@ -1847,6 +1912,7 @@ mod macos {
             binary_archive_path: binary_archive_path
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_BINARY_ARCHIVE_PATH)),
             rebuild_binary_archive,
+            abandon_acquired_frame_once,
         })
     }
 }

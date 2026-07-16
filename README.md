@@ -89,6 +89,11 @@ For a finite validation run, pass `--frames N`. Enable Apple's validation layer 
 `MTL_DEBUG_LAYER=1`. See the [macOS validation runbook](docs/macos-validation.md) before marking
 the platform slice complete; initial physical AppKit lifecycle evidence is recorded there.
 
+Pass `--abandon-acquired-frame-once` with a finite run to acquire one drawable, access its
+texture, and intentionally submit and present nothing for it. The per-frame autorelease pool is
+then drained, and the run fails unless later rendering submits successfully. This makes the
+otherwise exceptional frame-abandonment path observable without weakening normal validation.
+
 On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
 
 ```sh

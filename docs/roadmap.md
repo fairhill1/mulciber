@@ -28,9 +28,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [ ] AppKit window with a `CAMetalLayer` and Metal triangle (implemented and physically
   exercised on an Apple M2 running macOS 15.7.7 with Apple's validation layer: continuous drag
   resize including very small sizes, minimize/restore, zoom/restore, full occlusion/reveal, and
-  titlebar-close shutdown all completed cleanly with validation-clean output; display-change,
-  multi-display, differing backing scale factors, input, the macOS 26 / Metal 4 runtime, and
-  broader Apple-silicon hardware evidence remain outstanding).
+  titlebar-close shutdown all completed cleanly with validation-clean output; a separate automated
+  path acquired and abandoned one drawable before submission, then recovered for 120 submitted
+  frames and clean shutdown; display-change, multi-display, differing backing scale factors,
+  input, the macOS 26 / Metal 4 runtime, and broader Apple-silicon hardware evidence remain
+  outstanding).
 - [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
   an Nvidia RTX 3060 Ti; the window resizes smoothly, rendering remains functional, and driving
   redraw from `WM_SIZE` improved measured callback spacing from about 27 ms to 9 ms and looked

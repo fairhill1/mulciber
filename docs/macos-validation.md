@@ -13,6 +13,9 @@ milestone and records what has actually been exercised.
   strict cross-process load run.
 - Initial physical lifecycle evidence (continuous drag resize, minimize/restore, zoom/restore,
   full occlusion/reveal, titlebar close) was recorded on the same machine and date; see below.
+- A deterministic acquired-frame abandonment run on the same M2 acquired one drawable without
+  submission or presentation, drained its per-frame autorelease pool, recovered for 120 submitted
+  frames, and shut down cleanly under Metal API validation; see below.
 - The primary evidence machine runs macOS 15.7.7 with a Metal 3 device family. The roadmap's
   macOS 26 / Metal 4 runtime comparison was recorded against a second machine (Apple M5, macOS
   26.5.2); see below. The capability probe detects Metal 4 objects through the Objective-C
@@ -68,6 +71,35 @@ This establishes initial single-display lifecycle evidence on one Apple M2 machi
 change, multi-display, differing backing scale factors, explicit input handling, the macOS 26 /
 Metal 4 runtime, and broader Apple-silicon hardware coverage remain outstanding. Rendered resize
 cadence was accepted visually and was not instrumented or measured.
+
+### Acquired-frame abandonment evidence
+
+On 2026-07-16, a development tree based on revision
+`fce165e5878db5bcc86f3c41ed5194688c4b8b18` added and exercised the deterministic
+`--abandon-acquired-frame-once` path on the same Apple M2 and macOS 15.7.7 machine. The final run
+was:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
+  --abandon-acquired-frame-once --frames 120
+```
+
+The probe loaded the existing binary archive with four strict hits, acquired a drawable and
+accessed its texture, then intentionally created no command buffer and scheduled no presentation
+for that drawable. Returning from the iteration drained its autorelease pool. The next acquisition
+succeeded, 120 later frames were submitted, retained command buffers drained at shutdown, and the
+process exited successfully. Average GPU frame time was 0.830 ms over those 120 submitted frames.
+The validation layer printed nothing beyond its enabled banner.
+
+This establishes the Metal behavior of one intentionally abandoned acquired frame followed by
+continued rendering. It does not establish repeated abandonment under pressure, abandonment
+during resize or occlusion, or the corresponding Vulkan acquired-image behavior. The validation
+archive and exact development-tree status are recorded below.
+
+The ignored archive is
+`validation-artifacts/macos-metal-abandon-frame-20260716-222617.tar.gz` with SHA-256
+`75f83ef29373a84aab113755e55d92d6dbbd6776fddb582d7a611ecfefd6fca9`. It contains the
+environment, the display inventory returned during the run, and the verbatim validation log.
 
 ### macOS 26 / Metal 4 capability comparison
 
@@ -171,6 +203,17 @@ storage buffer, mip tail) fails the run on any mismatch. Success means exit code
 animated textured scene was visible, and the validation layer printed nothing beyond its startup
 banner. These finite runs shut down through the frame limit and are not lifecycle evidence.
 
+Exercise the acquired-but-unsubmitted frame path separately:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
+  --abandon-acquired-frame-once --frames 120
+```
+
+The run must report exactly one abandoned drawable, then report recovery after later rendering was
+submitted. The frame limit counts only submitted frames, so this proves acquisition recovered
+rather than allowing the abandoned iteration to satisfy the limit.
+
 ## Interactive lifecycle pass
 
 Run without `--frames`:
@@ -204,6 +247,7 @@ close is the supported shutdown path.
 - All startup GPU-to-CPU readback verifications pass.
 - Binary-archive generation and strict cross-process loading both report hits for all four
   pipelines.
+- The acquired-frame abandonment run reports one abandonment followed by a later submission.
 - The interactive pass completes every listed action with correct rendering before, during, and
   after each one.
 

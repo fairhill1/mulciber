@@ -153,6 +153,34 @@ pub unsafe fn object_object_out(
     unsafe { function(receiver, selector(name), argument, output) }
 }
 
+pub unsafe fn object_object_usize_two_out(
+    receiver: Object,
+    name: &CStr,
+    argument: Object,
+    options: usize,
+    first_output: *mut Object,
+    second_output: *mut Object,
+) -> Object {
+    let function: unsafe extern "C" fn(
+        Object,
+        Selector,
+        Object,
+        usize,
+        *mut Object,
+        *mut Object,
+    ) -> Object = unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            argument,
+            options,
+            first_output,
+            second_output,
+        )
+    }
+}
+
 pub unsafe fn object_event(
     receiver: Object,
     name: &CStr,
@@ -176,6 +204,17 @@ pub unsafe fn bool_isize(receiver: Object, name: &CStr, argument: isize) -> bool
     let function: unsafe extern "C" fn(Object, Selector, isize) -> bool =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), argument) }
+}
+
+pub unsafe fn bool_object_out(
+    receiver: Object,
+    name: &CStr,
+    argument: Object,
+    output: *mut Object,
+) -> bool {
+    let function: unsafe extern "C" fn(Object, Selector, Object, *mut Object) -> bool =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), argument, output) }
 }
 
 pub unsafe fn usize_value(receiver: Object, name: &CStr) -> usize {

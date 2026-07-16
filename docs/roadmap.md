@@ -51,7 +51,7 @@ Metal evidence completed so far:
 - [x] Memoryless 4x MSAA color and depth attachments resolved into the drawable.
 - [x] Reusable shadow depth, main MSAA, and fullscreen post-processing passes.
 - [x] Debug labels and command-buffer GPU start/end timing.
-- [ ] Pipeline caching with Metal binary archives.
+- [x] Strict cold-generation and cross-process loading of a device-specific Metal binary archive.
 
 ## 3. Extract Zinc APIs
 

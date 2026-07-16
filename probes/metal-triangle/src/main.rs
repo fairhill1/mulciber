@@ -5,11 +5,14 @@ mod objc;
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::ffi::{CStr, c_void};
+    use std::ffi::{CStr, CString, c_void};
     use std::fmt;
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
     use std::ptr;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use std::{env, num::NonZeroU64};
 
     use crate::objc::{
@@ -55,6 +58,8 @@ mod macos {
     const IN_FLIGHT_FRAMES: usize = 3;
     const SAMPLE_COUNT: usize = 4;
     const SHADOW_MAP_SIZE: usize = 1024;
+    const PIPELINE_OPTION_FAIL_ON_BINARY_ARCHIVE_MISS: usize = 1 << 2;
+    const DEFAULT_BINARY_ARCHIVE_PATH: &str = "target/zinc-metal-pipelines.metalarc";
     const METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
     #[link(name = "Metal", kind = "framework")]
@@ -215,6 +220,27 @@ mod macos {
         compute: Object,
     }
 
+    struct PipelineDescriptors {
+        shadow: Object,
+        main: Object,
+        post: Object,
+        compute: Object,
+    }
+
+    struct BinaryArchive {
+        object: Object,
+        array: Object,
+        url: Object,
+        path: PathBuf,
+        loaded: bool,
+    }
+
+    struct Options {
+        frame_limit: Option<NonZeroU64>,
+        binary_archive_path: PathBuf,
+        rebuild_binary_archive: bool,
+    }
+
     #[derive(Clone, Copy)]
     struct RenderPipelineSpec {
         vertex: &'static CStr,
@@ -272,7 +298,7 @@ mod macos {
     }
 
     impl Probe {
-        fn new() -> Result<Self, ProbeError> {
+        fn new(options: &Options) -> Result<Self, ProbeError> {
             // SAFETY: The program runs on the AppKit main thread and all selectors match SDK ABIs.
             unsafe {
                 let application = required(
@@ -334,7 +360,11 @@ mod macos {
                     "Metal command queue",
                 )?;
                 set_label(queue, c"Zinc graphics queue");
-                let pipelines = create_pipelines(device)?;
+                let pipelines = create_pipelines(
+                    device,
+                    &options.binary_archive_path,
+                    options.rebuild_binary_archive,
+                )?;
                 let depth_state = create_depth_state(device)?;
                 let buffers = create_buffer_resources(device)?;
                 let texture = create_texture(device, queue, pipelines.compute)?;
@@ -802,10 +832,47 @@ mod macos {
         }
     }
 
-    fn create_pipelines(device: Object) -> Result<PipelineStates, ProbeError> {
+    fn create_pipelines(
+        device: Object,
+        archive_path: &Path,
+        rebuild_archive: bool,
+    ) -> Result<PipelineStates, ProbeError> {
         let library = create_library(device)?;
-        let shadow = create_render_pipeline(
-            device,
+        let archive = create_binary_archive(device, archive_path, rebuild_archive)?;
+        let descriptors = create_pipeline_descriptors(library, archive.array)?;
+        if !archive.loaded {
+            populate_binary_archive(archive.object, &descriptors)?;
+            serialize_binary_archive(archive.object, archive.url, &archive.path)?;
+        }
+
+        let start = Instant::now();
+        let shadow = create_render_pipeline(device, descriptors.shadow, c"Zinc shadow pipeline")?;
+        let main = create_render_pipeline(device, descriptors.main, c"Zinc main pipeline")?;
+        let post = create_render_pipeline(device, descriptors.post, c"Zinc post pipeline")?;
+        let compute = create_compute_pipeline(device, descriptors.compute)?;
+        let pipeline_creation_ms = start.elapsed().as_secs_f64() * 1_000.0;
+        let action = if archive.loaded {
+            "loaded"
+        } else {
+            "generated"
+        };
+        println!(
+            "Metal binary archive: {action} {} (4 strict hits, pipeline creation {pipeline_creation_ms:.3} ms)",
+            archive.path.display()
+        );
+        Ok(PipelineStates {
+            shadow,
+            main,
+            post,
+            compute,
+        })
+    }
+
+    fn create_pipeline_descriptors(
+        library: Object,
+        binary_archives: Object,
+    ) -> Result<PipelineDescriptors, ProbeError> {
+        let shadow = create_render_pipeline_descriptor(
             library,
             RenderPipelineSpec {
                 vertex: c"shadow_vertex",
@@ -815,9 +882,9 @@ mod macos {
                 sample_count: 1,
                 label: c"Zinc shadow pipeline",
             },
+            binary_archives,
         )?;
-        let main = create_render_pipeline(
-            device,
+        let main = create_render_pipeline_descriptor(
             library,
             RenderPipelineSpec {
                 vertex: c"vertex_main",
@@ -827,9 +894,9 @@ mod macos {
                 sample_count: SAMPLE_COUNT,
                 label: c"Zinc main pipeline",
             },
+            binary_archives,
         )?;
-        let post = create_render_pipeline(
-            device,
+        let post = create_render_pipeline_descriptor(
             library,
             RenderPipelineSpec {
                 vertex: c"post_vertex",
@@ -839,25 +906,25 @@ mod macos {
                 sample_count: 1,
                 label: c"Zinc post pipeline",
             },
+            binary_archives,
         )?;
-        let function = load_function(library, c"copy_texture")?;
-        let mut error = ptr::null_mut();
-        // SAFETY: The function belongs to this device and the selector matches the Metal SDK ABI.
+        // SAFETY: The descriptor setters match the Metal SDK ABI and the archive array remains alive
+        // through pipeline creation.
         let compute = unsafe {
-            objc::object_object_out(
-                device,
-                c"newComputePipelineStateWithFunction:error:",
-                function,
-                &raw mut error,
-            )
+            let descriptor = required(
+                objc::object(objc::class(c"MTLComputePipelineDescriptor"), c"new"),
+                "compute pipeline descriptor",
+            )?;
+            set_label(descriptor, c"Zinc texture compute pipeline");
+            objc::void_object(
+                descriptor,
+                c"setComputeFunction:",
+                load_function(library, c"copy_texture")?,
+            );
+            objc::void_object(descriptor, c"setBinaryArchives:", binary_archives);
+            descriptor
         };
-        if compute.is_null() {
-            return Err(ProbeError(format!(
-                "Metal compute pipeline creation failed: {}",
-                objc::description(error)
-            )));
-        }
-        Ok(PipelineStates {
+        Ok(PipelineDescriptors {
             shadow,
             main,
             post,
@@ -865,12 +932,12 @@ mod macos {
         })
     }
 
-    fn create_render_pipeline(
-        device: Object,
+    fn create_render_pipeline_descriptor(
         library: Object,
         spec: RenderPipelineSpec,
+        binary_archives: Object,
     ) -> Result<Object, ProbeError> {
-        // SAFETY: Function, descriptor, and pipeline selectors match the Metal SDK ABI.
+        // SAFETY: Function and descriptor selectors match the Metal SDK ABI.
         unsafe {
             let descriptor = required(
                 objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
@@ -906,22 +973,224 @@ mod macos {
                 spec.depth_format,
             );
             objc::void_usize(descriptor, c"setRasterSampleCount:", spec.sample_count);
-            let mut error = ptr::null_mut();
-            let pipeline = objc::object_object_out(
+            objc::void_object(descriptor, c"setBinaryArchives:", binary_archives);
+            Ok(descriptor)
+        }
+    }
+
+    fn create_render_pipeline(
+        device: Object,
+        descriptor: Object,
+        label: &CStr,
+    ) -> Result<Object, ProbeError> {
+        let mut error = ptr::null_mut();
+        // SAFETY: The descriptor includes the binary archive and the strict option is available on
+        // Zinc's macOS 13 baseline. Reflection is intentionally not requested.
+        let pipeline = unsafe {
+            objc::object_object_usize_two_out(
                 device,
-                c"newRenderPipelineStateWithDescriptor:error:",
+                c"newRenderPipelineStateWithDescriptor:options:reflection:error:",
+                descriptor,
+                PIPELINE_OPTION_FAIL_ON_BINARY_ARCHIVE_MISS,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        if pipeline.is_null() {
+            Err(ProbeError(format!(
+                "Metal render pipeline creation failed for {label:?}; the binary archive may need --rebuild-binary-archive: {}",
+                objc::description(error)
+            )))
+        } else {
+            Ok(pipeline)
+        }
+    }
+
+    fn create_compute_pipeline(device: Object, descriptor: Object) -> Result<Object, ProbeError> {
+        let mut error = ptr::null_mut();
+        // SAFETY: The descriptor includes the binary archive and reflection is intentionally absent.
+        let pipeline = unsafe {
+            objc::object_object_usize_two_out(
+                device,
+                c"newComputePipelineStateWithDescriptor:options:reflection:error:",
+                descriptor,
+                PIPELINE_OPTION_FAIL_ON_BINARY_ARCHIVE_MISS,
+                ptr::null_mut(),
+                &raw mut error,
+            )
+        };
+        if pipeline.is_null() {
+            Err(ProbeError(format!(
+                "Metal compute pipeline creation failed; the binary archive may need --rebuild-binary-archive: {}",
+                objc::description(error)
+            )))
+        } else {
+            Ok(pipeline)
+        }
+    }
+
+    fn create_binary_archive(
+        device: Object,
+        path: &Path,
+        rebuild: bool,
+    ) -> Result<BinaryArchive, ProbeError> {
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            env::current_dir()
+                .map_err(|error| ProbeError(format!("could not resolve archive path: {error}")))?
+                .join(path)
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                ProbeError(format!(
+                    "could not create binary archive directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        if rebuild && path.exists() {
+            fs::remove_file(&path).map_err(|error| {
+                ProbeError(format!(
+                    "could not remove binary archive {}: {error}",
+                    path.display()
+                ))
+            })?;
+        }
+        let loaded = path.exists();
+        let url = file_url(&path)?;
+        let mut error = ptr::null_mut();
+        // SAFETY: Descriptor, URL, archive constructor, and NSArray factory match Foundation/Metal
+        // ABIs. A nil descriptor URL creates an empty archive.
+        unsafe {
+            let descriptor = required(
+                objc::object(objc::class(c"MTLBinaryArchiveDescriptor"), c"new"),
+                "binary archive descriptor",
+            )?;
+            if loaded {
+                objc::void_object(descriptor, c"setUrl:", url);
+            }
+            let object = objc::object_object_out(
+                device,
+                c"newBinaryArchiveWithDescriptor:error:",
                 descriptor,
                 &raw mut error,
             );
-            if pipeline.is_null() {
-                Err(ProbeError(format!(
-                    "Metal render pipeline creation failed for {:?}: {}",
-                    spec.label,
+            if object.is_null() {
+                return Err(ProbeError(format!(
+                    "could not {} Metal binary archive {}{}: {}",
+                    if loaded { "load" } else { "create" },
+                    path.display(),
+                    if loaded {
+                        "; use --rebuild-binary-archive if it is stale or corrupt"
+                    } else {
+                        ""
+                    },
                     objc::description(error)
-                )))
-            } else {
-                Ok(pipeline)
+                )));
             }
+            set_label(object, c"Zinc pipeline binary archive");
+            let array = required(
+                objc::object_object(objc::class(c"NSArray"), c"arrayWithObject:", object),
+                "binary archive array",
+            )?;
+            Ok(BinaryArchive {
+                object,
+                array,
+                url,
+                path,
+                loaded,
+            })
+        }
+    }
+
+    fn file_url(path: &Path) -> Result<Object, ProbeError> {
+        let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+            ProbeError(format!(
+                "binary archive path contains a NUL byte: {}",
+                path.display()
+            ))
+        })?;
+        // SAFETY: `fileURLWithPath:` accepts the temporary NSString and returns an autoreleased URL.
+        unsafe {
+            required(
+                objc::object_object(
+                    objc::class(c"NSURL"),
+                    c"fileURLWithPath:",
+                    objc::ns_string(&path),
+                ),
+                "binary archive file URL",
+            )
+        }
+    }
+
+    fn populate_binary_archive(
+        archive: Object,
+        descriptors: &PipelineDescriptors,
+    ) -> Result<(), ProbeError> {
+        add_pipeline_functions(
+            archive,
+            c"addRenderPipelineFunctionsWithDescriptor:error:",
+            descriptors.shadow,
+            "shadow render pipeline",
+        )?;
+        add_pipeline_functions(
+            archive,
+            c"addRenderPipelineFunctionsWithDescriptor:error:",
+            descriptors.main,
+            "main render pipeline",
+        )?;
+        add_pipeline_functions(
+            archive,
+            c"addRenderPipelineFunctionsWithDescriptor:error:",
+            descriptors.post,
+            "post render pipeline",
+        )?;
+        add_pipeline_functions(
+            archive,
+            c"addComputePipelineFunctionsWithDescriptor:error:",
+            descriptors.compute,
+            "texture compute pipeline",
+        )
+    }
+
+    fn add_pipeline_functions(
+        archive: Object,
+        selector: &CStr,
+        descriptor: Object,
+        label: &str,
+    ) -> Result<(), ProbeError> {
+        let mut error = ptr::null_mut();
+        // SAFETY: Both archive addition methods share the `(descriptor, NSError **) -> BOOL` ABI.
+        let added = unsafe { objc::bool_object_out(archive, selector, descriptor, &raw mut error) };
+        if added {
+            Ok(())
+        } else {
+            Err(ProbeError(format!(
+                "could not add {label} to Metal binary archive: {}",
+                objc::description(error)
+            )))
+        }
+    }
+
+    fn serialize_binary_archive(
+        archive: Object,
+        url: Object,
+        path: &Path,
+    ) -> Result<(), ProbeError> {
+        let mut error = ptr::null_mut();
+        // SAFETY: `serializeToURL:error:` accepts the file URL and NSError output pointer.
+        let serialized = unsafe {
+            objc::bool_object_out(archive, c"serializeToURL:error:", url, &raw mut error)
+        };
+        if serialized {
+            Ok(())
+        } else {
+            Err(ProbeError(format!(
+                "could not serialize Metal binary archive {}: {}",
+                path.display(),
+                objc::description(error)
+            )))
         }
     }
 
@@ -1528,26 +1797,56 @@ mod macos {
 
     pub fn run() -> Result<(), ProbeError> {
         let _pool = AutoreleasePool::new();
-        Probe::new()?.run(parse_frame_limit()?)
+        let options = parse_options()?;
+        Probe::new(&options)?.run(options.frame_limit)
     }
 
-    fn parse_frame_limit() -> Result<Option<NonZeroU64>, ProbeError> {
-        let mut arguments = env::args().skip(1);
-        let Some(argument) = arguments.next() else {
-            return Ok(None);
-        };
-        if argument != "--frames" {
-            return Err(ProbeError(format!("unknown argument: {argument}")));
+    fn parse_options() -> Result<Options, ProbeError> {
+        let mut frame_limit = None;
+        let mut binary_archive_path = None;
+        let mut rebuild_binary_archive = false;
+        let mut arguments = env::args_os().skip(1);
+        while let Some(argument) = arguments.next() {
+            match argument.to_str() {
+                Some("--frames") => {
+                    if frame_limit.is_some() {
+                        return Err(ProbeError("--frames was provided more than once".into()));
+                    }
+                    let value = arguments
+                        .next()
+                        .ok_or_else(|| ProbeError("--frames requires a positive integer".into()))?;
+                    let value = value
+                        .to_string_lossy()
+                        .parse::<NonZeroU64>()
+                        .map_err(|error| ProbeError(format!("invalid --frames value: {error}")))?;
+                    frame_limit = Some(value);
+                }
+                Some("--binary-archive") => {
+                    if binary_archive_path.is_some() {
+                        return Err(ProbeError(
+                            "--binary-archive was provided more than once".into(),
+                        ));
+                    }
+                    binary_archive_path =
+                        Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                            ProbeError("--binary-archive requires a file path".into())
+                        })?));
+                }
+                Some("--rebuild-binary-archive") => rebuild_binary_archive = true,
+                _ => {
+                    return Err(ProbeError(format!(
+                        "unknown argument: {}",
+                        argument.to_string_lossy()
+                    )));
+                }
+            }
         }
-        let value = arguments
-            .next()
-            .ok_or_else(|| ProbeError("--frames requires a positive integer".into()))?
-            .parse::<NonZeroU64>()
-            .map_err(|error| ProbeError(format!("invalid --frames value: {error}")))?;
-        if let Some(extra) = arguments.next() {
-            return Err(ProbeError(format!("unexpected argument: {extra}")));
-        }
-        Ok(Some(value))
+        Ok(Options {
+            frame_limit,
+            binary_archive_path: binary_archive_path
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_BINARY_ARCHIVE_PATH)),
+            rebuild_binary_archive,
+        })
     }
 }
 

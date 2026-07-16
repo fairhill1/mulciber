@@ -74,6 +74,17 @@ The build script invokes Xcode's `metal` and `metallib` tools and embeds the res
 loads that library directly and never invokes a shader compiler. This adds an SDK build requirement,
 not a shipped package dependency.
 
+The first run generates `target/zinc-metal-pipelines.metalarc` from all three render pipelines and
+the compute pipeline. Later runs load that device-specific Metal binary archive and create every
+pipeline with `MTLPipelineOptionFailOnBinaryArchiveMiss`, proving that the serialized entries are
+actually used. Pass `--binary-archive PATH` to select a different artifact or
+`--rebuild-binary-archive` after changing shaders, pipeline descriptors, the OS, or the GPU.
+
+This runtime generation path is probe machinery for producing and verifying a development artifact,
+not the intended shipping cache policy. Apple's SDK recommends generating binary archives during
+development and shipping them as assets; Metal maintains its own corruption-resilient application
+cache for pipelines compiled at runtime.
+
 For a finite validation run, pass `--frames N`. Enable Apple's validation layer with
 `MTL_DEBUG_LAYER=1`.
 

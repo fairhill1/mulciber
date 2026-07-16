@@ -94,6 +94,15 @@ in-flight attachment. The validation gate now automatically resizes the window t
 finite run completed without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-105528.zip`.
 
+The uniform-buffer slice was validated on 2026-07-16. Three host-visible coherent buffers remain
+persistently mapped for the renderer lifetime, and three descriptor sets pair the shared sampled
+texture with one frame-local uniform buffer apiece. After frame-fence completion, the CPU writes an
+80-byte std140-compatible block containing an aspect-correct transform and elapsed time, binds the
+matching descriptor set, submits, and advances the frame slot. The vertex shader preserves triangle
+proportions across window shapes and the fragment shader uses time for a subtle color pulse. The
+600-frame run and automated four-extent resize smoke completed without validation or loader
+messages. Evidence: `validation-artifacts/windows-vulkan-20260716-110153.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

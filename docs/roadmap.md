@@ -54,6 +54,8 @@ Vulkan evidence completed so far:
   layout transitions, a combined image sampler descriptor, and fragment sampling (same machine).
 - [x] Capability-selected, resize-dependent device-local depth attachment with explicit layout
   transitions, depth testing/writes, and swapchain-retirement ownership (same machine).
+- [x] Three persistently mapped, host-coherent uniform-buffer frame slots with matching descriptor
+  sets, aspect-correct transforms, and shader-visible elapsed time (same machine).
 
 Metal evidence completed so far:
 

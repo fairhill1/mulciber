@@ -14,6 +14,7 @@ use crate::win32::Window;
 const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
+const FRAME_SLOT_COUNT: usize = 3;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -22,6 +23,13 @@ struct Vertex {
     position: [f32; 2],
     color: [f32; 3],
     uv: [f32; 2],
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct FrameUniform {
+    transform: [[f32; 4]; 4],
+    tint_time: [f32; 4],
 }
 
 const TRIANGLE_VERTICES: [Vertex; 3] = [
@@ -1177,6 +1185,11 @@ struct GpuBuffer {
     memory: vk::VkDeviceMemory,
 }
 
+struct UniformBuffer {
+    buffer: GpuBuffer,
+    mapped: *mut c_void,
+}
+
 #[derive(Default)]
 struct GpuImage {
     handle: vk::VkImage,
@@ -1203,7 +1216,10 @@ struct Renderer {
     texture_sampler: vk::VkSampler,
     descriptor_set_layout: vk::VkDescriptorSetLayout,
     descriptor_pool: vk::VkDescriptorPool,
-    descriptor_set: vk::VkDescriptorSet,
+    descriptor_sets: Vec<vk::VkDescriptorSet>,
+    uniform_buffers: Vec<UniformBuffer>,
+    frame_slot: usize,
+    started: Instant,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
@@ -1239,7 +1255,10 @@ impl Renderer {
             texture_sampler: ptr::null_mut(),
             descriptor_set_layout: ptr::null_mut(),
             descriptor_pool: ptr::null_mut(),
-            descriptor_set: ptr::null_mut(),
+            descriptor_sets: Vec::new(),
+            uniform_buffers: Vec::new(),
+            frame_slot: 0,
+            started: Instant::now(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
             present_fences: Vec::new(),
@@ -1257,6 +1276,7 @@ impl Renderer {
         }
         renderer.create_frame_resources()?;
         renderer.create_geometry_buffers()?;
+        renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
         let (width, height) = window
             .client_extent()
@@ -1463,6 +1483,45 @@ impl Renderer {
         )
     }
 
+    fn create_uniform_buffers(&mut self) -> Result<(), ProbeError> {
+        let required_flags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32;
+        for slot in 0..FRAME_SLOT_COUNT {
+            let mut buffer = self.create_buffer(
+                mem::size_of::<FrameUniform>(),
+                vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
+                required_flags,
+                &format!("frame-slot {slot} uniform"),
+            )?;
+            let mut mapped = ptr::null_mut();
+            let map = check(
+                // SAFETY: The allocation is host-visible and the whole uniform range is valid.
+                unsafe {
+                    self.device.functions.map_memory.expect("loaded function")(
+                        self.device.handle,
+                        buffer.memory,
+                        0,
+                        u64::try_from(mem::size_of::<FrameUniform>())
+                            .expect("uniform byte length fits u64"),
+                        0,
+                        &raw mut mapped,
+                    )
+                },
+                &format!("vkMapMemory for frame-slot {slot} uniform"),
+            );
+            if let Err(error) = map {
+                // SAFETY: Mapping failed and the buffer has never been submitted.
+                unsafe { self.destroy_buffer(&mut buffer) };
+                return Err(error);
+            }
+            self.uniform_buffers.push(UniformBuffer { buffer, mapped });
+        }
+        println!(
+            "Uniforms: {FRAME_SLOT_COUNT} persistently mapped frame slots with transform/time data"
+        );
+        Ok(())
+    }
+
     fn create_texture_resources(&mut self) -> Result<(), ProbeError> {
         let mut staging = self.create_staging_buffer(&CHECKERBOARD_TEXELS, "texture")?;
         let result = self.create_texture_and_upload(&staging);
@@ -1660,17 +1719,27 @@ impl Renderer {
     }
 
     fn create_texture_descriptors(&mut self) -> Result<(), ProbeError> {
-        let binding = vk::VkDescriptorSetLayoutBinding {
-            binding: 0,
-            descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            descriptorCount: 1,
-            stageFlags: vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-            ..Default::default()
-        };
+        let bindings = [
+            vk::VkDescriptorSetLayoutBinding {
+                binding: 0,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptorCount: 1,
+                stageFlags: vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+                ..Default::default()
+            },
+            vk::VkDescriptorSetLayoutBinding {
+                binding: 1,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                descriptorCount: 1,
+                stageFlags: (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT)
+                    as u32,
+                ..Default::default()
+            },
+        ];
         let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount: 1,
-            pBindings: &raw const binding,
+            bindingCount: u32::try_from(bindings.len()).expect("descriptor binding count fits u32"),
+            pBindings: bindings.as_ptr(),
             ..Default::default()
         };
         check(
@@ -1688,15 +1757,23 @@ impl Renderer {
             },
             "vkCreateDescriptorSetLayout",
         )?;
-        let pool_size = vk::VkDescriptorPoolSize {
-            type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            descriptorCount: 1,
-        };
+        let descriptor_count = u32::try_from(FRAME_SLOT_COUNT).expect("frame slot count fits u32");
+        let pool_sizes = [
+            vk::VkDescriptorPoolSize {
+                type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptorCount: descriptor_count,
+            },
+            vk::VkDescriptorPoolSize {
+                type_: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                descriptorCount: descriptor_count,
+            },
+        ];
         let pool_info = vk::VkDescriptorPoolCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            maxSets: 1,
-            poolSizeCount: 1,
-            pPoolSizes: &raw const pool_size,
+            maxSets: descriptor_count,
+            poolSizeCount: u32::try_from(pool_sizes.len())
+                .expect("descriptor pool size count fits u32"),
+            pPoolSizes: pool_sizes.as_ptr(),
             ..Default::default()
         };
         check(
@@ -1714,11 +1791,13 @@ impl Renderer {
             },
             "vkCreateDescriptorPool",
         )?;
+        let layouts = [self.descriptor_set_layout; FRAME_SLOT_COUNT];
+        self.descriptor_sets = vec![ptr::null_mut(); FRAME_SLOT_COUNT];
         let allocate = vk::VkDescriptorSetAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             descriptorPool: self.descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const self.descriptor_set_layout,
+            descriptorSetCount: descriptor_count,
+            pSetLayouts: layouts.as_ptr(),
             ..Default::default()
         };
         check(
@@ -1730,35 +1809,62 @@ impl Renderer {
                     .expect("loaded function")(
                     self.device.handle,
                     &raw const allocate,
-                    &raw mut self.descriptor_set,
+                    self.descriptor_sets.as_mut_ptr(),
                 )
             },
             "vkAllocateDescriptorSets",
         )?;
-        let image = vk::VkDescriptorImageInfo {
-            sampler: self.texture_sampler,
-            imageView: self.texture.view,
-            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-        let write = vk::VkWriteDescriptorSet {
-            sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet: self.descriptor_set,
-            dstBinding: 0,
-            descriptorCount: 1,
-            descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            pImageInfo: &raw const image,
-            ..Default::default()
-        };
-        // SAFETY: The descriptor set and referenced image/sampler are live.
-        unsafe {
-            self.device
-                .functions
-                .update_descriptor_sets
-                .expect("loaded function")(
-                self.device.handle, 1, &raw const write, 0, ptr::null()
-            );
-        }
+        self.update_frame_descriptors();
         Ok(())
+    }
+
+    fn update_frame_descriptors(&self) {
+        for (&descriptor_set, uniform) in self.descriptor_sets.iter().zip(&self.uniform_buffers) {
+            let image = vk::VkDescriptorImageInfo {
+                sampler: self.texture_sampler,
+                imageView: self.texture.view,
+                imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+            let buffer = vk::VkDescriptorBufferInfo {
+                buffer: uniform.buffer.handle,
+                offset: 0,
+                range: u64::try_from(mem::size_of::<FrameUniform>())
+                    .expect("uniform byte length fits u64"),
+            };
+            let writes = [
+                vk::VkWriteDescriptorSet {
+                    sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    dstSet: descriptor_set,
+                    dstBinding: 0,
+                    descriptorCount: 1,
+                    descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    pImageInfo: &raw const image,
+                    ..Default::default()
+                },
+                vk::VkWriteDescriptorSet {
+                    sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    dstSet: descriptor_set,
+                    dstBinding: 1,
+                    descriptorCount: 1,
+                    descriptorType: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                    pBufferInfo: &raw const buffer,
+                    ..Default::default()
+                },
+            ];
+            // SAFETY: The set and referenced image/sampler/buffer are live for this update.
+            unsafe {
+                self.device
+                    .functions
+                    .update_descriptor_sets
+                    .expect("loaded function")(
+                    self.device.handle,
+                    u32::try_from(writes.len()).expect("descriptor write count fits u32"),
+                    writes.as_ptr(),
+                    0,
+                    ptr::null(),
+                );
+            }
+        }
     }
 
     fn create_buffer(
@@ -3091,6 +3197,11 @@ impl Renderer {
             .render_finished
             .get(image_slot)
             .ok_or_else(|| ProbeError("swapchain image has no presentation semaphore".into()))?;
+        let descriptor_set = *self
+            .descriptor_sets
+            .get(self.frame_slot)
+            .ok_or_else(|| ProbeError("current frame slot has no descriptor set".into()))?;
+        self.write_frame_uniform(self.frame_slot)?;
         let operation_started = Instant::now();
         // SAFETY: Fence is signaled and command buffer is no longer executing.
         check(
@@ -3112,8 +3223,9 @@ impl Renderer {
             },
             "vkResetCommandBuffer",
         )?;
-        self.record(image, view)?;
+        self.record(image, view, descriptor_set)?;
         self.submit(render_finished)?;
+        self.frame_slot = (self.frame_slot + 1) % FRAME_SLOT_COUNT;
         trace_sample.record_submit = operation_started.elapsed();
 
         let present_fence = self
@@ -3170,8 +3282,47 @@ impl Renderer {
         Ok(true)
     }
 
+    #[allow(clippy::cast_precision_loss)]
+    fn write_frame_uniform(&self, slot: usize) -> Result<(), ProbeError> {
+        let width = self.extent.width as f32;
+        let height = self.extent.height as f32;
+        let (scale_x, scale_y) = if width >= height {
+            (height / width, 1.0)
+        } else {
+            (1.0, width / height)
+        };
+        let uniform = FrameUniform {
+            transform: [
+                [scale_x, 0.0, 0.0, 0.0],
+                [0.0, scale_y, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            tint_time: [1.0, 1.0, 1.0, self.started.elapsed().as_secs_f32()],
+        };
+        let buffer = self
+            .uniform_buffers
+            .get(slot)
+            .ok_or_else(|| ProbeError("current frame slot has no uniform buffer".into()))?;
+        // SAFETY: The slot's persistent coherent mapping spans one `FrameUniform`. Frame-fence
+        // completion was established before this write, so the GPU is not reading this allocation.
+        unsafe {
+            ptr::copy_nonoverlapping(
+                (&raw const uniform).cast::<u8>(),
+                buffer.mapped.cast(),
+                mem::size_of::<FrameUniform>(),
+            );
+        }
+        Ok(())
+    }
+
     #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
-    fn record(&self, image: vk::VkImage, view: vk::VkImageView) -> Result<(), ProbeError> {
+    fn record(
+        &self,
+        image: vk::VkImage,
+        view: vk::VkImageView,
+        descriptor_set: vk::VkDescriptorSet,
+    ) -> Result<(), ProbeError> {
         let begin = vk::VkCommandBufferBeginInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
@@ -3283,7 +3434,7 @@ impl Renderer {
                 self.pipeline_layout,
                 0,
                 1,
-                &raw const self.descriptor_set,
+                &raw const descriptor_set,
                 0,
                 ptr::null(),
             );
@@ -3516,6 +3667,7 @@ impl Drop for Renderer {
         let mut vertex_buffer = mem::take(&mut self.vertex_buffer);
         let mut index_buffer = mem::take(&mut self.index_buffer);
         let mut texture = mem::take(&mut self.texture);
+        let mut uniform_buffers = mem::take(&mut self.uniform_buffers);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
             if !self.descriptor_pool.is_null() {
@@ -3548,6 +3700,16 @@ impl Drop for Renderer {
                     self.descriptor_set_layout,
                     ptr::null(),
                 );
+            }
+            for uniform in &mut uniform_buffers {
+                if !uniform.mapped.is_null() {
+                    self.device.functions.unmap_memory.expect("loaded function")(
+                        self.device.handle,
+                        uniform.buffer.memory,
+                    );
+                    uniform.mapped = ptr::null_mut();
+                }
+                self.destroy_buffer(&mut uniform.buffer);
             }
             self.destroy_buffer(&mut vertex_buffer);
             self.destroy_buffer(&mut index_buffer);
@@ -4002,6 +4164,12 @@ mod tests {
         assert_eq!(attributes[0].offset, 0);
         assert_eq!(attributes[1].offset, 8);
         assert_eq!(attributes[2].offset, 20);
+    }
+
+    #[test]
+    fn frame_uniform_matches_std140_block_layout() {
+        assert_eq!(mem::size_of::<FrameUniform>(), 80);
+        assert_eq!(mem::align_of::<FrameUniform>(), 16);
     }
 
     #[test]

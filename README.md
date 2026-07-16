@@ -106,7 +106,8 @@ cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
 
 The probe uploads geometry and a checkerboard texture through temporary staging buffers into
 device-local buffers and an RGBA8 image, then renders through indexed drawing with fragment texture
-sampling and a resize-dependent device-local depth attachment. It loads `vulkan-1.dll` dynamically
-and has no Rust package dependencies. Validation is required for the probe and reported through
+sampling, a resize-dependent device-local depth attachment, and three persistently mapped uniform
+frame slots for aspect correction and time. It loads `vulkan-1.dll` dynamically and has no Rust
+package dependencies. Validation is required for the probe and reported through
 `VK_EXT_debug_utils`. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

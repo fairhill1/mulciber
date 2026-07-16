@@ -51,6 +51,17 @@ multi-display, hardware-tier, or visual evidence.
 - New fallback paths must be observable and physically exercised when the current machine permits.
 - Pipeline cache work must follow `docs/vulkan-pipeline-cache.md`.
 
+## Platform organization
+
+- Treat Win32, AppKit, Wayland, and X11 as peer first-class targets in source layout and naming.
+- Keep shared entrypoints and report/runtime coordination target-neutral. Put native window, loader,
+  surface, event, and lifecycle machinery in explicitly named peer modules rather than embedding one
+  platform in `main.rs` and attaching later platforms around it.
+- Symmetric module boundaries do not imply identical native behavior. Preserve platform-specific
+  ownership and lifecycle rules instead of forcing them through a speculative common abstraction.
+- When adding a new target to an existing single-target probe, reorganize the old target into the
+  same peer structure as part of the port unless a documented temporary migration step prevents it.
+
 ## Evidence and documentation
 
 When capability evidence changes, update the applicable files:

@@ -18,6 +18,7 @@ fn main() {
     let wrapper = r#"
 #define VK_NO_PROTOTYPES 1
 #define VK_USE_PLATFORM_WIN32_KHR 1
+#define VK_USE_PLATFORM_XLIB_KHR 1
 #include "vulkan_core.h"
 
 typedef void* HANDLE;
@@ -28,7 +29,12 @@ typedef const unsigned short* LPCWSTR;
 typedef unsigned long DWORD;
 typedef struct SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 
+typedef struct _XDisplay Display;
+typedef unsigned long long Window;
+typedef unsigned long long VisualID;
+
 #include "vulkan_win32.h"
+#include "vulkan_xlib.h"
 "#;
 
     let mut builder = bindgen::Builder::default()

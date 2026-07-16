@@ -43,6 +43,7 @@ PFN_vkCreateSampler
 PFN_vkCreateShaderModule
 PFN_vkCreateSwapchainKHR
 PFN_vkCreateWin32SurfaceKHR
+PFN_vkCreateXlibSurfaceKHR
 PFN_vkDestroyCommandPool
 PFN_vkDestroyBuffer
 PFN_vkDestroyDescriptorPool
@@ -449,6 +450,8 @@ VkVertexInputAttributeDescription
 VkVertexInputBindingDescription
 VkWriteDescriptorSet
 VkWin32SurfaceCreateInfoKHR
+VkXlibSurfaceCreateInfoKHR
 VkDebugUtilsLabelEXT
 PFN_vkGetFenceStatus
 PFN_vkGetPhysicalDeviceMemoryProperties
+PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR

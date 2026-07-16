@@ -6445,6 +6445,14 @@ pub type PFN_vkDestroyDebugUtilsMessengerEXT = ::core::option::Option<
 >;
 pub type HINSTANCE = *mut ::core::ffi::c_void;
 pub type HWND = *mut ::core::ffi::c_void;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _XDisplay {
+    _unused: [u8; 0],
+}
+pub type Display = _XDisplay;
+pub type Window = ::core::ffi::c_ulonglong;
+pub type VisualID = ::core::ffi::c_ulonglong;
 pub type VkWin32SurfaceCreateFlagsKHR = VkFlags;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -6471,4 +6479,39 @@ pub type PFN_vkCreateWin32SurfaceKHR = ::core::option::Option<
         pAllocator: *const VkAllocationCallbacks,
         pSurface: *mut VkSurfaceKHR,
     ) -> VkResult,
+>;
+pub type VkXlibSurfaceCreateFlagsKHR = VkFlags;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkXlibSurfaceCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkXlibSurfaceCreateFlagsKHR,
+    pub dpy: *mut Display,
+    pub window: Window,
+}
+impl Default for VkXlibSurfaceCreateInfoKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type PFN_vkCreateXlibSurfaceKHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        instance: VkInstance,
+        pCreateInfo: *const VkXlibSurfaceCreateInfoKHR,
+        pAllocator: *const VkAllocationCallbacks,
+        pSurface: *mut VkSurfaceKHR,
+    ) -> VkResult,
+>;
+pub type PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        physicalDevice: VkPhysicalDevice,
+        queueFamilyIndex: u32,
+        dpy: *mut Display,
+        visualID: VisualID,
+    ) -> VkBool32,
 >;

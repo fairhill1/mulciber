@@ -17,7 +17,10 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   KDE Plasma with Vulkan 1.4; native Xorg hardware coverage remains pending).
 - [x] Port the Vulkan capability report to Wayland on Linux (physically exercised natively on KDE
   Plasma with a compositor-discovered `wl_surface` and Vulkan 1.4).
-- [ ] Run the report with the macOS 26 / Metal 4 runtime and compare results.
+- [x] Run the report with the macOS 26 / Metal 4 runtime and compare results (physically
+  exercised on an Apple M5 running macOS 26.5.2 with runtime-detected Metal 4 symbols all
+  present, against an Apple M2 running macOS 15.7.7 with all absent; recorded in the macOS
+  validation runbook).
 - [x] Pin the Vulkan registry, headers, loader, validation, profiles, and SPIR-V toolchain revisions.
 
 ## 1. Native presentation probes

@@ -20,6 +20,7 @@ mod macos {
 
     #[link(name = "objc")]
     unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> Object;
         fn objc_msgSend();
         fn sel_registerName(name: *const c_char) -> Selector;
     }
@@ -101,6 +102,12 @@ mod macos {
         supported: Option<bool>,
     }
 
+    struct RuntimeSymbol {
+        json_name: &'static str,
+        display_name: &'static str,
+        present: bool,
+    }
+
     struct Report {
         name: String,
         registry_id: Option<u64>,
@@ -113,6 +120,7 @@ mod macos {
         read_write_texture_tier: Option<u64>,
         families: [Family; 6],
         capabilities: [Capability; 5],
+        metal_4_runtime: [RuntimeSymbol; 6],
     }
 
     impl Report {
@@ -162,6 +170,38 @@ mod macos {
                         device.bool(c"supportsDynamicLibraries"),
                     ),
                 ],
+                metal_4_runtime: [
+                    RuntimeSymbol::new(
+                        "new_mtl4_command_queue_selector",
+                        "newMTL4CommandQueue device selector",
+                        device.responds_to(c"newMTL4CommandQueue"),
+                    ),
+                    RuntimeSymbol::new(
+                        "command_queue_descriptor_class",
+                        "MTL4CommandQueueDescriptor",
+                        class_exists(c"MTL4CommandQueueDescriptor"),
+                    ),
+                    RuntimeSymbol::new(
+                        "command_allocator_descriptor_class",
+                        "MTL4CommandAllocatorDescriptor",
+                        class_exists(c"MTL4CommandAllocatorDescriptor"),
+                    ),
+                    RuntimeSymbol::new(
+                        "argument_table_descriptor_class",
+                        "MTL4ArgumentTableDescriptor",
+                        class_exists(c"MTL4ArgumentTableDescriptor"),
+                    ),
+                    RuntimeSymbol::new(
+                        "compiler_descriptor_class",
+                        "MTL4CompilerDescriptor",
+                        class_exists(c"MTL4CompilerDescriptor"),
+                    ),
+                    RuntimeSymbol::new(
+                        "pipeline_data_set_serializer_descriptor_class",
+                        "MTL4PipelineDataSetSerializerDescriptor",
+                        class_exists(c"MTL4PipelineDataSetSerializerDescriptor"),
+                    ),
+                ],
             }
         }
 
@@ -206,7 +246,14 @@ mod macos {
                 }
             }
 
-            println!("Metal 4 SDK symbols: unavailable in this build (requires a newer Xcode SDK)");
+            println!("Metal 4 runtime symbols:");
+            for symbol in &self.metal_4_runtime {
+                println!("  {:<40} {}", symbol.display_name, yes_no(symbol.present));
+            }
+
+            println!(
+                "Metal 4 SDK symbols: not compiled into this probe; runtime presence is reported above"
+            );
         }
 
         fn json(&self) -> String {
@@ -262,6 +309,16 @@ mod macos {
                     .expect("writing to a String cannot fail");
                 push_json_value(&mut output, capability.supported);
             }
+            output.push_str("\n  },\n  \"metal_4_runtime\": {");
+            for (index, symbol) in self.metal_4_runtime.iter().enumerate() {
+                let separator = if index == 0 { "\n" } else { ",\n" };
+                write!(
+                    output,
+                    "{separator}    \"{}\": {}",
+                    symbol.json_name, symbol.present
+                )
+                .expect("writing to a String cannot fail");
+            }
             output.push_str("\n  },\n  \"build\": {\n    \"metal_4_sdk_symbols\": false\n  }\n}");
             output
         }
@@ -287,6 +344,16 @@ mod macos {
                 json_name,
                 display_name,
                 supported,
+            }
+        }
+    }
+
+    impl RuntimeSymbol {
+        const fn new(json_name: &'static str, display_name: &'static str, present: bool) -> Self {
+            Self {
+                json_name,
+                display_name,
+                present,
             }
         }
     }
@@ -402,6 +469,12 @@ mod macos {
     fn selector(name: &CStr) -> Selector {
         // SAFETY: `name` is NUL-terminated and Objective-C interns selector names permanently.
         unsafe { sel_registerName(name.as_ptr()) }
+    }
+
+    fn class_exists(name: &CStr) -> bool {
+        // SAFETY: `name` is NUL-terminated. `objc_getClass` returns null for unknown classes and
+        // registered class objects have process lifetime.
+        !unsafe { objc_getClass(name.as_ptr()) }.is_null()
     }
 
     unsafe fn send_object(receiver: Object, selector: Selector) -> Object {

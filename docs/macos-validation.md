@@ -13,11 +13,13 @@ milestone and records what has actually been exercised.
   strict cross-process load run.
 - Initial physical lifecycle evidence (continuous drag resize, minimize/restore, zoom/restore,
   full occlusion/reveal, titlebar close) was recorded on the same machine and date; see below.
-- The evidence machine runs macOS 15.7.7 with a Metal 3 device family. The roadmap's macOS 26 /
-  Metal 4 runtime comparison cannot be produced on this machine, and the capability probe reports
-  `Metal 4 SDK symbols: unavailable in this build`.
-- The evidence machine has a single built-in display. Display-change and multi-display behavior
-  cannot be evidenced on it.
+- The primary evidence machine runs macOS 15.7.7 with a Metal 3 device family. The roadmap's
+  macOS 26 / Metal 4 runtime comparison was recorded against a second machine (Apple M5, macOS
+  26.5.2); see below. The capability probe detects Metal 4 objects through the Objective-C
+  runtime, so the report does not depend on the build SDK; the probe itself still compiles no
+  Metal 4 SDK symbols.
+- Both evidence machines have a single built-in display. Display-change and multi-display
+  behavior cannot be evidenced on them.
 
 ## Recorded evidence
 
@@ -67,7 +69,40 @@ change, multi-display, differing backing scale factors, explicit input handling,
 Metal 4 runtime, and broader Apple-silicon hardware coverage remain outstanding. Rendered resize
 cadence was accepted visually and was not instrumented or measured.
 
-The ignored validation archive is `validation-artifacts/macos-metal-20260716-210416.tar.gz` with
+### macOS 26 / Metal 4 capability comparison
+
+On 2026-07-16 the capability report ran on a second machine: a MacBook Air with an Apple M5
+(8 GPU cores, Metal 4 per `system_profiler`), macOS 26.5.2 build 25F84, a single built-in
+2560x1664 Retina display, Rust 1.97.1, and Command Line Tools with the macOS 26.5 SDK. The source
+was the GitHub zip of `main` matching `90602d54aa0dceb9006aa04f6a0cd143e7a9326f` plus the updated
+`probes/metal-info/src/main.rs` that adds Metal 4 runtime-symbol detection, copied from the
+development tree before commit; it is therefore development evidence for the probe change. The
+run was driven over SSH; the capability probe opens no window, so a graphical session was not
+required.
+
+The same updated probe ran on the Apple M2 / macOS 15.7.7 machine as the comparison baseline and
+negative control. Differences between the two reports, both of which parsed without repair as
+schema version 1:
+
+- Device: Apple M2 versus Apple M5 (both 8 GPU cores, unified memory).
+- Recommended working set: 5.33 GiB versus 11.84 GiB; maximum buffer length: 4.00 GiB versus
+  8.88 GiB.
+- Families: the M5 adds Apple 9; both support Apple 7/8, Mac 2, Common 3, and Metal 3.
+- Metal 4 runtime symbols: absent on macOS 15 (all six report `no`) and present on macOS 26 (the
+  `newMTL4CommandQueue` device selector and the `MTL4CommandQueueDescriptor`,
+  `MTL4CommandAllocatorDescriptor`, `MTL4ArgumentTableDescriptor`, `MTL4CompilerDescriptor`, and
+  `MTL4PipelineDataSetSerializerDescriptor` classes all report `yes`).
+- Everything else was identical: argument buffers tier 2, read-write texture tier 2, 32.00 KiB
+  maximum threadgroup memory, and all five advanced selectors available.
+
+This establishes capability-report evidence only. No Metal 4 object was created, nothing was
+rendered on the M5, and the triangle probe has not run there. The comparison archive is
+`validation-artifacts/macos-metal4-compare-20260716-213831.tar.gz` with SHA-256
+`7608855475b87d61b1e1980b7c632cb7f6b9ef56e9ce1dbea499a0ad89a27a10`, containing both machines'
+environments, display inventories, and human-readable and JSON reports.
+
+The ignored validation archive for the M2 lifecycle evidence is
+`validation-artifacts/macos-metal-20260716-210416.tar.gz` with
 SHA-256 `0cd30bcb6ad2540632362ccdce2ab46f8f44466587cdb2196e22115551a3c3fb`. It contains the
 environment, display inventory, capability reports, and all run logs, including the interactive
 session.
@@ -114,9 +149,10 @@ python3 -c "import json,sys; r=json.load(open('mulciber-metal.json')); \
 assert r['schema_version'] == 1 and r['backend'] == 'metal'"
 ```
 
-The run must identify the device, memory facts, device families, and each advanced capability
-selector explicitly. Record whether Metal 4 SDK symbols were available in the build; on a
-pre-macOS-26 SDK the probe must say so rather than omit the section.
+The run must identify the device, memory facts, device families, each advanced capability
+selector, and each Metal 4 runtime symbol explicitly. Metal 4 detection queries the Objective-C
+runtime, so it reflects the running OS rather than the build SDK; on a pre-macOS-26 system every
+Metal 4 entry must report `no` rather than disappear from the report.
 
 ## Automated presentation runs
 

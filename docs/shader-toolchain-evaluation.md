@@ -1,5 +1,9 @@
 # Offline shader toolchain evaluation: Naga and Slang
 
+This document covers two evaluations: the SPIR-V paths (evaluated 2026-07-16 on Linux) and
+the Metal/MSL paths (evaluated 2026-07-16 on macOS, recorded in the
+[Metal output evaluation](#metal-output-evaluation) section).
+
 Milestone 2 requires graphics and compute pipelines with offline shader compilation, and
 milestone 4 adds bindless resource tables, mesh shading, and hardware ray tracing. This
 evaluation measures whether Naga (WGSL) and Slang can produce Vulkan-1.4-valid SPIR-V for
@@ -111,3 +115,97 @@ language gaps.
   tables, and cannot yet emit valid mesh-shader modules.
 - Both toolchains satisfy the offline and pinning requirements; neither result covers driver
   acceptance, pipeline creation, or rendered output, which remain probe work.
+
+## Metal output evaluation
+
+Metal is half of Mulciber's backend surface, and the SPIR-V evaluation above deliberately
+excluded both toolchains' Metal paths. This second evaluation measures whether the same
+corpus reaches Apple-toolchain-valid Metal Shading Language today.
+
+### Exactly what was tested
+
+- The same Naga 30.0.0 revision, now through its MSL back end as a library
+  (`back::msl::write_string`, MSL language version 3.1, `fake_missing_bindings` enabled so
+  resource slot assignment does not gate emission validity), and the same Slang 2026.10.2
+  release in its macOS arm64 packaging (`slang-2026.10.2-macos-aarch64.zip`, SHA-256
+  `5f37e80b16ee332669fa2355485f6cf2795fa5d406bf6e0b1533b3ea2f0e6d76`), invoked as
+  `slangc <source> -target metal -fvk-use-entrypoint-name -o <output>`.
+- Every emitted MSL module was compiled with Apple's `metal` front end
+  (`xcrun metal -c <source> -std=metal3.1`, Apple metal version 32023.620 from Xcode on
+  macOS 15.7.7, Apple M2). MSL 3.1 covers mesh shading (3.0) and intersection queries (2.4)
+  within Mulciber's Metal 3 baseline.
+- The identical seven scenario pairs, driven by the harness's new `--metal` path
+  (`--no-spirv` skipped SPIR-V because SPIRV-Tools was not installed on this host).
+- Evaluated 2026-07-16. This is standalone front-end acceptance only: no `metallib` was
+  shipped, no Metal pipeline was created, and nothing was rendered. A manual
+  `xcrun metallib` link of two accepted modules succeeded as a smoke check.
+- The emitted sources, compiled objects, `report.json`, and host environment are archived
+  as `validation-artifacts/shader-toolchain-metal-20260716-215355.tar.gz` with SHA-256
+  `9533244aee2e4269ae98ea454936e00ba5d0e6c8a9be80c9fe03a08ce1a29fc3`.
+
+### Results
+
+| Scenario | Milestone | Naga 30.0.0 (MSL 3.1) | slangc 2026.10.2 (MSL) |
+| --- | --- | --- | --- |
+| scene | 2 | valid | valid |
+| compute_storage | 2 | valid | **failed** (`GetDimensions` unavailable for Metal) |
+| indirect_args | 2 | valid | valid |
+| bindless | 4 | valid, true unsized argument-buffer array | **failed** (`NonUniformResourceIndex` unavailable; unsized arrays emit invalid MSL) |
+| ray_query | 4 | valid (`intersection_query`) | **failed** (`GetDimensions` unavailable) |
+| ray_pipeline | 4 | **failed** (MSL back-end `not implemented` panic) | **failed** (no Metal lowering for ray-pipeline stages) |
+| mesh | 4 | valid (`[[object]]`/`[[mesh]]`) | **failed** (requires whole-struct output assignment) |
+
+Naga passed 6 of 7; Slang passed 2 of 7. The outcome inverts the SPIR-V table almost
+scenario for scenario.
+
+### Findings
+
+1. **Naga's two SPIR-V defects do not exist on its MSL path.** The workgroup-memory layout
+   decorations and duplicate mesh builtins are SPIR-V back-end code generation bugs;
+   compute_storage and the complete task + mesh + fragment module emit MSL that Apple's
+   compiler accepts.
+2. **Naga emits true unsized bindless on Metal.** The unsized `binding_array` becomes a
+   `constant NagaArgumentBufferWrapper<texture2d<...>>*` argument-buffer pointer with no
+   fixed-size remap, the opposite of its SPIR-V limitation. Non-uniform indexing needs no
+   decoration in MSL, so the distinction dissolves on this target.
+3. **Naga has no MSL ray-pipeline lowering, and the failure mode is a panic.** The writer
+   hits an explicit `not implemented` panic rather than returning a backend error; Metal
+   itself has no separate ray-pipeline stage model, so the gap is expected even though the
+   failure mode is hostile. The harness catches the panic and records it as a finding.
+4. **Slang's Metal back end rejects two core intrinsics the corpus relies on.**
+   `RWStructuredBuffer.GetDimensions` (used by compute_storage and ray_query) and
+   `NonUniformResourceIndex` (used by bindless) both fail entry-point availability checks
+   for the `metal` target. Isolated variants confirmed each intrinsic is individually
+   sufficient to fail compilation. Mulciber's probe shaders pass sizes through uniforms and
+   Metal needs no non-uniform decoration, so both are avoidable in practice, but the same
+   portable source cannot currently serve both Slang targets unchanged.
+5. **Slang cannot emit valid unsized descriptor arrays for Metal.** Both a plain unsized
+   `Texture2D x[]` and the documented `ParameterBlock` argument-buffer form emit a
+   flexible array member in a non-final struct position, which Apple's compiler rejects;
+   bounded arrays compile. Slang bindless on Metal is therefore bounded-size today,
+   mirroring Naga's SPIR-V limitation.
+6. **Slang's Metal mesh support requires a different shader idiom.** Assigning mesh output
+   vertices member-by-member fails with an explicit "whole struct must be assigned" error;
+   a whole-struct variant of the corpus shader compiles for Metal and also emits SPIR-V.
+   Re-validating that variant with the pinned `spirv-val` remains pending because
+   SPIRV-Tools was not installed on the macOS host, so the checked-in corpus is unchanged.
+7. **Both toolchains preserve entry-point names and stage attributes in MSL**, including
+   Slang's `[[object]]`/`[[mesh]]`/`[[fragment]]` forms and Naga's qualifier forms, so
+   multi-entry-point modules remain addressable for pipeline creation.
+
+### Milestone implications
+
+- **Milestone 2 offline compilation for Metal:** Naga covers the workload shapes today.
+  Slang covers them only if shaders avoid `GetDimensions`, which the probe workload already
+  does; the corpus scenario fails as written.
+- **Milestone 4 for Metal:** Naga reaches mesh shading, inline ray query, and true unsized
+  bindless; ray pipelines are out of reach on both (and largely inapplicable to Metal's
+  model). Slang currently requires Metal-specific shader idioms and bounded bindless.
+- **Cross-backend view:** neither toolchain currently compiles the identical corpus to
+  both valid SPIR-V and accepted MSL. Slang is strongest for SPIR-V (7/7) and weak for MSL
+  (2/7); Naga is the reverse (5/7 and 6/7, with the SPIR-V failures pending upstream
+  fixes). A single-source strategy therefore either constrains shaders to the
+  intersection, pairs each backend with its stronger toolchain, or keeps Metal shaders in
+  MSL as the probes do today.
+- These results cover Apple front-end acceptance only; `metallib` packaging in the build,
+  pipeline creation, and rendered output remain probe work.

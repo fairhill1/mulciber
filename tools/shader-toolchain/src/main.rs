@@ -5,6 +5,11 @@
 //! the pinned `vulkan1.4` target environment, and records a machine-readable findings
 //! report under `validation-artifacts/shader-toolchain/`.
 //!
+//! Pass `--metal` to also compile both corpora to Metal Shading Language (Naga's MSL
+//! backend and `slangc -target metal`) and verify Apple-toolchain acceptance of every
+//! emitted module through `xcrun metal`; this path requires a macOS host with Xcode's
+//! Metal compiler. Pass `--no-spirv` to skip the SPIR-V path on hosts without SPIRV-Tools.
+//!
 //! Per-scenario compilation or validation failures are findings, not harness errors: the
 //! run still succeeds and the failure text is preserved in the report.
 
@@ -25,6 +30,17 @@ const SPIRV_TARGET_ENV: &str = "vulkan1.4";
 /// only at SPIR-V <= 1.4. Version 1.4 is still high enough for `SPV_EXT_mesh_shader`
 /// and `SPV_KHR_ray_tracing`, and Vulkan 1.4 consumes any SPIR-V version up to 1.6.
 const NAGA_SPIRV_LANG_VERSION: (u8, u8) = (1, 4);
+
+/// MSL version requested from Naga's Metal backend.
+///
+/// Mulciber's Metal 3 baseline corresponds to MSL 3.x; 3.1 covers mesh shading (3.0) and
+/// inline ray-tracing intersection queries (2.4) while staying within the macOS 14+
+/// runtimes the support contract targets.
+const NAGA_MSL_LANG_VERSION: (u8, u8) = (3, 1);
+
+/// Language-standard argument given to Apple's `metal` compiler, matching
+/// [`NAGA_MSL_LANG_VERSION`].
+const METAL_STD: &str = "metal3.1";
 
 /// One corpus scenario, present as both `shaders/wgsl/<name>.wgsl` and
 /// `shaders/slang/<name>.slang`.
@@ -137,7 +153,56 @@ impl CaseResult {
     }
 }
 
+/// Outcome of compiling one scenario to MSL and feeding it to Apple's `metal` compiler.
+struct MetalCaseResult {
+    toolchain: &'static str,
+    scenario: &'static str,
+    milestone: &'static str,
+    summary: &'static str,
+    source: String,
+    /// The toolchain emitted MSL source.
+    compiled: bool,
+    diagnostics: String,
+    msl_bytes: usize,
+    /// `xcrun metal -c -std=metal3.1` accepted the emitted MSL.
+    air_compiled: bool,
+    metal_diagnostics: String,
+    entry_points: Vec<String>,
+}
+
+impl MetalCaseResult {
+    fn new(toolchain: &'static str, scenario: &Scenario, source: String) -> Self {
+        Self {
+            toolchain,
+            scenario: scenario.name,
+            milestone: scenario.milestone,
+            summary: scenario.summary,
+            source,
+            compiled: false,
+            diagnostics: String::new(),
+            msl_bytes: 0,
+            air_compiled: false,
+            metal_diagnostics: String::new(),
+            entry_points: Vec::new(),
+        }
+    }
+}
+
 fn main() {
+    let mut run_spirv = true;
+    let mut run_metal = false;
+    for argument in env::args().skip(1) {
+        match argument.as_str() {
+            "--no-spirv" => run_spirv = false,
+            "--metal" => run_metal = true,
+            other => panic!("unknown argument: {other}"),
+        }
+    }
+    assert!(
+        run_spirv || run_metal,
+        "--no-spirv without --metal leaves nothing to evaluate"
+    );
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
@@ -151,34 +216,71 @@ fn main() {
     let slangc = env::var_os("SLANGC").map_or_else(|| PathBuf::from("slangc"), PathBuf::from);
     let slangc_version = tool_version(&slangc, &["-v"])
         .expect("slangc is required; install it or point the SLANGC environment variable at it");
-    let spirv_val_version = tool_version(Path::new("spirv-val"), &["--version"])
-        .expect("spirv-val from SPIRV-Tools is required on PATH");
+    let spirv_val_version = run_spirv.then(|| {
+        tool_version(Path::new("spirv-val"), &["--version"])
+            .expect("spirv-val from SPIRV-Tools is required on PATH for the SPIR-V path")
+    });
+    let metal_version = run_metal.then(|| {
+        tool_version(Path::new("xcrun"), &["metal", "--version"])
+            .expect("xcrun metal is required for the Metal path; install Xcode's Metal toolchain")
+    });
     let naga_version = naga_version(&manifest_dir);
 
     let mut results = Vec::new();
+    let mut metal_results = Vec::new();
     for scenario in scenarios() {
-        results.push(run_naga_case(&scenario, &corpus_dir, &out_dir));
-        results.push(run_slang_case(&scenario, &slangc, &corpus_dir, &out_dir));
+        if run_spirv {
+            results.push(run_naga_case(&scenario, &corpus_dir, &out_dir));
+            results.push(run_slang_case(&scenario, &slangc, &corpus_dir, &out_dir));
+        }
+        if run_metal {
+            metal_results.push(run_naga_metal_case(&scenario, &corpus_dir, &out_dir));
+            metal_results.push(run_slang_metal_case(
+                &scenario,
+                &slangc,
+                &corpus_dir,
+                &out_dir,
+            ));
+        }
     }
 
+    let mut toolchains = serde_json::json!({
+        "naga": {
+            "crate_version": naga_version,
+            "spirv_lang_version": format!(
+                "{}.{}",
+                NAGA_SPIRV_LANG_VERSION.0, NAGA_SPIRV_LANG_VERSION.1
+            ),
+            "msl_lang_version": format!(
+                "{}.{}",
+                NAGA_MSL_LANG_VERSION.0, NAGA_MSL_LANG_VERSION.1
+            ),
+            "notes": "library front::wgsl + back::spv/back::msl, default writer options otherwise",
+        },
+        "slangc": {
+            "version": slangc_version.trim(),
+            "invocation": "slangc <source> -target spirv|metal -fvk-use-entrypoint-name -o <output>",
+        },
+    });
+    if let Some(version) = &spirv_val_version {
+        toolchains["spirv_val"] =
+            serde_json::json!({ "version": version.lines().next().unwrap_or("") });
+    }
+    if let Some(version) = &metal_version {
+        toolchains["metal"] = serde_json::json!({
+            "version": version.lines().next().unwrap_or(""),
+            "invocation": format!("xcrun metal -c <source> -std={METAL_STD} -o <output>"),
+        });
+    }
     let report = serde_json::json!({
         "target_environment": SPIRV_TARGET_ENV,
-        "toolchains": {
-            "naga": {
-                "crate_version": naga_version,
-                "spirv_lang_version": format!(
-                    "{}.{}",
-                    NAGA_SPIRV_LANG_VERSION.0, NAGA_SPIRV_LANG_VERSION.1
-                ),
-                "notes": "library front::wgsl + back::spv, default writer options otherwise",
-            },
-            "slangc": {
-                "version": slangc_version.trim(),
-                "invocation": "slangc <source> -target spirv -fvk-use-entrypoint-name -o <output>",
-            },
-            "spirv_val": { "version": spirv_val_version.lines().next().unwrap_or("") },
+        "targets": {
+            "spirv": run_spirv,
+            "metal": run_metal,
         },
+        "toolchains": toolchains,
         "cases": results.iter().map(case_json).collect::<Vec<_>>(),
+        "metal_cases": metal_results.iter().map(metal_case_json).collect::<Vec<_>>(),
     });
     let report_path = out_dir.join("report.json");
     fs::write(
@@ -187,7 +289,12 @@ fn main() {
     )
     .expect("could not write the report");
 
-    print_summary(&results, &report_path);
+    if run_spirv {
+        print_summary(&results, &report_path);
+    }
+    if run_metal {
+        print_metal_summary(&metal_results, &report_path);
+    }
 }
 
 fn case_json(case: &CaseResult) -> serde_json::Value {
@@ -206,6 +313,22 @@ fn case_json(case: &CaseResult) -> serde_json::Value {
         "entry_points": case.entry_points,
         "spirv_capabilities": case.capabilities,
         "spirv_extensions": case.extensions,
+    })
+}
+
+fn metal_case_json(case: &MetalCaseResult) -> serde_json::Value {
+    serde_json::json!({
+        "toolchain": case.toolchain,
+        "scenario": case.scenario,
+        "milestone": case.milestone,
+        "summary": case.summary,
+        "source": case.source,
+        "compiled": case.compiled,
+        "diagnostics": case.diagnostics,
+        "msl_bytes": case.msl_bytes,
+        "air_compiled": case.air_compiled,
+        "metal_diagnostics": case.metal_diagnostics,
+        "entry_points": case.entry_points,
     })
 }
 
@@ -301,6 +424,154 @@ fn run_slang_case(
     };
     finish_case(&mut case, &bytes, out_dir);
     case
+}
+
+/// Compiles one WGSL scenario through Naga's MSL backend and checks Apple acceptance.
+fn run_naga_metal_case(scenario: &Scenario, corpus_dir: &Path, out_dir: &Path) -> MetalCaseResult {
+    let relative = format!("shaders/wgsl/{}.wgsl", scenario.name);
+    let mut case = MetalCaseResult::new("naga", scenario, relative);
+    let source_path = corpus_dir.join(format!("wgsl/{}.wgsl", scenario.name));
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", source_path.display()));
+
+    let module = match naga::front::wgsl::parse_str(&source) {
+        Ok(module) => module,
+        Err(error) => {
+            case.diagnostics = format!("parse: {}", error.emit_to_string(&source));
+            return case;
+        }
+    };
+    let mut validator = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        scenario.naga_capabilities,
+    );
+    let info = match validator.validate(&module) {
+        Ok(info) => info,
+        Err(error) => {
+            case.diagnostics = format!("validate: {}", error.emit_to_string(&source));
+            return case;
+        }
+    };
+
+    // `fake_missing_bindings` keeps this an emission-validity evaluation rather than a
+    // binding-model design: Naga fabricates Metal slot indices instead of requiring a
+    // per-entry-point resource map.
+    let options = naga::back::msl::Options {
+        lang_version: NAGA_MSL_LANG_VERSION,
+        fake_missing_bindings: true,
+        ..naga::back::msl::Options::default()
+    };
+    let pipeline_options = naga::back::msl::PipelineOptions::default();
+    // Naga's MSL writer panics with `not implemented` on constructs it has no Metal
+    // lowering for (rather than returning a backend error), so a panic is a per-case
+    // finding here, not a harness failure. The hook is silenced so the captured panic
+    // does not masquerade as a harness crash on stderr.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let written = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        naga::back::msl::write_string(&module, &info, &options, &pipeline_options)
+    }));
+    std::panic::set_hook(default_hook);
+    let msl = match written {
+        Ok(Ok((msl, _))) => msl,
+        Ok(Err(error)) => {
+            case.diagnostics = format!("msl backend: {error}");
+            return case;
+        }
+        Err(panic) => {
+            let text = panic
+                .downcast_ref::<&str>()
+                .map(|&text| text.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".into());
+            case.diagnostics = format!("msl backend panic: {text}");
+            return case;
+        }
+    };
+    finish_metal_case(&mut case, &msl, out_dir);
+    case
+}
+
+/// Compiles one Slang scenario to MSL through `slangc` and checks Apple acceptance.
+fn run_slang_metal_case(
+    scenario: &Scenario,
+    slangc: &Path,
+    corpus_dir: &Path,
+    out_dir: &Path,
+) -> MetalCaseResult {
+    let relative = format!("shaders/slang/{}.slang", scenario.name);
+    let mut case = MetalCaseResult::new("slangc", scenario, relative);
+    let source_path = corpus_dir.join(format!("slang/{}.slang", scenario.name));
+    let msl_path = out_dir.join(format!("slangc-{}.metal", scenario.name));
+    let _ = fs::remove_file(&msl_path);
+
+    let output = Command::new(slangc)
+        .arg(&source_path)
+        .args(["-target", "metal", "-fvk-use-entrypoint-name", "-o"])
+        .arg(&msl_path)
+        .output()
+        .expect("could not run slangc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        case.diagnostics = stderr.trim().to_string();
+    }
+    if !output.status.success() {
+        return case;
+    }
+    let Ok(msl) = fs::read_to_string(&msl_path) else {
+        case.diagnostics += "\nslangc reported success but wrote no output";
+        return case;
+    };
+    finish_metal_case(&mut case, &msl, out_dir);
+    case
+}
+
+/// Persists the MSL source, runs Apple's `metal` compiler on it, and records entry points.
+fn finish_metal_case(case: &mut MetalCaseResult, msl: &str, out_dir: &Path) {
+    case.compiled = true;
+    case.msl_bytes = msl.len();
+    let msl_path = out_dir.join(format!("{}-{}.metal", case.toolchain, case.scenario));
+    fs::write(&msl_path, msl)
+        .unwrap_or_else(|error| panic!("could not write {}: {error}", msl_path.display()));
+
+    for line in msl.lines() {
+        for stage in ["vertex", "fragment", "kernel", "mesh", "object"] {
+            // Slang writes `[[stage]] ReturnType name(...)`; Naga writes the plain MSL
+            // qualifier form, optionally behind attributes such as
+            // `[[max_total_threads_per_threadgroup(64)]] kernel void name(...)`. Either
+            // way the entry-point name is the identifier immediately before the
+            // parameter list.
+            let attribute = format!("[[{stage}]]");
+            let keyword = format!("{stage} ");
+            let rest = line.split(&attribute).nth(1).or_else(|| {
+                line.match_indices(&keyword).find_map(|(index, _)| {
+                    let standalone = index == 0 || line.as_bytes()[index - 1] == b' ';
+                    standalone.then(|| &line[index + keyword.len()..])
+                })
+            });
+            if let Some(rest) = rest {
+                let name = rest
+                    .split('(')
+                    .next()
+                    .and_then(|signature| signature.split_whitespace().last())
+                    .unwrap_or("?");
+                case.entry_points.push(format!("{stage}:{name}"));
+            }
+        }
+    }
+
+    let air_path = out_dir.join(format!("{}-{}.air", case.toolchain, case.scenario));
+    let _ = fs::remove_file(&air_path);
+    let output = Command::new("xcrun")
+        .args(["metal", "-c"])
+        .arg(&msl_path)
+        .arg(format!("-std={METAL_STD}"))
+        .arg("-o")
+        .arg(&air_path)
+        .output()
+        .expect("could not run xcrun metal");
+    case.air_compiled = output.status.success();
+    case.metal_diagnostics = String::from_utf8_lossy(&output.stderr).trim().to_string();
 }
 
 /// Persists the SPIR-V blob, then records validation and disassembly facts on the case.
@@ -420,6 +691,48 @@ fn print_summary(results: &[CaseResult], report_path: &Path) {
         .count();
     println!(
         "{} of {} cases passed; report: {}",
+        results.len() - failed,
+        results.len(),
+        report_path.display()
+    );
+}
+
+fn print_metal_summary(results: &[MetalCaseResult], report_path: &Path) {
+    println!(
+        "shader toolchain Metal evaluation against {METAL_STD} ({} cases)",
+        results.len()
+    );
+    for case in results {
+        let status = if case.compiled && case.air_compiled {
+            "ok"
+        } else if case.compiled {
+            "REJECTED"
+        } else {
+            "FAILED"
+        };
+        println!(
+            "  {status:<8} {:<7} {:<16} milestone {} [{}]",
+            case.toolchain,
+            case.scenario,
+            case.milestone,
+            case.entry_points.join(", "),
+        );
+        if !case.compiled {
+            for line in case.diagnostics.lines().take(4) {
+                println!("          {line}");
+            }
+        } else if !case.air_compiled {
+            for line in case.metal_diagnostics.lines().take(4) {
+                println!("          {line}");
+            }
+        }
+    }
+    let failed = results
+        .iter()
+        .filter(|case| !(case.compiled && case.air_compiled))
+        .count();
+    println!(
+        "{} of {} Metal cases passed; report: {}",
         results.len() - failed,
         results.len(),
         report_path.display()

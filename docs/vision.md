@@ -128,6 +128,9 @@ coherence, and an evidence-backed support contract. Any one of those in isolatio
 ## Current reality
 
 Zinc is presently a research foundation, not a consumable game platform. The Metal probes establish
-substantial rendering and lifecycle evidence, and the initial Vulkan/Win32 presentation path awaits
-physical validation. The public `zinc-gpu` and `zinc-platform` APIs remain empty until comparable
-backend evidence exists. The [implementation roadmap](roadmap.md) tracks that progression.
+substantial rendering and lifecycle evidence, and the initial Vulkan/Win32 presentation path has
+been physically exercised on one Windows 11 and Nvidia hardware tier. Its rendering resumes at the
+new size after a resize drag but does not update during the drag. Wayland, X11, the documented
+Windows baseline tier, and a representative Vulkan workload still need comparable evidence. The
+public `zinc-gpu` and `zinc-platform` APIs remain empty until that evidence exists. The
+[implementation roadmap](roadmap.md) tracks that progression.

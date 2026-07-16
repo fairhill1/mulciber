@@ -19,8 +19,9 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 ## 1. Native presentation probes
 
 - [x] AppKit window with a `CAMetalLayer` and Metal triangle.
-- [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (implemented and cross-checked; physical
-  Windows validation pending).
+- [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
+  an Nvidia RTX 3060 Ti; rendering currently updates after a resize drag rather than during it, and
+  multi-display and GTX 1060-class baseline coverage remain outstanding).
 - [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle.
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle.
 - [ ] Replace conventional device-idle swapchain retirement with tracked presentation completion

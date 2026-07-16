@@ -1,7 +1,18 @@
 # Win32/Vulkan validation runbook
 
-The Win32 probe is compiled from macOS, but its milestone remains incomplete until these checks pass
-on a physical Windows 10 or 11 x86-64 system.
+The Win32 probe was initially compiled and cross-checked from macOS. This runbook captures the
+physical Windows evidence required for each supported hardware and driver tier.
+
+## Recorded validation
+
+The first physical run was recorded on 2026-07-16 at commit
+`1972ad486d4bbd8a76c714aca86513c60419ba2a`: Windows 11 Pro build 26200, Nvidia GeForce RTX 3060 Ti,
+driver 591.86, and Vulkan loader/validation layer 1.4.350. The 600-frame finite run, resize recovery,
+minimize/restore, maximize/restore, title-bar shutdown, and Alt+F4 shutdown completed without Vulkan
+validation or loader warnings. Rendering resized only after the drag ended rather than continuously
+during the drag, so the presentation milestone remains incomplete. Display movement was not
+tested because only one display was available. This establishes initial evidence on one modern
+Nvidia tier; it does not replace the required GTX 1060-class baseline or multi-display runs.
 
 ## Setup
 

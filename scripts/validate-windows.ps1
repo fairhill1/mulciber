@@ -131,8 +131,10 @@ try {
         Write-Host "  5. Close with the title-bar button."
         Read-Host "Press Enter to launch" | Out-Null
         Invoke-NativeLogged -Command $Probe -Arguments @() -LogName "interactive-titlebar.log"
-        $TitleBarPassed = Read-Yes "Did the triangle remain stable and close cleanly? [yes/no]"
+        $TitleBarPassed = Read-Yes "Did resize recovery, minimize/restore, maximize/restore, and title-bar close work? [yes/no]"
+        $LiveResizePassed = Read-Yes "Did the triangle keep rendering and resize during the drag? [yes/no]"
         $ManualLines += "titlebar_lifecycle_passed=$TitleBarPassed"
+        $ManualLines += "live_resize_passed=$LiveResizePassed"
 
         Write-Host ""
         Write-Host "Interactive lifecycle run 2: close the window with Alt+F4."
@@ -142,11 +144,14 @@ try {
         $ManualLines += "alt_f4_passed=$AltF4Passed"
 
         $DisplayNotes = Read-Host "Display-change notes (or 'not tested')"
+        if ([string]::IsNullOrWhiteSpace($DisplayNotes)) {
+            $DisplayNotes = "not recorded"
+        }
         $ManualLines += "display_notes=$DisplayNotes"
         $ManualPath = Join-Path $ArtifactDirectory "manual-observations.txt"
         $ManualLines | Set-Content -Path $ManualPath -Encoding UTF8
 
-        if (-not $TitleBarPassed -or -not $AltF4Passed) {
+        if (-not $TitleBarPassed -or -not $LiveResizePassed -or -not $AltF4Passed) {
             throw "one or more interactive lifecycle checks failed"
         }
     }

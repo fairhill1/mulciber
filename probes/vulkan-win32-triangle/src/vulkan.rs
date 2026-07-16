@@ -644,6 +644,7 @@ struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
     swapchain_maintenance1: bool,
+    sample_count: vk::VkSampleCountFlagBits,
 }
 
 struct DeviceFns {
@@ -959,6 +960,7 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
 fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
     let force_swapchain_fallback =
         env::var_os("MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
+    let force_msaa_1x = env::var_os("MULCIBER_VULKAN_FORCE_MSAA_1X").is_some();
     let enumerate = instance
         .functions
         .enumerate_physical_devices
@@ -1092,6 +1094,11 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                         queue_family: u32::try_from(index).expect("queue family index fits u32"),
                         swapchain_maintenance1: maintenance_extension
                             && maintenance1.swapchainMaintenance1 == vk::VK_TRUE,
+                        sample_count: choose_sample_count(
+                            properties.limits.framebufferColorSampleCounts,
+                            properties.limits.framebufferDepthSampleCounts,
+                            force_msaa_1x,
+                        ),
                     },
                     fixed_c_string(&properties.deviceName),
                 ));
@@ -1108,6 +1115,9 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
     if force_swapchain_fallback {
         println!("Swapchain maintenance override: forced fallback");
     }
+    if force_msaa_1x {
+        println!("Multisampling override: forced 1x fallback");
+    }
     println!(
         "Swapchain retirement: {}",
         if adapter.swapchain_maintenance1 {
@@ -1116,6 +1126,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
             "deferred reacquisition fallback"
         }
     );
+    println!("Multisampling: {}", sample_count_name(adapter.sample_count));
     Ok(adapter)
 }
 
@@ -1188,6 +1199,7 @@ unsafe extern "C" fn debug_callback(
 struct RetiredSwapchain {
     handle: vk::VkSwapchainKHR,
     views: Vec<vk::VkImageView>,
+    msaa_color: GpuImage,
     depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
@@ -1222,6 +1234,7 @@ struct Renderer {
     extent: vk::VkExtent2D,
     images: Vec<vk::VkImage>,
     views: Vec<vk::VkImageView>,
+    msaa_color: GpuImage,
     depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
@@ -1271,6 +1284,7 @@ impl Renderer {
             extent: vk::VkExtent2D::default(),
             images: Vec::new(),
             views: Vec::new(),
+            msaa_color: GpuImage::default(),
             depth: GpuImage::default(),
             pipeline_layout: ptr::null_mut(),
             pipeline: ptr::null_mut(),
@@ -3314,6 +3328,7 @@ impl Renderer {
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];
         self.views = self.create_image_views()?;
+        self.create_msaa_color_attachment()?;
         self.create_depth_attachment()?;
         if !reuse_pipeline {
             self.create_pipeline()?;
@@ -3580,6 +3595,129 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_lines)]
+    fn create_msaa_color_attachment(&mut self) -> Result<(), ProbeError> {
+        if self.device.adapter.sample_count == vk::VK_SAMPLE_COUNT_1_BIT {
+            return Ok(());
+        }
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: self.format,
+            extent: vk::VkExtent3D {
+                width: self.extent.width,
+                height: self.extent.height,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: self.device.adapter.sample_count,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                | vk::VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.msaa_color.handle,
+                )
+            },
+            "vkCreateImage for multisampled color attachment",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The multisampled image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.msaa_color.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local multisampled color memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.msaa_color.memory,
+                )
+            },
+            "vkAllocateMemory for multisampled color attachment",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.msaa_color.handle,
+                    self.msaa_color.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for multisampled color attachment",
+        )?;
+        let view_info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.msaa_color.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: self.format,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: color_subresource_range(),
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const view_info,
+                    ptr::null(),
+                    &raw mut self.msaa_color.view,
+                )
+            },
+            "vkCreateImageView for multisampled color attachment",
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn create_depth_attachment(&mut self) -> Result<(), ProbeError> {
         let info = vk::VkImageCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -3592,9 +3730,10 @@ impl Renderer {
             },
             mipLevels: 1,
             arrayLayers: 1,
-            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            samples: self.device.adapter.sample_count,
             tiling: vk::VK_IMAGE_TILING_OPTIMAL,
-            usage: vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
+            usage: (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                | vk::VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) as u32,
             sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
             ..Default::default()
@@ -3820,7 +3959,7 @@ impl Renderer {
         };
         let multisample = vk::VkPipelineMultisampleStateCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
+            rasterizationSamples: self.device.adapter.sample_count,
             ..Default::default()
         };
         let depth_stencil = vk::VkPipelineDepthStencilStateCreateInfo {
@@ -3959,6 +4098,7 @@ impl Renderer {
         self.retired.push(RetiredSwapchain {
             handle: mem::replace(&mut self.swapchain, ptr::null_mut()),
             views: mem::take(&mut self.views),
+            msaa_color: mem::take(&mut self.msaa_color),
             depth: mem::take(&mut self.depth),
             pipeline_layout: if retire_pipeline {
                 mem::replace(&mut self.pipeline_layout, ptr::null_mut())
@@ -4017,6 +4157,8 @@ impl Renderer {
     fn destroy_retired_swapchain(device: &DeviceContext, retired: RetiredSwapchain) {
         // SAFETY: Completion was established before this owned resource set reached this helper.
         unsafe {
+            let mut msaa_color = retired.msaa_color;
+            destroy_gpu_image(device, &mut msaa_color);
             let mut depth = retired.depth;
             destroy_gpu_image(device, &mut depth);
             if !retired.pipeline.is_null() {
@@ -4305,6 +4447,19 @@ impl Renderer {
             vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             color_subresource_range(),
         );
+        let multisampled = self.device.adapter.sample_count != vk::VK_SAMPLE_COUNT_1_BIT;
+        if multisampled {
+            self.image_barrier(
+                self.msaa_color.handle,
+                vk::VK_PIPELINE_STAGE_2_NONE,
+                vk::VK_ACCESS_2_NONE,
+                vk::VK_IMAGE_LAYOUT_UNDEFINED,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                color_subresource_range(),
+            );
+        }
         self.image_barrier(
             self.depth.handle,
             vk::VK_PIPELINE_STAGE_2_NONE,
@@ -4319,11 +4474,29 @@ impl Renderer {
         );
         let attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            imageView: view,
+            imageView: if multisampled {
+                self.msaa_color.view
+            } else {
+                view
+            },
             imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            resolveMode: vk::VK_RESOLVE_MODE_NONE,
+            resolveMode: if multisampled {
+                vk::VK_RESOLVE_MODE_AVERAGE_BIT
+            } else {
+                vk::VK_RESOLVE_MODE_NONE
+            },
+            resolveImageView: if multisampled { view } else { ptr::null_mut() },
+            resolveImageLayout: if multisampled {
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            } else {
+                vk::VK_IMAGE_LAYOUT_UNDEFINED
+            },
             loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            storeOp: if multisampled {
+                vk::VK_ATTACHMENT_STORE_OP_DONT_CARE
+            } else {
+                vk::VK_ATTACHMENT_STORE_OP_STORE
+            },
             clearValue: vk::VkClearValue {
                 color: vk::VkClearColorValue {
                     float32: [0.025, 0.035, 0.055, 1.0],
@@ -4337,7 +4510,7 @@ impl Renderer {
             imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             resolveMode: vk::VK_RESOLVE_MODE_NONE,
             loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
             clearValue: vk::VkClearValue {
                 depthStencil: vk::VkClearDepthStencilValue {
                     depth: 1.0,
@@ -4756,6 +4929,27 @@ unsafe fn destroy_gpu_image(device: &DeviceContext, image: &mut GpuImage) {
     }
 }
 
+fn choose_sample_count(
+    color_sample_counts: vk::VkSampleCountFlags,
+    depth_sample_counts: vk::VkSampleCountFlags,
+    force_1x: bool,
+) -> vk::VkSampleCountFlagBits {
+    let four_samples = u32::try_from(vk::VK_SAMPLE_COUNT_4_BIT).expect("positive sample-count bit");
+    if !force_1x && color_sample_counts & depth_sample_counts & four_samples != 0 {
+        vk::VK_SAMPLE_COUNT_4_BIT
+    } else {
+        vk::VK_SAMPLE_COUNT_1_BIT
+    }
+}
+
+fn sample_count_name(sample_count: vk::VkSampleCountFlagBits) -> &'static str {
+    if sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+        "4x MSAA color/depth with swapchain resolve"
+    } else {
+        "1x fallback"
+    }
+}
+
 fn choose_depth_format(device: &DeviceContext) -> Result<vk::VkFormat, ProbeError> {
     for format in [
         vk::VK_FORMAT_D32_SFLOAT,
@@ -5166,6 +5360,24 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn sample_count_requires_shared_color_and_depth_support() {
+        let one = u32::try_from(vk::VK_SAMPLE_COUNT_1_BIT).expect("positive sample-count bit");
+        let four = u32::try_from(vk::VK_SAMPLE_COUNT_4_BIT).expect("positive sample-count bit");
+        assert_eq!(
+            choose_sample_count(one | four, one | four, false),
+            vk::VK_SAMPLE_COUNT_4_BIT
+        );
+        assert_eq!(
+            choose_sample_count(one | four, one, false),
+            vk::VK_SAMPLE_COUNT_1_BIT
+        );
+        assert_eq!(
+            choose_sample_count(one | four, one | four, true),
+            vk::VK_SAMPLE_COUNT_1_BIT
+        );
     }
 
     #[test]

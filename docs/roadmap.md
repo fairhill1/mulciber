@@ -65,6 +65,8 @@ Vulkan evidence completed so far:
   readback, explicit compute-to-copy-to-fragment transitions, and fragment sampling (same machine).
 - [x] Complete 8x8-to-1x1 storage-image mip chain generated through synchronized nearest blits,
   with exact 1x1 tail readback and explicit generated-mip fragment sampling (same machine).
+- [x] Capability-selected 4x multisampled transient color/depth attachments resolved into the
+  swapchain, with a physically validated 1x fallback and resize-retirement ownership (same machine).
 
 Metal evidence completed so far:
 

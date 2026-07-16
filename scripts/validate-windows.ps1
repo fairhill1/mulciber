@@ -220,6 +220,13 @@ try {
     $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-win32-triangle.exe"
     $env:VK_LOADER_DEBUG = "error,warn"
     Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "finite-run.log"
+    $env:MULCIBER_VULKAN_FORCE_MSAA_1X = "1"
+    try {
+        Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "msaa-1x-fallback.log"
+    }
+    finally {
+        Remove-Item Env:MULCIBER_VULKAN_FORCE_MSAA_1X -ErrorAction SilentlyContinue
+    }
     Invoke-AutomatedResizeSmoke $Probe
 
     $ManualLines = @()
@@ -265,6 +272,7 @@ try {
 
     $RuntimeLogs = @(
         Join-Path $ArtifactDirectory "finite-run.log"
+        Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
         Join-Path $ArtifactDirectory "resize-smoke.log"
         Join-Path $ArtifactDirectory "resize-smoke.stderr.log"
         Join-Path $ArtifactDirectory "interactive-titlebar.log"

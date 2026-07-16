@@ -142,6 +142,16 @@ fragment shader explicitly samples mip 1. The 600-frame run and automated four-e
 completed on the RTX 3060 Ti without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-113651.zip`.
 
+The multisampling slice was validated on 2026-07-16. Adapter selection intersects framebuffer color
+and depth sample-count support, choosing 4x when available and otherwise retaining a 1x path. At 4x,
+each swapchain generation owns transient device-local multisampled color and depth images; dynamic
+rendering clears and renders into them, resolves color into the acquired single-sample swapchain
+image with average resolve, and discards transient attachment contents. These images retire with the
+swapchain and its presentation-completion tracking. The validation gate completed the native 4x
+600-frame run, a forced 1x 600-frame fallback run, and the four-extent 4x resize smoke without
+validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-114427.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -167,9 +177,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-windows.p
 ```
 
 The script records the OS, GPU and driver, Git revision/status, Rust version, the native Mulciber JSON
-capability report, full `vulkaninfo`, Cargo test output, and a 600-frame validation run. It then
-guides two interactive runs: lifecycle testing closed through the title bar, followed by an Alt+F4
-shutdown test.
+capability report, full `vulkaninfo`, Cargo test output, a normal 600-frame validation run, and a
+forced 1x multisampling-fallback run. It then guides two interactive runs: lifecycle testing closed
+through the title bar, followed by an Alt+F4 shutdown test.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP
@@ -200,6 +210,10 @@ To exercise the compatibility path on a driver that supports presentation fences
 `VK_KHR_swapchain_maintenance1`, print `Swapchain retirement: deferred reacquisition fallback`, and
 keep retired swapchains alive until reacquisition proves queued presentation has completed. This is
 a diagnostic override, not a normal runtime recommendation.
+
+Set `MULCIBER_VULKAN_FORCE_MSAA_1X=1` to bypass supported 4x multisampling and exercise the 1x color
+and depth path. The automated validation script runs this finite fallback check in addition to the
+adapter-selected path.
 
 ## Interactive lifecycle pass
 

@@ -84,6 +84,16 @@ the fragment shader samples the image while drawing the indexed triangle. The co
 noninteractive Windows gate ran 600 frames on the RTX 3060 Ti without validation or loader
 messages. Evidence: `validation-artifacts/windows-vulkan-20260716-104453.zip`.
 
+The depth slice was validated on 2026-07-16. The renderer queries optimal-tiled depth-attachment
+format support, selected `D32_SFLOAT` on the RTX 3060 Ti, and creates a device-local depth image and
+view at each swapchain extent. Dynamic rendering clears the attachment after an explicit
+`UNDEFINED` to `DEPTH_ATTACHMENT_OPTIMAL` transition, with depth testing and writes enabled in the
+pipeline. Depth resources retire with their corresponding swapchains so resize does not destroy an
+in-flight attachment. The validation gate now automatically resizes the window through 640x360,
+1200x700, 320x240, and 960x540 before closing it with `WM_CLOSE`; that smoke test and the 600-frame
+finite run completed without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-105528.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

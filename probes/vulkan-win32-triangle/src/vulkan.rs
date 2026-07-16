@@ -422,6 +422,7 @@ struct InstanceFns {
     destroy_surface: vk::PFN_vkDestroySurfaceKHR,
     enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
     get_physical_device_properties: vk::PFN_vkGetPhysicalDeviceProperties,
+    get_physical_device_format_properties: vk::PFN_vkGetPhysicalDeviceFormatProperties,
     get_physical_device_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties,
     get_physical_device_features2: vk::PFN_vkGetPhysicalDeviceFeatures2,
     get_queue_family_properties: vk::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
@@ -449,6 +450,7 @@ impl InstanceFns {
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
+            get_physical_device_format_properties: load!(c"vkGetPhysicalDeviceFormatProperties"),
             get_physical_device_memory_properties: load!(c"vkGetPhysicalDeviceMemoryProperties"),
             get_physical_device_features2: load!(c"vkGetPhysicalDeviceFeatures2"),
             get_queue_family_properties: load!(c"vkGetPhysicalDeviceQueueFamilyProperties"),
@@ -1161,6 +1163,7 @@ unsafe extern "C" fn debug_callback(
 struct RetiredSwapchain {
     handle: vk::VkSwapchainKHR,
     views: Vec<vk::VkImageView>,
+    depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
     render_finished: Vec<vk::VkSemaphore>,
@@ -1185,9 +1188,11 @@ struct Renderer {
     device: DeviceContext,
     swapchain: vk::VkSwapchainKHR,
     format: vk::VkFormat,
+    depth_format: vk::VkFormat,
     extent: vk::VkExtent2D,
     images: Vec<vk::VkImage>,
     views: Vec<vk::VkImageView>,
+    depth: GpuImage,
     pipeline_layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
     command_pool: vk::VkCommandPool,
@@ -1214,13 +1219,16 @@ struct Renderer {
 
 impl Renderer {
     fn new(device: DeviceContext, window: &Window) -> Result<Self, ProbeError> {
+        let depth_format = choose_depth_format(&device)?;
         let mut renderer = Self {
             device,
             swapchain: ptr::null_mut(),
             format: vk::VK_FORMAT_UNDEFINED,
+            depth_format,
             extent: vk::VkExtent2D::default(),
             images: Vec::new(),
             views: Vec::new(),
+            depth: GpuImage::default(),
             pipeline_layout: ptr::null_mut(),
             pipeline: ptr::null_mut(),
             command_pool: ptr::null_mut(),
@@ -1255,6 +1263,10 @@ impl Renderer {
             .map_err(|error| ProbeError(error.to_string()))?;
         if width != 0 && height != 0 {
             renderer.recreate_swapchain(width, height)?;
+            println!(
+                "Depth: resize-dependent device-local {} attachment with testing/writes",
+                depth_format_name(renderer.depth_format)
+            );
         }
         Ok(renderer)
     }
@@ -1965,6 +1977,7 @@ impl Renderer {
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            color_subresource_range(),
         );
         let region = vk::VkBufferImageCopy2 {
             sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
@@ -2005,6 +2018,7 @@ impl Renderer {
             vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            color_subresource_range(),
         );
         check(
             // SAFETY: The command buffer is recording and the upload commands are complete.
@@ -2162,41 +2176,8 @@ impl Renderer {
     }
 
     unsafe fn destroy_image(&self, image: &mut GpuImage) {
-        if !image.view.is_null() {
-            // SAFETY: The view is owned by this renderer and no longer in GPU use.
-            unsafe {
-                self.device
-                    .functions
-                    .destroy_image_view
-                    .expect("loaded function")(
-                    self.device.handle, image.view, ptr::null()
-                );
-            }
-            image.view = ptr::null_mut();
-        }
-        if !image.handle.is_null() {
-            // SAFETY: The image is owned by this renderer and no longer in GPU use.
-            unsafe {
-                self.device
-                    .functions
-                    .destroy_image
-                    .expect("loaded function")(
-                    self.device.handle, image.handle, ptr::null()
-                );
-            }
-            image.handle = ptr::null_mut();
-        }
-        if !image.memory.is_null() {
-            // SAFETY: The bound image was destroyed before its allocation is freed.
-            unsafe {
-                self.device.functions.free_memory.expect("loaded function")(
-                    self.device.handle,
-                    image.memory,
-                    ptr::null(),
-                );
-            }
-            image.memory = ptr::null_mut();
-        }
+        // SAFETY: The caller established that this renderer-owned image is no longer in GPU use.
+        unsafe { destroy_gpu_image(&self.device, image) };
     }
 
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
@@ -2271,6 +2252,7 @@ impl Renderer {
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];
         self.views = self.create_image_views()?;
+        self.create_depth_attachment()?;
         if !reuse_pipeline {
             self.create_pipeline()?;
         }
@@ -2535,6 +2517,125 @@ impl Renderer {
         Ok(views)
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn create_depth_attachment(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: self.depth_format,
+            extent: vk::VkExtent3D {
+                width: self.extent.width,
+                height: self.extent.height,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.depth.handle,
+                )
+            },
+            "vkCreateImage for depth attachment",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The depth image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.depth.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local depth memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.depth.memory,
+                )
+            },
+            "vkAllocateMemory for depth attachment",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.depth.handle,
+                    self.depth.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for depth attachment",
+        )?;
+        let view_info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.depth.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: self.depth_format,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: depth_subresource_range(),
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The depth image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const view_info,
+                    ptr::null(),
+                    &raw mut self.depth.view,
+                )
+            },
+            "vkCreateImageView for depth attachment",
+        )
+    }
+
     fn create_pipeline(&mut self) -> Result<(), ProbeError> {
         let layout_info = vk::VkPipelineLayoutCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -2616,6 +2717,7 @@ impl Renderer {
         Ok(module)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn create_graphics_pipeline(
         &mut self,
         vertex: vk::VkShaderModule,
@@ -2659,6 +2761,15 @@ impl Renderer {
             rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
             ..Default::default()
         };
+        let depth_stencil = vk::VkPipelineDepthStencilStateCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            depthTestEnable: vk::VK_TRUE,
+            depthWriteEnable: vk::VK_TRUE,
+            depthCompareOp: vk::VK_COMPARE_OP_LESS,
+            minDepthBounds: 0.0,
+            maxDepthBounds: 1.0,
+            ..Default::default()
+        };
         let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
             colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
                 | vk::VK_COLOR_COMPONENT_G_BIT
@@ -2683,6 +2794,7 @@ impl Renderer {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             colorAttachmentCount: 1,
             pColorAttachmentFormats: &raw const self.format,
+            depthAttachmentFormat: self.depth_format,
             ..Default::default()
         };
         let info = vk::VkGraphicsPipelineCreateInfo {
@@ -2695,6 +2807,7 @@ impl Renderer {
             pViewportState: &raw const viewport,
             pRasterizationState: &raw const rasterization,
             pMultisampleState: &raw const multisample,
+            pDepthStencilState: &raw const depth_stencil,
             pColorBlendState: &raw const blend,
             pDynamicState: &raw const dynamic,
             layout: self.pipeline_layout,
@@ -2784,6 +2897,7 @@ impl Renderer {
         self.retired.push(RetiredSwapchain {
             handle: mem::replace(&mut self.swapchain, ptr::null_mut()),
             views: mem::take(&mut self.views),
+            depth: mem::take(&mut self.depth),
             pipeline_layout: if retire_pipeline {
                 mem::replace(&mut self.pipeline_layout, ptr::null_mut())
             } else {
@@ -2841,6 +2955,8 @@ impl Renderer {
     fn destroy_retired_swapchain(device: &DeviceContext, retired: RetiredSwapchain) {
         // SAFETY: Completion was established before this owned resource set reached this helper.
         unsafe {
+            let mut depth = retired.depth;
+            destroy_gpu_image(device, &mut depth);
             if !retired.pipeline.is_null() {
                 device.functions.destroy_pipeline.expect("loaded function")(
                     device.handle,
@@ -3080,6 +3196,19 @@ impl Renderer {
             vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            color_subresource_range(),
+        );
+        self.image_barrier(
+            self.depth.handle,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            depth_subresource_range(),
         );
         let attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -3095,6 +3224,21 @@ impl Renderer {
             },
             ..Default::default()
         };
+        let depth_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: self.depth.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            resolveMode: vk::VK_RESOLVE_MODE_NONE,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                depthStencil: vk::VkClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
         let render_area = vk::VkRect2D {
             offset: vk::VkOffset2D { x: 0, y: 0 },
             extent: self.extent,
@@ -3105,6 +3249,7 @@ impl Renderer {
             layerCount: 1,
             colorAttachmentCount: 1,
             pColorAttachments: &raw const attachment,
+            pDepthAttachment: &raw const depth_attachment,
             ..Default::default()
         };
         let viewport = vk::VkViewport {
@@ -3198,6 +3343,7 @@ impl Renderer {
             vk::VK_PIPELINE_STAGE_2_NONE,
             vk::VK_ACCESS_2_NONE,
             vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            color_subresource_range(),
         );
         // SAFETY: The command buffer is recording and the render scope has ended.
         check(
@@ -3221,6 +3367,7 @@ impl Renderer {
         destination_stage: vk::VkPipelineStageFlags2,
         destination_access: vk::VkAccessFlags2,
         new_layout: vk::VkImageLayout,
+        subresource_range: vk::VkImageSubresourceRange,
     ) {
         let barrier = vk::VkImageMemoryBarrier2 {
             sType: vk::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -3233,7 +3380,7 @@ impl Renderer {
             srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
             dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
             image,
-            subresourceRange: color_subresource_range(),
+            subresourceRange: subresource_range,
             ..Default::default()
         };
         let dependency = vk::VkDependencyInfo {
@@ -3445,6 +3592,79 @@ impl Drop for Renderer {
     }
 }
 
+unsafe fn destroy_gpu_image(device: &DeviceContext, image: &mut GpuImage) {
+    if !image.view.is_null() {
+        // SAFETY: The view is owned by this resource and no longer in GPU use.
+        unsafe {
+            device
+                .functions
+                .destroy_image_view
+                .expect("loaded function")(device.handle, image.view, ptr::null());
+        }
+        image.view = ptr::null_mut();
+    }
+    if !image.handle.is_null() {
+        // SAFETY: The image is owned by this resource and no longer in GPU use.
+        unsafe {
+            device.functions.destroy_image.expect("loaded function")(
+                device.handle,
+                image.handle,
+                ptr::null(),
+            );
+        }
+        image.handle = ptr::null_mut();
+    }
+    if !image.memory.is_null() {
+        // SAFETY: The bound image was destroyed before its allocation is freed.
+        unsafe {
+            device.functions.free_memory.expect("loaded function")(
+                device.handle,
+                image.memory,
+                ptr::null(),
+            );
+        }
+        image.memory = ptr::null_mut();
+    }
+}
+
+fn choose_depth_format(device: &DeviceContext) -> Result<vk::VkFormat, ProbeError> {
+    for format in [
+        vk::VK_FORMAT_D32_SFLOAT,
+        vk::VK_FORMAT_D24_UNORM_S8_UINT,
+        vk::VK_FORMAT_D16_UNORM,
+    ] {
+        let mut properties = vk::VkFormatProperties::default();
+        // SAFETY: The physical device is live and properties storage is writable.
+        unsafe {
+            device
+                .instance
+                .functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                device.adapter.handle, format, &raw mut properties
+            );
+        }
+        if properties.optimalTilingFeatures
+            & vk::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT as u32
+            != 0
+        {
+            return Ok(format);
+        }
+    }
+    Err(ProbeError(
+        "adapter exposes no supported optimal-tiled depth attachment format".into(),
+    ))
+}
+
+fn depth_format_name(format: vk::VkFormat) -> &'static str {
+    match format {
+        vk::VK_FORMAT_D32_SFLOAT => "D32_SFLOAT",
+        vk::VK_FORMAT_D24_UNORM_S8_UINT => "D24_UNORM_S8_UINT",
+        vk::VK_FORMAT_D16_UNORM => "D16_UNORM",
+        _ => "unknown depth format",
+    }
+}
+
 fn choose_surface_format(formats: &[vk::VkSurfaceFormatKHR]) -> Option<vk::VkSurfaceFormatKHR> {
     formats
         .iter()
@@ -3550,6 +3770,16 @@ fn vertex_input_descriptions() -> (
 fn color_subresource_range() -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+        baseMipLevel: 0,
+        levelCount: 1,
+        baseArrayLayer: 0,
+        layerCount: 1,
+    }
+}
+
+fn depth_subresource_range() -> vk::VkImageSubresourceRange {
+    vk::VkImageSubresourceRange {
+        aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
         baseMipLevel: 0,
         levelCount: 1,
         baseArrayLayer: 0,

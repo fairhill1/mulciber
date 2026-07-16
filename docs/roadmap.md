@@ -52,6 +52,8 @@ Vulkan evidence completed so far:
   indexed drawing (physically exercised on Windows 11 / RTX 3060 Ti with validation enabled).
 - [x] Device-local RGBA8 sampled texture populated through a host-visible staging upload, explicit
   layout transitions, a combined image sampler descriptor, and fragment sampling (same machine).
+- [x] Capability-selected, resize-dependent device-local depth attachment with explicit layout
+  transitions, depth testing/writes, and swapchain-retirement ownership (same machine).
 
 Metal evidence completed so far:
 

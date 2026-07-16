@@ -70,6 +70,83 @@ function Read-Yes {
     }
 }
 
+function Invoke-AutomatedResizeSmoke {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Probe
+    )
+
+    if (-not ("MulciberValidationWin32" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class MulciberValidationWin32
+{
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(
+        IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+}
+'@
+    }
+
+    $StandardOutput = Join-Path $ArtifactDirectory "resize-smoke.log"
+    $StandardError = Join-Path $ArtifactDirectory "resize-smoke.stderr.log"
+    Write-Host "> $Probe (automated resize smoke)"
+    $Process = Start-Process -FilePath $Probe `
+        -RedirectStandardOutput $StandardOutput `
+        -RedirectStandardError $StandardError `
+        -PassThru
+    try {
+        $Window = [IntPtr]::Zero
+        for ($Attempt = 0; $Attempt -lt 50 -and $Window -eq [IntPtr]::Zero; $Attempt++) {
+            Start-Sleep -Milliseconds 100
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                break
+            }
+            $Window = $Process.MainWindowHandle
+        }
+        if ($Window -eq [IntPtr]::Zero) {
+            throw "automated resize smoke could not find the Vulkan window"
+        }
+
+        foreach ($Size in @(@(640, 360), @(1200, 700), @(320, 240), @(960, 540))) {
+            $Resized = [MulciberValidationWin32]::SetWindowPos(
+                $Window, [IntPtr]::Zero, 80, 80, $Size[0], $Size[1], 0x0014)
+            if (-not $Resized) {
+                throw "SetWindowPos failed during automated resize smoke"
+            }
+            Start-Sleep -Milliseconds 450
+        }
+        if (-not [MulciberValidationWin32]::PostMessage(
+            $Window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
+            throw "posting WM_CLOSE failed during automated resize smoke"
+        }
+        if (-not $Process.WaitForExit(10000)) {
+            throw "Vulkan probe did not exit after automated resize smoke"
+        }
+        if ($Process.ExitCode -ne 0) {
+            throw "automated resize smoke exited with code $($Process.ExitCode)"
+        }
+    }
+    finally {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            $Process.WaitForExit()
+        }
+        if (Test-Path $StandardOutput) {
+            Get-Content $StandardOutput | Write-Host
+        }
+        if (Test-Path $StandardError) {
+            Get-Content $StandardError | Write-Host
+        }
+    }
+}
+
 function Write-SystemReport {
     $ReportPath = Join-Path $ArtifactDirectory "system.txt"
     @(
@@ -143,6 +220,7 @@ try {
     $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-win32-triangle.exe"
     $env:VK_LOADER_DEBUG = "error,warn"
     Invoke-NativeLogged $Probe @("--frames", $Frames.ToString()) "finite-run.log"
+    Invoke-AutomatedResizeSmoke $Probe
 
     $ManualLines = @()
     if (-not $SkipInteractive) {
@@ -187,6 +265,8 @@ try {
 
     $RuntimeLogs = @(
         Join-Path $ArtifactDirectory "finite-run.log"
+        Join-Path $ArtifactDirectory "resize-smoke.log"
+        Join-Path $ArtifactDirectory "resize-smoke.stderr.log"
         Join-Path $ArtifactDirectory "interactive-titlebar.log"
         Join-Path $ArtifactDirectory "interactive-alt-f4.log"
     ) | Where-Object { Test-Path $_ }

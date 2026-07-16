@@ -6,23 +6,9 @@ type Selector = *mut c_void;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {
     pub width: f64,
     pub height: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Rect {
-    pub origin: Point,
-    pub size: Size,
 }
 
 #[repr(C)]
@@ -117,19 +103,6 @@ pub unsafe fn object_three_usizes_bool(
     unsafe { function(receiver, selector(name), first, second, third, fourth) }
 }
 
-pub unsafe fn object_window_init(
-    receiver: Object,
-    name: &CStr,
-    rect: Rect,
-    style: usize,
-    backing: usize,
-    deferred: bool,
-) -> Object {
-    let function: unsafe extern "C" fn(Object, Selector, Rect, usize, usize, bool) -> Object =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), rect, style, backing, deferred) }
-}
-
 pub unsafe fn object_bytes(
     receiver: Object,
     name: &CStr,
@@ -181,29 +154,10 @@ pub unsafe fn object_object_usize_two_out(
     }
 }
 
-pub unsafe fn object_event(
-    receiver: Object,
-    name: &CStr,
-    mask: usize,
-    expiration: Object,
-    mode: Object,
-    dequeue: bool,
-) -> Object {
-    let function: unsafe extern "C" fn(Object, Selector, usize, Object, Object, bool) -> Object =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), mask, expiration, mode, dequeue) }
-}
-
 pub unsafe fn bool_value(receiver: Object, name: &CStr) -> bool {
     let function: unsafe extern "C" fn(Object, Selector) -> bool =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name)) }
-}
-
-pub unsafe fn bool_isize(receiver: Object, name: &CStr, argument: isize) -> bool {
-    let function: unsafe extern "C" fn(Object, Selector, isize) -> bool =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), argument) }
 }
 
 pub unsafe fn bool_object_out(
@@ -233,18 +187,6 @@ pub unsafe fn f64_value(receiver: Object, name: &CStr) -> f64 {
     let function: unsafe extern "C" fn(Object, Selector) -> f64 =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name)) }
-}
-
-pub unsafe fn rect_value(receiver: Object, name: &CStr) -> Rect {
-    let function: unsafe extern "C" fn(Object, Selector) -> Rect =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name)) }
-}
-
-pub unsafe fn rect_rect(receiver: Object, name: &CStr, argument: Rect) -> Rect {
-    let function: unsafe extern "C" fn(Object, Selector, Rect) -> Rect =
-        unsafe { mem::transmute(objc_msgSend as *const ()) };
-    unsafe { function(receiver, selector(name), argument) }
 }
 
 pub unsafe fn void(receiver: Object, name: &CStr) {

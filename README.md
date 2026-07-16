@@ -28,6 +28,11 @@ unified slice, the design decisions it must settle, and the direct-native, singl
 `wgpu`/`winit`, SDL3 GPU, Vulkano, and scoped raylib comparisons it must survive. Portability receives
 no credit in the Metal-only and Vulkan-only viability evaluations.
 
+The first extracted boundary moves AppKit application, window, event, and drawable-metrics ownership
+into `mulciber-platform`; the existing full Metal probe is its first executable consumer. The
+[experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
+peer-platform work. `mulciber`'s graphics API remains empty.
+
 ## Direction
 
 - Vulkan 1.4 on Windows and Linux.

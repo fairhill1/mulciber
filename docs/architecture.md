@@ -19,10 +19,11 @@ parallel and is not implied by the existence of public Rust items.
 - `mulciber-shader` will eventually own offline compilation, reflection, and binding validation.
 - `mulciber-runtime` will eventually own timing, the game loop, jobs, and platform/GPU coordination.
 
-Only the first two library shells exist today. The probes have established enough of the necessary
-contracts to begin their unstable extraction; the shells remain empty until the first outside-in
-application flow and its ownership decisions are recorded. Extraction does not create a stable API by
-default.
+The first extraction now gives `mulciber-platform` an experimental AppKit application, window, event,
+drawable-metrics, and borrowed-target boundary consumed by the Metal probe; its concrete decisions
+are recorded in the [platform contract](api-platform-contract.md). Peer Win32, Wayland, and X11
+implementations remain in the Vulkan probe, and the `mulciber` graphics shell remains empty. Extraction
+does not create a stable API by default.
 
 ## Unified contract and backend selection
 

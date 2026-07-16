@@ -13,6 +13,9 @@ version = "0.0.0"
 [[package]]
 name = "mulciber-metal-triangle"
 version = "0.0.0"
+dependencies = [
+ "mulciber-platform",
+]
 
 [[package]]
 name = "mulciber-platform"

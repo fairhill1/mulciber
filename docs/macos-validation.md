@@ -16,6 +16,10 @@ milestone and records what has actually been exercised.
 - A deterministic acquired-frame abandonment run on the same M2 acquired one drawable without
   submission or presentation, drained its per-frame autorelease pool, recovered for 120 submitted
   frames, and shut down cleanly under Metal API validation; see below.
+- The first experimental API extraction moved AppKit application, window, event pumping, drawable
+  metrics, and window metric revisions into `mulciber-platform`. Development runs based on revision
+  `449c01c` exercised the full Metal probe, acquired-frame abandonment, and a new physical lifecycle
+  pass through that boundary; see below. No new display coverage is inferred.
 - The primary evidence machine runs macOS 15.7.7 with a Metal 3 device family. The roadmap's
   macOS 26 / Metal 4 runtime comparison was recorded against a second machine (Apple M5, macOS
   26.5.2); see below. The capability probe detects Metal 4 objects through the Objective-C
@@ -100,6 +104,39 @@ The ignored archive is
 `validation-artifacts/macos-metal-abandon-frame-20260716-222617.tar.gz` with SHA-256
 `75f83ef29373a84aab113755e55d92d6dbbd6776fddb582d7a611ecfefd6fca9`. It contains the
 environment, the display inventory returned during the run, and the verbatim validation log.
+
+### Experimental platform extraction regression
+
+On 2026-07-16, a development tree based on revision
+`449c01cb1997fedd674a4a58bd0105f141a3317b` moved AppKit application/window creation, event
+dispatch, drawable extent and backing-scale queries, suspension policy, and window metric revisions into
+the experimental `mulciber-platform` API. The full Metal probe consumed that boundary while retaining
+its existing Metal renderer. Two validation-enabled runs completed on the same M2/macOS 15.7.7
+machine:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- --frames 3
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
+  --abandon-acquired-frame-once --frames 120
+```
+
+The final smoke run loaded four strict binary-archive hits, submitted three frames, reported 0.947 ms
+average GPU frame time, and exited zero. The second loaded four strict hits, abandoned exactly one
+acquired drawable, recovered for 120 submitted frames, reported 1.061 ms average GPU frame time, and
+exited zero. Neither run emitted Metal validation output beyond the enabled banner.
+
+This is development-tree regression evidence for the first extraction, not a clean-revision archive.
+It proves that finite rendering and the targeted drawable-abandonment behavior survive the new
+platform boundary.
+
+The same development tree then ran interactively without `--frames`. After approximately four minutes
+idle, the user physically exercised continuous resize including very small sizes, minimize/restore,
+zoom/restore, full occlusion/reveal, and titlebar close. The process loaded four strict binary-archive
+hits, submitted 6,504 frames at a reported 0.917 ms average GPU frame time, and exited zero with no
+Metal validation output beyond the enabled banner. No visual artifacts or lag were reported. This
+repeats the physical lifecycle pass through the extracted boundary on the single-display M2; it does
+not establish display-change or multi-display behavior, and the console output was observed during
+development rather than preserved in a new validation archive.
 
 ### macOS 26 / Metal 4 capability comparison
 

@@ -10,6 +10,11 @@ continues in parallel, and Gate 2 must pass before the extracted API is presente
 game-facing slice. See the [viability gates](viability-gates.md) and the native evidence ledger in
 [backend contracts](backend-contracts.md).
 
+The first implementation record is the
+[experimental platform and window contract](api-platform-contract.md). It extracts the AppKit
+application/window lifecycle into `mulciber-platform` and keeps the full Metal probe as its initial
+executable consumer while peer platform and graphics extraction continue.
+
 ## Objective
 
 Extract one unified game-facing path through `mulciber-platform` and `mulciber` that can:

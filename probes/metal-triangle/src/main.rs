@@ -15,9 +15,12 @@ mod macos {
     use std::time::{Duration, Instant};
     use std::{env, num::NonZeroU64};
 
-    use crate::objc::{
-        self, AutoreleasePool, ClearColor, Object, Origin3, Point, Rect, Size, Size3,
+    use mulciber_platform::{
+        Application, LogicalSize, PhysicalExtent, PumpStatus, Window, WindowDescriptor,
+        WindowEvent, integration,
     };
+
+    use crate::objc::{self, AutoreleasePool, ClearColor, Object, Origin3, Size, Size3};
 
     const PIXEL_FORMAT_INVALID: usize = 0;
     const PIXEL_FORMAT_BGRA8_UNORM: usize = 80;
@@ -41,7 +44,6 @@ mod macos {
     const COMPARE_FUNCTION_LESS: usize = 1;
     const SAMPLER_FILTER_LINEAR: usize = 1;
     const SAMPLER_ADDRESS_REPEAT: usize = 2;
-    const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
     const CHECKER_WIDTH: usize = 8;
     const CHECKER_HEIGHT: usize = 8;
     const BC1_BLOCK_WIDTH: usize = 4;
@@ -65,11 +67,6 @@ mod macos {
     #[link(name = "Metal", kind = "framework")]
     unsafe extern "C" {
         fn MTLCreateSystemDefaultDevice() -> Object;
-    }
-
-    #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {
-        static NSDefaultRunLoopMode: Object;
     }
 
     #[link(name = "QuartzCore", kind = "framework")]
@@ -287,9 +284,8 @@ mod macos {
     }
 
     struct Probe {
-        application: Object,
-        window: Object,
-        view: Object,
+        application: Application,
+        window: Window,
         device: Object,
         layer: Object,
         queue: Object,
@@ -311,7 +307,7 @@ mod macos {
         scene_color: Object,
         depth_texture: Object,
         depth_extent: (usize, usize),
-        drawable_size: Size,
+        drawable_size: PhysicalExtent,
         gpu_time_seconds: f64,
         gpu_timed_frames: u32,
         frame_abandonment: FrameAbandonment,
@@ -319,49 +315,21 @@ mod macos {
 
     impl Probe {
         fn new(options: &Options) -> Result<Self, ProbeError> {
-            // SAFETY: The program runs on the AppKit main thread and all selectors match SDK ABIs.
+            let application = Application::new()
+                .map_err(|error| ProbeError(format!("create platform application: {error}")))?;
+            let window = application
+                .create_window(&WindowDescriptor::new(
+                    "Mulciber — native Metal",
+                    LogicalSize::new(960, 540),
+                ))
+                .map_err(|error| ProbeError(format!("create platform window: {error}")))?;
+            // SAFETY: The target is borrowed from `window`, remains on AppKit's main thread, and is
+            // used only to install the layer whose lifecycle stays bounded by this Probe.
+            let view = unsafe { integration::appkit_view(&window.surface_target()).as_ptr() };
+
+            // SAFETY: The program runs on the AppKit main thread and all Metal selectors match SDK
+            // ABIs. AppKit ownership and lifecycle are provided by `mulciber-platform` above.
             unsafe {
-                let application = required(
-                    objc::object(objc::class(c"NSApplication"), c"sharedApplication"),
-                    "NSApplication",
-                )?;
-                if !objc::bool_isize(application, c"setActivationPolicy:", 0) {
-                    return Err(ProbeError(
-                        "could not activate as a regular application".into(),
-                    ));
-                }
-                objc::void(application, c"finishLaunching");
-
-                let style = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3);
-                let initial_rect = Rect {
-                    origin: Point { x: 0.0, y: 0.0 },
-                    size: Size {
-                        width: 960.0,
-                        height: 540.0,
-                    },
-                };
-                let allocated_window = objc::object(objc::class(c"NSWindow"), c"alloc");
-                let window = required(
-                    objc::object_window_init(
-                        allocated_window,
-                        c"initWithContentRect:styleMask:backing:defer:",
-                        initial_rect,
-                        style,
-                        2,
-                        false,
-                    ),
-                    "NSWindow",
-                )?;
-                objc::void_object(
-                    window,
-                    c"setTitle:",
-                    objc::ns_string(c"Mulciber — native Metal"),
-                );
-                objc::void_bool(window, c"setReleasedWhenClosed:", false);
-
-                let view = required(objc::object(window, c"contentView"), "NSView")?;
-                objc::void_bool(view, c"setWantsLayer:", true);
-
                 let device = required(MTLCreateSystemDefaultDevice(), "Metal device")?;
                 let layer = required(
                     objc::object(objc::class(c"CAMetalLayer"), c"layer"),
@@ -391,14 +359,9 @@ mod macos {
                 let sampler = create_sampler(device)?;
                 let shadow_texture = create_shadow_texture(device)?;
 
-                objc::void(window, c"center");
-                objc::void_object(window, c"makeKeyAndOrderFront:", ptr::null_mut());
-                objc::void(application, c"activate");
-
                 Ok(Self {
                     application,
                     window,
-                    view,
                     device,
                     layer,
                     queue,
@@ -420,7 +383,7 @@ mod macos {
                     scene_color: ptr::null_mut(),
                     depth_texture: ptr::null_mut(),
                     depth_extent: (0, 0),
-                    drawable_size: Size::default(),
+                    drawable_size: PhysicalExtent::default(),
                     gpu_time_seconds: 0.0,
                     gpu_timed_frames: 0,
                     frame_abandonment: FrameAbandonment::new(options.abandon_acquired_frame_once),
@@ -438,9 +401,13 @@ mod macos {
 
         fn render_loop(&mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
             let mut rendered_frames = 0;
-            while self.pump_events() {
+            loop {
+                let (status, redraw_requested) = self.pump_events()?;
+                if status == PumpStatus::Exit {
+                    break;
+                }
                 let _pool = AutoreleasePool::new();
-                if self.render()? {
+                if redraw_requested && self.render()? {
                     rendered_frames += 1;
                     if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
                         break;
@@ -452,52 +419,35 @@ mod macos {
             Ok(())
         }
 
-        fn pump_events(&self) -> bool {
-            // SAFETY: Events are polled and dispatched on AppKit's main thread.
-            unsafe {
-                let date = objc::object(objc::class(c"NSDate"), c"distantPast");
-                loop {
-                    let event = objc::object_event(
-                        self.application,
-                        c"nextEventMatchingMask:untilDate:inMode:dequeue:",
-                        usize::MAX,
-                        date,
-                        NSDefaultRunLoopMode,
-                        true,
-                    );
-                    if event.is_null() {
-                        break;
-                    }
-                    objc::void_object(self.application, c"sendEvent:", event);
-                }
-                objc::void(self.application, c"updateWindows");
-
-                let visible = objc::bool_value(self.window, c"isVisible");
-                let minimized = objc::bool_value(self.window, c"isMiniaturized");
-                visible || minimized
-            }
+        fn pump_events(&mut self) -> Result<(PumpStatus, bool), ProbeError> {
+            let mut redraw_requested = false;
+            let status = self
+                .application
+                .pump_events(&self.window, |event| {
+                    redraw_requested |= matches!(event, WindowEvent::RedrawRequested(_));
+                })
+                .map_err(|error| ProbeError(format!("pump platform events: {error}")))?;
+            Ok((status, redraw_requested))
         }
 
         fn render(&mut self) -> Result<bool, ProbeError> {
             // SAFETY: Metal and AppKit objects are alive and each selector matches the SDK ABI.
             unsafe {
-                if objc::bool_value(self.window, c"isMiniaturized")
-                    || objc::usize_value(self.window, c"occlusionState") & OCCLUSION_STATE_VISIBLE
-                        == 0
-                {
+                let Some(metrics) = self.window.rendering_metrics() else {
                     return Ok(false);
-                }
-
-                let logical = objc::rect_value(self.view, c"bounds");
-                let backing = objc::rect_rect(self.view, c"convertRectToBacking:", logical);
-                if backing.size.width <= 0.0 || backing.size.height <= 0.0 {
-                    return Ok(false);
-                }
-                if backing.size != self.drawable_size {
-                    self.drawable_size = backing.size;
-                    objc::void_size(self.layer, c"setDrawableSize:", backing.size);
-                    let scale = objc::f64_value(self.window, c"backingScaleFactor");
-                    objc::void_f64(self.layer, c"setContentsScale:", scale);
+                };
+                let extent = metrics.extent();
+                if extent != self.drawable_size {
+                    self.drawable_size = extent;
+                    objc::void_size(
+                        self.layer,
+                        c"setDrawableSize:",
+                        Size {
+                            width: f64::from(extent.width()),
+                            height: f64::from(extent.height()),
+                        },
+                    );
+                    objc::void_f64(self.layer, c"setContentsScale:", metrics.scale_factor());
                 }
 
                 let drawable = objc::object(self.layer, c"nextDrawable");

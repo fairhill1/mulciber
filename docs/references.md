@@ -11,6 +11,8 @@ documentation to identify later capabilities.
 - Canonical specification: <https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html>
 - Source repository: <https://github.com/KhronosGroup/Vulkan-Docs>
 - Conformance products: <https://www.khronos.org/conformance/adopters/conformant-products>
+- Presentation-semaphore reuse guidance:
+  <https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html>
 
 Compatible revisions of Vulkan-Headers, Vulkan-Loader, Vulkan-ValidationLayers, Vulkan-Profiles,
 SPIRV-Headers, SPIRV-Tools, and glslang are recorded in the machine-readable

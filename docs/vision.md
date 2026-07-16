@@ -60,6 +60,22 @@ Dependency minimalism serves this goal; dependency count is not a product featur
 a focused dependency whenever it removes substantial correctness or maintenance risk without taking
 over Zinc's policy layer.
 
+### Learnable without ecosystem memory
+
+Zinc starts with a severe familiarity disadvantage: developers and coding models already know
+`wgpu` and `winit`, while Zinc has no accumulated tutorials, answers, or training corpus. A marginally
+cleaner API cannot overcome that advantage.
+
+The repository must therefore be sufficient teaching material. Zinc's public model should be small
+enough to explain end to end, names and ownership should be unsurprising, compiler errors should point
+to corrective action, and canonical examples should cover complete game tasks rather than isolated
+methods. A developer—or an LLM given only the checked-out repository—should not need backend source
+spelunking to create a window, render a scene, handle resize, and shut down correctly.
+
+This is not a separate AI-specific API. The properties that make Zinc legible to an unfamiliar model
+also make it legible to an unfamiliar human: local source-of-truth documentation, explicit state,
+few hidden conventions, searchable terminology, and examples kept executable by tests.
+
 ### Evidence before abstraction
 
 Public APIs are extracted from validated native implementations. Metal/AppKit, Vulkan/Win32,
@@ -102,6 +118,8 @@ Zinc earns its maintenance cost only if it eventually lets a serious Rust game:
 4. Keep runtime policy and dependencies narrow enough for an engine team to understand and control.
 5. Add a supported platform or capability once in Zinc instead of rebuilding its lifecycle in every
    game.
+6. Be learned from its own documentation and examples faster than familiarity with established
+   alternatives can outweigh Zinc's technical advantages.
 
 If Zinc becomes merely a younger, less portable `wgpu`/`winit` combination, it has failed this test.
 Its reason to exist is the combination of native capability reach, game-specific lifecycle

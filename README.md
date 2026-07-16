@@ -32,9 +32,9 @@ abstraction. Those probes will establish the real platform contracts from which 
 - Modern features such as mesh shading, bindless resources, ray tracing, and sparse resources are
   independent capabilities rather than a single linear hardware tier.
 
-See [the project vision](docs/vision.md), [support contract](docs/support-contract.md),
-[architecture decisions](docs/architecture.md), [pinned references](docs/references.md), and
-[implementation roadmap](docs/roadmap.md).
+See [the project vision](docs/vision.md), [viability gates](docs/viability-gates.md),
+[support contract](docs/support-contract.md), [architecture decisions](docs/architecture.md),
+[pinned references](docs/references.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Current probes
 

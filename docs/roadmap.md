@@ -3,6 +3,10 @@
 Each milestone is a runnable vertical slice. Public abstraction work follows backend evidence rather
 than preceding it.
 
+Advancing between major milestones is governed by the [viability gates](viability-gates.md). Passing
+more checkboxes is not sufficient if Zinc is converging on a less mature `wgpu`/`winit` substitute or
+cannot be learned efficiently without pre-existing ecosystem knowledge.
+
 ## 0. Capability inventory
 
 - [x] Establish the support and dependency contracts.
@@ -19,6 +23,8 @@ than preceding it.
   Windows validation pending).
 - [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle.
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle.
+- [ ] Replace conventional device-idle swapchain retirement with tracked presentation completion
+  using presentation fences when available and a deferred-retirement fallback.
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.

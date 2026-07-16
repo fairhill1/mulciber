@@ -4,6 +4,7 @@ use std::fmt;
 use std::mem;
 use std::num::NonZeroU64;
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use crate::win32::Window;
 const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
+static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -33,6 +35,7 @@ impl fmt::Display for ProbeError {
 impl std::error::Error for ProbeError {}
 
 pub fn run() -> Result<(), ProbeError> {
+    VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
     let frame_limit = parse_frame_limit()?;
     let window = Window::new("Zinc — native Vulkan 1.4", 960, 540)
         .map_err(|error| ProbeError(error.to_string()))?;
@@ -41,23 +44,37 @@ pub fn run() -> Result<(), ProbeError> {
     let device = DeviceContext::new(instance)?;
     let mut renderer = Renderer::new(device, &window)?;
 
-    let mut rendered_frames = 0;
-    while window.pump_events() {
-        let (width, height) = window
-            .client_extent()
-            .map_err(|error| ProbeError(error.to_string()))?;
-        if width == 0 || height == 0 {
-            thread::sleep(Duration::from_millis(16));
-            continue;
-        }
-        if renderer.render(width, height)? {
-            rendered_frames += 1;
-            if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
-                break;
+    let render_result = (|| {
+        let mut rendered_frames = 0;
+        while window.pump_events() {
+            let (width, height) = window
+                .client_extent()
+                .map_err(|error| ProbeError(error.to_string()))?;
+            if width == 0 || height == 0 {
+                thread::sleep(Duration::from_millis(16));
+                continue;
+            }
+            if renderer.render(width, height)? {
+                rendered_frames += 1;
+                if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
+                    break;
+                }
             }
         }
+        Ok(())
+    })();
+    let finish_result = renderer.finish();
+    drop(renderer);
+    render_result.and(finish_result)?;
+
+    let validation_messages = VALIDATION_MESSAGE_COUNT.load(Ordering::Relaxed);
+    if validation_messages == 0 {
+        Ok(())
+    } else {
+        Err(ProbeError(format!(
+            "Vulkan validation reported {validation_messages} warning/error message(s)"
+        )))
     }
-    renderer.finish()
 }
 
 const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {
@@ -803,6 +820,7 @@ unsafe extern "C" fn debug_callback(
             "warning"
         };
         eprintln!("Vulkan validation {level}: {message}");
+        VALIDATION_MESSAGE_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     vk::VK_FALSE
 }
@@ -819,7 +837,7 @@ struct Renderer {
     command_pool: vk::VkCommandPool,
     command_buffer: vk::VkCommandBuffer,
     image_available: vk::VkSemaphore,
-    render_finished: vk::VkSemaphore,
+    render_finished: Vec<vk::VkSemaphore>,
     frame_fence: vk::VkFence,
     recreate_after_present: bool,
 }
@@ -838,7 +856,7 @@ impl Renderer {
             command_pool: ptr::null_mut(),
             command_buffer: ptr::null_mut(),
             image_available: ptr::null_mut(),
-            render_finished: ptr::null_mut(),
+            render_finished: Vec::new(),
             frame_fence: ptr::null_mut(),
             recreate_after_present: false,
         };
@@ -900,23 +918,21 @@ impl Renderer {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
             ..Default::default()
         };
-        for output in [&raw mut self.image_available, &raw mut self.render_finished] {
-            // SAFETY: Device and create info are valid; output is a distinct writable field.
-            check(
-                unsafe {
-                    self.device
-                        .functions
-                        .create_semaphore
-                        .expect("loaded function")(
-                        self.device.handle,
-                        &raw const semaphore_info,
-                        ptr::null(),
-                        output,
-                    )
-                },
-                "vkCreateSemaphore",
-            )?;
-        }
+        // SAFETY: Device and create info are valid; output is writable.
+        check(
+            unsafe {
+                self.device
+                    .functions
+                    .create_semaphore
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const semaphore_info,
+                    ptr::null(),
+                    &raw mut self.image_available,
+                )
+            },
+            "vkCreateSemaphore",
+        )?;
         let fence_info = vk::VkFenceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             flags: vk::VK_FENCE_CREATE_SIGNALED_BIT as u32,
@@ -1010,9 +1026,53 @@ impl Renderer {
         self.format = format.format;
         self.extent = extent;
         self.images = self.swapchain_images()?;
+        self.create_present_semaphores()?;
         self.views = self.create_image_views()?;
         self.create_pipeline()?;
         self.recreate_after_present = false;
+        Ok(())
+    }
+
+    fn create_present_semaphores(&mut self) -> Result<(), ProbeError> {
+        let info = vk::VkSemaphoreCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            ..Default::default()
+        };
+        self.render_finished.reserve(self.images.len());
+        for _ in &self.images {
+            let mut semaphore = ptr::null_mut();
+            // SAFETY: Device/create info are valid and the output handle is writable.
+            let result = check(
+                unsafe {
+                    self.device
+                        .functions
+                        .create_semaphore
+                        .expect("loaded function")(
+                        self.device.handle,
+                        &raw const info,
+                        ptr::null(),
+                        &raw mut semaphore,
+                    )
+                },
+                "vkCreateSemaphore for swapchain image",
+            );
+            if let Err(error) = result {
+                // SAFETY: Previously created semaphores are idle because the new swapchain has not
+                // been rendered or presented yet.
+                unsafe {
+                    for semaphore in self.render_finished.drain(..) {
+                        self.device
+                            .functions
+                            .destroy_semaphore
+                            .expect("loaded function")(
+                            self.device.handle, semaphore, ptr::null()
+                        );
+                    }
+                }
+                return Err(error);
+            }
+            self.render_finished.push(semaphore);
+        }
         Ok(())
     }
 
@@ -1414,6 +1474,10 @@ impl Renderer {
             .get(image_index as usize)
             .ok_or_else(|| ProbeError("driver returned an invalid swapchain image index".into()))?;
         let image = self.images[image_index as usize];
+        let render_finished = *self
+            .render_finished
+            .get(image_index as usize)
+            .ok_or_else(|| ProbeError("swapchain image has no presentation semaphore".into()))?;
         // SAFETY: Fence is signaled and command buffer is no longer executing.
         check(
             unsafe {
@@ -1435,12 +1499,12 @@ impl Renderer {
             "vkResetCommandBuffer",
         )?;
         self.record(image, view)?;
-        self.submit()?;
+        self.submit(render_finished)?;
 
         let present = vk::VkPresentInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             waitSemaphoreCount: 1,
-            pWaitSemaphores: &raw const self.render_finished,
+            pWaitSemaphores: &raw const render_finished,
             swapchainCount: 1,
             pSwapchains: &raw const self.swapchain,
             pImageIndices: &raw const image_index,
@@ -1621,7 +1685,7 @@ impl Renderer {
         }
     }
 
-    fn submit(&self) -> Result<(), ProbeError> {
+    fn submit(&self, render_finished: vk::VkSemaphore) -> Result<(), ProbeError> {
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             semaphore: self.image_available,
@@ -1637,7 +1701,7 @@ impl Renderer {
         };
         let signal = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            semaphore: self.render_finished,
+            semaphore: render_finished,
             stageMask: vk::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             ..Default::default()
         };
@@ -1682,7 +1746,10 @@ impl Renderer {
     }
 
     fn destroy_swapchain_resources(&mut self) {
-        // SAFETY: Device is idle before callers invoke this; handles are owned and reset after use.
+        // SAFETY: Handles here are owned and reset after use, and submitted device work is idle.
+        // Base VK_KHR_swapchain has no portable present-completion fence, so this probe follows the
+        // conventional device-idle retirement path. Zinc's production path must use presentation
+        // fences when available or defer destruction until reacquisition proves presentation ended.
         unsafe {
             if !self.pipeline.is_null() {
                 self.device
@@ -1712,6 +1779,14 @@ impl Renderer {
                     self.device.handle, view, ptr::null()
                 );
             }
+            for semaphore in self.render_finished.drain(..) {
+                self.device
+                    .functions
+                    .destroy_semaphore
+                    .expect("loaded function")(
+                    self.device.handle, semaphore, ptr::null()
+                );
+            }
             self.images.clear();
             if !self.swapchain.is_null() {
                 self.device
@@ -1728,7 +1803,8 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
-        // SAFETY: Best-effort wait ensures resource destruction does not race the GPU.
+        // SAFETY: Best-effort wait ensures resource destruction does not race submitted GPU work.
+        // See `destroy_swapchain_resources` for the separate presentation-completion limitation.
         unsafe {
             let _ = self
                 .device
@@ -1747,15 +1823,15 @@ impl Drop for Renderer {
                     self.device.handle, self.frame_fence, ptr::null()
                 );
             }
-            for semaphore in [self.render_finished, self.image_available] {
-                if !semaphore.is_null() {
-                    self.device
-                        .functions
-                        .destroy_semaphore
-                        .expect("loaded function")(
-                        self.device.handle, semaphore, ptr::null()
-                    );
-                }
+            if !self.image_available.is_null() {
+                self.device
+                    .functions
+                    .destroy_semaphore
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.image_available,
+                    ptr::null(),
+                );
             }
             if !self.command_pool.is_null() {
                 self.device

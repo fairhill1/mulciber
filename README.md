@@ -100,6 +100,21 @@ queue families, core workload features and limits, device extensions, surface fo
 modes, and explicit Mulciber Vulkan 1.4 baseline failures. The `--json` form emits the versioned report
 used for cross-machine comparisons and adapter-tier evidence.
 
+On Linux, the same report has explicit X11 and Wayland paths:
+
+```sh
+cargo run -p mulciber-vulkan-info -- --platform x11
+cargo run -q -p mulciber-vulkan-info -- --platform x11 --json
+cargo run -p mulciber-vulkan-info -- --platform wayland
+cargo run -q -p mulciber-vulkan-info -- --platform wayland --json
+```
+
+The X11 path creates a hidden Xlib window. The Wayland capability path discovers `wl_compositor`
+and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface capability queries
+but is not an XDG-shell presentation or lifecycle implementation. Both paths are implemented and
+compile/link-tested on Linux; physical Vulkan 1.4 surface evidence remains pending. See the
+[Linux validation runbook](docs/linux-validation.md) before recording either path as exercised.
+
 ```sh
 cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
 ```

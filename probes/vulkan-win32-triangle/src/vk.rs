@@ -6453,6 +6453,16 @@ pub struct _XDisplay {
 pub type Display = _XDisplay;
 pub type Window = ::core::ffi::c_ulonglong;
 pub type VisualID = ::core::ffi::c_ulonglong;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct wl_display {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct wl_surface {
+    _unused: [u8; 0],
+}
 pub type VkWin32SurfaceCreateFlagsKHR = VkFlags;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -6513,5 +6523,39 @@ pub type PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR = ::core::option::Opt
         queueFamilyIndex: u32,
         dpy: *mut Display,
         visualID: VisualID,
+    ) -> VkBool32,
+>;
+pub type VkWaylandSurfaceCreateFlagsKHR = VkFlags;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkWaylandSurfaceCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkWaylandSurfaceCreateFlagsKHR,
+    pub display: *mut wl_display,
+    pub surface: *mut wl_surface,
+}
+impl Default for VkWaylandSurfaceCreateInfoKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type PFN_vkCreateWaylandSurfaceKHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        instance: VkInstance,
+        pCreateInfo: *const VkWaylandSurfaceCreateInfoKHR,
+        pAllocator: *const VkAllocationCallbacks,
+        pSurface: *mut VkSurfaceKHR,
+    ) -> VkResult,
+>;
+pub type PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        physicalDevice: VkPhysicalDevice,
+        queueFamilyIndex: u32,
+        display: *mut wl_display,
     ) -> VkBool32,
 >;

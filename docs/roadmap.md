@@ -13,7 +13,10 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [x] Query the default Metal device without a graphics abstraction dependency.
 - [x] Emit a machine-readable Metal capability report.
 - [x] Emit a machine-readable Vulkan capability report with real Win32 presentation data.
-- [ ] Port the Vulkan capability report to Wayland and X11 on Linux.
+- [ ] Port the Vulkan capability report to X11 on Linux (implemented and Linux-build-verified;
+  physical Vulkan 1.4 surface evidence remains pending).
+- [ ] Port the Vulkan capability report to Wayland on Linux (implemented with a compositor-discovered
+  `wl_surface` and Linux-build-verified; physical Vulkan 1.4 surface evidence remains pending).
 - [ ] Run the report with the macOS 26 / Metal 4 runtime and compare results.
 - [x] Pin the Vulkan registry, headers, loader, validation, profiles, and SPIR-V toolchain revisions.
 

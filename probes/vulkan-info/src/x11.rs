@@ -1,23 +1,8 @@
-use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
+use std::ffi::{CString, c_char, c_int, c_uint, c_ulong};
 use std::fmt;
 use std::ptr;
 
 use crate::vk;
-
-pub const JSON_NAME: &str = "linux-x11";
-pub const DISPLAY_NAME: &str = "X11";
-pub const SURFACE_EXTENSION: &CStr = c"VK_KHR_xlib_surface";
-pub const CREATE_SURFACE_NAME: &CStr = c"vkCreateXlibSurfaceKHR";
-pub type CreateSurface = vk::PFN_vkCreateXlibSurfaceKHR;
-
-const RTLD_NOW: c_int = 2;
-
-#[link(name = "dl")]
-unsafe extern "C" {
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    fn dlclose(handle: *mut c_void) -> c_int;
-}
 
 #[link(name = "X11")]
 unsafe extern "C" {
@@ -57,39 +42,18 @@ impl fmt::Display for X11Error {
 
 impl std::error::Error for X11Error {}
 
-pub struct Window {
+pub(crate) struct Window {
     display: *mut vk::Display,
     handle: vk::Window,
 }
 
-pub struct VulkanLibrary(*mut c_void);
-
-impl VulkanLibrary {
-    pub fn open() -> Result<Self, &'static str> {
-        // SAFETY: The library name is static and NUL-terminated.
-        let library = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
-        if library.is_null() {
-            Err("could not load libvulkan.so.1; install a Vulkan loader and driver")
-        } else {
-            Ok(Self(library))
-        }
-    }
-
-    pub unsafe fn symbol(&self, name: &CStr) -> *mut c_void {
-        // SAFETY: The library is live and the symbol name is NUL-terminated.
-        unsafe { dlsym(self.0, name.as_ptr()) }
-    }
-}
-
-impl Drop for VulkanLibrary {
-    fn drop(&mut self) {
-        // SAFETY: All Vulkan children are destroyed before the owning library is dropped.
-        unsafe { dlclose(self.0) };
-    }
-}
-
 impl Window {
-    pub fn new(title: &str, width: u32, height: u32, visible: bool) -> Result<Self, X11Error> {
+    pub(super) fn new(
+        title: &str,
+        width: u32,
+        height: u32,
+        visible: bool,
+    ) -> Result<Self, X11Error> {
         let title = CString::new(title)
             .map_err(|_| X11Error("X11 window title contains an interior NUL".into()))?;
         // SAFETY: A null display name asks Xlib to use the DISPLAY environment variable.
@@ -121,11 +85,11 @@ impl Window {
         Ok(Self { display, handle })
     }
 
-    pub const fn display(&self) -> *mut vk::Display {
+    pub(super) const fn display(&self) -> *mut vk::Display {
         self.display
     }
 
-    pub const fn handle(&self) -> vk::Window {
+    pub(super) const fn handle(&self) -> vk::Window {
         self.handle
     }
 }
@@ -144,8 +108,8 @@ impl Drop for Window {
     }
 }
 
-pub unsafe fn create_surface(
-    function: CreateSurface,
+pub(super) unsafe fn create_surface(
+    function: vk::PFN_vkCreateXlibSurfaceKHR,
     instance: vk::VkInstance,
     window: &Window,
     surface: *mut vk::VkSurfaceKHR,

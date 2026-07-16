@@ -1,4 +1,5 @@
 use std::ffi::{CStr, c_char, c_void};
+use std::mem;
 
 use crate::vk;
 
@@ -7,12 +8,6 @@ use crate::vk;
 mod window;
 
 pub use window::Window;
-
-pub const JSON_NAME: &str = "windows";
-pub const DISPLAY_NAME: &str = "Win32";
-pub const SURFACE_EXTENSION: &CStr = c"VK_KHR_win32_surface";
-pub const CREATE_SURFACE_NAME: &CStr = c"vkCreateWin32SurfaceKHR";
-pub type CreateSurface = vk::PFN_vkCreateWin32SurfaceKHR;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -48,12 +43,47 @@ impl Drop for VulkanLibrary {
     }
 }
 
+pub fn create_window(
+    title: &str,
+    width: u32,
+    height: u32,
+    visible: bool,
+    requested_platform: Option<&str>,
+) -> Result<Window, String> {
+    if requested_platform.is_some_and(|platform| platform != "windows") {
+        return Err("Windows supports only --platform windows".into());
+    }
+    Window::new(title, width, height, visible).map_err(|error| error.to_string())
+}
+
+pub const fn json_name(_window: &Window) -> &'static str {
+    "windows"
+}
+
+pub const fn display_name(_window: &Window) -> &'static str {
+    "Win32"
+}
+
+pub const fn surface_extension(_window: &Window) -> &'static CStr {
+    c"VK_KHR_win32_surface"
+}
+
+pub const fn create_surface_name(_window: &Window) -> &'static CStr {
+    c"vkCreateWin32SurfaceKHR"
+}
+
 pub unsafe fn create_surface(
-    function: CreateSurface,
+    function: vk::PFN_vkVoidFunction,
     instance: vk::VkInstance,
     window: &Window,
     surface: *mut vk::VkSurfaceKHR,
 ) -> vk::VkResult {
+    assert_eq!(
+        mem::size_of::<vk::PFN_vkCreateWin32SurfaceKHR>(),
+        mem::size_of::<vk::PFN_vkVoidFunction>()
+    );
+    // SAFETY: The function was loaded by the Win32 Vulkan surface-creation name.
+    let function: vk::PFN_vkCreateWin32SurfaceKHR = unsafe { mem::transmute_copy(&function) };
     let info = vk::VkWin32SurfaceCreateInfoKHR {
         sType: vk::VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
         hinstance: window.instance(),

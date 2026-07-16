@@ -6,7 +6,7 @@
 #[path = "windows.rs"]
 mod native;
 #[cfg(target_os = "linux")]
-#[path = "x11.rs"]
+#[path = "linux.rs"]
 mod native;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 #[path = "../../vulkan-win32-triangle/src/vk.rs"]

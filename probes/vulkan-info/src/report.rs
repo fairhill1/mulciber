@@ -111,7 +111,7 @@ mod platform {
 
     struct InstanceFns {
         destroy_instance: vk::PFN_vkDestroyInstance,
-        create_surface: native::CreateSurface,
+        create_surface: vk::PFN_vkVoidFunction,
         destroy_surface: vk::PFN_vkDestroySurfaceKHR,
         enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
         get_properties: vk::PFN_vkGetPhysicalDeviceProperties,
@@ -126,7 +126,11 @@ mod platform {
     }
 
     impl InstanceFns {
-        unsafe fn load(entry: &Entry, instance: vk::VkInstance) -> Result<Self, ProbeError> {
+        unsafe fn load(
+            entry: &Entry,
+            instance: vk::VkInstance,
+            window: &Window,
+        ) -> Result<Self, ProbeError> {
             macro_rules! load {
                 ($name:literal) => {
                     unsafe { entry.instance_proc(instance, $name) }?
@@ -135,7 +139,7 @@ mod platform {
             Ok(Self {
                 destroy_instance: load!(c"vkDestroyInstance"),
                 create_surface: unsafe {
-                    entry.instance_proc(instance, native::CREATE_SURFACE_NAME)
+                    entry.instance_proc(instance, native::create_surface_name(window))
                 }?,
                 destroy_surface: load!(c"vkDestroySurfaceKHR"),
                 enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
@@ -158,6 +162,8 @@ mod platform {
         instance: vk::VkInstance,
         surface: vk::VkSurfaceKHR,
         loader_version: u32,
+        platform_name: &'static str,
+        display_name: &'static str,
     }
 
     impl Context {
@@ -171,7 +177,8 @@ mod platform {
                 )));
             }
             let extensions = instance_extensions(&entry)?;
-            for required in [c"VK_KHR_surface", native::SURFACE_EXTENSION] {
+            let surface_extension = native::surface_extension(window);
+            for required in [c"VK_KHR_surface", surface_extension] {
                 if !extensions.iter().any(|name| name == required.to_bytes()) {
                     return Err(ProbeError(format!(
                         "required instance extension {} is unavailable",
@@ -185,10 +192,7 @@ mod platform {
                 apiVersion: API_VERSION_1_4,
                 ..Default::default()
             };
-            let enabled_extensions = [
-                c"VK_KHR_surface".as_ptr(),
-                native::SURFACE_EXTENSION.as_ptr(),
-            ];
+            let enabled_extensions = [c"VK_KHR_surface".as_ptr(), surface_extension.as_ptr()];
             let create_info = vk::VkInstanceCreateInfo {
                 sType: vk::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                 pApplicationInfo: &raw const application,
@@ -209,7 +213,7 @@ mod platform {
                 "vkCreateInstance",
             )?;
             // SAFETY: The instance is live and names are paired with generated function types.
-            let functions = unsafe { InstanceFns::load(&entry, instance) }?;
+            let functions = unsafe { InstanceFns::load(&entry, instance, window) }?;
             let mut surface = ptr::null_mut();
             check(
                 // SAFETY: The native window and instance remain live; output is writable.
@@ -221,7 +225,7 @@ mod platform {
                         &raw mut surface,
                     )
                 },
-                native::CREATE_SURFACE_NAME
+                native::create_surface_name(window)
                     .to_str()
                     .expect("static Vulkan function name is UTF-8"),
             )?;
@@ -231,6 +235,8 @@ mod platform {
                 instance,
                 surface,
                 loader_version,
+                platform_name: native::json_name(window),
+                display_name: native::display_name(window),
             })
         }
     }
@@ -254,6 +260,7 @@ mod platform {
 
     struct Report {
         loader_version: u32,
+        platform_name: &'static str,
         selected_adapter: Option<usize>,
         adapters: Vec<AdapterReport>,
     }
@@ -348,6 +355,7 @@ mod platform {
                 .map(|(index, _)| index);
             Ok(Self {
                 loader_version: context.loader_version,
+                platform_name: context.platform_name,
                 selected_adapter,
                 adapters,
             })
@@ -356,7 +364,7 @@ mod platform {
         #[allow(clippy::too_many_lines)]
         fn print_human(&self) {
             println!("Mulciber Vulkan capability report");
-            println!("platform: {}", native::JSON_NAME);
+            println!("platform: {}", self.platform_name);
             println!("loader API: {}", version_string(self.loader_version));
             println!("adapters: {}", self.adapters.len());
             match self.selected_adapter {
@@ -468,7 +476,7 @@ mod platform {
             write!(
                 output,
                 "{{\n  \"schema_version\": 1,\n  \"backend\": \"vulkan\",\n  \"platform\": \"{}\",\n  \"loader_api_version\": \"{}\",\n  \"loader_api_version_raw\": {},\n  \"selected_adapter_index\": ",
-                native::JSON_NAME,
+                self.platform_name,
                 version_string(self.loader_version),
                 self.loader_version
             )
@@ -578,13 +586,13 @@ mod platform {
             if !queues.iter().any(|queue| queue.graphics && queue.present) {
                 baseline_failures.push(format!(
                     "no queue family supports both graphics and this {} surface",
-                    native::DISPLAY_NAME
+                    context.display_name
                 ));
             }
             if surface.formats.is_empty() {
                 baseline_failures.push(format!(
                     "the {} surface exposes no formats",
-                    native::DISPLAY_NAME
+                    context.display_name
                 ));
             }
             if !surface
@@ -593,7 +601,7 @@ mod platform {
             {
                 baseline_failures.push(format!(
                     "the {} surface does not expose FIFO presentation",
-                    native::DISPLAY_NAME
+                    context.display_name
                 ));
             }
             Ok(Self {
@@ -991,13 +999,31 @@ mod platform {
     }
 
     pub fn run() -> Result<(), ProbeError> {
-        let json = match env::args_os().skip(1).collect::<Vec<_>>().as_slice() {
-            [] => false,
-            [argument] if argument == "--json" => true,
-            _ => return Err(ProbeError("usage: mulciber-vulkan-info [--json]".into())),
-        };
-        let window = Window::new("Mulciber Vulkan capability surface", 64, 64, false)
-            .map_err(|error| ProbeError(error.to_string()))?;
+        let mut json = false;
+        let mut requested_platform = None;
+        let mut arguments = env::args_os().skip(1);
+        while let Some(argument) = arguments.next() {
+            if argument == "--json" && !json {
+                json = true;
+            } else if argument == "--platform" && requested_platform.is_none() {
+                let platform = arguments.next().ok_or_else(usage_error)?;
+                requested_platform = Some(
+                    platform
+                        .into_string()
+                        .map_err(|_| ProbeError("--platform must be Unicode".into()))?,
+                );
+            } else {
+                return Err(usage_error());
+            }
+        }
+        let window = native::create_window(
+            "Mulciber Vulkan capability surface",
+            64,
+            64,
+            false,
+            requested_platform.as_deref(),
+        )
+        .map_err(ProbeError)?;
         let context = Context::new(&window)?;
         let report = Report::collect(&context)?;
         if json {
@@ -1006,6 +1032,10 @@ mod platform {
             report.print_human();
         }
         Ok(())
+    }
+
+    fn usage_error() -> ProbeError {
+        ProbeError("usage: mulciber-vulkan-info [--json] [--platform windows|x11|wayland]".into())
     }
 
     const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {

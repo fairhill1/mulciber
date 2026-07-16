@@ -40,7 +40,7 @@ and hardware breadth remain governed by the viability gates.
 
 | Game-facing need | Metal evidence | Vulkan evidence | Candidate shared invariant | Native boundary or missing evidence |
 | --- | --- | --- | --- | --- |
-| Enumerate usable devices and reject an unsupported baseline | The capability probe reports the default device, GPU families, memory facts, limits, and selected advanced capabilities. **Partial**: one default-device path and incomplete Metal 4 evidence. | The Win32 capability probe reports every adapter, memory heaps, queue families, workload features and limits, device extensions, surface formats, present modes, and explicit baseline failures. **Established** on the current Windows tier. | Device selection returns structured facts plus explicit rejection reasons. Required capabilities reject startup; optional capabilities select a path. | Metal multi-device policy, Linux presentation data, macOS 26/Metal 4, and the Windows baseline hardware tier remain pending. |
+| Enumerate usable devices and reject an unsupported baseline | The capability probe reports the default device, GPU families, memory facts, limits, and selected advanced capabilities. **Partial**: one default-device path and incomplete Metal 4 evidence. | The Win32 capability probe reports every adapter, memory heaps, queue families, workload features and limits, device extensions, surface formats, present modes, and explicit baseline failures. **Established** on the current Windows tier. Peer X11 and Wayland report paths are implemented and compile/link-tested on Linux but lack physical Vulkan 1.4 results. | Device selection returns structured facts plus explicit rejection reasons. Required capabilities reject startup; optional capabilities select a path. | Physical Linux presentation data, Metal multi-device policy, macOS 26/Metal 4, and the Windows baseline hardware tier remain pending. |
 | Negotiate features without a linear quality tier | Metal checks texture compression, sample count, storage behavior, and other selectors independently. | Vulkan checks API version, required core features, extensions, queue/present support, formats, memory types, and shared color/depth sample counts independently. | Capabilities remain independently queryable. Profiles may be convenience predicates, never the source of truth. | The eventual stability and naming of capability records remain unresolved. |
 | Explain the selected execution path | Probe output records selected Metal facilities and archive behavior. | Probe output identifies the adapter, depth format, sample path, texture compression path and exact BC1 capability facts, pipeline-cache mode, and swapchain-retirement mechanism. | Selection and fallback decisions are available to application diagnostics without requiring native handles. | A stable diagnostic/event format is pending public API work. |
 
@@ -119,8 +119,8 @@ and hardware breadth remain governed by the viability gates.
 ## Evidence still blocking Gate 1
 
 - Physical AppKit resize, minimize/restore, maximize/zoom, display-change, and shutdown evidence.
-- Wayland and X11 capability, presentation, resize, and lifecycle implementations on physical Linux
-  systems.
+- Physical Wayland and X11 capability-report evidence on Vulkan 1.4 systems; both report paths are
+  implemented, while XDG-shell/X11 presentation, resize, and lifecycle probes remain pending.
 - Windows baseline hardware and broader driver coverage, including a naturally
   swapchain-maintenance-less adapter.
 - Device-loss, out-of-memory, memory-pressure, suspend/resume, and recovery evidence on every claimed

@@ -19,6 +19,7 @@ fn main() {
 #define VK_NO_PROTOTYPES 1
 #define VK_USE_PLATFORM_WIN32_KHR 1
 #define VK_USE_PLATFORM_XLIB_KHR 1
+#define VK_USE_PLATFORM_WAYLAND_KHR 1
 #include "vulkan_core.h"
 
 typedef void* HANDLE;
@@ -32,9 +33,12 @@ typedef struct SECURITY_ATTRIBUTES SECURITY_ATTRIBUTES;
 typedef struct _XDisplay Display;
 typedef unsigned long long Window;
 typedef unsigned long long VisualID;
+typedef struct wl_display wl_display;
+typedef struct wl_surface wl_surface;
 
 #include "vulkan_win32.h"
 #include "vulkan_xlib.h"
+#include "vulkan_wayland.h"
 "#;
 
     let mut builder = bindgen::Builder::default()

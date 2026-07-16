@@ -16,6 +16,9 @@ const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
 const FRAME_SLOT_COUNT: usize = 3;
 const STORAGE_VALUE_COUNT: usize = 64;
+const COMPUTE_IMAGE_WIDTH: u32 = 8;
+const COMPUTE_IMAGE_HEIGHT: u32 = 8;
+const RGBA8_TEXEL_SIZE: usize = 4;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
@@ -695,6 +698,7 @@ struct DeviceFns {
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
+    cmd_copy_image_to_buffer2: vk::PFN_vkCmdCopyImageToBuffer2,
     cmd_dispatch: vk::PFN_vkCmdDispatch,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
@@ -779,6 +783,7 @@ impl DeviceFns {
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
+            cmd_copy_image_to_buffer2: load!(c"vkCmdCopyImageToBuffer2"),
             cmd_dispatch: load!(c"vkCmdDispatch"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
@@ -1231,6 +1236,7 @@ struct Renderer {
     started: Instant,
     compute_storage: GpuBuffer,
     compute_indirect: GpuBuffer,
+    compute_image: GpuImage,
     compute_readback: GpuBuffer,
     compute_descriptor_set_layout: vk::VkDescriptorSetLayout,
     compute_descriptor_pool: vk::VkDescriptorPool,
@@ -1278,6 +1284,7 @@ impl Renderer {
             started: Instant::now(),
             compute_storage: GpuBuffer::default(),
             compute_indirect: GpuBuffer::default(),
+            compute_image: GpuImage::default(),
             compute_readback: GpuBuffer::default(),
             compute_descriptor_set_layout: ptr::null_mut(),
             compute_descriptor_pool: ptr::null_mut(),
@@ -1304,6 +1311,7 @@ impl Renderer {
         renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
         renderer.create_compute_readback_resources()?;
+        renderer.create_texture_descriptors()?;
         let (width, height) = window
             .client_extent()
             .map_err(|error| ProbeError(error.to_string()))?;
@@ -1565,7 +1573,6 @@ impl Renderer {
         unsafe { self.destroy_buffer(&mut staging) };
         result?;
         self.create_texture_sampler()?;
-        self.create_texture_descriptors()?;
         println!(
             "Texture: device-local {TEXTURE_WIDTH}x{TEXTURE_HEIGHT} RGBA8 image uploaded and sampled"
         );
@@ -1746,21 +1753,21 @@ impl Renderer {
 
     fn create_texture_descriptors(&mut self) -> Result<(), ProbeError> {
         let bindings = [
-            vk::VkDescriptorSetLayoutBinding {
-                binding: 0,
-                descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount: 1,
-                stageFlags: vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-                ..Default::default()
-            },
-            vk::VkDescriptorSetLayoutBinding {
-                binding: 1,
-                descriptorType: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                descriptorCount: 1,
-                stageFlags: (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT)
-                    as u32,
-                ..Default::default()
-            },
+            descriptor_binding(
+                0,
+                vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+            ),
+            descriptor_binding(
+                1,
+                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT) as u32,
+            ),
+            descriptor_binding(
+                2,
+                vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+            ),
         ];
         let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1787,7 +1794,7 @@ impl Renderer {
         let pool_sizes = [
             vk::VkDescriptorPoolSize {
                 type_: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount: descriptor_count,
+                descriptorCount: descriptor_count * 2,
             },
             vk::VkDescriptorPoolSize {
                 type_: vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1851,6 +1858,11 @@ impl Renderer {
                 imageView: self.texture.view,
                 imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             };
+            let generated_image = vk::VkDescriptorImageInfo {
+                sampler: self.texture_sampler,
+                imageView: self.compute_image.view,
+                imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
             let buffer = vk::VkDescriptorBufferInfo {
                 buffer: uniform.buffer.handle,
                 offset: 0,
@@ -1876,6 +1888,15 @@ impl Renderer {
                     pBufferInfo: &raw const buffer,
                     ..Default::default()
                 },
+                vk::VkWriteDescriptorSet {
+                    sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    dstSet: descriptor_set,
+                    dstBinding: 2,
+                    descriptorCount: 1,
+                    descriptorType: vk::VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    pImageInfo: &raw const generated_image,
+                    ..Default::default()
+                },
             ];
             // SAFETY: The set and referenced image/sampler/buffer are live for this update.
             unsafe {
@@ -1894,6 +1915,7 @@ impl Renderer {
     }
 
     fn create_compute_readback_resources(&mut self) -> Result<(), ProbeError> {
+        self.create_compute_image()?;
         self.compute_storage = self.create_buffer(
             storage_buffer_byte_len(),
             (vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT) as u32,
@@ -1919,9 +1941,159 @@ impl Renderer {
         self.create_compute_pipeline()?;
         self.dispatch_compute_and_verify()?;
         println!(
-            "Compute: {STORAGE_VALUE_COUNT} storage values and indexed-indirect arguments generated and read back exactly"
+            "Compute: {STORAGE_VALUE_COUNT} storage values, indexed-indirect arguments, and an {COMPUTE_IMAGE_WIDTH}x{COMPUTE_IMAGE_HEIGHT} storage image generated and read back exactly"
         );
         Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn create_compute_image(&mut self) -> Result<(), ProbeError> {
+        let mut properties = vk::VkFormatProperties::default();
+        // SAFETY: The selected adapter is live and properties storage is writable.
+        unsafe {
+            self.device
+                .instance
+                .functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                self.device.adapter.handle,
+                vk::VK_FORMAT_R8G8B8A8_UNORM,
+                &raw mut properties,
+            );
+        }
+        let required_features = (vk::VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+            | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+            | vk::VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) as u32;
+        if properties.optimalTilingFeatures & required_features != required_features {
+            return Err(ProbeError(
+                "R8G8B8A8_UNORM lacks required optimal-tiled storage, sampled, or transfer-source support"
+                    .into(),
+            ));
+        }
+        let info = vk::VkImageCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType: vk::VK_IMAGE_TYPE_2D,
+            format: vk::VK_FORMAT_R8G8B8A8_UNORM,
+            extent: vk::VkExtent3D {
+                width: COMPUTE_IMAGE_WIDTH,
+                height: COMPUTE_IMAGE_HEIGHT,
+                depth: 1,
+            },
+            mipLevels: 1,
+            arrayLayers: 1,
+            samples: vk::VK_SAMPLE_COUNT_1_BIT,
+            tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+            usage: (vk::VK_IMAGE_USAGE_STORAGE_BIT
+                | vk::VK_IMAGE_USAGE_SAMPLED_BIT
+                | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT) as u32,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Device/create info are valid and owned output storage is writable.
+            unsafe {
+                self.device.functions.create_image.expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut self.compute_image.handle,
+                )
+            },
+            "vkCreateImage for compute storage image",
+        )?;
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The image is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_image_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                self.compute_image.handle,
+                &raw mut requirements,
+            );
+        }
+        let memory_type = self
+            .find_memory_type(
+                requirements.memoryTypeBits,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            )
+            .ok_or_else(|| {
+                ProbeError("adapter exposes no device-local compute image memory type".into())
+            })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut self.compute_image.memory,
+                )
+            },
+            "vkAllocateMemory for compute storage image",
+        )?;
+        check(
+            // SAFETY: Image and allocation are compatible at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_image_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    self.compute_image.handle,
+                    self.compute_image.memory,
+                    0,
+                )
+            },
+            "vkBindImageMemory for compute storage image",
+        )?;
+        self.compute_image.view = self.create_compute_image_view()?;
+        Ok(())
+    }
+
+    fn create_compute_image_view(&self) -> Result<vk::VkImageView, ProbeError> {
+        let info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: self.compute_image.handle,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: vk::VK_FORMAT_R8G8B8A8_UNORM,
+            components: vk::VkComponentMapping {
+                r: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                g: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                b: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+                a: vk::VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange: color_subresource_range(),
+            ..Default::default()
+        };
+        let mut view = ptr::null_mut();
+        check(
+            // SAFETY: Image/create info are valid and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_image_view
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut view,
+                )
+            },
+            "vkCreateImageView for compute storage image",
+        )?;
+        Ok(view)
     }
 
     fn create_compute_descriptors(&mut self) -> Result<(), ProbeError> {
@@ -1936,6 +2108,13 @@ impl Renderer {
             vk::VkDescriptorSetLayoutBinding {
                 binding: 1,
                 descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptorCount: 1,
+                stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
+                ..Default::default()
+            },
+            vk::VkDescriptorSetLayoutBinding {
+                binding: 2,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                 descriptorCount: 1,
                 stageFlags: vk::VK_SHADER_STAGE_COMPUTE_BIT as u32,
                 ..Default::default()
@@ -1962,15 +2141,22 @@ impl Renderer {
             },
             "vkCreateDescriptorSetLayout for compute storage",
         )?;
-        let pool_size = vk::VkDescriptorPoolSize {
-            type_: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            descriptorCount: 2,
-        };
+        let pool_sizes = [
+            vk::VkDescriptorPoolSize {
+                type_: vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptorCount: 2,
+            },
+            vk::VkDescriptorPoolSize {
+                type_: vk::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                descriptorCount: 1,
+            },
+        ];
         let pool_info = vk::VkDescriptorPoolCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             maxSets: 1,
-            poolSizeCount: 1,
-            pPoolSizes: &raw const pool_size,
+            poolSizeCount: u32::try_from(pool_sizes.len())
+                .expect("compute descriptor pool size count fits u32"),
+            pPoolSizes: pool_sizes.as_ptr(),
             ..Default::default()
         };
         check(
@@ -2028,6 +2214,11 @@ impl Renderer {
                     .expect("indirect command byte length fits u64"),
             },
         ];
+        let image = vk::VkDescriptorImageInfo {
+            sampler: ptr::null_mut(),
+            imageView: self.compute_image.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_GENERAL,
+        };
         let writes = [
             vk::VkWriteDescriptorSet {
                 sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -2047,8 +2238,17 @@ impl Renderer {
                 pBufferInfo: &raw const buffers[1],
                 ..Default::default()
             },
+            vk::VkWriteDescriptorSet {
+                sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                dstSet: self.compute_descriptor_set,
+                dstBinding: 2,
+                descriptorCount: 1,
+                descriptorType: vk::VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                pImageInfo: &raw const image,
+                ..Default::default()
+            },
         ];
-        // SAFETY: The descriptor set and both referenced storage buffers are live.
+        // SAFETY: The descriptor set and referenced storage buffers/image are live.
         unsafe {
             self.device
                 .functions
@@ -2164,6 +2364,16 @@ impl Renderer {
             },
             "vkBeginCommandBuffer for compute readback",
         )?;
+        self.image_barrier(
+            self.compute_image.handle,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_GENERAL,
+            color_subresource_range(),
+        );
         // SAFETY: Command buffer is recording and all compute resources are live.
         unsafe {
             self.device
@@ -2195,6 +2405,16 @@ impl Renderer {
             );
         }
         self.compute_output_barriers();
+        self.image_barrier(
+            self.compute_image.handle,
+            vk::VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            vk::VK_IMAGE_LAYOUT_GENERAL,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            color_subresource_range(),
+        );
         self.copy_buffer_region(
             self.compute_storage.handle,
             self.compute_readback.handle,
@@ -2210,6 +2430,17 @@ impl Renderer {
             u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                 .expect("indirect command byte length fits u64"),
         );
+        self.copy_compute_image_to_readback();
+        self.image_barrier(
+            self.compute_image.handle,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            color_subresource_range(),
+        );
         self.copy_to_host_barrier();
         check(
             // SAFETY: The command buffer is recording and all commands are complete.
@@ -2221,6 +2452,42 @@ impl Renderer {
             },
             "vkEndCommandBuffer for compute readback",
         )
+    }
+
+    fn copy_compute_image_to_readback(&self) {
+        let region = vk::VkBufferImageCopy2 {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            bufferOffset: u64::try_from(compute_image_readback_offset())
+                .expect("compute image readback offset fits u64"),
+            imageSubresource: vk::VkImageSubresourceLayers {
+                aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                mipLevel: 0,
+                baseArrayLayer: 0,
+                layerCount: 1,
+            },
+            imageExtent: vk::VkExtent3D {
+                width: COMPUTE_IMAGE_WIDTH,
+                height: COMPUTE_IMAGE_HEIGHT,
+                depth: 1,
+            },
+            ..Default::default()
+        };
+        let copy = vk::VkCopyImageToBufferInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+            srcImage: self.compute_image.handle,
+            srcImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dstBuffer: self.compute_readback.handle,
+            regionCount: 1,
+            pRegions: &raw const region,
+            ..Default::default()
+        };
+        // SAFETY: The image and buffer are live, correctly laid out, and the copy range fits.
+        unsafe {
+            self.device
+                .functions
+                .cmd_copy_image_to_buffer2
+                .expect("loaded function")(self.command_buffer, &raw const copy);
+        }
     }
 
     fn compute_output_barriers(&self) {
@@ -2307,6 +2574,15 @@ impl Renderer {
                 .cast::<vk::VkDrawIndexedIndirectCommand>()
                 .read_unaligned()
         };
+        // SAFETY: The tightly packed image copy immediately follows the indirect command and is
+        // fully contained in the mapped readback range.
+        let texels = unsafe {
+            std::slice::from_raw_parts(
+                mapped.cast::<u8>().add(compute_image_readback_offset()),
+                compute_image_byte_len(),
+            )
+            .to_vec()
+        };
         // SAFETY: The mapping belongs to this live allocation and is unmapped exactly once.
         unsafe {
             self.device.functions.unmap_memory.expect("loaded function")(
@@ -2337,6 +2613,14 @@ impl Renderer {
                 command.vertexOffset,
                 command.firstInstance,
             )));
+        }
+        for (index, actual) in texels.chunks_exact(RGBA8_TEXEL_SIZE).enumerate() {
+            let expected = expected_compute_texel(index);
+            if actual != expected {
+                return Err(ProbeError(format!(
+                    "compute image readback mismatch at texel {index}: expected {expected:?}, got {actual:?}"
+                )));
+            }
         }
         Ok(())
     }
@@ -4211,6 +4495,7 @@ impl Drop for Renderer {
         let mut uniform_buffers = mem::take(&mut self.uniform_buffers);
         let mut compute_storage = mem::take(&mut self.compute_storage);
         let mut compute_indirect = mem::take(&mut self.compute_indirect);
+        let mut compute_image = mem::take(&mut self.compute_image);
         let mut compute_readback = mem::take(&mut self.compute_readback);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
@@ -4240,6 +4525,7 @@ impl Drop for Renderer {
                 );
             }
             self.destroy_image(&mut texture);
+            self.destroy_image(&mut compute_image);
             if !self.descriptor_set_layout.is_null() {
                 self.device
                     .functions
@@ -4444,6 +4730,20 @@ fn shader_stage(
     }
 }
 
+fn descriptor_binding(
+    binding: u32,
+    descriptor_type: vk::VkDescriptorType,
+    stage_flags: vk::VkShaderStageFlags,
+) -> vk::VkDescriptorSetLayoutBinding {
+    vk::VkDescriptorSetLayoutBinding {
+        binding,
+        descriptorType: descriptor_type,
+        descriptorCount: 1,
+        stageFlags: stage_flags,
+        ..Default::default()
+    }
+}
+
 fn vertex_input_descriptions() -> (
     vk::VkVertexInputBindingDescription,
     [vk::VkVertexInputAttributeDescription; 3],
@@ -4564,8 +4864,18 @@ fn storage_buffer_byte_len() -> usize {
     STORAGE_VALUE_COUNT * mem::size_of::<u32>()
 }
 
-fn compute_readback_byte_len() -> usize {
+fn compute_image_byte_len() -> usize {
+    usize::try_from(COMPUTE_IMAGE_WIDTH * COMPUTE_IMAGE_HEIGHT)
+        .expect("compute image texel count fits usize")
+        * RGBA8_TEXEL_SIZE
+}
+
+fn compute_image_readback_offset() -> usize {
     storage_buffer_byte_len() + mem::size_of::<vk::VkDrawIndexedIndirectCommand>()
+}
+
+fn compute_readback_byte_len() -> usize {
+    compute_image_readback_offset() + compute_image_byte_len()
 }
 
 fn expected_indirect_command() -> vk::VkDrawIndexedIndirectCommand {
@@ -4575,6 +4885,17 @@ fn expected_indirect_command() -> vk::VkDrawIndexedIndirectCommand {
         firstIndex: 0,
         vertexOffset: 0,
         firstInstance: 0,
+    }
+}
+
+fn expected_compute_texel(index: usize) -> [u8; RGBA8_TEXEL_SIZE] {
+    let width = usize::try_from(COMPUTE_IMAGE_WIDTH).expect("compute image width fits usize");
+    let x = index % width;
+    let y = index / width;
+    if (x + y).is_multiple_of(2) {
+        [255, 0, 255, 255]
+    } else {
+        [0, 255, 255, 255]
     }
 }
 
@@ -4791,7 +5112,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_storage_pattern_and_barrier_are_deterministic() {
+    fn compute_outputs_and_barriers_are_deterministic() {
         assert_eq!(expected_storage_value(0), 1_013_904_223);
         assert_eq!(expected_storage_value(1), 1_015_568_748);
         assert_eq!(expected_storage_value(63), 1_118_769_298);
@@ -4842,5 +5163,13 @@ mod tests {
             vk::VK_ACCESS_2_TRANSFER_READ_BIT | vk::VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT
         );
         assert_eq!(indirect_barrier.size, 20);
+
+        assert_eq!(compute_image_byte_len(), 256);
+        assert_eq!(compute_image_readback_offset(), 276);
+        assert_eq!(compute_readback_byte_len(), 532);
+        assert_eq!(expected_compute_texel(0), [255, 0, 255, 255]);
+        assert_eq!(expected_compute_texel(1), [0, 255, 255, 255]);
+        assert_eq!(expected_compute_texel(8), [0, 255, 255, 255]);
+        assert_eq!(expected_compute_texel(63), [255, 0, 255, 255]);
     }
 }

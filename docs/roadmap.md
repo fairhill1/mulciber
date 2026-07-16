@@ -61,6 +61,8 @@ Vulkan evidence completed so far:
 - [x] Compute-written device-local indexed-indirect command synchronized for transfer and
   indirect-command reads, verified through exact readback, and consumed by
   `vkCmdDrawIndexedIndirect` (same machine).
+- [x] Compute-written device-local RGBA8 storage image with capability checks, exact texel
+  readback, explicit compute-to-copy-to-fragment transitions, and fragment sampling (same machine).
 
 Metal evidence completed so far:
 

@@ -20,8 +20,8 @@ glslang = "168d452a4f460d24b588fed08477a81c44ee27a1"
 compiler = "shaderc v2026.2"
 target_environment = "vulkan1.4"
 vertex_sha256 = "4544daff48f87567eb8c7845fa4d8654887ea9bd23fabd1d7f5a0d175309fe72"
-fragment_sha256 = "62123bb5085d65e8c86b5da71a977215daf2ae39c4d56dc74d26538200608159"
-compute_sha256 = "3f836a86b0248c6d95e18de80ba2cab31a9c5e655adf0167ac5b2f4bea2e998c"
+fragment_sha256 = "efe0e17880dd0196987ca35fd92584c31892bbb4dcbf5950d492d4200de8be6f"
+compute_sha256 = "5e533a741b081cbe053be0c835dfccbf562e57382e84ee03a557d1520b2478c7"
 
 [inputs]
 vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"

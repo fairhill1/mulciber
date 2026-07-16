@@ -5632,6 +5632,26 @@ impl Default for VkCopyBufferToImageInfo2 {
     }
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkCopyImageToBufferInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstBuffer: VkBuffer,
+    pub regionCount: u32,
+    pub pRegions: *const VkBufferImageCopy2,
+}
+impl Default for VkCopyImageToBufferInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkRenderingAttachmentInfo {
     pub sType: VkStructureType,
@@ -5715,6 +5735,12 @@ pub type PFN_vkCmdCopyBufferToImage2 = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,
         pCopyBufferToImageInfo: *const VkCopyBufferToImageInfo2,
+    ),
+>;
+pub type PFN_vkCmdCopyImageToBuffer2 = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        pCopyImageToBufferInfo: *const VkCopyImageToBufferInfo2,
     ),
 >;
 pub type PFN_vkCmdBeginRendering = ::core::option::Option<

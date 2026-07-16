@@ -122,6 +122,16 @@ startup compares all five command fields exactly, and rendering consumes the sam
 RTX 3060 Ti without validation or loader messages. Evidence:
 `validation-artifacts/windows-vulkan-20260716-111925.zip`.
 
+The storage-image slice was validated on 2026-07-16. The renderer capability-checks optimal-tiled
+`R8G8B8A8_UNORM`, creates a device-local 8x8 image with storage, transfer-source, and sampled usage,
+and exposes it to the startup compute shader through a storage-image descriptor. The 8x8 workgroup
+writes an exact magenta/cyan texel pattern alongside the existing storage-buffer and indirect-command
+outputs. Explicit synchronization2 transitions make the image writable by compute, readable by copy,
+then readable by the fragment shader; all 256 copied-back bytes are checked before rendering samples
+the same image. The 600-frame run and automated four-extent resize smoke completed on the RTX 3060 Ti
+without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260716-112831.zip`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

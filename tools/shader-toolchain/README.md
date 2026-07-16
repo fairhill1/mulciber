@@ -32,19 +32,22 @@ summary table. Per-scenario compilation or validation failures are findings, not
 errors; the process still exits successfully and preserves the failure text.
 
 Pass `--metal` to also compile both corpora to Metal Shading Language (Naga's MSL backend
-and `slangc -target metal`) and verify that Apple's `metal` compiler accepts every emitted
-module at `-std=metal3.1`. This path requires a macOS host with Xcode's Metal toolchain and
-writes the emitted `.metal` sources, compiled `.air` objects, and `metal_cases` report
-entries alongside the SPIR-V artifacts. Pass `--no-spirv` to skip the SPIR-V path on hosts
-without SPIRV-Tools:
+with explicit resource slots and `slangc -target metal`). Every accepted source is compiled
+at `-std=metal3.1` and linked into a `.metallib`; accepted milestone-2 functions must also
+create native Metal render or compute pipelines. This path requires a macOS host with
+Xcode's Metal toolchain and writes the emitted `.metal` sources, compiled `.air` objects,
+linked `.metallib` files, and `metal_cases` report entries alongside the SPIR-V artifacts.
+Pass `--no-spirv` to skip the SPIR-V path on hosts without SPIRV-Tools:
 
 ```sh
 SLANGC=/path/to/slang/bin/slangc \
   cargo run --manifest-path tools/shader-toolchain/Cargo.toml -- --metal --no-spirv
 ```
 
-Apple-toolchain acceptance is standalone evidence only: no Metal pipeline is created and
-nothing is rendered.
+The harness removes each case's previous outputs before attempting it, so a failed case
+cannot leave a stale artifact in a later evidence archive. Pipeline creation is stronger
+than front-end acceptance, but the harness does not bind resources, dispatch compute work,
+or render; those remain probe responsibilities.
 
 Recorded findings and their milestone implications are written up in
 `docs/shader-toolchain-evaluation.md`.

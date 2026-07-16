@@ -6,9 +6,9 @@
 //! report under `validation-artifacts/shader-toolchain/`.
 //!
 //! Pass `--metal` to also compile both corpora to Metal Shading Language (Naga's MSL
-//! backend and `slangc -target metal`) and verify Apple-toolchain acceptance of every
-//! emitted module through `xcrun metal`; this path requires a macOS host with Xcode's
-//! Metal compiler. Pass `--no-spirv` to skip the SPIR-V path on hosts without SPIRV-Tools.
+//! backend and `slangc -target metal`), link every accepted module, and create native Metal
+//! pipelines for the milestone-2 cases; this path requires a macOS host with Xcode's Metal
+//! compiler. Pass `--no-spirv` to skip the SPIR-V path on hosts without SPIRV-Tools.
 //!
 //! Per-scenario compilation or validation failures are findings, not harness errors: the
 //! run still succeeds and the failure text is preserved in the report.
@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use naga::valid::Capabilities;
+
+mod metal_runtime;
 
 /// SPIR-V consumption environment shared with `vulkan-toolchain.lock.toml`.
 const SPIRV_TARGET_ENV: &str = "vulkan1.4";
@@ -56,7 +58,152 @@ struct Scenario {
     /// size. When this is non-empty, every resource binding in the module must be listed,
     /// because a partial binding map is an error.
     naga_binding_map: &'static [(u32, u32, Option<u32>)],
+    /// Real Metal resource slots used by every entry point that references each binding.
+    naga_msl_bindings: &'static [MslBinding],
+    /// Metal buffer slot containing runtime storage-buffer lengths, when required by Naga.
+    naga_msl_sizes_buffer: Option<u8>,
+    /// Milestone-2 pipeline that must be created after the emitted AIR is linked.
+    metal_pipeline: Option<MetalPipeline>,
 }
+
+#[derive(Clone, Copy)]
+struct MslBinding {
+    group: u32,
+    binding: u32,
+    target: MslBindTarget,
+}
+
+#[derive(Clone, Copy)]
+enum MslBindTarget {
+    Buffer(u8),
+    Texture(u8),
+    Sampler(u8),
+}
+
+#[derive(Clone, Copy)]
+enum MetalPipeline {
+    Render {
+        naga_vertex: &'static str,
+        naga_fragment: &'static str,
+        slang_vertex: &'static str,
+        slang_fragment: &'static str,
+    },
+    Compute {
+        naga_function: &'static str,
+        slang_function: &'static str,
+    },
+}
+
+impl MetalPipeline {
+    fn for_toolchain(self, toolchain: &str) -> metal_runtime::PipelineSpec<'static> {
+        match self {
+            Self::Render {
+                naga_vertex,
+                naga_fragment,
+                slang_vertex,
+                slang_fragment,
+            } => {
+                let (vertex, fragment) = if toolchain == "naga" {
+                    (naga_vertex, naga_fragment)
+                } else {
+                    (slang_vertex, slang_fragment)
+                };
+                metal_runtime::PipelineSpec::Render { vertex, fragment }
+            }
+            Self::Compute {
+                naga_function,
+                slang_function,
+            } => metal_runtime::PipelineSpec::Compute {
+                function: if toolchain == "naga" {
+                    naga_function
+                } else {
+                    slang_function
+                },
+            },
+        }
+    }
+}
+
+const SCENE_MSL_BINDINGS: &[MslBinding] = &[
+    MslBinding {
+        group: 0,
+        binding: 0,
+        target: MslBindTarget::Buffer(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 1,
+        target: MslBindTarget::Texture(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 2,
+        target: MslBindTarget::Sampler(0),
+    },
+];
+
+const COMPUTE_STORAGE_MSL_BINDINGS: &[MslBinding] = &[
+    MslBinding {
+        group: 0,
+        binding: 0,
+        target: MslBindTarget::Buffer(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 1,
+        target: MslBindTarget::Texture(0),
+    },
+];
+
+const INDIRECT_MSL_BINDINGS: &[MslBinding] = &[MslBinding {
+    group: 0,
+    binding: 0,
+    target: MslBindTarget::Buffer(0),
+}];
+
+const BINDLESS_MSL_BINDINGS: &[MslBinding] = &[
+    MslBinding {
+        group: 0,
+        binding: 0,
+        target: MslBindTarget::Buffer(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 1,
+        target: MslBindTarget::Buffer(1),
+    },
+    MslBinding {
+        group: 0,
+        binding: 2,
+        target: MslBindTarget::Buffer(2),
+    },
+];
+
+const RAY_QUERY_MSL_BINDINGS: &[MslBinding] = &[
+    MslBinding {
+        group: 0,
+        binding: 0,
+        target: MslBindTarget::Buffer(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 1,
+        target: MslBindTarget::Buffer(1),
+    },
+];
+
+const RAY_PIPELINE_MSL_BINDINGS: &[MslBinding] = &[
+    MslBinding {
+        group: 0,
+        binding: 0,
+        target: MslBindTarget::Buffer(0),
+    },
+    MslBinding {
+        group: 0,
+        binding: 1,
+        target: MslBindTarget::Buffer(1),
+    },
+];
 
 /// The representative corpus: milestone 2 workload shapes plus milestone 4 capabilities.
 fn scenarios() -> Vec<Scenario> {
@@ -67,6 +214,14 @@ fn scenarios() -> Vec<Scenario> {
             summary: "uniform-driven textured vertex/fragment pair",
             naga_capabilities: Capabilities::empty(),
             naga_binding_map: &[],
+            naga_msl_bindings: SCENE_MSL_BINDINGS,
+            naga_msl_sizes_buffer: None,
+            metal_pipeline: Some(MetalPipeline::Render {
+                naga_vertex: "vs_scene",
+                naga_fragment: "fs_scene",
+                slang_vertex: "vsScene",
+                slang_fragment: "fsScene",
+            }),
         },
         Scenario {
             name: "compute_storage",
@@ -74,6 +229,12 @@ fn scenarios() -> Vec<Scenario> {
             summary: "compute with storage buffer, storage image, workgroup barrier",
             naga_capabilities: Capabilities::empty(),
             naga_binding_map: &[],
+            naga_msl_bindings: COMPUTE_STORAGE_MSL_BINDINGS,
+            naga_msl_sizes_buffer: Some(1),
+            metal_pipeline: Some(MetalPipeline::Compute {
+                naga_function: "cs_storage",
+                slang_function: "csStorage",
+            }),
         },
         Scenario {
             name: "indirect_args",
@@ -81,6 +242,12 @@ fn scenarios() -> Vec<Scenario> {
             summary: "compute-written indexed-indirect draw arguments",
             naga_capabilities: Capabilities::empty(),
             naga_binding_map: &[],
+            naga_msl_bindings: INDIRECT_MSL_BINDINGS,
+            naga_msl_sizes_buffer: None,
+            metal_pipeline: Some(MetalPipeline::Compute {
+                naga_function: "cs_write_indirect",
+                slang_function: "csWriteIndirect",
+            }),
         },
         Scenario {
             name: "bindless",
@@ -89,6 +256,9 @@ fn scenarios() -> Vec<Scenario> {
             naga_capabilities: Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY
                 .union(Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING),
             naga_binding_map: &[(0, 0, Some(64)), (0, 1, None), (0, 2, None)],
+            naga_msl_bindings: BINDLESS_MSL_BINDINGS,
+            naga_msl_sizes_buffer: None,
+            metal_pipeline: None,
         },
         Scenario {
             name: "ray_query",
@@ -96,6 +266,9 @@ fn scenarios() -> Vec<Scenario> {
             summary: "inline ray query from compute",
             naga_capabilities: Capabilities::RAY_QUERY,
             naga_binding_map: &[],
+            naga_msl_bindings: RAY_QUERY_MSL_BINDINGS,
+            naga_msl_sizes_buffer: Some(2),
+            metal_pipeline: None,
         },
         Scenario {
             name: "ray_pipeline",
@@ -103,6 +276,9 @@ fn scenarios() -> Vec<Scenario> {
             summary: "ray generation, miss, any-hit, closest-hit stages",
             naga_capabilities: Capabilities::RAY_TRACING_PIPELINE,
             naga_binding_map: &[],
+            naga_msl_bindings: RAY_PIPELINE_MSL_BINDINGS,
+            naga_msl_sizes_buffer: Some(2),
+            metal_pipeline: None,
         },
         Scenario {
             name: "mesh",
@@ -110,6 +286,9 @@ fn scenarios() -> Vec<Scenario> {
             summary: "task + mesh shading pipeline",
             naga_capabilities: Capabilities::MESH_SHADER,
             naga_binding_map: &[],
+            naga_msl_bindings: &[],
+            naga_msl_sizes_buffer: None,
+            metal_pipeline: None,
         },
     ]
 }
@@ -167,6 +346,13 @@ struct MetalCaseResult {
     /// `xcrun metal -c -std=metal3.1` accepted the emitted MSL.
     air_compiled: bool,
     metal_diagnostics: String,
+    /// `xcrun metallib` linked the AIR object into a loadable Metal library.
+    metallib_linked: bool,
+    metallib_diagnostics: String,
+    /// Milestone-2 cases continue through native Metal pipeline creation.
+    pipeline_attempted: bool,
+    pipeline_created: bool,
+    pipeline_diagnostics: String,
     entry_points: Vec<String>,
 }
 
@@ -183,8 +369,20 @@ impl MetalCaseResult {
             msl_bytes: 0,
             air_compiled: false,
             metal_diagnostics: String::new(),
+            metallib_linked: false,
+            metallib_diagnostics: String::new(),
+            pipeline_attempted: false,
+            pipeline_created: false,
+            pipeline_diagnostics: String::new(),
             entry_points: Vec::new(),
         }
+    }
+
+    fn passed(&self) -> bool {
+        self.compiled
+            && self.air_compiled
+            && self.metallib_linked
+            && (!self.pipeline_attempted || self.pipeline_created)
     }
 }
 
@@ -255,7 +453,7 @@ fn main() {
                 "{}.{}",
                 NAGA_MSL_LANG_VERSION.0, NAGA_MSL_LANG_VERSION.1
             ),
-            "notes": "library front::wgsl + back::spv/back::msl, default writer options otherwise",
+            "notes": "library front::wgsl + back::spv/back::msl; MSL uses explicit per-entry-point resource slots",
         },
         "slangc": {
             "version": slangc_version.trim(),
@@ -270,6 +468,7 @@ fn main() {
         toolchains["metal"] = serde_json::json!({
             "version": version.lines().next().unwrap_or(""),
             "invocation": format!("xcrun metal -c <source> -std={METAL_STD} -o <output>"),
+            "metallib_invocation": "xcrun metallib <air> -o <metallib>",
         });
     }
     let report = serde_json::json!({
@@ -277,6 +476,8 @@ fn main() {
         "targets": {
             "spirv": run_spirv,
             "metal": run_metal,
+            "metal_api_validation": env::var_os("MTL_DEBUG_LAYER")
+                .is_some_and(|value| value == "1"),
         },
         "toolchains": toolchains,
         "cases": results.iter().map(case_json).collect::<Vec<_>>(),
@@ -328,6 +529,11 @@ fn metal_case_json(case: &MetalCaseResult) -> serde_json::Value {
         "msl_bytes": case.msl_bytes,
         "air_compiled": case.air_compiled,
         "metal_diagnostics": case.metal_diagnostics,
+        "metallib_linked": case.metallib_linked,
+        "metallib_diagnostics": case.metallib_diagnostics,
+        "pipeline_attempted": case.pipeline_attempted,
+        "pipeline_created": case.pipeline_created,
+        "pipeline_diagnostics": case.pipeline_diagnostics,
         "entry_points": case.entry_points,
     })
 }
@@ -337,6 +543,7 @@ fn run_naga_case(scenario: &Scenario, corpus_dir: &Path, out_dir: &Path) -> Case
     let relative = format!("shaders/wgsl/{}.wgsl", scenario.name);
     let mut case = CaseResult::new("naga", scenario, relative.clone());
     let source_path = corpus_dir.join(format!("wgsl/{}.wgsl", scenario.name));
+    remove_case_artifacts("naga", scenario.name, out_dir, &["spv"]);
     let source = fs::read_to_string(&source_path)
         .unwrap_or_else(|error| panic!("could not read {}: {error}", source_path.display()));
 
@@ -403,7 +610,7 @@ fn run_slang_case(
     let mut case = CaseResult::new("slangc", scenario, relative);
     let source_path = corpus_dir.join(format!("slang/{}.slang", scenario.name));
     let spv_path = out_dir.join(format!("slangc-{}.spv", scenario.name));
-    let _ = fs::remove_file(&spv_path);
+    remove_case_artifacts("slangc", scenario.name, out_dir, &["spv"]);
 
     let output = Command::new(slangc)
         .arg(&source_path)
@@ -431,6 +638,12 @@ fn run_naga_metal_case(scenario: &Scenario, corpus_dir: &Path, out_dir: &Path) -
     let relative = format!("shaders/wgsl/{}.wgsl", scenario.name);
     let mut case = MetalCaseResult::new("naga", scenario, relative);
     let source_path = corpus_dir.join(format!("wgsl/{}.wgsl", scenario.name));
+    remove_case_artifacts(
+        "naga",
+        scenario.name,
+        out_dir,
+        &["metal", "air", "metallib"],
+    );
     let source = fs::read_to_string(&source_path)
         .unwrap_or_else(|error| panic!("could not read {}: {error}", source_path.display()));
 
@@ -453,12 +666,47 @@ fn run_naga_metal_case(scenario: &Scenario, corpus_dir: &Path, out_dir: &Path) -
         }
     };
 
-    // `fake_missing_bindings` keeps this an emission-validity evaluation rather than a
-    // binding-model design: Naga fabricates Metal slot indices instead of requiring a
-    // per-entry-point resource map.
+    let resources = scenario
+        .naga_msl_bindings
+        .iter()
+        .map(|binding| {
+            let target = match binding.target {
+                MslBindTarget::Buffer(slot) => naga::back::msl::BindTarget {
+                    buffer: Some(slot),
+                    ..Default::default()
+                },
+                MslBindTarget::Texture(slot) => naga::back::msl::BindTarget {
+                    texture: Some(slot),
+                    ..Default::default()
+                },
+                MslBindTarget::Sampler(slot) => naga::back::msl::BindTarget {
+                    sampler: Some(naga::back::msl::BindSamplerTarget::Resource(slot)),
+                    ..Default::default()
+                },
+            };
+            (
+                naga::ResourceBinding {
+                    group: binding.group,
+                    binding: binding.binding,
+                },
+                target,
+            )
+        })
+        .collect();
+    let entry_point_resources = naga::back::msl::EntryPointResources {
+        resources,
+        sizes_buffer: scenario.naga_msl_sizes_buffer,
+        ..Default::default()
+    };
+    let per_entry_point_map = module
+        .entry_points
+        .iter()
+        .map(|entry| (entry.name.clone(), entry_point_resources.clone()))
+        .collect();
     let options = naga::back::msl::Options {
         lang_version: NAGA_MSL_LANG_VERSION,
-        fake_missing_bindings: true,
+        per_entry_point_map,
+        fake_missing_bindings: false,
         ..naga::back::msl::Options::default()
     };
     let pipeline_options = naga::back::msl::PipelineOptions::default();
@@ -488,7 +736,7 @@ fn run_naga_metal_case(scenario: &Scenario, corpus_dir: &Path, out_dir: &Path) -
             return case;
         }
     };
-    finish_metal_case(&mut case, &msl, out_dir);
+    finish_metal_case(&mut case, scenario, &msl, out_dir);
     case
 }
 
@@ -503,7 +751,12 @@ fn run_slang_metal_case(
     let mut case = MetalCaseResult::new("slangc", scenario, relative);
     let source_path = corpus_dir.join(format!("slang/{}.slang", scenario.name));
     let msl_path = out_dir.join(format!("slangc-{}.metal", scenario.name));
-    let _ = fs::remove_file(&msl_path);
+    remove_case_artifacts(
+        "slangc",
+        scenario.name,
+        out_dir,
+        &["metal", "air", "metallib"],
+    );
 
     let output = Command::new(slangc)
         .arg(&source_path)
@@ -522,12 +775,12 @@ fn run_slang_metal_case(
         case.diagnostics += "\nslangc reported success but wrote no output";
         return case;
     };
-    finish_metal_case(&mut case, &msl, out_dir);
+    finish_metal_case(&mut case, scenario, &msl, out_dir);
     case
 }
 
 /// Persists the MSL source, runs Apple's `metal` compiler on it, and records entry points.
-fn finish_metal_case(case: &mut MetalCaseResult, msl: &str, out_dir: &Path) {
+fn finish_metal_case(case: &mut MetalCaseResult, scenario: &Scenario, msl: &str, out_dir: &Path) {
     case.compiled = true;
     case.msl_bytes = msl.len();
     let msl_path = out_dir.join(format!("{}-{}.metal", case.toolchain, case.scenario));
@@ -561,10 +814,12 @@ fn finish_metal_case(case: &mut MetalCaseResult, msl: &str, out_dir: &Path) {
     }
 
     let air_path = out_dir.join(format!("{}-{}.air", case.toolchain, case.scenario));
-    let _ = fs::remove_file(&air_path);
+    let module_cache = out_dir.join("metal-module-cache");
+    fs::create_dir_all(&module_cache).expect("could not create the Metal module cache");
     let output = Command::new("xcrun")
-        .args(["metal", "-c"])
+        .args(["-sdk", "macosx", "metal", "-c"])
         .arg(&msl_path)
+        .arg(format!("-fmodules-cache-path={}", module_cache.display()))
         .arg(format!("-std={METAL_STD}"))
         .arg("-o")
         .arg(&air_path)
@@ -572,6 +827,43 @@ fn finish_metal_case(case: &mut MetalCaseResult, msl: &str, out_dir: &Path) {
         .expect("could not run xcrun metal");
     case.air_compiled = output.status.success();
     case.metal_diagnostics = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !case.air_compiled {
+        return;
+    }
+
+    let metallib_path = out_dir.join(format!("{}-{}.metallib", case.toolchain, case.scenario));
+    let output = Command::new("xcrun")
+        .args(["-sdk", "macosx", "metallib"])
+        .arg(&air_path)
+        .arg("-o")
+        .arg(&metallib_path)
+        .output()
+        .expect("could not run xcrun metallib");
+    case.metallib_linked = output.status.success();
+    case.metallib_diagnostics = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !case.metallib_linked {
+        return;
+    }
+
+    if let Some(pipeline) = scenario.metal_pipeline {
+        case.pipeline_attempted = true;
+        match metal_runtime::create_pipeline(&metallib_path, pipeline.for_toolchain(case.toolchain))
+        {
+            Ok(()) => case.pipeline_created = true,
+            Err(error) => case.pipeline_diagnostics = error,
+        }
+    }
+}
+
+fn remove_case_artifacts(toolchain: &str, scenario: &str, out_dir: &Path, extensions: &[&str]) {
+    for extension in extensions {
+        let path = out_dir.join(format!("{toolchain}-{scenario}.{extension}"));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("could not remove stale {}: {error}", path.display()),
+        }
+    }
 }
 
 /// Persists the SPIR-V blob, then records validation and disassembly facts on the case.
@@ -703,10 +995,16 @@ fn print_metal_summary(results: &[MetalCaseResult], report_path: &Path) {
         results.len()
     );
     for case in results {
-        let status = if case.compiled && case.air_compiled {
+        let status = if case.passed() {
             "ok"
         } else if case.compiled {
-            "REJECTED"
+            if !case.air_compiled {
+                "REJECTED"
+            } else if !case.metallib_linked {
+                "LINKFAIL"
+            } else {
+                "PIPEFAIL"
+            }
         } else {
             "FAILED"
         };
@@ -725,12 +1023,17 @@ fn print_metal_summary(results: &[MetalCaseResult], report_path: &Path) {
             for line in case.metal_diagnostics.lines().take(4) {
                 println!("          {line}");
             }
+        } else if !case.metallib_linked {
+            for line in case.metallib_diagnostics.lines().take(4) {
+                println!("          {line}");
+            }
+        } else if case.pipeline_attempted && !case.pipeline_created {
+            for line in case.pipeline_diagnostics.lines().take(4) {
+                println!("          {line}");
+            }
         }
     }
-    let failed = results
-        .iter()
-        .filter(|case| !(case.compiled && case.air_compiled))
-        .count();
+    let failed = results.iter().filter(|case| !case.passed()).count();
     println!(
         "{} of {} Metal cases passed; report: {}",
         results.len() - failed,

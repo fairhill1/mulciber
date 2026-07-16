@@ -58,8 +58,16 @@ function Read-Yes {
         [string]$Prompt
     )
 
-    $Answer = Read-Host $Prompt
-    return $Answer -match "^(y|yes)$"
+    while ($true) {
+        $Answer = Read-Host $Prompt
+        if ($Answer -match "^(?i:y|yes)$") {
+            return $true
+        }
+        if ($Answer -match "^(?i:n|no)$") {
+            return $false
+        }
+        Write-Host "Please answer only 'yes' or 'no'; descriptive details belong in the notes prompt." -ForegroundColor Yellow
+    }
 }
 
 function Write-SystemReport {

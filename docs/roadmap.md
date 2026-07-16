@@ -21,8 +21,9 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [ ] AppKit window with a `CAMetalLayer` and Metal triangle (implemented, but physical resize,
   minimize/restore, maximize/zoom, display-change, and shutdown evidence has not been recorded).
 - [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
-  an Nvidia RTX 3060 Ti; live resize is functional but not yet smoothly frame-paced, and
-  multi-display and GTX 1060-class baseline coverage remain outstanding).
+  an Nvidia RTX 3060 Ti; live resize is functional but appears low-frame-rate or delayed, and its
+  cadence has not been measured; multi-display and GTX 1060-class baseline coverage remain
+  outstanding).
 - [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle.
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle.
 - [ ] Replace conventional device-idle swapchain retirement with tracked presentation completion

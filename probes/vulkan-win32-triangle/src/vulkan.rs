@@ -16,6 +16,29 @@ const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 3],
+}
+
+const TRIANGLE_VERTICES: [Vertex; 3] = [
+    Vertex {
+        position: [0.00, -0.65],
+        color: [1.00, 0.20, 0.15],
+    },
+    Vertex {
+        position: [-0.62, 0.45],
+        color: [0.15, 0.85, 0.35],
+    },
+    Vertex {
+        position: [0.62, 0.45],
+        color: [0.20, 0.40, 1.00],
+    },
+];
+const TRIANGLE_INDICES: [u16; 3] = [0, 1, 2];
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn FreeLibrary(module: *mut c_void) -> i32;
@@ -387,6 +410,7 @@ struct InstanceFns {
     destroy_surface: vk::PFN_vkDestroySurfaceKHR,
     enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
     get_physical_device_properties: vk::PFN_vkGetPhysicalDeviceProperties,
+    get_physical_device_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties,
     get_physical_device_features2: vk::PFN_vkGetPhysicalDeviceFeatures2,
     get_queue_family_properties: vk::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
     get_surface_support: vk::PFN_vkGetPhysicalDeviceSurfaceSupportKHR,
@@ -413,6 +437,7 @@ impl InstanceFns {
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
+            get_physical_device_memory_properties: load!(c"vkGetPhysicalDeviceMemoryProperties"),
             get_physical_device_features2: load!(c"vkGetPhysicalDeviceFeatures2"),
             get_queue_family_properties: load!(c"vkGetPhysicalDeviceQueueFamilyProperties"),
             get_surface_support: load!(c"vkGetPhysicalDeviceSurfaceSupportKHR"),
@@ -598,6 +623,14 @@ struct DeviceFns {
     destroy_device: vk::PFN_vkDestroyDevice,
     get_device_queue: vk::PFN_vkGetDeviceQueue,
     device_wait_idle: vk::PFN_vkDeviceWaitIdle,
+    create_buffer: vk::PFN_vkCreateBuffer,
+    destroy_buffer: vk::PFN_vkDestroyBuffer,
+    get_buffer_memory_requirements: vk::PFN_vkGetBufferMemoryRequirements,
+    allocate_memory: vk::PFN_vkAllocateMemory,
+    free_memory: vk::PFN_vkFreeMemory,
+    bind_buffer_memory: vk::PFN_vkBindBufferMemory,
+    map_memory: vk::PFN_vkMapMemory,
+    unmap_memory: vk::PFN_vkUnmapMemory,
     create_swapchain: vk::PFN_vkCreateSwapchainKHR,
     destroy_swapchain: vk::PFN_vkDestroySwapchainKHR,
     get_swapchain_images: vk::PFN_vkGetSwapchainImagesKHR,
@@ -621,9 +654,11 @@ struct DeviceFns {
     cmd_begin_rendering: vk::PFN_vkCmdBeginRendering,
     cmd_end_rendering: vk::PFN_vkCmdEndRendering,
     cmd_bind_pipeline: vk::PFN_vkCmdBindPipeline,
+    cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
+    cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
-    cmd_draw: vk::PFN_vkCmdDraw,
+    cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
     create_semaphore: vk::PFN_vkCreateSemaphore,
     destroy_semaphore: vk::PFN_vkDestroySemaphore,
     create_fence: vk::PFN_vkCreateFence,
@@ -655,6 +690,14 @@ impl DeviceFns {
             destroy_device: load!(c"vkDestroyDevice"),
             get_device_queue: load!(c"vkGetDeviceQueue"),
             device_wait_idle: load!(c"vkDeviceWaitIdle"),
+            create_buffer: load!(c"vkCreateBuffer"),
+            destroy_buffer: load!(c"vkDestroyBuffer"),
+            get_buffer_memory_requirements: load!(c"vkGetBufferMemoryRequirements"),
+            allocate_memory: load!(c"vkAllocateMemory"),
+            free_memory: load!(c"vkFreeMemory"),
+            bind_buffer_memory: load!(c"vkBindBufferMemory"),
+            map_memory: load!(c"vkMapMemory"),
+            unmap_memory: load!(c"vkUnmapMemory"),
             create_swapchain: load!(c"vkCreateSwapchainKHR"),
             destroy_swapchain: load!(c"vkDestroySwapchainKHR"),
             get_swapchain_images: load!(c"vkGetSwapchainImagesKHR"),
@@ -678,9 +721,11 @@ impl DeviceFns {
             cmd_begin_rendering: load!(c"vkCmdBeginRendering"),
             cmd_end_rendering: load!(c"vkCmdEndRendering"),
             cmd_bind_pipeline: load!(c"vkCmdBindPipeline"),
+            cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
+            cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
-            cmd_draw: load!(c"vkCmdDraw"),
+            cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
             create_fence: load!(c"vkCreateFence"),
@@ -1080,6 +1125,12 @@ struct RetiredSwapchain {
     present_pending: Vec<bool>,
 }
 
+#[derive(Default)]
+struct GpuBuffer {
+    handle: vk::VkBuffer,
+    memory: vk::VkDeviceMemory,
+}
+
 struct Renderer {
     device: DeviceContext,
     swapchain: vk::VkSwapchainKHR,
@@ -1091,6 +1142,8 @@ struct Renderer {
     pipeline: vk::VkPipeline,
     command_pool: vk::VkCommandPool,
     command_buffer: vk::VkCommandBuffer,
+    vertex_buffer: GpuBuffer,
+    index_buffer: GpuBuffer,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
@@ -1117,6 +1170,8 @@ impl Renderer {
             pipeline: ptr::null_mut(),
             command_pool: ptr::null_mut(),
             command_buffer: ptr::null_mut(),
+            vertex_buffer: GpuBuffer::default(),
+            index_buffer: GpuBuffer::default(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
             present_fences: Vec::new(),
@@ -1133,6 +1188,7 @@ impl Renderer {
             println!("Live resize timing trace enabled");
         }
         renderer.create_frame_resources()?;
+        renderer.create_geometry_buffers()?;
         let (width, height) = window
             .client_extent()
             .map_err(|error| ProbeError(error.to_string()))?;
@@ -1241,6 +1297,192 @@ impl Renderer {
             )?;
         }
         Ok(())
+    }
+
+    fn create_geometry_buffers(&mut self) -> Result<(), ProbeError> {
+        self.vertex_buffer = self.create_static_buffer(
+            // SAFETY: `Vertex` is `repr(C)`, contains only initialized `f32` arrays, and its tested
+            // 20-byte layout has no padding.
+            unsafe { slice_bytes(&TRIANGLE_VERTICES) },
+            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
+            "vertex",
+        )?;
+        self.index_buffer = self.create_static_buffer(
+            // SAFETY: `u16` has no padding and every element is initialized.
+            unsafe { slice_bytes(&TRIANGLE_INDICES) },
+            vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT as u32,
+            "index",
+        )?;
+        println!("Geometry: host-visible vertex/index buffers with indexed drawing");
+        Ok(())
+    }
+
+    fn create_static_buffer(
+        &self,
+        bytes: &[u8],
+        usage: vk::VkBufferUsageFlags,
+        description: &str,
+    ) -> Result<GpuBuffer, ProbeError> {
+        let size = u64::try_from(bytes.len()).expect("buffer byte length fits u64");
+        let info = vk::VkBufferCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            size,
+            usage,
+            sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+            ..Default::default()
+        };
+        let mut buffer = GpuBuffer::default();
+        check(
+            // SAFETY: The device/create info are live and output storage is writable.
+            unsafe {
+                self.device
+                    .functions
+                    .create_buffer
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const info,
+                    ptr::null(),
+                    &raw mut buffer.handle,
+                )
+            },
+            &format!("vkCreateBuffer for {description} data"),
+        )?;
+
+        let result = self.allocate_and_upload_buffer(&mut buffer, bytes, description);
+        if let Err(error) = result {
+            // SAFETY: The partially constructed buffer and memory are owned here and not in use.
+            unsafe { self.destroy_buffer(&mut buffer) };
+            return Err(error);
+        }
+        Ok(buffer)
+    }
+
+    fn allocate_and_upload_buffer(
+        &self,
+        buffer: &mut GpuBuffer,
+        bytes: &[u8],
+        description: &str,
+    ) -> Result<(), ProbeError> {
+        let mut requirements = vk::VkMemoryRequirements::default();
+        // SAFETY: The buffer is live and requirements storage is writable.
+        unsafe {
+            self.device
+                .functions
+                .get_buffer_memory_requirements
+                .expect("loaded function")(
+                self.device.handle,
+                buffer.handle,
+                &raw mut requirements,
+            );
+        }
+        let mut properties = vk::VkPhysicalDeviceMemoryProperties::default();
+        // SAFETY: The selected adapter is live and properties storage is writable.
+        unsafe {
+            self.device
+                .instance
+                .functions
+                .get_physical_device_memory_properties
+                .expect("loaded function")(
+                self.device.adapter.handle, &raw mut properties
+            );
+        }
+        let required_flags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32;
+        let memory_type = find_memory_type(
+            &properties,
+            requirements.memoryTypeBits,
+            required_flags,
+        )
+        .ok_or_else(|| {
+            ProbeError(format!(
+                "adapter exposes no host-visible coherent memory for the {description} buffer"
+            ))
+        })?;
+        let allocation = vk::VkMemoryAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: requirements.size,
+            memoryTypeIndex: memory_type,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: Allocation info and output memory storage are valid.
+            unsafe {
+                self.device
+                    .functions
+                    .allocate_memory
+                    .expect("loaded function")(
+                    self.device.handle,
+                    &raw const allocation,
+                    ptr::null(),
+                    &raw mut buffer.memory,
+                )
+            },
+            &format!("vkAllocateMemory for {description} data"),
+        )?;
+        check(
+            // SAFETY: The buffer and allocation share compatible requirements at offset zero.
+            unsafe {
+                self.device
+                    .functions
+                    .bind_buffer_memory
+                    .expect("loaded function")(
+                    self.device.handle, buffer.handle, buffer.memory, 0
+                )
+            },
+            &format!("vkBindBufferMemory for {description} data"),
+        )?;
+
+        let mut mapped = ptr::null_mut();
+        check(
+            // SAFETY: The allocation is host-visible and the requested range is in bounds.
+            unsafe {
+                self.device.functions.map_memory.expect("loaded function")(
+                    self.device.handle,
+                    buffer.memory,
+                    0,
+                    u64::try_from(bytes.len()).expect("buffer byte length fits u64"),
+                    0,
+                    &raw mut mapped,
+                )
+            },
+            &format!("vkMapMemory for {description} data"),
+        )?;
+        // SAFETY: Vulkan returned a writable mapping of at least `bytes.len()` bytes. The selected
+        // memory is host coherent, so unmapping makes the copied bytes visible without a flush.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
+            self.device.functions.unmap_memory.expect("loaded function")(
+                self.device.handle,
+                buffer.memory,
+            );
+        }
+        Ok(())
+    }
+
+    unsafe fn destroy_buffer(&self, buffer: &mut GpuBuffer) {
+        if !buffer.handle.is_null() {
+            // SAFETY: The buffer is owned by this renderer and no longer in GPU use.
+            unsafe {
+                self.device
+                    .functions
+                    .destroy_buffer
+                    .expect("loaded function")(
+                    self.device.handle, buffer.handle, ptr::null()
+                );
+            }
+            buffer.handle = ptr::null_mut();
+        }
+        if !buffer.memory.is_null() {
+            // SAFETY: All objects bound to the allocation have been destroyed.
+            unsafe {
+                self.device.functions.free_memory.expect("loaded function")(
+                    self.device.handle,
+                    buffer.memory,
+                    ptr::null(),
+                );
+            }
+            buffer.memory = ptr::null_mut();
+        }
     }
 
     fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
@@ -1667,8 +1909,14 @@ impl Renderer {
             shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, vertex),
             shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
         ];
+        let (binding, attributes) = vertex_input_descriptions();
         let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            vertexBindingDescriptionCount: 1,
+            pVertexBindingDescriptions: &raw const binding,
+            vertexAttributeDescriptionCount: u32::try_from(attributes.len())
+                .expect("vertex attribute count fits u32"),
+            pVertexAttributeDescriptions: attributes.as_ptr(),
             ..Default::default()
         };
         let input_assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
@@ -2177,10 +2425,34 @@ impl Renderer {
                 .expect("loaded function")(
                 self.command_buffer, 0, 1, &raw const render_area
             );
-            self.device.functions.cmd_draw.expect("loaded function")(
+            let vertex_offset: vk::VkDeviceSize = 0;
+            self.device
+                .functions
+                .cmd_bind_vertex_buffers
+                .expect("loaded function")(
                 self.command_buffer,
-                3,
+                0,
                 1,
+                &raw const self.vertex_buffer.handle,
+                &raw const vertex_offset,
+            );
+            self.device
+                .functions
+                .cmd_bind_index_buffer
+                .expect("loaded function")(
+                self.command_buffer,
+                self.index_buffer.handle,
+                0,
+                vk::VK_INDEX_TYPE_UINT16,
+            );
+            self.device
+                .functions
+                .cmd_draw_indexed
+                .expect("loaded function")(
+                self.command_buffer,
+                u32::try_from(TRIANGLE_INDICES.len()).expect("index count fits u32"),
+                1,
+                0,
                 0,
                 0,
             );
@@ -2371,6 +2643,13 @@ impl Drop for Renderer {
     fn drop(&mut self) {
         let _ = self.finish();
         self.destroy_swapchain_resources();
+        let mut vertex_buffer = mem::take(&mut self.vertex_buffer);
+        let mut index_buffer = mem::take(&mut self.index_buffer);
+        // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
+        unsafe {
+            self.destroy_buffer(&mut vertex_buffer);
+            self.destroy_buffer(&mut index_buffer);
+        }
         // SAFETY: Frame resources are owned by this renderer and destroyed once after GPU idle.
         unsafe {
             if !self.frame_fence.is_null() {
@@ -2479,6 +2758,33 @@ fn shader_stage(
     }
 }
 
+fn vertex_input_descriptions() -> (
+    vk::VkVertexInputBindingDescription,
+    [vk::VkVertexInputAttributeDescription; 2],
+) {
+    let binding = vk::VkVertexInputBindingDescription {
+        binding: 0,
+        stride: u32::try_from(mem::size_of::<Vertex>()).expect("vertex stride fits u32"),
+        inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    let attributes = [
+        vk::VkVertexInputAttributeDescription {
+            location: 0,
+            binding: 0,
+            format: vk::VK_FORMAT_R32G32_SFLOAT,
+            offset: 0,
+        },
+        vk::VkVertexInputAttributeDescription {
+            location: 1,
+            binding: 0,
+            format: vk::VK_FORMAT_R32G32B32_SFLOAT,
+            offset: u32::try_from(mem::size_of::<[f32; 2]>())
+                .expect("vertex attribute offset fits u32"),
+        },
+    ];
+    (binding, attributes)
+}
+
 fn color_subresource_range() -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
@@ -2487,6 +2793,25 @@ fn color_subresource_range() -> vk::VkImageSubresourceRange {
         baseArrayLayer: 0,
         layerCount: 1,
     }
+}
+
+unsafe fn slice_bytes<T>(values: &[T]) -> &[u8] {
+    let byte_len = mem::size_of_val(values);
+    // SAFETY: The caller guarantees every byte in each value is initialized. The returned byte
+    // slice has the same lifetime and exact extent as the input slice.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), byte_len) }
+}
+
+fn find_memory_type(
+    properties: &vk::VkPhysicalDeviceMemoryProperties,
+    compatible_bits: u32,
+    required_flags: u32,
+) -> Option<u32> {
+    (0..properties.memoryTypeCount).find(|&index| {
+        let compatible = compatible_bits & (1_u32 << index) != 0;
+        let flags = properties.memoryTypes[index as usize].propertyFlags;
+        compatible && flags & required_flags == required_flags
+    })
 }
 
 fn spirv_words(bytes: &[u8]) -> Result<Vec<u32>, ProbeError> {
@@ -2613,5 +2938,36 @@ mod tests {
         .expect("one format");
         assert_eq!(format.format, vk::VK_FORMAT_B8G8R8A8_SRGB);
         assert_eq!(format.colorSpace, vk::VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+    }
+
+    #[test]
+    fn memory_type_requires_compatibility_and_all_flags() {
+        let mut properties = vk::VkPhysicalDeviceMemoryProperties {
+            memoryTypeCount: 3,
+            ..Default::default()
+        };
+        properties.memoryTypes[0].propertyFlags = vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT as u32;
+        properties.memoryTypes[1].propertyFlags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+            as u32;
+        properties.memoryTypes[2].propertyFlags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            | vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            as u32;
+        let required = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32;
+
+        assert_eq!(find_memory_type(&properties, 0b111, required), Some(1));
+        assert_eq!(find_memory_type(&properties, 0b100, required), Some(2));
+        assert_eq!(find_memory_type(&properties, 0b001, required), None);
+    }
+
+    #[test]
+    fn vertex_layout_matches_pipeline_descriptions() {
+        let (binding, attributes) = vertex_input_descriptions();
+        assert_eq!(mem::size_of::<Vertex>(), 20);
+        assert_eq!(binding.stride, 20);
+        assert_eq!(attributes[0].offset, 0);
+        assert_eq!(attributes[1].offset, 8);
     }
 }

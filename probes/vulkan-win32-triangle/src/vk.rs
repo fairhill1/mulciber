@@ -68,6 +68,12 @@ pub struct VkFence_T {
 pub type VkFence = *mut VkFence_T;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkDeviceMemory_T {
+    _unused: [u8; 0],
+}
+pub type VkDeviceMemory = *mut VkDeviceMemory_T;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkBuffer_T {
     _unused: [u8; 0],
 }
@@ -2840,6 +2846,15 @@ pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: VkCommandBufferLevel = 0;
 pub const VK_COMMAND_BUFFER_LEVEL_SECONDARY: VkCommandBufferLevel = 1;
 pub const VK_COMMAND_BUFFER_LEVEL_MAX_ENUM: VkCommandBufferLevel = 2147483647;
 pub type VkCommandBufferLevel = ::core::ffi::c_int;
+pub const VK_INDEX_TYPE_UINT16: VkIndexType = 0;
+pub const VK_INDEX_TYPE_UINT32: VkIndexType = 1;
+pub const VK_INDEX_TYPE_UINT8: VkIndexType = 1000265000;
+pub const VK_INDEX_TYPE_NONE_KHR: VkIndexType = 1000165000;
+pub const VK_INDEX_TYPE_NONE_NV: VkIndexType = 1000165000;
+pub const VK_INDEX_TYPE_UINT8_EXT: VkIndexType = 1000265000;
+pub const VK_INDEX_TYPE_UINT8_KHR: VkIndexType = 1000265000;
+pub const VK_INDEX_TYPE_MAX_ENUM: VkIndexType = 2147483647;
+pub type VkIndexType = ::core::ffi::c_int;
 pub const VK_COMPARE_OP_NEVER: VkCompareOp = 0;
 pub const VK_COMPARE_OP_LESS: VkCompareOp = 1;
 pub const VK_COMPARE_OP_EQUAL: VkCompareOp = 2;
@@ -3199,6 +3214,7 @@ pub type VkShaderStageFlagBits = ::core::ffi::c_int;
 pub type VkShaderStageFlags = VkFlags;
 pub type VkDeviceCreateFlags = VkFlags;
 pub type VkDeviceQueueCreateFlags = VkFlags;
+pub type VkMemoryMapFlags = VkFlags;
 pub const VK_IMAGE_ASPECT_COLOR_BIT: VkImageAspectFlagBits = 1;
 pub const VK_IMAGE_ASPECT_DEPTH_BIT: VkImageAspectFlagBits = 2;
 pub const VK_IMAGE_ASPECT_STENCIL_BIT: VkImageAspectFlagBits = 4;
@@ -3224,6 +3240,42 @@ pub type VkFenceCreateFlagBits = ::core::ffi::c_int;
 pub type VkFenceCreateFlags = VkFlags;
 pub type VkSemaphoreCreateFlags = VkFlags;
 pub type VkQueryPipelineStatisticFlags = VkFlags;
+pub type VkBufferCreateFlags = VkFlags;
+pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: VkBufferUsageFlagBits = 1;
+pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: VkBufferUsageFlagBits = 2;
+pub const VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT: VkBufferUsageFlagBits = 4;
+pub const VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT: VkBufferUsageFlagBits = 8;
+pub const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: VkBufferUsageFlagBits = 16;
+pub const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: VkBufferUsageFlagBits = 32;
+pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: VkBufferUsageFlagBits = 64;
+pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: VkBufferUsageFlagBits = 128;
+pub const VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT: VkBufferUsageFlagBits = 256;
+pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: VkBufferUsageFlagBits = 131072;
+pub const VK_BUFFER_USAGE_VIDEO_DECODE_SRC_BIT_KHR: VkBufferUsageFlagBits = 8192;
+pub const VK_BUFFER_USAGE_VIDEO_DECODE_DST_BIT_KHR: VkBufferUsageFlagBits = 16384;
+pub const VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT: VkBufferUsageFlagBits = 2048;
+pub const VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT: VkBufferUsageFlagBits = 4096;
+pub const VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT: VkBufferUsageFlagBits = 512;
+pub const VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT: VkBufferUsageFlagBits = 268435456;
+pub const VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR:
+    VkBufferUsageFlagBits = 524288;
+pub const VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR: VkBufferUsageFlagBits = 1048576;
+pub const VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR: VkBufferUsageFlagBits = 1024;
+pub const VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR: VkBufferUsageFlagBits = 32768;
+pub const VK_BUFFER_USAGE_VIDEO_ENCODE_SRC_BIT_KHR: VkBufferUsageFlagBits = 65536;
+pub const VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT: VkBufferUsageFlagBits = 2097152;
+pub const VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT: VkBufferUsageFlagBits = 4194304;
+pub const VK_BUFFER_USAGE_PUSH_DESCRIPTORS_DESCRIPTOR_BUFFER_BIT_EXT: VkBufferUsageFlagBits =
+    67108864;
+pub const VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT: VkBufferUsageFlagBits = 8388608;
+pub const VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT: VkBufferUsageFlagBits = 16777216;
+pub const VK_BUFFER_USAGE_TILE_MEMORY_BIT_QCOM: VkBufferUsageFlagBits = 134217728;
+pub const VK_BUFFER_USAGE_RAY_TRACING_BIT_NV: VkBufferUsageFlagBits = 1024;
+pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_EXT: VkBufferUsageFlagBits = 131072;
+pub const VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR: VkBufferUsageFlagBits = 131072;
+pub const VK_BUFFER_USAGE_FLAG_BITS_MAX_ENUM: VkBufferUsageFlagBits = 2147483647;
+pub type VkBufferUsageFlagBits = ::core::ffi::c_int;
+pub type VkBufferUsageFlags = VkFlags;
 pub type VkImageViewCreateFlags = VkFlags;
 pub type VkDependencyFlags = VkFlags;
 pub const VK_COMMAND_POOL_CREATE_TRANSIENT_BIT: VkCommandPoolCreateFlagBits = 1;
@@ -3693,6 +3745,30 @@ impl Default for VkLayerProperties {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkMemoryAllocateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub allocationSize: VkDeviceSize,
+    pub memoryTypeIndex: u32,
+}
+impl Default for VkMemoryAllocateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkMemoryRequirements {
+    pub size: VkDeviceSize,
+    pub alignment: VkDeviceSize,
+    pub memoryTypeBits: u32,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkFenceCreateInfo {
     pub sType: VkStructureType,
     pub pNext: *const ::core::ffi::c_void,
@@ -3715,6 +3791,27 @@ pub struct VkSemaphoreCreateInfo {
     pub flags: VkSemaphoreCreateFlags,
 }
 impl Default for VkSemaphoreCreateInfo {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkBufferCreateInfo {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkBufferCreateFlags,
+    pub size: VkDeviceSize,
+    pub usage: VkBufferUsageFlags,
+    pub sharingMode: VkSharingMode,
+    pub queueFamilyIndexCount: u32,
+    pub pQueueFamilyIndices: *const u32,
+}
+impl Default for VkBufferCreateInfo {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {
@@ -4356,6 +4453,48 @@ pub type PFN_vkGetDeviceQueue = ::core::option::Option<
 >;
 pub type PFN_vkDeviceWaitIdle =
     ::core::option::Option<unsafe extern "C" fn(device: VkDevice) -> VkResult>;
+pub type PFN_vkAllocateMemory = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pAllocateInfo: *const VkMemoryAllocateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pMemory: *mut VkDeviceMemory,
+    ) -> VkResult,
+>;
+pub type PFN_vkFreeMemory = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        memory: VkDeviceMemory,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkMapMemory = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        memory: VkDeviceMemory,
+        offset: VkDeviceSize,
+        size: VkDeviceSize,
+        flags: VkMemoryMapFlags,
+        ppData: *mut *mut ::core::ffi::c_void,
+    ) -> VkResult,
+>;
+pub type PFN_vkUnmapMemory =
+    ::core::option::Option<unsafe extern "C" fn(device: VkDevice, memory: VkDeviceMemory)>;
+pub type PFN_vkBindBufferMemory = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        buffer: VkBuffer,
+        memory: VkDeviceMemory,
+        memoryOffset: VkDeviceSize,
+    ) -> VkResult,
+>;
+pub type PFN_vkGetBufferMemoryRequirements = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        buffer: VkBuffer,
+        pMemoryRequirements: *mut VkMemoryRequirements,
+    ),
+>;
 pub type PFN_vkCreateFence = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
@@ -4397,6 +4536,21 @@ pub type PFN_vkDestroySemaphore = ::core::option::Option<
     unsafe extern "C" fn(
         device: VkDevice,
         semaphore: VkSemaphore,
+        pAllocator: *const VkAllocationCallbacks,
+    ),
+>;
+pub type PFN_vkCreateBuffer = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pCreateInfo: *const VkBufferCreateInfo,
+        pAllocator: *const VkAllocationCallbacks,
+        pBuffer: *mut VkBuffer,
+    ) -> VkResult,
+>;
+pub type PFN_vkDestroyBuffer = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        buffer: VkBuffer,
         pAllocator: *const VkAllocationCallbacks,
     ),
 >;
@@ -4521,12 +4675,30 @@ pub type PFN_vkCmdSetScissor = ::core::option::Option<
         pScissors: *const VkRect2D,
     ),
 >;
-pub type PFN_vkCmdDraw = ::core::option::Option<
+pub type PFN_vkCmdBindIndexBuffer = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,
-        vertexCount: u32,
+        buffer: VkBuffer,
+        offset: VkDeviceSize,
+        indexType: VkIndexType,
+    ),
+>;
+pub type PFN_vkCmdBindVertexBuffers = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        firstBinding: u32,
+        bindingCount: u32,
+        pBuffers: *const VkBuffer,
+        pOffsets: *const VkDeviceSize,
+    ),
+>;
+pub type PFN_vkCmdDrawIndexed = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        indexCount: u32,
         instanceCount: u32,
-        firstVertex: u32,
+        firstIndex: u32,
+        vertexOffset: i32,
         firstInstance: u32,
     ),
 >;

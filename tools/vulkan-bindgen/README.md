@@ -4,8 +4,8 @@
 Khronos headers recorded in `../../vulkan-toolchain.lock.toml`. It is an isolated workspace so
 libclang and its transitive dependencies never enter Zinc's runtime dependency graph.
 
-Place `vulkan_core.h`, `vulkan_win32.h`, and `vk_platform.h` from the pinned Vulkan-Headers commit
-in one directory, then run:
+Place the pinned Vulkan-Headers `include/vulkan` directory and its sibling `include/vk_video`
+directory together under one include root, then run:
 
 ```sh
 cargo run --manifest-path tools/vulkan-bindgen/Cargo.toml -- \

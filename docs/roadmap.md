@@ -46,6 +46,11 @@ Implement independently in Vulkan and Metal:
 - GPU timestamps, labels, and pipeline caching.
 - One GPU-driven textured scene with depth, shadows, and post-processing.
 
+Vulkan evidence completed so far:
+
+- [x] Host-visible vertex and index buffers with indexed drawing (physically exercised on Windows
+  11 / RTX 3060 Ti with validation enabled).
+
 Metal evidence completed so far:
 
 - [x] Shared vertex and index buffers with indexed drawing.

@@ -61,6 +61,13 @@ reported Vulkan API 1.4.325, three memory heaps, six queue families, 261 device 
 Win32 surface formats, and five present modes. Both the human-readable form and the schema-versioned
 JSON form completed successfully; PowerShell parsed the JSON without repair.
 
+The first representative Vulkan resource slice was then exercised on the same machine. The probe
+uploaded interleaved positions/colors and 16-bit indices into owned host-visible coherent Vulkan
+buffers, bound both resources, and rendered through `vkCmdDrawIndexed`. A 600-frame run completed
+without validation or loader output. This establishes buffer allocation, memory-type selection,
+mapping/upload, vertex-input declaration, binding, indexed drawing, and orderly resource teardown;
+it does not yet establish device-local staging uploads or the remaining representative workload.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

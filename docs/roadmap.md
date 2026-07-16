@@ -23,8 +23,9 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
   an Nvidia RTX 3060 Ti; the window resizes smoothly, rendering remains functional, and driving
   redraw from `WM_SIZE` improved measured callback spacing from about 27 ms to 9 ms and looked
-  noticeably better; presentation-fence retirement is physically exercised, while the deferred
-  fallback, multi-display behavior, and GTX 1060-class baseline remain outstanding).
+  noticeably better; presentation-fence retirement and the forced deferred fallback are physically
+  exercised, while a naturally extension-less adapter, multi-display behavior, and the GTX
+  1060-class baseline remain outstanding).
 - [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle.
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle.
 - [x] Replace conventional device-idle swapchain retirement with tracked presentation completion

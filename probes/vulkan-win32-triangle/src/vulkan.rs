@@ -847,6 +847,7 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
 
 #[allow(clippy::too_many_lines)]
 fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
+    let force_swapchain_fallback = env::var_os("ZINC_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
     let enumerate = instance
         .functions
         .enumerate_physical_devices
@@ -886,7 +887,8 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
             continue;
         }
 
-        let maintenance_extension = instance.surface_maintenance1
+        let maintenance_extension = !force_swapchain_fallback
+            && instance.surface_maintenance1
             && extensions.iter().any(|name| {
                 name == vk::VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
                     .strip_suffix(&[0])
@@ -988,6 +990,9 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         ProbeError("no Vulkan 1.4 graphics/present adapter satisfies Zinc's baseline".into())
     })?;
     println!("Vulkan adapter: {}", String::from_utf8_lossy(&name));
+    if force_swapchain_fallback {
+        println!("Swapchain maintenance override: forced fallback");
+    }
     println!(
         "Swapchain retirement: {}",
         if adapter.swapchain_maintenance1 {

@@ -47,6 +47,14 @@ that run. The user reported that the triangle resizing looked noticeably better.
 still averaged 10.493 ms under the faster churn and reached 21.247 ms in the worst observed sample;
 parity with the Vulkan cube demo has not been established.
 
+The deferred-retirement compatibility path was then forced on the same machine with
+`ZINC_VULKAN_FORCE_SWAPCHAIN_FALLBACK=1`. Its 600-frame automated run and measured manual drag-resize
+run completed without validation or loader output. The manual run covered 1,352 resize attempts and
+968 swapchain recreations; callback spacing averaged 9.540 ms, image acquisition averaged 0.072 ms,
+and the maximum observed acquisition was 15.547 ms. This physically exercises the fallback logic
+under rapid resize, but it does not replace future coverage on hardware or a driver that naturally
+lacks `VK_KHR_swapchain_maintenance1`.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
@@ -97,6 +105,12 @@ report for the machine.
 For an opt-in live-resize timing summary, set `ZINC_VULKAN_RESIZE_TRACE=1` before launching without a
 frame limit. Drag-resize, close the window, and preserve the printed callback, recreation, acquire,
 submit, and present timings.
+
+To exercise the compatibility path on a driver that supports presentation fences, set
+`ZINC_VULKAN_FORCE_SWAPCHAIN_FALLBACK=1`. The probe will skip
+`VK_KHR_swapchain_maintenance1`, print `Swapchain retirement: deferred reacquisition fallback`, and
+keep retired swapchains alive until reacquisition proves queued presentation has completed. This is
+a diagnostic override, not a normal runtime recommendation.
 
 ## Interactive lifecycle pass
 

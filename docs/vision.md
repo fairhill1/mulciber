@@ -136,7 +136,8 @@ was initially choppier than the Vulkan cube demo. Driving redraw from `WM_SIZE` 
 callback spacing from about 27 ms to 9 ms and looked noticeably better, though parity with the cube
 demo has not been established. Swapchain recreation now tracks presentation completion with
 maintenance-extension fences when available and deferred reacquisition otherwise; the fence path
-has physical evidence, while the fallback does not. Wayland, X11, the documented Windows baseline
-tier, and a representative Vulkan workload still need comparable evidence. The public `zinc-gpu`
-and `zinc-platform` APIs remain empty until that evidence exists. The [implementation
-roadmap](roadmap.md) tracks that progression.
+and forced fallback both have physical evidence on the RTX 3060 Ti, while a naturally
+extension-less adapter does not. Wayland, X11, the documented Windows baseline tier, and a
+representative Vulkan workload still need comparable evidence. The public `zinc-gpu` and
+`zinc-platform` APIs remain empty until that evidence exists. The [implementation roadmap](roadmap.md)
+tracks that progression.

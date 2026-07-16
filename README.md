@@ -2,6 +2,22 @@
 
 Zinc is a native game platform for Vulkan and Metal.
 
+## Why Zinc?
+
+Zinc is for Rust games that want native-engine control without maintaining separate graphics and
+window-system stacks for every desktop platform. It combines direct Vulkan and Metal access with
+game-focused platform lifecycle, exposes recent GPU capabilities without forcing them into a WebGPU
+feature model, and keeps the shipped runtime small and auditable.
+
+This is a deliberately narrower goal than `wgpu` plus `winit`, not a claim that those projects are
+bad foundations. Zinc trades their broad portability and maturity for native API reach, coordinated
+GPU/platform/runtime design, and a first-class support contract limited to modern Windows, Linux,
+and Apple-silicon macOS machines.
+
+Minimal dependencies are a means to predictable ownership, policy, and maintenance—not the reason
+for the project by themselves. Read [the project vision](docs/vision.md) for the intended user,
+non-goals, and the criteria Zinc must meet to justify its existence.
+
 The project is intentionally beginning with small native probes instead of a predesigned graphics
 abstraction. Those probes will establish the real platform contracts from which `zinc-gpu` and
 `zinc-platform` are derived.
@@ -16,8 +32,9 @@ abstraction. Those probes will establish the real platform contracts from which 
 - Modern features such as mesh shading, bindless resources, ray tracing, and sparse resources are
   independent capabilities rather than a single linear hardware tier.
 
-See [the support contract](docs/support-contract.md), [architecture decisions](docs/architecture.md),
-[pinned references](docs/references.md), and [the implementation roadmap](docs/roadmap.md).
+See [the project vision](docs/vision.md), [support contract](docs/support-contract.md),
+[architecture decisions](docs/architecture.md), [pinned references](docs/references.md), and
+[implementation roadmap](docs/roadmap.md).
 
 ## Current probes
 

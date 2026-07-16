@@ -5,7 +5,7 @@ mod objc;
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::ffi::c_void;
+    use std::ffi::{CStr, c_void};
     use std::fmt;
     use std::ptr;
     use std::thread;
@@ -16,11 +16,14 @@ mod macos {
         self, AutoreleasePool, ClearColor, Object, Origin3, Point, Rect, Size, Size3,
     };
 
+    const PIXEL_FORMAT_INVALID: usize = 0;
     const PIXEL_FORMAT_BGRA8_UNORM: usize = 80;
     const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
     const PIXEL_FORMAT_BC1_RGBA: usize = 130;
     const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
+    const LOAD_ACTION_DONT_CARE: usize = 0;
     const LOAD_ACTION_CLEAR: usize = 2;
+    const STORE_ACTION_STORE: usize = 1;
     const STORE_ACTION_DONT_CARE: usize = 0;
     const STORE_ACTION_MULTISAMPLE_RESOLVE: usize = 2;
     const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
@@ -51,6 +54,7 @@ mod macos {
     const EXPECTED_MIP_TAIL: [u8; 4] = [144, 154, 148, 255];
     const IN_FLIGHT_FRAMES: usize = 3;
     const SAMPLE_COUNT: usize = 4;
+    const SHADOW_MAP_SIZE: usize = 1024;
     const METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shader.metallib"));
 
     #[link(name = "Metal", kind = "framework")]
@@ -205,8 +209,20 @@ mod macos {
     impl std::error::Error for ProbeError {}
 
     struct PipelineStates {
-        render: Object,
+        shadow: Object,
+        main: Object,
+        post: Object,
         compute: Object,
+    }
+
+    #[derive(Clone, Copy)]
+    struct RenderPipelineSpec {
+        vertex: &'static CStr,
+        fragment: Option<&'static CStr>,
+        color_format: usize,
+        depth_format: usize,
+        sample_count: usize,
+        label: &'static CStr,
     }
 
     struct BufferResources {
@@ -232,7 +248,9 @@ mod macos {
         device: Object,
         layer: Object,
         queue: Object,
-        pipeline: Object,
+        shadow_pipeline: Object,
+        main_pipeline: Object,
+        post_pipeline: Object,
         depth_state: Object,
         vertices: Object,
         indices: Object,
@@ -243,10 +261,14 @@ mod macos {
         phase: f32,
         texture: Object,
         sampler: Object,
+        shadow_texture: Object,
         multisample_color: Object,
+        scene_color: Object,
         depth_texture: Object,
         depth_extent: (usize, usize),
         drawable_size: Size,
+        gpu_time_seconds: f64,
+        gpu_timed_frames: u32,
     }
 
     impl Probe {
@@ -311,11 +333,13 @@ mod macos {
                     objc::object(device, c"newCommandQueue"),
                     "Metal command queue",
                 )?;
+                set_label(queue, c"Zinc graphics queue");
                 let pipelines = create_pipelines(device)?;
                 let depth_state = create_depth_state(device)?;
                 let buffers = create_buffer_resources(device)?;
                 let texture = create_texture(device, queue, pipelines.compute)?;
                 let sampler = create_sampler(device)?;
+                let shadow_texture = create_shadow_texture(device)?;
 
                 objc::void(window, c"center");
                 objc::void_object(window, c"makeKeyAndOrderFront:", ptr::null_mut());
@@ -328,7 +352,9 @@ mod macos {
                     device,
                     layer,
                     queue,
-                    pipeline: pipelines.render,
+                    shadow_pipeline: pipelines.shadow,
+                    main_pipeline: pipelines.main,
+                    post_pipeline: pipelines.post,
                     depth_state,
                     vertices: buffers.vertices,
                     indices: buffers.indices,
@@ -339,10 +365,14 @@ mod macos {
                     phase: 0.0,
                     texture,
                     sampler,
+                    shadow_texture,
                     multisample_color: ptr::null_mut(),
+                    scene_color: ptr::null_mut(),
                     depth_texture: ptr::null_mut(),
                     depth_extent: (0, 0),
                     drawable_size: Size::default(),
+                    gpu_time_seconds: 0.0,
+                    gpu_timed_frames: 0,
                 })
             }
         }
@@ -350,6 +380,7 @@ mod macos {
         fn run(mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
             let render_result = self.render_loop(frame_limit);
             let cleanup_result = self.finish_gpu();
+            self.print_gpu_timing();
             render_result.and(cleanup_result)
         }
 
@@ -442,58 +473,24 @@ mod macos {
                         drawable_extent.1,
                         "memoryless multisample depth texture",
                     )?;
+                    self.scene_color = create_scene_color_texture(
+                        self.device,
+                        drawable_extent.0,
+                        drawable_extent.1,
+                    )?;
                     self.depth_extent = drawable_extent;
                 }
 
-                let pass = self.render_pass(drawable_texture)?;
                 let uniforms = self.prepare_uniforms()?;
 
                 let command_buffer = required(
                     objc::object(self.queue, c"commandBuffer"),
                     "Metal command buffer",
                 )?;
-                let encoder = required(
-                    objc::object_object(
-                        command_buffer,
-                        c"renderCommandEncoderWithDescriptor:",
-                        pass,
-                    ),
-                    "Metal render encoder",
-                )?;
-                objc::void_object(encoder, c"setRenderPipelineState:", self.pipeline);
-                objc::void_object(encoder, c"setDepthStencilState:", self.depth_state);
-                objc::void_object_two_usizes(
-                    encoder,
-                    c"setVertexBuffer:offset:atIndex:",
-                    self.vertices,
-                    0,
-                    0,
-                );
-                objc::void_object_two_usizes(
-                    encoder,
-                    c"setVertexBuffer:offset:atIndex:",
-                    uniforms,
-                    0,
-                    1,
-                );
-                objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", self.texture, 0);
-                objc::void_object_usize(
-                    encoder,
-                    c"setFragmentSamplerState:atIndex:",
-                    self.sampler,
-                    0,
-                );
-                objc::void_two_usizes_object_usize_object_usize(
-                    encoder,
-                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                    PRIMITIVE_TYPE_TRIANGLE,
-                    INDEX_TYPE_UINT16,
-                    self.indices,
-                    0,
-                    self.indirect_arguments,
-                    0,
-                );
-                objc::void(encoder, c"endEncoding");
+                set_label(command_buffer, c"Zinc multipass frame");
+                self.encode_shadow_pass(command_buffer, uniforms)?;
+                self.encode_main_pass(command_buffer, uniforms)?;
+                self.encode_post_pass(command_buffer, drawable_texture)?;
                 objc::void_object(command_buffer, c"presentDrawable:", drawable);
                 objc::void(command_buffer, c"commit");
                 self.track_submission(command_buffer)?;
@@ -507,6 +504,12 @@ mod macos {
                 // SAFETY: This slot retains its command buffer until it completes and is released.
                 unsafe { objc::void(previous, c"waitUntilCompleted") };
                 let completion = required_command_buffer_success(previous, "in-flight frame");
+                if completion.is_ok()
+                    && let Some(seconds) = command_buffer_gpu_time(previous)
+                {
+                    self.gpu_time_seconds += seconds;
+                    self.gpu_timed_frames += 1;
+                }
                 // SAFETY: `track_submission` added exactly one retain for this slot.
                 unsafe { objc::void(previous, c"release") };
                 self.in_flight[self.frame_slot] = ptr::null_mut();
@@ -538,7 +541,158 @@ mod macos {
             Ok(())
         }
 
-        fn render_pass(&self, drawable_texture: Object) -> Result<Object, ProbeError> {
+        fn encode_shadow_pass(
+            &self,
+            command_buffer: Object,
+            uniforms: Object,
+        ) -> Result<(), ProbeError> {
+            // SAFETY: The pass, resources, and pipeline share the same device and remain alive.
+            unsafe {
+                let encoder = required(
+                    objc::object_object(
+                        command_buffer,
+                        c"renderCommandEncoderWithDescriptor:",
+                        self.shadow_pass()?,
+                    ),
+                    "shadow render encoder",
+                )?;
+                set_label(encoder, c"Zinc shadow pass");
+                objc::void_object(encoder, c"setRenderPipelineState:", self.shadow_pipeline);
+                objc::void_object(encoder, c"setDepthStencilState:", self.depth_state);
+                self.bind_geometry(encoder, uniforms);
+                self.draw_geometry(encoder);
+                objc::void(encoder, c"endEncoding");
+            }
+            Ok(())
+        }
+
+        fn encode_main_pass(
+            &self,
+            command_buffer: Object,
+            uniforms: Object,
+        ) -> Result<(), ProbeError> {
+            // SAFETY: The pass, resources, and pipeline share the same device and remain alive.
+            unsafe {
+                let encoder = required(
+                    objc::object_object(
+                        command_buffer,
+                        c"renderCommandEncoderWithDescriptor:",
+                        self.main_pass()?,
+                    ),
+                    "main render encoder",
+                )?;
+                set_label(encoder, c"Zinc main pass");
+                objc::void_object(encoder, c"setRenderPipelineState:", self.main_pipeline);
+                objc::void_object(encoder, c"setDepthStencilState:", self.depth_state);
+                self.bind_geometry(encoder, uniforms);
+                objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", self.texture, 0);
+                objc::void_object_usize(
+                    encoder,
+                    c"setFragmentTexture:atIndex:",
+                    self.shadow_texture,
+                    1,
+                );
+                objc::void_object_usize(
+                    encoder,
+                    c"setFragmentSamplerState:atIndex:",
+                    self.sampler,
+                    0,
+                );
+                self.draw_geometry(encoder);
+                objc::void(encoder, c"endEncoding");
+            }
+            Ok(())
+        }
+
+        fn encode_post_pass(
+            &self,
+            command_buffer: Object,
+            drawable_texture: Object,
+        ) -> Result<(), ProbeError> {
+            // SAFETY: The post pipeline is single-sampled and the full-screen draw needs no buffers.
+            unsafe {
+                let encoder = required(
+                    objc::object_object(
+                        command_buffer,
+                        c"renderCommandEncoderWithDescriptor:",
+                        Self::post_pass(drawable_texture)?,
+                    ),
+                    "post render encoder",
+                )?;
+                set_label(encoder, c"Zinc post-process pass");
+                objc::void_object(encoder, c"setRenderPipelineState:", self.post_pipeline);
+                objc::void_object_usize(
+                    encoder,
+                    c"setFragmentTexture:atIndex:",
+                    self.scene_color,
+                    0,
+                );
+                objc::void_three_usizes(
+                    encoder,
+                    c"drawPrimitives:vertexStart:vertexCount:",
+                    PRIMITIVE_TYPE_TRIANGLE,
+                    0,
+                    3,
+                );
+                objc::void(encoder, c"endEncoding");
+            }
+            Ok(())
+        }
+
+        unsafe fn bind_geometry(&self, encoder: Object, uniforms: Object) {
+            unsafe {
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    self.vertices,
+                    0,
+                    0,
+                );
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    uniforms,
+                    0,
+                    1,
+                );
+            }
+        }
+
+        unsafe fn draw_geometry(&self, encoder: Object) {
+            unsafe {
+                objc::void_two_usizes_object_usize_object_usize(
+                    encoder,
+                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                    PRIMITIVE_TYPE_TRIANGLE,
+                    INDEX_TYPE_UINT16,
+                    self.indices,
+                    0,
+                    self.indirect_arguments,
+                    0,
+                );
+            }
+        }
+
+        fn shadow_pass(&self) -> Result<Object, ProbeError> {
+            // SAFETY: Attachment objects remain alive and selectors match the Metal SDK ABI.
+            unsafe {
+                let pass = required(
+                    objc::object(
+                        objc::class(c"MTLRenderPassDescriptor"),
+                        c"renderPassDescriptor",
+                    ),
+                    "shadow pass descriptor",
+                )?;
+                let depth = required(objc::object(pass, c"depthAttachment"), "depth attachment")?;
+                objc::void_object(depth, c"setTexture:", self.shadow_texture);
+                objc::void_usize(depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
+                objc::void_usize(depth, c"setStoreAction:", STORE_ACTION_STORE);
+                objc::void_f64(depth, c"setClearDepth:", 1.0);
+                Ok(pass)
+            }
+        }
+
+        fn main_pass(&self) -> Result<Object, ProbeError> {
             // SAFETY: Attachment objects are alive for the autorelease-pool scope and all selectors
             // match the Metal SDK ABI.
             unsafe {
@@ -558,7 +712,7 @@ mod macos {
                     "color attachment",
                 )?;
                 objc::void_object(color, c"setTexture:", self.multisample_color);
-                objc::void_object(color, c"setResolveTexture:", drawable_texture);
+                objc::void_object(color, c"setResolveTexture:", self.scene_color);
                 objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_CLEAR);
                 objc::void_usize(color, c"setStoreAction:", STORE_ACTION_MULTISAMPLE_RESOLVE);
                 objc::void_clear_color(
@@ -580,8 +734,35 @@ mod macos {
             }
         }
 
+        fn post_pass(drawable_texture: Object) -> Result<Object, ProbeError> {
+            // SAFETY: The drawable texture is valid through command-buffer presentation.
+            unsafe {
+                let pass = required(
+                    objc::object(
+                        objc::class(c"MTLRenderPassDescriptor"),
+                        c"renderPassDescriptor",
+                    ),
+                    "post pass descriptor",
+                )?;
+                let attachments = required(
+                    objc::object(pass, c"colorAttachments"),
+                    "post color attachments",
+                )?;
+                let color = required(
+                    objc::object_usize(attachments, c"objectAtIndexedSubscript:", 0),
+                    "post color attachment",
+                )?;
+                objc::void_object(color, c"setTexture:", drawable_texture);
+                objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_DONT_CARE);
+                objc::void_usize(color, c"setStoreAction:", STORE_ACTION_STORE);
+                Ok(pass)
+            }
+        }
+
         fn finish_gpu(&mut self) -> Result<(), ProbeError> {
             let mut first_error = None;
+            let mut gpu_time_seconds = 0.0;
+            let mut gpu_timed_frames = 0;
             for command_buffer in &mut self.in_flight {
                 if command_buffer.is_null() {
                     continue;
@@ -589,6 +770,12 @@ mod macos {
                 // SAFETY: Each slot owns one retained, committed command buffer.
                 unsafe { objc::void(*command_buffer, c"waitUntilCompleted") };
                 let completion = required_command_buffer_success(*command_buffer, "frame shutdown");
+                if completion.is_ok()
+                    && let Some(seconds) = command_buffer_gpu_time(*command_buffer)
+                {
+                    gpu_time_seconds += seconds;
+                    gpu_timed_frames += 1;
+                }
                 // SAFETY: The slot's retain is balanced after GPU completion.
                 unsafe { objc::void(*command_buffer, c"release") };
                 *command_buffer = ptr::null_mut();
@@ -598,91 +785,151 @@ mod macos {
                     first_error = Some(error);
                 }
             }
+            self.gpu_time_seconds += gpu_time_seconds;
+            self.gpu_timed_frames += gpu_timed_frames;
             first_error.map_or(Ok(()), Err)
+        }
+
+        fn print_gpu_timing(&self) {
+            if self.gpu_timed_frames == 0 {
+                return;
+            }
+            let average_ms = self.gpu_time_seconds * 1_000.0 / f64::from(self.gpu_timed_frames);
+            println!(
+                "GPU frame time: {average_ms:.3} ms average over {} frames",
+                self.gpu_timed_frames
+            );
         }
     }
 
     fn create_pipelines(device: Object) -> Result<PipelineStates, ProbeError> {
-        // SAFETY: Library, function, descriptor, and pipeline selectors match the Metal SDK ABI.
+        let library = create_library(device)?;
+        let shadow = create_render_pipeline(
+            device,
+            library,
+            RenderPipelineSpec {
+                vertex: c"shadow_vertex",
+                fragment: None,
+                color_format: PIXEL_FORMAT_INVALID,
+                depth_format: PIXEL_FORMAT_DEPTH32_FLOAT,
+                sample_count: 1,
+                label: c"Zinc shadow pipeline",
+            },
+        )?;
+        let main = create_render_pipeline(
+            device,
+            library,
+            RenderPipelineSpec {
+                vertex: c"vertex_main",
+                fragment: Some(c"fragment_main"),
+                color_format: PIXEL_FORMAT_BGRA8_UNORM,
+                depth_format: PIXEL_FORMAT_DEPTH32_FLOAT,
+                sample_count: SAMPLE_COUNT,
+                label: c"Zinc main pipeline",
+            },
+        )?;
+        let post = create_render_pipeline(
+            device,
+            library,
+            RenderPipelineSpec {
+                vertex: c"post_vertex",
+                fragment: Some(c"post_fragment"),
+                color_format: PIXEL_FORMAT_BGRA8_UNORM,
+                depth_format: PIXEL_FORMAT_INVALID,
+                sample_count: 1,
+                label: c"Zinc post pipeline",
+            },
+        )?;
+        let function = load_function(library, c"copy_texture")?;
+        let mut error = ptr::null_mut();
+        // SAFETY: The function belongs to this device and the selector matches the Metal SDK ABI.
+        let compute = unsafe {
+            objc::object_object_out(
+                device,
+                c"newComputePipelineStateWithFunction:error:",
+                function,
+                &raw mut error,
+            )
+        };
+        if compute.is_null() {
+            return Err(ProbeError(format!(
+                "Metal compute pipeline creation failed: {}",
+                objc::description(error)
+            )));
+        }
+        Ok(PipelineStates {
+            shadow,
+            main,
+            post,
+            compute,
+        })
+    }
+
+    fn create_render_pipeline(
+        device: Object,
+        library: Object,
+        spec: RenderPipelineSpec,
+    ) -> Result<Object, ProbeError> {
+        // SAFETY: Function, descriptor, and pipeline selectors match the Metal SDK ABI.
         unsafe {
-            let library = create_library(device)?;
-
-            let vertex = required(
-                objc::object_object(
-                    library,
-                    c"newFunctionWithName:",
-                    objc::ns_string(c"vertex_main"),
-                ),
-                "vertex function",
-            )?;
-            let fragment = required(
-                objc::object_object(
-                    library,
-                    c"newFunctionWithName:",
-                    objc::ns_string(c"fragment_main"),
-                ),
-                "fragment function",
-            )?;
-            let compute = required(
-                objc::object_object(
-                    library,
-                    c"newFunctionWithName:",
-                    objc::ns_string(c"copy_texture"),
-                ),
-                "compute function",
-            )?;
-
             let descriptor = required(
                 objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
                 "render pipeline descriptor",
             )?;
-            objc::void_object(descriptor, c"setVertexFunction:", vertex);
-            objc::void_object(descriptor, c"setFragmentFunction:", fragment);
-            let attachments = required(
-                objc::object(descriptor, c"colorAttachments"),
-                "pipeline color attachments",
-            )?;
-            let color = required(
-                objc::object_usize(attachments, c"objectAtIndexedSubscript:", 0),
-                "pipeline color attachment",
-            )?;
-            objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM);
+            set_label(descriptor, spec.label);
+            objc::void_object(
+                descriptor,
+                c"setVertexFunction:",
+                load_function(library, spec.vertex)?,
+            );
+            if let Some(fragment) = spec.fragment {
+                objc::void_object(
+                    descriptor,
+                    c"setFragmentFunction:",
+                    load_function(library, fragment)?,
+                );
+            }
+            if spec.color_format != PIXEL_FORMAT_INVALID {
+                let attachments = required(
+                    objc::object(descriptor, c"colorAttachments"),
+                    "pipeline color attachments",
+                )?;
+                let color = required(
+                    objc::object_usize(attachments, c"objectAtIndexedSubscript:", 0),
+                    "pipeline color attachment",
+                )?;
+                objc::void_usize(color, c"setPixelFormat:", spec.color_format);
+            }
             objc::void_usize(
                 descriptor,
                 c"setDepthAttachmentPixelFormat:",
-                PIXEL_FORMAT_DEPTH32_FLOAT,
+                spec.depth_format,
             );
-            objc::void_usize(descriptor, c"setRasterSampleCount:", SAMPLE_COUNT);
-
+            objc::void_usize(descriptor, c"setRasterSampleCount:", spec.sample_count);
             let mut error = ptr::null_mut();
-            let render = objc::object_object_out(
+            let pipeline = objc::object_object_out(
                 device,
                 c"newRenderPipelineStateWithDescriptor:error:",
                 descriptor,
                 &raw mut error,
             );
-            if render.is_null() {
-                return Err(ProbeError(format!(
-                    "Metal render pipeline creation failed: {}",
+            if pipeline.is_null() {
+                Err(ProbeError(format!(
+                    "Metal render pipeline creation failed for {:?}: {}",
+                    spec.label,
                     objc::description(error)
-                )));
+                )))
+            } else {
+                Ok(pipeline)
             }
-
-            error = ptr::null_mut();
-            let compute = objc::object_object_out(
-                device,
-                c"newComputePipelineStateWithFunction:error:",
-                compute,
-                &raw mut error,
-            );
-            if compute.is_null() {
-                return Err(ProbeError(format!(
-                    "Metal compute pipeline creation failed: {}",
-                    objc::description(error)
-                )));
-            }
-            Ok(PipelineStates { render, compute })
         }
+    }
+
+    fn load_function(library: Object, name: &CStr) -> Result<Object, ProbeError> {
+        // SAFETY: `newFunctionWithName:` accepts NSString and returns a retained Metal function.
+        let function =
+            unsafe { objc::object_object(library, c"newFunctionWithName:", objc::ns_string(name)) };
+        required(function, "offline Metal function")
     }
 
     fn create_library(device: Object) -> Result<Object, ProbeError> {
@@ -771,10 +1018,12 @@ mod macos {
                 objc::object(queue, c"commandBuffer"),
                 "texture preparation command buffer",
             )?;
+            set_label(command_buffer, c"Zinc texture preparation");
             let upload_blit = required(
                 objc::object(command_buffer, c"blitCommandEncoder"),
                 "texture upload blit encoder",
             )?;
+            set_label(upload_blit, c"Zinc BC1 upload");
             objc::void_copy_buffer_to_texture(
                 upload_blit,
                 c"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
@@ -798,6 +1047,7 @@ mod macos {
                 objc::object(command_buffer, c"computeCommandEncoder"),
                 "texture compute encoder",
             )?;
+            set_label(compute, c"Zinc texture decompression");
             objc::void_object(compute, c"setComputePipelineState:", compute_pipeline);
             objc::void_object_usize(compute, c"setTexture:atIndex:", source_texture, 0);
             objc::void_object_usize(compute, c"setTexture:atIndex:", output_texture, 1);
@@ -843,6 +1093,7 @@ mod macos {
                 objc::object(command_buffer, c"blitCommandEncoder"),
                 "texture readback blit encoder",
             )?;
+            set_label(blit, c"Zinc mip generation and readback");
             objc::void_object(blit, c"generateMipmapsForTexture:", texture);
             objc::void_copy_texture_to_buffer(
                 blit,
@@ -930,6 +1181,7 @@ mod macos {
             )
         };
         let storage = required(storage, "private compute storage buffer")?;
+        set_label(storage, c"Zinc compute storage output");
         let upload = unsafe {
             objc::object_bytes(
                 device,
@@ -940,7 +1192,11 @@ mod macos {
             )
         };
         let upload = required(upload, "texture upload buffer")?;
+        set_label(upload, c"Zinc BC1 staging buffer");
         let (readback, readback_length) = create_readback_buffer(device)?;
+        set_label(readback, c"Zinc texture and storage readback");
+        set_label(source, c"Zinc BC1 source");
+        set_label(output, c"Zinc computed mipmapped texture");
         Ok(TextureResources {
             source,
             output,
@@ -992,11 +1248,15 @@ mod macos {
                 ),
                 "Metal indexed-indirect argument buffer",
             )?;
+            set_label(vertices, c"Zinc scene vertices");
+            set_label(indices, c"Zinc scene indices");
+            set_label(indirect_arguments, c"Zinc indexed-indirect arguments");
+            let uniforms = create_uniform_buffers(device)?;
             Ok(BufferResources {
                 vertices,
                 indices,
                 indirect_arguments,
-                uniforms: create_uniform_buffers(device)?,
+                uniforms,
             })
         }
     }
@@ -1015,6 +1275,7 @@ mod macos {
                 )
             };
             *buffer = required(value, "per-frame uniform buffer")?;
+            set_label(*buffer, c"Zinc per-frame uniforms");
         }
         Ok(buffers)
     }
@@ -1151,10 +1412,78 @@ mod macos {
             objc::void_usize(descriptor, c"setSampleCount:", SAMPLE_COUNT);
             objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_MEMORYLESS);
             objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_RENDER_TARGET);
-            required(
+            let texture = required(
                 objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
                 label,
-            )
+            )?;
+            if pixel_format == PIXEL_FORMAT_DEPTH32_FLOAT {
+                set_label(texture, c"Zinc transient MSAA depth");
+            } else {
+                set_label(texture, c"Zinc transient MSAA color");
+            }
+            Ok(texture)
+        }
+    }
+
+    fn create_scene_color_texture(
+        device: Object,
+        width: usize,
+        height: usize,
+    ) -> Result<Object, ProbeError> {
+        // SAFETY: This private texture is resolved into, then sampled by the next encoder.
+        unsafe {
+            let descriptor = required(
+                objc::object_three_usizes_bool(
+                    objc::class(c"MTLTextureDescriptor"),
+                    c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+                    PIXEL_FORMAT_BGRA8_UNORM,
+                    width,
+                    height,
+                    false,
+                ),
+                "scene color descriptor",
+            )?;
+            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
+            objc::void_usize(
+                descriptor,
+                c"setUsage:",
+                TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
+            );
+            let texture = required(
+                objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
+                "scene color texture",
+            )?;
+            set_label(texture, c"Zinc resolved scene color");
+            Ok(texture)
+        }
+    }
+
+    fn create_shadow_texture(device: Object) -> Result<Object, ProbeError> {
+        // SAFETY: The depth texture is rendered once per frame and sampled by the following pass.
+        unsafe {
+            let descriptor = required(
+                objc::object_three_usizes_bool(
+                    objc::class(c"MTLTextureDescriptor"),
+                    c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
+                    PIXEL_FORMAT_DEPTH32_FLOAT,
+                    SHADOW_MAP_SIZE,
+                    SHADOW_MAP_SIZE,
+                    false,
+                ),
+                "shadow texture descriptor",
+            )?;
+            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
+            objc::void_usize(
+                descriptor,
+                c"setUsage:",
+                TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
+            );
+            let texture = required(
+                objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
+                "shadow depth texture",
+            )?;
+            set_label(texture, c"Zinc reusable shadow depth");
+            Ok(texture)
         }
     }
 
@@ -1174,6 +1503,19 @@ mod macos {
                 objc::description(error)
             )))
         }
+    }
+
+    fn command_buffer_gpu_time(command_buffer: Object) -> Option<f64> {
+        // SAFETY: These read-only timestamp properties are available on the macOS 13 baseline and
+        // are queried only after command-buffer completion.
+        let start = unsafe { objc::f64_value(command_buffer, c"GPUStartTime") };
+        let end = unsafe { objc::f64_value(command_buffer, c"GPUEndTime") };
+        (start > 0.0 && end >= start).then_some(end - start)
+    }
+
+    fn set_label(object: Object, label: &CStr) {
+        // SAFETY: Metal and descriptor objects implement `setLabel:` with NSString input.
+        unsafe { objc::void_object(object, c"setLabel:", objc::ns_string(label)) };
     }
 
     fn required(value: Object, label: &str) -> Result<Object, ProbeError> {

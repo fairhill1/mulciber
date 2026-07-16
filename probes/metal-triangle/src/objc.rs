@@ -274,6 +274,18 @@ pub unsafe fn void_object_two_usizes(
     unsafe { function(receiver, selector(name), object, first, second) };
 }
 
+pub unsafe fn void_three_usizes(
+    receiver: Object,
+    name: &CStr,
+    first: usize,
+    second: usize,
+    third: usize,
+) {
+    let function: unsafe extern "C" fn(Object, Selector, usize, usize, usize) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second, third) };
+}
+
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn void_two_usizes_object_usize_object_usize(
     receiver: Object,

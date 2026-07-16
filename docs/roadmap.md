@@ -49,7 +49,9 @@ Metal evidence completed so far:
 - [x] Capability-checked BC1 source texture decompressed through compute.
 - [x] Generated mip chain with exact 1x1 mip-tail readback validation.
 - [x] Memoryless 4x MSAA color and depth attachments resolved into the drawable.
-- [ ] Timestamps, labels, and pipeline caching.
+- [x] Reusable shadow depth, main MSAA, and fullscreen post-processing passes.
+- [x] Debug labels and command-buffer GPU start/end timing.
+- [ ] Pipeline caching with Metal binary archives.
 
 ## 3. Extract Zinc APIs
 

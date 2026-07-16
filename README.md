@@ -48,6 +48,11 @@ storage buffer whose copied-back contents are verified. Three per-frame uniform 
 geometry and are updated only after their previous command buffers complete. All retained in-flight
 command buffers are drained and released even when rendering or GPU completion fails.
 
+Each frame encodes a reusable shadow-depth pass, the memoryless MSAA main pass resolved into a
+shader-readable scene texture, and a fullscreen post-processing pass into the drawable. Major GPU
+objects and encoders carry debug labels, and completed command buffers provide aggregate GPU frame
+timing.
+
 The build script invokes Xcode's `metal` and `metallib` tools and embeds the result. The running probe
 loads that library directly and never invokes a shader compiler. This adds an SDK build requirement,
 not a shipped package dependency.

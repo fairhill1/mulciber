@@ -48,8 +48,8 @@ Implement independently in Vulkan and Metal:
 
 Vulkan evidence completed so far:
 
-- [x] Host-visible vertex and index buffers with indexed drawing (physically exercised on Windows
-  11 / RTX 3060 Ti with validation enabled).
+- [x] Device-local vertex and index buffers populated through host-visible staging uploads, with
+  indexed drawing (physically exercised on Windows 11 / RTX 3060 Ti with validation enabled).
 
 Metal evidence completed so far:
 

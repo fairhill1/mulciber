@@ -4807,12 +4807,17 @@ pub type VkFlags64 = u64;
 pub type VkPipelineStageFlags2 = VkFlags64;
 pub type VkPipelineStageFlagBits2 = VkFlags64;
 pub const VK_PIPELINE_STAGE_2_NONE: VkPipelineStageFlagBits2 = 0;
+pub const VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT: VkPipelineStageFlagBits2 = 4;
 pub const VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT: VkPipelineStageFlagBits2 = 1024;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkPipelineStageFlagBits2 = 65536;
+pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
 pub type VkAccessFlags2 = VkFlags64;
 pub type VkAccessFlagBits2 = VkFlags64;
 pub const VK_ACCESS_2_NONE: VkAccessFlagBits2 = 0;
+pub const VK_ACCESS_2_INDEX_READ_BIT: VkAccessFlagBits2 = 2;
+pub const VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT: VkAccessFlagBits2 = 4;
 pub const VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT: VkAccessFlagBits2 = 256;
+pub const VK_ACCESS_2_TRANSFER_WRITE_BIT: VkAccessFlagBits2 = 4096;
 pub type VkSubmitFlags = VkFlags;
 pub type VkRenderingFlags = VkFlags;
 #[repr(C)]
@@ -4994,6 +4999,43 @@ impl Default for VkSubmitInfo2 {
     }
 }
 #[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkBufferCopy2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcOffset: VkDeviceSize,
+    pub dstOffset: VkDeviceSize,
+    pub size: VkDeviceSize,
+}
+impl Default for VkBufferCopy2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkCopyBufferInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcBuffer: VkBuffer,
+    pub dstBuffer: VkBuffer,
+    pub regionCount: u32,
+    pub pRegions: *const VkBufferCopy2,
+}
+impl Default for VkCopyBufferInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VkRenderingAttachmentInfo {
     pub sType: VkStructureType,
@@ -5069,6 +5111,9 @@ pub type PFN_vkQueueSubmit2 = ::core::option::Option<
         pSubmits: *const VkSubmitInfo2,
         fence: VkFence,
     ) -> VkResult,
+>;
+pub type PFN_vkCmdCopyBuffer2 = ::core::option::Option<
+    unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pCopyBufferInfo: *const VkCopyBufferInfo2),
 >;
 pub type PFN_vkCmdBeginRendering = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pRenderingInfo: *const VkRenderingInfo),

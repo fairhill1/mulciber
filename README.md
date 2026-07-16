@@ -104,6 +104,8 @@ used for cross-machine comparisons and adapter-tier evidence.
 cargo run -p mulciber-vulkan-win32-triangle -- --frames 600
 ```
 
-The probe loads `vulkan-1.dll` dynamically and has no Rust package dependencies. Validation is
-required for the probe and reported through `VK_EXT_debug_utils`. See the
+The probe uploads geometry through temporary staging buffers into device-local vertex/index
+buffers, then renders through indexed drawing. It loads `vulkan-1.dll` dynamically and has no Rust
+package dependencies. Validation is required for the probe and reported through
+`VK_EXT_debug_utils`. See the
 [Windows validation runbook](docs/windows-validation.md) before marking the slice complete.

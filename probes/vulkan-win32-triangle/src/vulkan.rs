@@ -656,6 +656,7 @@ struct DeviceFns {
     cmd_bind_pipeline: vk::PFN_vkCmdBindPipeline,
     cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
+    cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
     cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
@@ -723,6 +724,7 @@ impl DeviceFns {
             cmd_bind_pipeline: load!(c"vkCmdBindPipeline"),
             cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
+            cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
             cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
@@ -1301,30 +1303,104 @@ impl Renderer {
     }
 
     fn create_geometry_buffers(&mut self) -> Result<(), ProbeError> {
-        self.vertex_buffer = self.create_static_buffer(
-            // SAFETY: `Vertex` is `repr(C)`, contains only initialized `f32` arrays, and its tested
-            // 20-byte layout has no padding.
-            unsafe { slice_bytes(&TRIANGLE_VERTICES) },
-            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
-            "vertex",
-        )?;
-        self.index_buffer = self.create_static_buffer(
-            // SAFETY: `u16` has no padding and every element is initialized.
-            unsafe { slice_bytes(&TRIANGLE_INDICES) },
-            vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT as u32,
-            "index",
-        )?;
-        println!("Geometry: host-visible vertex/index buffers with indexed drawing");
+        // SAFETY: `Vertex` is `repr(C)`, contains only initialized `f32` arrays, and its tested
+        // 20-byte layout has no padding.
+        let vertex_bytes = unsafe { slice_bytes(&TRIANGLE_VERTICES) };
+        // SAFETY: `u16` has no padding and every element is initialized.
+        let index_bytes = unsafe { slice_bytes(&TRIANGLE_INDICES) };
+        let mut vertex_staging = self.create_staging_buffer(vertex_bytes, "vertex")?;
+        let mut index_staging = match self.create_staging_buffer(index_bytes, "index") {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                // SAFETY: No commands reference this buffer because recording has not started.
+                unsafe { self.destroy_buffer(&mut vertex_staging) };
+                return Err(error);
+            }
+        };
+
+        let upload = self.create_device_geometry_and_upload(
+            &vertex_staging,
+            vertex_bytes.len(),
+            &index_staging,
+            index_bytes.len(),
+        );
+        if upload.is_err() {
+            // An error after queue submission can leave staging buffers referenced by unfinished
+            // work. The startup failure path favors orderly cleanup over latency.
+            // SAFETY: The queue belongs to this device; a device-lost error still permits cleanup.
+            let _ = unsafe {
+                self.device
+                    .functions
+                    .device_wait_idle
+                    .expect("loaded function")(self.device.handle)
+            };
+        }
+        // SAFETY: Successful upload waits for its fence; the error path attempted device idle.
+        unsafe {
+            self.destroy_buffer(&mut vertex_staging);
+            self.destroy_buffer(&mut index_staging);
+        }
+        upload?;
+        println!("Geometry: device-local vertex/index buffers uploaded through staging");
         Ok(())
     }
 
-    fn create_static_buffer(
+    fn create_staging_buffer(
         &self,
         bytes: &[u8],
-        usage: vk::VkBufferUsageFlags,
         description: &str,
     ) -> Result<GpuBuffer, ProbeError> {
-        let size = u64::try_from(bytes.len()).expect("buffer byte length fits u64");
+        let required_flags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32;
+        let mut buffer = self.create_buffer(
+            bytes.len(),
+            vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
+            required_flags,
+            &format!("{description} staging"),
+        )?;
+        if let Err(error) = self.write_buffer(&buffer, bytes, description) {
+            // SAFETY: The buffer has not been submitted to the GPU.
+            unsafe { self.destroy_buffer(&mut buffer) };
+            return Err(error);
+        }
+        Ok(buffer)
+    }
+
+    fn create_device_geometry_and_upload(
+        &mut self,
+        vertex_staging: &GpuBuffer,
+        vertex_size: usize,
+        index_staging: &GpuBuffer,
+        index_size: usize,
+    ) -> Result<(), ProbeError> {
+        self.vertex_buffer = self.create_buffer(
+            vertex_size,
+            (vk::VK_BUFFER_USAGE_TRANSFER_DST_BIT | vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) as u32,
+            vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            "device-local vertex",
+        )?;
+        self.index_buffer = self.create_buffer(
+            index_size,
+            (vk::VK_BUFFER_USAGE_TRANSFER_DST_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT) as u32,
+            vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            "device-local index",
+        )?;
+        self.upload_geometry(
+            vertex_staging,
+            u64::try_from(vertex_size).expect("vertex byte length fits u64"),
+            index_staging,
+            u64::try_from(index_size).expect("index byte length fits u64"),
+        )
+    }
+
+    fn create_buffer(
+        &self,
+        byte_len: usize,
+        usage: vk::VkBufferUsageFlags,
+        required_flags: vk::VkMemoryPropertyFlags,
+        description: &str,
+    ) -> Result<GpuBuffer, ProbeError> {
+        let size = u64::try_from(byte_len).expect("buffer byte length fits u64");
         let info = vk::VkBufferCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
             size,
@@ -1346,24 +1422,8 @@ impl Renderer {
                     &raw mut buffer.handle,
                 )
             },
-            &format!("vkCreateBuffer for {description} data"),
+            &format!("vkCreateBuffer for {description} buffer"),
         )?;
-
-        let result = self.allocate_and_upload_buffer(&mut buffer, bytes, description);
-        if let Err(error) = result {
-            // SAFETY: The partially constructed buffer and memory are owned here and not in use.
-            unsafe { self.destroy_buffer(&mut buffer) };
-            return Err(error);
-        }
-        Ok(buffer)
-    }
-
-    fn allocate_and_upload_buffer(
-        &self,
-        buffer: &mut GpuBuffer,
-        bytes: &[u8],
-        description: &str,
-    ) -> Result<(), ProbeError> {
         let mut requirements = vk::VkMemoryRequirements::default();
         // SAFETY: The buffer is live and requirements storage is writable.
         unsafe {
@@ -1387,25 +1447,22 @@ impl Renderer {
                 self.device.adapter.handle, &raw mut properties
             );
         }
-        let required_flags = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-            | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32;
-        let memory_type = find_memory_type(
-            &properties,
-            requirements.memoryTypeBits,
-            required_flags,
-        )
-        .ok_or_else(|| {
-            ProbeError(format!(
-                "adapter exposes no host-visible coherent memory for the {description} buffer"
-            ))
-        })?;
+        let Some(memory_type) =
+            find_memory_type(&properties, requirements.memoryTypeBits, required_flags)
+        else {
+            // SAFETY: The buffer is unbound and has never been submitted to the GPU.
+            unsafe { self.destroy_buffer(&mut buffer) };
+            return Err(ProbeError(format!(
+                "adapter exposes no compatible memory type for the {description} buffer"
+            )));
+        };
         let allocation = vk::VkMemoryAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             allocationSize: requirements.size,
             memoryTypeIndex: memory_type,
             ..Default::default()
         };
-        check(
+        let allocate = check(
             // SAFETY: Allocation info and output memory storage are valid.
             unsafe {
                 self.device
@@ -1418,9 +1475,14 @@ impl Renderer {
                     &raw mut buffer.memory,
                 )
             },
-            &format!("vkAllocateMemory for {description} data"),
-        )?;
-        check(
+            &format!("vkAllocateMemory for {description} buffer"),
+        );
+        if let Err(error) = allocate {
+            // SAFETY: Allocation failed, so only the unbound buffer needs cleanup.
+            unsafe { self.destroy_buffer(&mut buffer) };
+            return Err(error);
+        }
+        let bind = check(
             // SAFETY: The buffer and allocation share compatible requirements at offset zero.
             unsafe {
                 self.device
@@ -1430,9 +1492,22 @@ impl Renderer {
                     self.device.handle, buffer.handle, buffer.memory, 0
                 )
             },
-            &format!("vkBindBufferMemory for {description} data"),
-        )?;
+            &format!("vkBindBufferMemory for {description} buffer"),
+        );
+        if let Err(error) = bind {
+            // SAFETY: Binding failed and neither object can be referenced by GPU work.
+            unsafe { self.destroy_buffer(&mut buffer) };
+            return Err(error);
+        }
+        Ok(buffer)
+    }
 
+    fn write_buffer(
+        &self,
+        buffer: &GpuBuffer,
+        bytes: &[u8],
+        description: &str,
+    ) -> Result<(), ProbeError> {
         let mut mapped = ptr::null_mut();
         check(
             // SAFETY: The allocation is host-visible and the requested range is in bounds.
@@ -1457,6 +1532,146 @@ impl Renderer {
                 buffer.memory,
             );
         }
+        Ok(())
+    }
+
+    fn upload_geometry(
+        &mut self,
+        vertex_staging: &GpuBuffer,
+        vertex_size: vk::VkDeviceSize,
+        index_staging: &GpuBuffer,
+        index_size: vk::VkDeviceSize,
+    ) -> Result<(), ProbeError> {
+        check(
+            // SAFETY: The frame fence is signaled during startup and not attached to GPU work.
+            unsafe {
+                self.device.functions.reset_fences.expect("loaded function")(
+                    self.device.handle,
+                    1,
+                    &raw const self.frame_fence,
+                )
+            },
+            "vkResetFences for geometry upload",
+        )?;
+        self.record_geometry_upload(vertex_staging, vertex_size, index_staging, index_size)?;
+        self.submit_upload()?;
+        self.wait_for_frame()
+    }
+
+    fn record_geometry_upload(
+        &self,
+        vertex_staging: &GpuBuffer,
+        vertex_size: vk::VkDeviceSize,
+        index_staging: &GpuBuffer,
+        index_size: vk::VkDeviceSize,
+    ) -> Result<(), ProbeError> {
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The fresh command buffer is in its initial state and begin info is valid.
+            unsafe {
+                self.device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(self.command_buffer, &raw const begin)
+            },
+            "vkBeginCommandBuffer for geometry upload",
+        )?;
+        self.copy_buffer(
+            vertex_staging.handle,
+            self.vertex_buffer.handle,
+            vertex_size,
+        );
+        self.copy_buffer(index_staging.handle, self.index_buffer.handle, index_size);
+
+        let barriers = [
+            buffer_barrier(
+                self.vertex_buffer.handle,
+                vertex_size,
+                vk::VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+            ),
+            buffer_barrier(
+                self.index_buffer.handle,
+                index_size,
+                vk::VK_ACCESS_2_INDEX_READ_BIT,
+            ),
+        ];
+        let dependency = vk::VkDependencyInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            bufferMemoryBarrierCount: u32::try_from(barriers.len())
+                .expect("buffer barrier count fits u32"),
+            pBufferMemoryBarriers: barriers.as_ptr(),
+            ..Default::default()
+        };
+        // SAFETY: The command buffer is recording and all buffers/ranges are live and valid.
+        unsafe {
+            self.device
+                .functions
+                .cmd_pipeline_barrier2
+                .expect("loaded function")(self.command_buffer, &raw const dependency);
+        }
+        check(
+            // SAFETY: The command buffer is recording and all commands are complete.
+            unsafe {
+                self.device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.command_buffer)
+            },
+            "vkEndCommandBuffer for geometry upload",
+        )
+    }
+
+    fn copy_buffer(&self, source: vk::VkBuffer, destination: vk::VkBuffer, size: vk::VkDeviceSize) {
+        let region = vk::VkBufferCopy2 {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+            size,
+            ..Default::default()
+        };
+        let copy = vk::VkCopyBufferInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+            srcBuffer: source,
+            dstBuffer: destination,
+            regionCount: 1,
+            pRegions: &raw const region,
+            ..Default::default()
+        };
+        // SAFETY: The command buffer is recording; source/destination usages and range are valid.
+        unsafe {
+            self.device
+                .functions
+                .cmd_copy_buffer2
+                .expect("loaded function")(self.command_buffer, &raw const copy);
+        }
+    }
+
+    fn submit_upload(&mut self) -> Result<(), ProbeError> {
+        let command = command_buffer_submit_info(self.command_buffer);
+        let submit = vk::VkSubmitInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            commandBufferInfoCount: 1,
+            pCommandBufferInfos: &raw const command,
+            ..Default::default()
+        };
+        check(
+            // SAFETY: The recorded command buffer and unsignaled fence are live.
+            unsafe {
+                self.device
+                    .functions
+                    .queue_submit2
+                    .expect("loaded function")(
+                    self.device.queue,
+                    1,
+                    &raw const submit,
+                    self.frame_fence,
+                )
+            },
+            "vkQueueSubmit2 for geometry upload",
+        )?;
+        self.frame_pending = true;
         Ok(())
     }
 
@@ -2530,13 +2745,7 @@ impl Renderer {
             stageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             ..Default::default()
         };
-        let command = vk::VkCommandBufferSubmitInfo {
-            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            commandBuffer: self.command_buffer,
-            // Zero selects every valid physical device, including the normal single-device case.
-            deviceMask: 0,
-            ..Default::default()
-        };
+        let command = command_buffer_submit_info(self.command_buffer);
         let signal = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             semaphore: render_finished,
@@ -2796,6 +3005,38 @@ fn color_subresource_range() -> vk::VkImageSubresourceRange {
     }
 }
 
+fn command_buffer_submit_info(
+    command_buffer: vk::VkCommandBuffer,
+) -> vk::VkCommandBufferSubmitInfo {
+    vk::VkCommandBufferSubmitInfo {
+        sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        commandBuffer: command_buffer,
+        // Zero selects every valid physical device, including the normal single-device case.
+        deviceMask: 0,
+        ..Default::default()
+    }
+}
+
+fn buffer_barrier(
+    buffer: vk::VkBuffer,
+    size: vk::VkDeviceSize,
+    destination_access: vk::VkAccessFlags2,
+) -> vk::VkBufferMemoryBarrier2 {
+    vk::VkBufferMemoryBarrier2 {
+        sType: vk::VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        srcStageMask: vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+        srcAccessMask: vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        dstStageMask: vk::VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
+        dstAccessMask: destination_access,
+        srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        buffer,
+        offset: 0,
+        size,
+        ..Default::default()
+    }
+}
+
 unsafe fn slice_bytes<T>(values: &[T]) -> &[u8] {
     let byte_len = mem::size_of_val(values);
     // SAFETY: The caller guarantees every byte in each value is initialized. The returned byte
@@ -2961,6 +3202,14 @@ mod tests {
         assert_eq!(find_memory_type(&properties, 0b111, required), Some(1));
         assert_eq!(find_memory_type(&properties, 0b100, required), Some(2));
         assert_eq!(find_memory_type(&properties, 0b001, required), None);
+        assert_eq!(
+            find_memory_type(
+                &properties,
+                0b111,
+                vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+            ),
+            Some(2)
+        );
     }
 
     #[test]
@@ -2970,5 +3219,26 @@ mod tests {
         assert_eq!(binding.stride, 20);
         assert_eq!(attributes[0].offset, 0);
         assert_eq!(attributes[1].offset, 8);
+    }
+
+    #[test]
+    fn geometry_upload_barrier_makes_transfer_writes_readable() {
+        let barrier = buffer_barrier(
+            ptr::null_mut(),
+            64,
+            vk::VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT,
+        );
+        assert_eq!(barrier.srcStageMask, vk::VK_PIPELINE_STAGE_2_COPY_BIT);
+        assert_eq!(barrier.srcAccessMask, vk::VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        assert_eq!(
+            barrier.dstStageMask,
+            vk::VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
+        );
+        assert_eq!(
+            barrier.dstAccessMask,
+            vk::VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
+        );
+        assert_eq!(barrier.offset, 0);
+        assert_eq!(barrier.size, 64);
     }
 }

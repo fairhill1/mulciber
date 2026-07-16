@@ -68,6 +68,14 @@ without validation or loader output. This establishes buffer allocation, memory-
 mapping/upload, vertex-input declaration, binding, indexed drawing, and orderly resource teardown;
 it does not yet establish device-local staging uploads or the remaining representative workload.
 
+The geometry path was subsequently moved into device-local vertex and index buffers. Two temporary
+host-visible coherent staging buffers are mapped and populated at startup, copied with
+`vkCmdCopyBuffer2`, and synchronized with explicit transfer-write to vertex/index-read buffer
+barriers before a fenced upload submission completes. A 600-frame run on the same machine reported
+the device-local staging path and completed without validation or loader output. This establishes
+the first real Vulkan upload path; texture uploads, readback, and reusable upload scheduling remain
+outstanding.
+
 ## Setup
 
 Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing

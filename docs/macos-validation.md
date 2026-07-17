@@ -21,6 +21,35 @@ recorded validation run. The subsequent acquisition reshape (reconfiguration fol
 acquisition) changes this resize path again, so a captured physical resize/lifecycle pass on the
 reshaped code remains pending on this machine.
 
+At `7d25d1f` (reconfiguration folded into acquisition), the same machine pulled main over SSH and
+passed `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace`, natively compiling the reshaped Metal acquisition path. With
+`MTL_DEBUG_LAYER=1`, `mulciber-api-cube --frames 120 --abandon-acquired-frame-once` (4x path,
+abandonment, recovery) and `--frames 120 --force-one-sample` each presented 120 frames and exited
+zero with only the validation-enabled banner. These were again static-window runs; the physical
+resize/lifecycle pass on the reshaped acquisition remains pending.
+
+## Single-backend build evidence
+
+At revision `7d25d1f` on the Apple M2 (8 cores, macOS 15.7.7, Rust 1.97.0, default release
+profile), the macOS build of `examples/cube` was measured as the Metal-only single-backend data
+point:
+
+- `cargo tree` matches Linux: `mulciber` depends only on `mulciber-platform`, which depends on
+  nothing; the example adds `glam` as its own math choice.
+- `cargo clean` followed by `cargo build --release -p mulciber-cube` completed in 1.3 seconds of
+  wall clock.
+- The produced binary is 519,824 bytes as built and 412,496 bytes stripped.
+- `otool -L` lists only `libobjc`, Metal, QuartzCore, `libSystem`, AppKit, and CoreFoundation.
+  No Vulkan loader, MoltenVK, or other graphics library is referenced.
+- The binary contains zero Vulkan symbols or strings (`vkCreateInstance`, `libvulkan`, `VK_KHR`,
+  `VkDevice` all absent); the Vulkan backend module is excluded at `cfg(target_os)` level, so it
+  is not compiled, linked, initialized, or reachable.
+- Backend dispatch is compile-time module aliasing (`crates/mulciber/src/backend/mod.rs`); the
+  ordinary frame path contains no backend-selection branch, table, or trait object.
+
+The Vulkan-only mirror of this record is in the Linux runbook's single-backend build evidence.
+
 ## Textured cube checkpoint evidence
 
 The resource-backed same-source cube was compiled and linted natively on the Apple M2 / macOS

@@ -162,8 +162,10 @@ fallback, and acquired-frame abandonment/recovery controls.
   ordinary backend branches or application `unsafe`.
 - [ ] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   and shutdown conformance tests.
-- [ ] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
-  and does not add portability-only dispatch to the ordinary frame path.
+- [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
+  and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
+  dependency-tree, size, and clean-build measurements are recorded in the
+  [Linux](linux-validation.md) and [macOS](macos-validation.md) single-backend build evidence.
 - [ ] Implement and preserve the pinned direct-native, practical single-backend Rust, `wgpu`/`winit`,
   SDL3 GPU, Vulkano, and scoped raylib comparisons.
 - [ ] Record the Gate 2 pass, redesign, narrow, or stop decision from correctness, ergonomics,

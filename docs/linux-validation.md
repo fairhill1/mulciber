@@ -89,6 +89,31 @@ This is automated, single-machine, single-display native Wayland evidence plus o
 drag-resize smoke. Extracted-slice X11, native Xorg, minimize/restore, display-change,
 multi-display, and broader hardware coverage remain unrecorded.
 
+### Single-backend build evidence
+
+At revision `7d25d1f` on the x86-64 CachyOS machine below (i5-12400F, 12 threads, Rust 1.97.0,
+default release profile), the Linux build of `examples/cube` was measured as the Vulkan-only
+single-backend data point:
+
+- `cargo tree` shows `mulciber` depending only on `mulciber-platform` and `mulciber-platform`
+  depending on nothing; the example adds `glam` as its own math choice. No graphics, windowing,
+  binding, or shader crate appears in the tree.
+- `cargo clean` followed by `cargo build --release -p mulciber-cube` completed in 1.2 seconds of
+  wall clock with no compiler cache or rustc wrapper configured.
+- The produced binary is 644,200 bytes as built and 499,504 bytes stripped.
+- `ldd` lists only libc/libm/libgcc, the dynamic loader, and the Linux platform peers
+  (`libwayland-client`, `libX11`/`libXext`/`libxcb` with their transitive helpers). Both Linux
+  platform paths are present by design as runtime-selected peers. `libvulkan` is not link-time
+  required; the backend loads `libvulkan.so.1` at graphics open, so a Vulkan-less system fails
+  with a structured error rather than at process start.
+- The binary contains zero Metal, Objective-C, or AppKit symbols or strings
+  (`objc_msgSend`, `CAMetalLayer`, `MTLDevice`, `metallib` all absent); the Metal backend module
+  is excluded at `cfg(target_os)` level, so it is not compiled, linked, initialized, or reachable.
+- Backend dispatch is compile-time module aliasing (`crates/mulciber/src/backend/mod.rs`); the
+  ordinary frame path contains no backend-selection branch, table, or trait object.
+
+The Metal-only mirror of this record belongs to the macOS runbook.
+
 ## Recorded evidence
 
 Revision `d5a50a490063b99d04d5dcfc4282c39f883b1bbe` was exercised on a physical

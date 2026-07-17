@@ -150,18 +150,18 @@ coherence, and an evidence-backed support contract. Any one of those in isolatio
 
 ## Current reality
 
-Mulciber is presently a research foundation, not a consumable game platform. Representative native
-Metal and Vulkan workloads now cover owned resources, uploads and readback, graphics and compute,
+Mulciber is presently a research foundation, not a consumable game-development stack. Representative
+native Metal and Vulkan workloads now cover owned resources, uploads and readback, graphics and compute,
 multiple render passes, synchronization, diagnostics, and native pipeline artifacts. Initial physical
-lifecycle evidence exists for AppKit, Win32, and Wayland; X11 has automated XWayland presentation
-evidence but still lacks physical lifecycle interaction. Metal acquired-drawable abandonment and
-Vulkan presentation retirement have targeted evidence, while the corresponding Vulkan
-acquired-but-unpresented behavior remains unresolved.
+lifecycle evidence exists for AppKit, Win32, Wayland, and X11 through XWayland. Metal
+acquired-drawable abandonment, Vulkan presentation retirement, and Vulkan acquired-but-unpresented
+recovery through both native mechanisms have targeted evidence.
 
 The evidence is sufficient to begin the narrow unstable extraction defined in the
 [API extraction and comparison plan](api-extraction-plan.md). Gate 1 remains incomplete: display and
 multi-display changes, native Xorg interaction, broader hardware and drivers, the macOS 26 rendering
 path, explicit suspension cases, and destructive recovery such as device loss and out-of-memory remain
-coverage gaps. The public `mulciber` and `mulciber-platform` library shells are still empty, and no
-stable API or first-class support claim has been made. The [implementation roadmap](roadmap.md) tracks
-the extraction and remaining evidence in parallel.
+coverage gaps. `mulciber-platform` contains the experimental desktop OS boundary, and `mulciber` now
+contains the first unstable graphics lifecycle vocabulary; neither is a stable API or first-class
+support claim. The [implementation roadmap](roadmap.md) tracks the extraction and remaining evidence
+in parallel.

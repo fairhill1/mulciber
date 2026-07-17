@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/mulciber.svg)](https://crates.io/crates/mulciber)
 [![docs.rs](https://docs.rs/mulciber/badge.svg)](https://docs.rs/mulciber)
 
-Mulciber is a native game platform for Vulkan and Metal.
+Mulciber is a native game-development stack for Rust, built directly on Vulkan and Metal.
 
 ## Why Mulciber?
 
@@ -54,6 +54,7 @@ type names. `mulciber`'s graphics API remains empty.
 See [the project vision](docs/vision.md), [viability gates](docs/viability-gates.md),
 [support contract](docs/support-contract.md), [architecture decisions](docs/architecture.md),
 [API extraction and comparison plan](docs/api-extraction-plan.md),
+[experimental graphics lifecycle contract](docs/api-graphics-contract.md),
 [pinned references](docs/references.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Current probes

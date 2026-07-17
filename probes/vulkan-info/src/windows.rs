@@ -1,13 +1,17 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::mem;
 
+use mulciber_platform::integration::{
+    Win32SurfaceTarget, create_window as create_platform_window, native_surface_target,
+};
+use mulciber_platform::{Application, LogicalSize, Window as PlatformWindow, WindowDescriptor};
+
 use crate::vk;
 
-#[path = "../../vulkan-triangle/src/win32.rs"]
-#[allow(dead_code)]
-mod window;
-
-pub use window::Window;
+pub struct Window {
+    window: PlatformWindow,
+    _application: Application,
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -53,7 +57,14 @@ pub fn create_window(
     if requested_platform.is_some_and(|platform| platform != "windows") {
         return Err("Windows supports only --platform windows".into());
     }
-    Window::new(title, width, height, visible).map_err(|error| error.to_string())
+    let application = Application::new().map_err(|error| error.to_string())?;
+    let descriptor = WindowDescriptor::new(title, LogicalSize::new(width, height));
+    let window = create_platform_window(&application, &descriptor, visible)
+        .map_err(|error| error.to_string())?;
+    Ok(Window {
+        window,
+        _application: application,
+    })
 }
 
 pub const fn json_name(_window: &Window) -> &'static str {
@@ -84,14 +95,21 @@ pub unsafe fn create_surface(
     );
     // SAFETY: The function was loaded by the Win32 Vulkan surface-creation name.
     let function: vk::PFN_vkCreateWin32SurfaceKHR = unsafe { mem::transmute_copy(&function) };
+    let target = native_target(window);
     let info = vk::VkWin32SurfaceCreateInfoKHR {
         sType: vk::VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-        hinstance: window.instance(),
-        hwnd: window.handle(),
+        hinstance: target.instance.as_ptr(),
+        hwnd: target.window.as_ptr(),
         ..Default::default()
     };
     // SAFETY: The window/instance are live, output is writable, and the function type matches.
     unsafe {
         function.expect("loaded function")(instance, &raw const info, std::ptr::null(), surface)
     }
+}
+
+fn native_target(window: &Window) -> Win32SurfaceTarget {
+    let target = window.window.surface_target();
+    // SAFETY: The handles are used only while the source window remains alive.
+    unsafe { native_surface_target(&target) }
 }

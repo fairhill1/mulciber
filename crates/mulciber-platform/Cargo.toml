@@ -12,5 +12,13 @@ version = "0.1.0"
 categories = ["game-development", "graphics"]
 publish = ["crates-io"]
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
 [lints]
 workspace = true

@@ -160,11 +160,13 @@ first-class support claim.
 - [ ] Keep backend-specific capabilities reachable without leaking native object ownership or
   bypassing presentation-retirement tracking.
 
-Initial extraction progress: AppKit, Wayland, and X11 application/window/event paths, logical and
-physical sizing, window metric revisions, lifecycle/redraw events, and borrowed opaque graphics
+Initial extraction progress: AppKit, Win32, Wayland, and X11 application/window/event paths, logical
+and physical sizing, window metric revisions, lifecycle/redraw events, and borrowed opaque graphics
 targets now live in `mulciber-platform` and drive the full Metal and Vulkan probes. AppKit supplies
-backing scale; Linux intentionally reports `1.0` pending scale/display-change evidence. The
-platform-spine item remains open until the peer Win32 implementation uses the same contract. See the
+backing scale; Linux and the initial Win32 extraction intentionally report `1.0` pending
+scale/display-change evidence. Win32 cross-compiles and lints from Linux, including synchronous
+redraw delivery inside its nested sizing loop, but the platform-spine item remains open until the
+extracted path passes automated and physical Windows validation. See the
 [experimental platform contract](api-platform-contract.md).
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion

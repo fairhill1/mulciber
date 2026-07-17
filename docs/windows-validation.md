@@ -5,6 +5,14 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+The development tree after `mulciber-platform` 0.1.0 moves Win32 application/window ownership,
+thread-message dispatch, client metrics, nested live-resize redraw callbacks, and borrowed Vulkan
+surface handles into the platform crate. Both Vulkan probes consume that implementation and
+cross-compile and lint cleanly for `x86_64-pc-windows-msvc` from Linux. This is implementation and
+cross-target evidence only. Before updating the platform-spine milestone or publishing the next
+crate version, run the preferred automated validation below and physically repeat live resize,
+minimize/restore, maximize/restore, titlebar close, and Alt+F4 shutdown on Windows.
+
 The first physical run was recorded on 2026-07-16 at commit
 `1972ad486d4bbd8a76c714aca86513c60419ba2a`: Windows 11 Pro build 26200, Nvidia GeForce RTX 3060 Ti,
 driver 591.86, and Vulkan loader/validation layer 1.4.350. The 600-frame finite run, resize recovery,

@@ -1,7 +1,7 @@
 //! Native window, event, display, and lifecycle support for Mulciber.
 //!
-//! This API is experimental. Its native `AppKit`, Wayland, and X11 implementations preserve their
-//! backend-specific ownership and lifecycle machinery behind the same game-facing contract.
+//! This API is experimental. Its native `AppKit`, Win32, Wayland, and X11 implementations preserve
+//! their backend-specific ownership and lifecycle machinery behind the same game-facing contract.
 
 use core::fmt;
 
@@ -22,6 +22,15 @@ mod linux;
 pub use linux::integration;
 #[cfg(target_os = "linux")]
 pub use linux::{Application, SurfaceTarget, Window};
+
+#[cfg(target_os = "windows")]
+mod win32;
+
+#[cfg(target_os = "windows")]
+#[doc(hidden)]
+pub use win32::integration;
+#[cfg(target_os = "windows")]
+pub use win32::{Application, SurfaceTarget, Window};
 
 /// A two-dimensional extent in logical window coordinates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -94,10 +103,16 @@ impl PhysicalExtent {
 pub struct WindowRevision(u64);
 
 impl WindowRevision {
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) const INITIAL: Self = Self(1);
 
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
@@ -118,7 +133,10 @@ pub struct WindowMetrics {
 }
 
 impl WindowMetrics {
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) const fn new(
         extent: PhysicalExtent,
         scale_factor: f64,
@@ -209,7 +227,10 @@ pub enum PumpStatus {
 pub struct PlatformError(String);
 
 impl PlatformError {
-    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }

@@ -28,9 +28,10 @@ unified slice, the design decisions it must settle, and the direct-native, singl
 `wgpu`/`winit`, SDL3 GPU, Vulkano, and scoped raylib comparisons it must survive. Portability receives
 no credit in the Metal-only and Vulkan-only viability evaluations.
 
-The first extracted boundary moves AppKit, Wayland, and X11 application/window, event, and
-drawable-metrics ownership into `mulciber-platform`; the full Metal and Vulkan probes are its
-executable consumers. Win32 remains in the Vulkan probe pending the peer extraction. The
+The first extracted boundary moves peer AppKit, Win32, Wayland, and X11 application/window, event,
+and drawable-metrics ownership into `mulciber-platform`; the full Metal and Vulkan probes are its
+executable consumers. The Win32 extraction cross-compiles from Linux and awaits a batched physical
+Windows validation run before the platform-spine milestone or a new crate release is claimed. The
 [experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
 peer-platform work. The [first graphics-slice flow](docs/api-first-slice.md) reviews the intended
 outside-in application experience against both native call sequences without committing graphics

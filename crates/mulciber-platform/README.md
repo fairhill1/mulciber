@@ -5,9 +5,11 @@ platform. It owns native application connections, windows, event pumping, drawab
 borrowed graphics surface targets without imposing a cross-platform windowing framework.
 
 Version 0.1.0 contains peer native AppKit, Wayland, and X11 implementations exercised by Mulciber's
-Metal and Vulkan probes. Win32 extraction, input, display enumeration, multi-window support, and a
+Metal and Vulkan probes. The current development tree adds the peer Win32 implementation, pending
+physical validation and a later release. Input, display enumeration, multi-window support, and a
 stable application-facing API remain in progress. The current API is research-stage and may change
-without compatibility guarantees.
+without compatibility guarantees. On docs.rs, use the platform selector to view the implementation
+available for each target operating system.
 
 Development, design contracts, runnable probes, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).

@@ -12,8 +12,9 @@ game-facing slice. See the [viability gates](viability-gates.md) and the native 
 
 The first implementation record is the
 [experimental platform and window contract](api-platform-contract.md). It extracts peer AppKit,
-Wayland, and X11 application/window lifecycles into `mulciber-platform`; the full Metal and Vulkan
-probes are executable consumers while Win32 and graphics extraction continue.
+Win32, Wayland, and X11 application/window lifecycles into `mulciber-platform`; the full Metal and
+Vulkan probes are executable consumers while Win32 physical validation and graphics extraction
+continue.
 
 The complete application-facing ownership and frame flow is sketched separately in the
 [first graphics slice](api-first-slice.md). Its graphics names are intentionally non-compiling

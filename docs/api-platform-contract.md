@@ -3,9 +3,9 @@
 This document records the first API extraction from the native probes. The types and names are
 unstable and exist to test Gate 2; they are not a supported platform claim. The implementation began
 from revision `449c01cb1997fedd674a4a58bd0105f141a3317b` and was initially exercised through the
-AppKit/Metal probe. Peer Wayland and X11 implementations now drive the Vulkan probe through the same
-contract. Win32 remains required before this candidate contract can be judged coherent across all
-four native window systems.
+AppKit/Metal probe. Peer Win32, Wayland, and X11 implementations now drive the Vulkan probes through
+the same contract. The Win32 extraction still requires physical validation before this candidate
+contract can be judged coherent across all four native window systems.
 
 ## Extracted boundary
 
@@ -21,7 +21,7 @@ four native window systems.
   window ownership.
 
 The Metal probe no longer creates or polls `NSApplication`, `NSWindow`, or `NSView` directly. The
-Vulkan probe no longer creates or pumps Wayland/XDG-shell or Xlib windows directly. Each probe
+Vulkan probes no longer create or pump Win32, Wayland/XDG-shell, or Xlib windows directly. Each probe
 retains its graphics API ownership and consumes a borrowed platform surface target. This is an
 intentional intermediate boundary: platform lifecycle is extracted before GPU resource and command
 APIs, while the full validated workloads continue to exercise it.
@@ -30,22 +30,25 @@ APIs, while the full validated workloads continue to exercise it.
 
 ### Main-thread ownership
 
-On macOS, `Application::new` verifies the process main thread before connecting to AppKit. On Linux,
-application and window objects are confined to their creating thread; the native display connection
-is currently established with the window because both proven implementations own one connection per
-window. `Application`, `Window`, and the borrowed surface target are intentionally neither `Send` nor
-`Sync`. This makes native-thread ownership structural rather than a comment that ordinary application
-code can accidentally violate.
+On macOS, `Application::new` verifies the process main thread before connecting to AppKit. On Linux
+and Windows, application and window objects are confined to their creating thread; Linux's native
+display connection is currently established with the window because both proven implementations own
+one connection per window. `Application`, `Window`, and the borrowed surface target are intentionally
+neither `Send` nor `Sync`. This makes native-thread ownership structural rather than a comment that
+ordinary application code can accidentally violate.
 
 ### Game-owned loop with native event pumping
 
 The game calls `Application::pump_events` and receives translated events through a callback. This
 keeps the game in control of its architecture while leaving room for a native backend to invoke redraw
-during nested or modal event processing. AppKit, Wayland, and X11 emit `RedrawRequested` after queued
-events are dispatched whenever the surface is drawable. The Vulkan probe currently uses the pump's
-continue/exit result and then reads current metrics; its adapter intentionally leaves event-driven
-render coordination for the graphics extraction. A later Win32 implementation must prove that the
-same callback shape can preserve the already validated live-resize redraw behavior.
+during nested or modal event processing. AppKit, Win32, Wayland, and X11 emit `RedrawRequested` after
+queued events are dispatched whenever the surface is drawable. Win32 temporarily registers the
+handler while dispatching messages, allowing `WM_SIZE` and a window timer to deliver redraw requests
+synchronously inside its nested interactive-sizing loop. Its Vulkan adapter renders only those
+nested requests; normal frame work remains in the probe's outer loop. Linux currently uses the pump's
+continue/exit result and then reads current metrics, intentionally leaving fully event-driven render
+coordination for the graphics extraction. The Win32 callback shape is structurally preserved but
+still requires physical regression evidence through the extracted boundary.
 
 The metrics carried by `RedrawRequested` are the authoritative input for that render opportunity. The
 Metal probe consumes them directly rather than querying the window a second time after event delivery.
@@ -54,13 +57,13 @@ This is not yet a commitment that polling is the final runtime API. Gate 5 may a
 loop above this layer, but it must not invalidate the lower-level game-controlled path without a
 written comparison.
 
-The current AppKit and Linux slices permit exactly one live `Window` per `Application`. AppKit's
-event queue is process-wide and the initial Linux extraction preserves each probe's one-window
-connection topology; accepting multiple windows here would silently assert an event-routing and
-connection-ownership model that has not been designed. Dropping the window releases the slot so
-another can be created. Multi-window support remains a deliberate later design step that must
-introduce application-level window identity and event routing rather than pretending the present
-callback is already sufficient.
+The current AppKit, Win32, and Linux slices permit exactly one live `Window` per `Application`.
+AppKit's event queue is process-wide, Win32 messages are thread-wide, and the initial Linux
+extraction preserves each probe's one-window connection topology; accepting multiple windows here
+would silently assert an event-routing and connection-ownership model that has not been designed.
+Dropping the window releases the slot so another can be created. Multi-window support remains a
+deliberate later design step that must introduce application-level window identity and event routing
+rather than pretending the present callback is already sufficient.
 
 ### Window metrics and presentation ownership
 
@@ -85,32 +88,33 @@ request separately, so temporary invisibility is not interpreted as termination.
 This encodes the policy already exercised by the Metal probe; the Wayland explicit-zero-size case and
 other compositors may refine the vocabulary before support.
 
-Wayland and X11 translate their native client extent into physical extent with scale factor `1.0`.
-They advance the same revision type on extent changes, but scale, display-change, fractional-scaling,
-and explicit zero-sized-suspension behavior remain pending evidence and must not be inferred from the
-current value.
+Win32, Wayland, and X11 translate their proven native client extent into the shared extent with scale
+factor `1.0`. They advance the same revision type on extent changes, but per-monitor DPI, scale,
+display-change, fractional-scaling, and explicit Wayland zero-sized-suspension behavior remain
+pending evidence and must not be inferred from the current value.
 
 ### Borrowed native integration
 
 `Window::surface_target` returns an opaque value borrowed for the window lifetime. It transfers no
-retain, release, or destruction authority. Raw AppKit, Wayland, and Xlib handles are reachable only
-through hidden unsafe integration bridges because `mulciber-platform` and the graphics consumers are
-separate crates. Backend code must not retain handles beyond the source window, use them from another
-thread, destroy them, or replace platform ownership.
+retain, release, or destruction authority. Raw AppKit, Win32, Wayland, and Xlib handles are reachable
+only through hidden unsafe integration bridges because `mulciber-platform` and the graphics consumers
+are separate crates. Backend code must not retain handles beyond the source window, use them from
+another thread, destroy them, or replace platform ownership.
 
 This is backend plumbing, not the intended native escape hatch for games. The safe public graphics
 API will accept the opaque target directly.
 
 ### Failure and destruction
 
-Creation and event pumping return contextual `PlatformError` values. The AppKit `Window` owns the retain returned
-by `NSWindow` initialization and an owned delegate whose non-owning close-state association remains
-bounded by the window. Destruction detaches and releases the delegate, closes the window, and releases
-the window retain on its creating thread. Graphics shutdown still occurs explicitly before the probe
-and window are dropped. Stable recovery categories remain open until the error model is extracted
-across both graphics backends. The Wayland implementation destroys protocol roles child-first before
-disconnecting its display. The X11 implementation destroys its sync counter and window before closing
-the display. Existing GPU/presentation shutdown still occurs before either platform window drops.
+Creation and event pumping return contextual `PlatformError` values. The AppKit `Window` owns the
+retain returned by `NSWindow` initialization and an owned delegate whose non-owning close-state
+association remains bounded by the window. Destruction detaches and releases the delegate, closes the
+window, and releases the window retain on its creating thread. Graphics shutdown still occurs
+explicitly before the probe and window are dropped. Stable recovery categories remain open until the
+error model is extracted across both graphics backends. The Wayland implementation destroys protocol
+roles child-first before disconnecting its display. The X11 implementation destroys its sync counter
+and window before closing the display. Win32 destroys its window before unregistering its unique
+class. Existing GPU/presentation shutdown still occurs before each platform window drops.
 
 ## Initial validation
 
@@ -152,10 +156,16 @@ pumping, borrowed-handle surface creation, presentation, and shutdown through th
 do not repeat or broaden the previously recorded physical lifecycle, resize, display, or visual
 evidence.
 
+The development tree after `mulciber-platform` 0.1.0 then moved Win32 window and event ownership into
+the platform crate. Both Vulkan consumers and the platform tests compile and lint cleanly for
+`x86_64-pc-windows-msvc` from Linux. This proves target structure and Rust/Win32 ABI compilation only;
+it does not establish construction, nested resize callbacks, Vulkan presentation, lifecycle, or
+shutdown until the physical Windows validation below is completed.
+
 ## Required next evidence
 
-1. Implement the same public types with a peer Win32 module and preserve the Vulkan probe's validated
-   nested live-resize behavior.
+1. Run the extracted Win32 path through the automated validation matrix and physically repeat nested
+   live resize, minimize/restore, maximize/restore, titlebar close, and Alt+F4 shutdown.
 2. Resolve whether full occlusion is a rendering-suspension state or a separate render-policy event
    once the runtime contract is tested.
 3. Prove scale/display changes advance window revisions correctly on hardware with the necessary

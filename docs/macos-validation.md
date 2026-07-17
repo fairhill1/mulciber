@@ -1,5 +1,51 @@
 # macOS AppKit/Metal validation runbook
 
+## Input-transition checkpoint
+
+The AppKit-first input experiment delivers physical keys, aggregate modifiers, logical-coordinate
+pointer motion and buttons, precise/coarse scroll, and focus transitions through the existing
+`mulciber-platform` pump. The separate input cube consumes those transitions directly while the
+minimal graphics-only cube stays unchanged; this is lower-level platform evidence, not the future
+runtime snapshot API.
+
+Run the interactive cube with Metal validation enabled:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-input-cube
+```
+
+In one captured session, verify W/A/S/D and arrow-key rotation including key repeat, Space
+spin toggle, R reset, primary-button drag, release after dragging outside the content area, trackpad
+or wheel zoom, and focus loss/reacquisition. Then repeat continuous resize, minimize/restore, full
+occlusion/reveal, and titlebar close. Record which scroll hardware was used and whether any key
+produced an AppKit alert sound or failed to reach the example. Successful rendering and input
+behavior must accompany exit code zero and no Metal validation output beyond the startup banner.
+
+Implementation and unit-test evidence alone must not be recorded as physical input coverage. Text or
+IME input, gestures, pressure, gamepads, relative-pointer capture, multi-display behavior, and input
+on Win32/Wayland/X11 remain outside this checkpoint.
+
+On 2026-07-17, an uncommitted development tree based on `6eccf2e` ran the new input cube repeatedly
+under `MTL_DEBUG_LAYER=1` while the operator physically reviewed it. Every process closed through the
+titlebar with exit code zero and Metal emitted only its validation-enabled banner. The first pass
+established that translated keys and pointer controls reached the application, but exposed two real
+defects: AppKit produced its fallback alert sound for handled keys because the ordinary `NSView` was
+not a first responder, and autonomous model spin fought direct manipulation. A custom AppKit content
+view now accepts and consumes the already-translated physical key events; the operator confirmed the
+alert sound was gone. The input example now starts stationary and Space toggles its independent
+automatic spin.
+
+Two later passes exposed an application-math error rather than a platform-coordinate error. Euler
+pitch composed inside the model's yaw made vertical drag orientation-dependent; a sign-only change
+could make one face appear inverted while another barely moved. Both input comparison examples now
+pre-multiply normalized quaternion increments around fixed screen axes. The final pass corrected the
+top-left Y sign, and the operator confirmed vertical drag felt correct. This iterative record proves
+the final key-responder and vertical-drag paths plus validation-clean rendering and shutdown. It does
+not by itself claim that every checklist action above—especially outside-window button release,
+focus invalidation, key repeat, minimize/restore, or every scroll unit—was independently observed.
+The `wgpu-input-cube` peer compiled and linted on the same Mac but was not physically run in this
+record.
+
 ## Render-target reclamation evidence
 
 Revision `884c9d2` introduced stale-generation render-target reclamation into the Metal textured

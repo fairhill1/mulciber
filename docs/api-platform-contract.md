@@ -17,6 +17,8 @@ contract can be judged coherent across all four native window systems.
 - translation of drawable extent and backing scale into `WindowMetrics`;
 - monotonically increasing `WindowRevision` values for changed drawable metrics;
 - rendering suspension, resumption, redraw, metric-change, and close events; and
+- an AppKit-first experimental stream of ordered keyboard, pointer, scroll, modifier, and focus
+  transitions, with peer backend evidence still pending; and
 - a borrowed opaque `SurfaceTarget` used to connect the graphics layer without transferring native
   window ownership.
 
@@ -63,6 +65,13 @@ Metal probe consumes them directly rather than querying the window a second time
 This is not yet a commitment that polling is the final runtime API. Gate 5 may add an owning runtime
 loop above this layer, but it must not invalidate the lower-level game-controlled path without a
 written comparison.
+
+The first input-transition experiment follows that same rule. AppKit delivers physical keys,
+modifiers, logical-coordinate pointer motion/buttons, precise or coarse scroll, and focus changes in
+native queue order before the pump's final redraw. It deliberately does not create input snapshots:
+snapshot boundaries belong to fixed/variable update policy in the later runtime. Text/IME, gamepads,
+relative-pointer capture, and peer Win32/Wayland/X11 evidence remain separate work. See the
+[experimental input contract](input-contract.md).
 
 The current AppKit, Win32, and Linux slices permit exactly one live `Window` per `Application`.
 AppKit's event queue is process-wide, Win32 messages are thread-wide, and the initial Linux
@@ -184,3 +193,5 @@ behavior was not recorded. Evidence: `validation-artifacts/windows-vulkan-202607
    with safe `mulciber` surface creation when the graphics extraction begins.
 5. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
    other Gate 2 targets in the extraction plan.
+6. Implement and physically exercise the input-transition contract on Win32, Wayland, and X11 before
+   treating the AppKit-first event names as a shared platform claim.

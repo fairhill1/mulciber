@@ -6,6 +6,7 @@ members = [
     "crates/mulciber-shader",
     "examples/clear",
     "examples/cube",
+    "examples/input-cube",
     "probes/metal-info",
     "probes/metal-triangle",
     "probes/api-clear",

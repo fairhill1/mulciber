@@ -7,7 +7,8 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::{
-    PhysicalExtent, PlatformError, PumpStatus, WindowDescriptor, WindowEvent, WindowMetrics,
+    ButtonState, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PlatformError,
+    PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent, WindowMetrics,
     WindowRevision,
 };
 
@@ -17,7 +18,32 @@ type Selector = *mut c_void;
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
 const ASSOCIATION_ASSIGN: usize = 0;
 const UTF8_STRING_ENCODING: usize = 4;
-static CLOSE_STATE_KEY: u8 = 0;
+const EVENT_LEFT_MOUSE_DOWN: usize = 1;
+const EVENT_LEFT_MOUSE_UP: usize = 2;
+const EVENT_RIGHT_MOUSE_DOWN: usize = 3;
+const EVENT_RIGHT_MOUSE_UP: usize = 4;
+const EVENT_MOUSE_MOVED: usize = 5;
+const EVENT_LEFT_MOUSE_DRAGGED: usize = 6;
+const EVENT_RIGHT_MOUSE_DRAGGED: usize = 7;
+const EVENT_KEY_DOWN: usize = 10;
+const EVENT_KEY_UP: usize = 11;
+const EVENT_FLAGS_CHANGED: usize = 12;
+const EVENT_SCROLL_WHEEL: usize = 22;
+const EVENT_OTHER_MOUSE_DOWN: usize = 25;
+const EVENT_OTHER_MOUSE_UP: usize = 26;
+const EVENT_OTHER_MOUSE_DRAGGED: usize = 27;
+const MODIFIER_CAPS_LOCK: usize = 1 << 16;
+const MODIFIER_SHIFT: usize = 1 << 17;
+const MODIFIER_CONTROL: usize = 1 << 18;
+const MODIFIER_OPTION: usize = 1 << 19;
+const MODIFIER_COMMAND: usize = 1 << 20;
+const MODIFIER_FUNCTION: usize = 1 << 23;
+static WINDOW_STATE_KEY: u8 = 0;
+
+struct WindowDelegateState {
+    close_requested: Cell<bool>,
+    focused: Cell<bool>,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -160,11 +186,22 @@ impl Application {
             void_object(window.as_ptr(), c"setTitle:", title.as_ptr());
             void(title.as_ptr(), c"release");
 
-            let view = required(object(window.as_ptr(), c"contentView"), "NSView")?;
+            let view = create_content_view(initial_rect.size)?;
+            void_object(window.as_ptr(), c"setContentView:", view.as_ptr());
+            void(view.as_ptr(), c"release");
             void_bool(view.as_ptr(), c"setWantsLayer:", true);
+            void_bool(window.as_ptr(), c"setAcceptsMouseMovedEvents:", true);
+            if !bool_object(window.as_ptr(), c"makeFirstResponder:", view.as_ptr()) {
+                return Err(PlatformError::new(
+                    "could not make the Mulciber content view AppKit's first responder",
+                ));
+            }
 
-            let close_requested = Rc::new(Cell::new(false));
-            let delegate = create_window_delegate(&close_requested)?;
+            let delegate_state = Rc::new(WindowDelegateState {
+                close_requested: Cell::new(false),
+                focused: Cell::new(false),
+            });
+            let delegate = create_window_delegate(&delegate_state)?;
             void_object(window.as_ptr(), c"setDelegate:", delegate.as_ptr());
 
             void(window.as_ptr(), c"center");
@@ -175,6 +212,9 @@ impl Application {
             );
             void(self.raw.as_ptr(), c"activate");
 
+            let focused = bool_value(window.as_ptr(), c"isKeyWindow");
+            delegate_state.focused.set(focused);
+
             let result = Window {
                 raw: window,
                 view,
@@ -182,8 +222,10 @@ impl Application {
                 last_extent: Cell::new(PhysicalExtent::default()),
                 last_scale_factor: Cell::new(0.0),
                 last_metrics: Cell::new(None),
-                close_requested,
+                delegate_state,
                 close_reported: Cell::new(false),
+                last_focused: Cell::new(focused),
+                captured_pointer_buttons: Cell::new(0),
                 delegate,
                 _window_lease: window_lease,
                 _main_thread: PhantomData,
@@ -248,7 +290,14 @@ impl Application {
                 if event.is_null() {
                     break;
                 }
+                let input = window.translate_input_event(event);
                 void_object(self.raw.as_ptr(), c"sendEvent:", event);
+                if let Some(focus) = window.take_focus_transition() {
+                    handler(WindowEvent::Input(focus));
+                }
+                if let Some(input) = input {
+                    handler(WindowEvent::Input(input));
+                }
             }
             void(self.raw.as_ptr(), c"updateWindows");
         }
@@ -259,6 +308,10 @@ impl Application {
             }
             window.last_metrics.set(None);
             return Ok(PumpStatus::Exit);
+        }
+
+        if let Some(focus) = window.take_focus_transition() {
+            handler(WindowEvent::Input(focus));
         }
 
         let previous = window.last_metrics.get();
@@ -282,8 +335,10 @@ pub struct Window {
     last_extent: Cell<PhysicalExtent>,
     last_scale_factor: Cell<f64>,
     last_metrics: Cell<Option<WindowMetrics>>,
-    close_requested: Rc<Cell<bool>>,
+    delegate_state: Rc<WindowDelegateState>,
     close_reported: Cell<bool>,
+    last_focused: Cell<bool>,
+    captured_pointer_buttons: Cell<u32>,
     delegate: NonNull<c_void>,
     _window_lease: WindowLease,
     _main_thread: PhantomData<Rc<()>>,
@@ -305,8 +360,127 @@ impl Window {
         }
     }
 
+    fn take_focus_transition(&self) -> Option<InputEvent> {
+        let focused = self.delegate_state.focused.get();
+        if self.last_focused.replace(focused) == focused {
+            return None;
+        }
+        if !focused {
+            self.captured_pointer_buttons.set(0);
+        }
+        Some(InputEvent::FocusChanged { focused })
+    }
+
+    fn translate_input_event(&self, event: Object) -> Option<InputEvent> {
+        // SAFETY: The event remains alive in the current AppKit autorelease pool. Every selector is
+        // valid for NSEvent, and returned scalar/aggregate values are copied immediately.
+        unsafe {
+            if object(event, c"window") != self.raw.as_ptr() {
+                return None;
+            }
+            let modifiers = appkit_modifiers(usize_value(event, c"modifierFlags"));
+            match usize_value(event, c"type") {
+                EVENT_KEY_DOWN => Some(InputEvent::Keyboard {
+                    key: appkit_key_code(u16_value(event, c"keyCode")),
+                    state: ButtonState::Pressed,
+                    repeat: bool_value(event, c"isARepeat"),
+                    modifiers,
+                }),
+                EVENT_KEY_UP => Some(InputEvent::Keyboard {
+                    key: appkit_key_code(u16_value(event, c"keyCode")),
+                    state: ButtonState::Released,
+                    repeat: false,
+                    modifiers,
+                }),
+                EVENT_FLAGS_CHANGED => Some(InputEvent::ModifiersChanged(modifiers)),
+                EVENT_MOUSE_MOVED
+                | EVENT_LEFT_MOUSE_DRAGGED
+                | EVENT_RIGHT_MOUSE_DRAGGED
+                | EVENT_OTHER_MOUSE_DRAGGED => {
+                    let (position, inside) = self.pointer_position(event);
+                    (inside || self.captured_pointer_buttons.get() != 0).then_some(
+                        InputEvent::PointerMoved {
+                            position,
+                            modifiers,
+                        },
+                    )
+                }
+                EVENT_LEFT_MOUSE_DOWN | EVENT_RIGHT_MOUSE_DOWN | EVENT_OTHER_MOUSE_DOWN => {
+                    let (position, inside) = self.pointer_position(event);
+                    if !inside {
+                        return None;
+                    }
+                    let number = usize_value(event, c"buttonNumber");
+                    if number < u32::BITS as usize {
+                        self.captured_pointer_buttons
+                            .set(self.captured_pointer_buttons.get() | (1_u32 << number));
+                    }
+                    Some(InputEvent::PointerButton {
+                        button: appkit_pointer_button(number),
+                        state: ButtonState::Pressed,
+                        position,
+                        modifiers,
+                    })
+                }
+                EVENT_LEFT_MOUSE_UP | EVENT_RIGHT_MOUSE_UP | EVENT_OTHER_MOUSE_UP => {
+                    let (position, inside) = self.pointer_position(event);
+                    let number = usize_value(event, c"buttonNumber");
+                    let mask = (number < u32::BITS as usize).then(|| 1_u32 << number);
+                    let captured =
+                        mask.is_some_and(|mask| self.captured_pointer_buttons.get() & mask != 0);
+                    if let Some(mask) = mask {
+                        self.captured_pointer_buttons
+                            .set(self.captured_pointer_buttons.get() & !mask);
+                    }
+                    (inside || captured).then_some(InputEvent::PointerButton {
+                        button: appkit_pointer_button(number),
+                        state: ButtonState::Released,
+                        position,
+                        modifiers,
+                    })
+                }
+                EVENT_SCROLL_WHEEL => {
+                    let (position, inside) = self.pointer_position(event);
+                    inside.then_some(InputEvent::Scroll {
+                        delta: if bool_value(event, c"hasPreciseScrollingDeltas") {
+                            ScrollDelta::Precise {
+                                x: f64_value(event, c"scrollingDeltaX"),
+                                y: f64_value(event, c"scrollingDeltaY"),
+                            }
+                        } else {
+                            ScrollDelta::Coarse {
+                                x: f64_value(event, c"scrollingDeltaX"),
+                                y: f64_value(event, c"scrollingDeltaY"),
+                            }
+                        },
+                        position,
+                        modifiers,
+                    })
+                }
+                _ => None,
+            }
+        }
+    }
+
+    unsafe fn pointer_position(&self, event: Object) -> (LogicalPosition, bool) {
+        let window_position = unsafe { point_value(event, c"locationInWindow") };
+        let view_position = unsafe {
+            point_object(
+                self.view.as_ptr(),
+                c"convertPoint:fromView:",
+                window_position,
+                core::ptr::null_mut(),
+            )
+        };
+        let bounds = unsafe { rect_value(self.view.as_ptr(), c"bounds") };
+        let x = view_position.x - bounds.origin.x;
+        let y = bounds.origin.y + bounds.size.height - view_position.y;
+        let inside = x >= 0.0 && y >= 0.0 && x < bounds.size.width && y < bounds.size.height;
+        (LogicalPosition::new(x, y), inside)
+    }
+
     fn is_open(&self) -> bool {
-        !self.close_requested.get()
+        !self.delegate_state.close_requested.get()
     }
 
     fn current_window_metrics(&self) -> Option<WindowMetrics> {
@@ -407,7 +581,7 @@ impl Drop for WindowLease {
 }
 
 fn create_window_delegate(
-    close_requested: &Rc<Cell<bool>>,
+    state: &Rc<WindowDelegateState>,
 ) -> Result<NonNull<c_void>, PlatformError> {
     let delegate_class = window_delegate_class()?;
     // SAFETY: The dynamically registered class inherits NSObject initialization. The association is
@@ -419,13 +593,101 @@ fn create_window_delegate(
         )?;
         objc_setAssociatedObject(
             delegate.as_ptr(),
-            (&raw const CLOSE_STATE_KEY).cast(),
-            Rc::as_ptr(close_requested).cast_mut().cast(),
+            (&raw const WINDOW_STATE_KEY).cast(),
+            Rc::as_ptr(state).cast_mut().cast(),
             ASSOCIATION_ASSIGN,
         );
         Ok(delegate)
     }
 }
+
+fn create_content_view(size: Size) -> Result<NonNull<c_void>, PlatformError> {
+    let view_class = platform_view_class()?;
+    // SAFETY: The class inherits NSView and initWithFrame: takes the SDK Rect aggregate. The caller
+    // transfers this owned allocation to NSWindow's retained contentView property.
+    unsafe {
+        required(
+            object_rect_init(
+                object(view_class, c"alloc"),
+                c"initWithFrame:",
+                Rect {
+                    origin: Point::default(),
+                    size,
+                },
+            ),
+            "Mulciber AppKit content view",
+        )
+    }
+}
+
+fn platform_view_class() -> Result<Object, PlatformError> {
+    static CLASS: OnceLock<Result<usize, PlatformError>> = OnceLock::new();
+    CLASS
+        .get_or_init(|| {
+            // SAFETY: Registration runs once. The superclass and selectors have process lifetime,
+            // and each method implementation matches the registered Objective-C type encoding.
+            unsafe {
+                let existing = objc_getClass(c"MulciberPlatformView_v1".as_ptr());
+                if !existing.is_null() {
+                    return Ok(existing as usize);
+                }
+                let view = objc_allocateClassPair(
+                    class(c"NSView")?,
+                    c"MulciberPlatformView_v1".as_ptr(),
+                    0,
+                );
+                if view.is_null() {
+                    return Err(PlatformError::new(
+                        "could not allocate the AppKit content view class",
+                    ));
+                }
+                let accepts_first_responder_added = class_addMethod(
+                    view,
+                    selector(c"acceptsFirstResponder"),
+                    accepts_first_responder as *const c_void,
+                    c"B@:".as_ptr(),
+                );
+                let key_down_added = class_addMethod(
+                    view,
+                    selector(c"keyDown:"),
+                    consume_key_event as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                let key_up_added = class_addMethod(
+                    view,
+                    selector(c"keyUp:"),
+                    consume_key_event as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                let flags_changed_added = class_addMethod(
+                    view,
+                    selector(c"flagsChanged:"),
+                    consume_key_event as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                if !accepts_first_responder_added
+                    || !key_down_added
+                    || !key_up_added
+                    || !flags_changed_added
+                {
+                    objc_disposeClassPair(view);
+                    return Err(PlatformError::new(
+                        "could not install AppKit content view input methods",
+                    ));
+                }
+                objc_registerClassPair(view);
+                Ok(view as usize)
+            }
+        })
+        .clone()
+        .map(|view| view as Object)
+}
+
+unsafe extern "C" fn accepts_first_responder(_view: Object, _selector: Selector) -> bool {
+    true
+}
+
+unsafe extern "C" fn consume_key_event(_view: Object, _selector: Selector, _event: Object) {}
 
 fn window_delegate_class() -> Result<Object, PlatformError> {
     static CLASS: OnceLock<Result<usize, PlatformError>> = OnceLock::new();
@@ -460,7 +722,23 @@ fn window_delegate_class() -> Result<Object, PlatformError> {
                     window_will_close as *const c_void,
                     c"v@:@".as_ptr(),
                 );
-                if !should_close_added || !will_close_added {
+                let did_become_key_added = class_addMethod(
+                    delegate,
+                    selector(c"windowDidBecomeKey:"),
+                    window_did_become_key as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                let did_resign_key_added = class_addMethod(
+                    delegate,
+                    selector(c"windowDidResignKey:"),
+                    window_did_resign_key as *const c_void,
+                    c"v@:@".as_ptr(),
+                );
+                if !should_close_added
+                    || !will_close_added
+                    || !did_become_key_added
+                    || !did_resign_key_added
+                {
                     objc_disposeClassPair(delegate);
                     return Err(PlatformError::new(
                         "could not install AppKit window delegate methods",
@@ -491,15 +769,41 @@ unsafe extern "C" fn window_will_close(
     unsafe { mark_close_requested(delegate) };
 }
 
-unsafe fn mark_close_requested(delegate: Object) {
-    let state = unsafe {
-        objc_getAssociatedObject(delegate, (&raw const CLOSE_STATE_KEY).cast()).cast::<Cell<bool>>()
-    };
-    if let Some(state) = NonNull::new(state) {
-        // SAFETY: create_window_delegate associates Rc::as_ptr while Window keeps that allocation
-        // alive and detaches the delegate before releasing its final reference.
-        unsafe { state.as_ref() }.set(true);
+unsafe extern "C" fn window_did_become_key(
+    delegate: Object,
+    _selector: Selector,
+    _notification: Object,
+) {
+    if let Some(state) = unsafe { delegate_state(delegate) } {
+        // SAFETY: Window keeps the associated state alive until after detaching this delegate.
+        unsafe { state.as_ref() }.focused.set(true);
     }
+}
+
+unsafe extern "C" fn window_did_resign_key(
+    delegate: Object,
+    _selector: Selector,
+    _notification: Object,
+) {
+    if let Some(state) = unsafe { delegate_state(delegate) } {
+        // SAFETY: Window keeps the associated state alive until after detaching this delegate.
+        unsafe { state.as_ref() }.focused.set(false);
+    }
+}
+
+unsafe fn mark_close_requested(delegate: Object) {
+    if let Some(state) = unsafe { delegate_state(delegate) } {
+        // SAFETY: Window keeps the associated state alive until after detaching this delegate.
+        unsafe { state.as_ref() }.close_requested.set(true);
+    }
+}
+
+unsafe fn delegate_state(delegate: Object) -> Option<NonNull<WindowDelegateState>> {
+    let state = unsafe {
+        objc_getAssociatedObject(delegate, (&raw const WINDOW_STATE_KEY).cast())
+            .cast::<WindowDelegateState>()
+    };
+    NonNull::new(state)
 }
 
 /// Internal bridge used by Mulciber's Metal backend.
@@ -620,15 +924,26 @@ unsafe fn bool_isize(receiver: Object, name: &CStr, value: isize) -> bool {
     unsafe { function(receiver, selector(name), value) }
 }
 
-#[cfg(test)]
 unsafe fn bool_object(receiver: Object, name: &CStr, value: Object) -> bool {
     let function: unsafe extern "C" fn(Object, Selector, Object) -> bool =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), value) }
 }
 
+unsafe fn object_rect_init(receiver: Object, name: &CStr, rect: Rect) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, Rect) -> Object =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), rect) }
+}
+
 unsafe fn usize_value(receiver: Object, name: &CStr) -> usize {
     let function: unsafe extern "C" fn(Object, Selector) -> usize =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name)) }
+}
+
+unsafe fn u16_value(receiver: Object, name: &CStr) -> u16 {
+    let function: unsafe extern "C" fn(Object, Selector) -> u16 =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name)) }
 }
@@ -643,6 +958,18 @@ unsafe fn rect_value(receiver: Object, name: &CStr) -> Rect {
     let function: unsafe extern "C" fn(Object, Selector) -> Rect =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name)) }
+}
+
+unsafe fn point_value(receiver: Object, name: &CStr) -> Point {
+    let function: unsafe extern "C" fn(Object, Selector) -> Point =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name)) }
+}
+
+unsafe fn point_object(receiver: Object, name: &CStr, value: Point, object: Object) -> Point {
+    let function: unsafe extern "C" fn(Object, Selector, Point, Object) -> Point =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), value, object) }
 }
 
 unsafe fn rect_rect(receiver: Object, name: &CStr, value: Rect) -> Rect {
@@ -712,16 +1039,158 @@ fn physical_dimension(value: f64) -> Option<u32> {
     Some(rounded as u32)
 }
 
+fn appkit_modifiers(flags: usize) -> Modifiers {
+    let mut bits = 0;
+    if flags & MODIFIER_SHIFT != 0 {
+        bits |= Modifiers::SHIFT;
+    }
+    if flags & MODIFIER_CONTROL != 0 {
+        bits |= Modifiers::CONTROL;
+    }
+    if flags & MODIFIER_OPTION != 0 {
+        bits |= Modifiers::ALT;
+    }
+    if flags & MODIFIER_COMMAND != 0 {
+        bits |= Modifiers::SUPER;
+    }
+    if flags & MODIFIER_CAPS_LOCK != 0 {
+        bits |= Modifiers::CAPS_LOCK;
+    }
+    if flags & MODIFIER_FUNCTION != 0 {
+        bits |= Modifiers::FUNCTION;
+    }
+    Modifiers::from_bits(bits)
+}
+
+#[allow(clippy::too_many_lines)]
+fn appkit_key_code(code: u16) -> KeyCode {
+    match code {
+        0 => KeyCode::KeyA,
+        1 => KeyCode::KeyS,
+        2 => KeyCode::KeyD,
+        3 => KeyCode::KeyF,
+        4 => KeyCode::KeyH,
+        5 => KeyCode::KeyG,
+        6 => KeyCode::KeyZ,
+        7 => KeyCode::KeyX,
+        8 => KeyCode::KeyC,
+        9 => KeyCode::KeyV,
+        11 => KeyCode::KeyB,
+        12 => KeyCode::KeyQ,
+        13 => KeyCode::KeyW,
+        14 => KeyCode::KeyE,
+        15 => KeyCode::KeyR,
+        16 => KeyCode::KeyY,
+        17 => KeyCode::KeyT,
+        18 => KeyCode::Digit1,
+        19 => KeyCode::Digit2,
+        20 => KeyCode::Digit3,
+        21 => KeyCode::Digit4,
+        22 => KeyCode::Digit6,
+        23 => KeyCode::Digit5,
+        24 => KeyCode::Equal,
+        25 => KeyCode::Digit9,
+        26 => KeyCode::Digit7,
+        27 => KeyCode::Minus,
+        28 => KeyCode::Digit8,
+        29 => KeyCode::Digit0,
+        30 => KeyCode::BracketRight,
+        31 => KeyCode::KeyO,
+        32 => KeyCode::KeyU,
+        33 => KeyCode::BracketLeft,
+        34 => KeyCode::KeyI,
+        35 => KeyCode::KeyP,
+        36 => KeyCode::Enter,
+        37 => KeyCode::KeyL,
+        38 => KeyCode::KeyJ,
+        39 => KeyCode::Quote,
+        40 => KeyCode::KeyK,
+        41 => KeyCode::Semicolon,
+        42 => KeyCode::Backslash,
+        43 => KeyCode::Comma,
+        44 => KeyCode::Slash,
+        45 => KeyCode::KeyN,
+        46 => KeyCode::KeyM,
+        47 => KeyCode::Period,
+        48 => KeyCode::Tab,
+        49 => KeyCode::Space,
+        50 => KeyCode::Backquote,
+        51 => KeyCode::Backspace,
+        53 => KeyCode::Escape,
+        64 => KeyCode::F17,
+        65 => KeyCode::NumpadDecimal,
+        67 => KeyCode::NumpadMultiply,
+        69 => KeyCode::NumpadAdd,
+        71 => KeyCode::NumpadClear,
+        75 => KeyCode::NumpadDivide,
+        76 => KeyCode::NumpadEnter,
+        78 => KeyCode::NumpadSubtract,
+        79 => KeyCode::F18,
+        80 => KeyCode::F19,
+        81 => KeyCode::NumpadEqual,
+        82 => KeyCode::Numpad0,
+        83 => KeyCode::Numpad1,
+        84 => KeyCode::Numpad2,
+        85 => KeyCode::Numpad3,
+        86 => KeyCode::Numpad4,
+        87 => KeyCode::Numpad5,
+        88 => KeyCode::Numpad6,
+        89 => KeyCode::Numpad7,
+        90 => KeyCode::F20,
+        91 => KeyCode::Numpad8,
+        92 => KeyCode::Numpad9,
+        96 => KeyCode::F5,
+        97 => KeyCode::F6,
+        98 => KeyCode::F7,
+        99 => KeyCode::F3,
+        100 => KeyCode::F8,
+        101 => KeyCode::F9,
+        103 => KeyCode::F11,
+        105 => KeyCode::F13,
+        106 => KeyCode::F16,
+        107 => KeyCode::F14,
+        109 => KeyCode::F10,
+        111 => KeyCode::F12,
+        113 => KeyCode::F15,
+        114 => KeyCode::Insert,
+        115 => KeyCode::Home,
+        116 => KeyCode::PageUp,
+        117 => KeyCode::Delete,
+        118 => KeyCode::F4,
+        119 => KeyCode::End,
+        120 => KeyCode::F2,
+        121 => KeyCode::PageDown,
+        122 => KeyCode::F1,
+        123 => KeyCode::ArrowLeft,
+        124 => KeyCode::ArrowRight,
+        125 => KeyCode::ArrowDown,
+        126 => KeyCode::ArrowUp,
+        _ => KeyCode::Unidentified(u32::from(code)),
+    }
+}
+
+fn appkit_pointer_button(number: usize) -> PointerButton {
+    match number {
+        0 => PointerButton::Primary,
+        1 => PointerButton::Secondary,
+        2 => PointerButton::Middle,
+        _ => PointerButton::Other(u16::try_from(number).unwrap_or(u16::MAX)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
     use std::rc::Rc;
 
-    use crate::{PhysicalExtent, WindowEvent, WindowMetrics, WindowRevision};
+    use crate::{
+        KeyCode, PhysicalExtent, PointerButton, WindowEvent, WindowMetrics, WindowRevision,
+    };
 
     use super::{
-        WindowSlot, bool_object, create_window_delegate, metrics_transition, physical_dimension,
-        void,
+        MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_OPTION, MODIFIER_SHIFT, Size,
+        WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers, appkit_pointer_button,
+        bool_object, bool_value, create_content_view, create_window_delegate, metrics_transition,
+        physical_dimension, void, void_object,
     };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
@@ -770,9 +1239,11 @@ mod tests {
 
     #[test]
     fn window_delegate_records_a_close_request() {
-        let close_requested = Rc::new(Cell::new(false));
-        let delegate =
-            create_window_delegate(&close_requested).expect("delegate creation should succeed");
+        let state = Rc::new(WindowDelegateState {
+            close_requested: false.into(),
+            focused: false.into(),
+        });
+        let delegate = create_window_delegate(&state).expect("delegate creation should succeed");
 
         // SAFETY: The dynamically registered method accepts an unused object argument. The test then
         // balances the delegate's owned allocation.
@@ -785,6 +1256,75 @@ mod tests {
             void(delegate.as_ptr(), c"release");
         }
 
-        assert!(close_requested.get());
+        assert!(state.close_requested.get());
+    }
+
+    #[test]
+    fn window_delegate_records_focus_transitions() {
+        let state = Rc::new(WindowDelegateState {
+            close_requested: false.into(),
+            focused: false.into(),
+        });
+        let delegate = create_window_delegate(&state).expect("delegate creation should succeed");
+
+        // SAFETY: Both dynamically registered methods accept an unused notification object. The
+        // test balances the delegate's owned allocation after exercising both callbacks.
+        unsafe {
+            void_object(
+                delegate.as_ptr(),
+                c"windowDidBecomeKey:",
+                core::ptr::null_mut(),
+            );
+            assert!(state.focused.get());
+            void_object(
+                delegate.as_ptr(),
+                c"windowDidResignKey:",
+                core::ptr::null_mut(),
+            );
+            assert!(!state.focused.get());
+            void(delegate.as_ptr(), c"release");
+        }
+    }
+
+    #[test]
+    fn platform_content_view_accepts_first_responder() {
+        let view = create_content_view(Size {
+            width: 640.0,
+            height: 480.0,
+        })
+        .expect("content view creation should succeed");
+        // SAFETY: The test owns the initialized NSView and balances it after calling a registered
+        // no-argument method.
+        unsafe {
+            assert!(bool_value(view.as_ptr(), c"acceptsFirstResponder"));
+            void(view.as_ptr(), c"release");
+        }
+    }
+
+    #[test]
+    fn appkit_key_codes_map_by_physical_position() {
+        assert_eq!(appkit_key_code(0), KeyCode::KeyA);
+        assert_eq!(appkit_key_code(13), KeyCode::KeyW);
+        assert_eq!(appkit_key_code(123), KeyCode::ArrowLeft);
+        assert_eq!(appkit_key_code(999), KeyCode::Unidentified(999));
+    }
+
+    #[test]
+    fn appkit_modifiers_preserve_gameplay_flags() {
+        let modifiers = appkit_modifiers(
+            MODIFIER_SHIFT | MODIFIER_CONTROL | MODIFIER_OPTION | MODIFIER_COMMAND,
+        );
+        assert!(modifiers.shift());
+        assert!(modifiers.control());
+        assert!(modifiers.alt());
+        assert!(modifiers.super_key());
+    }
+
+    #[test]
+    fn appkit_pointer_buttons_preserve_extra_button_numbers() {
+        assert_eq!(appkit_pointer_button(0), PointerButton::Primary);
+        assert_eq!(appkit_pointer_button(1), PointerButton::Secondary);
+        assert_eq!(appkit_pointer_button(2), PointerButton::Middle);
+        assert_eq!(appkit_pointer_button(7), PointerButton::Other(7));
     }
 }

@@ -48,6 +48,39 @@ From the plan's task list, this record covers:
 
 Task 6 (native differentiation) is Gate 4 scope; task 7 (integrated runtime) is Gate 5 scope.
 
+### Post-record input parity extension
+
+On 2026-07-17, after the first results below had been recorded, a separate lower-level input-
+transition comparison pair was added. The original `mulciber-cube` and `wgpu-cube` sources remain
+unchanged, so this does not retroactively change the Gate 2 task list, thresholds, measurements, or
+line-count table, and it is not the Gate 5 snapshot, fixed-update, or runtime task.
+
+`mulciber-input-cube` and `wgpu-input-cube` add equivalent W/A/S/D and arrow transitions for
+rotation, primary-button dragging for orbit, precise/pixel or coarse/line scrolling for zoom, focus
+loss to cancel dragging, Space spin toggle, and R reset. Both start with automatic spin paused, use top-left logical pointer
+coordinates and the same interaction constants and transform math. The Mulciber side receives ordered transitions
+through `mulciber-platform`; the comparison side uses ordinary `winit::WindowEvent` keyboard,
+cursor, mouse, wheel, and focus variants. Input application size and behavior are measured as a
+separate extension, never folded into the preserved graphics-only figures below.
+The wgpu input peer retains the same pre-existing `bytemuck` upload helper as `wgpu-cube`; neither
+Mulciber example adds it because Mulciber's typed `create_mesh` boundary performs that safe conversion
+inside the library. Dependency and line accounting preserves this difference rather than adding an
+unused application dependency for visual symmetry.
+
+At this implementation checkpoint, raw `wc -l` application-source counts (shader excluded) are:
+
+| Source | Lines |
+| --- | --- |
+| `mulciber-input-cube` (`main.rs` + `scene.rs`) | 202 + 80 |
+| `wgpu-input-cube` (`main.rs` + `scene.rs`) | 601 + 83 |
+
+These are source-size facts, not an input-ergonomics verdict. The wgpu input application omits the
+graphics comparison's finite/fallback validation switches so both input examples are ordinary
+interactive programs; results must discuss total behavior and plumbing rather than subtracting the
+differently scoped historical cube figures. The Mulciber input cube passed an iterative physical
+AppKit review recorded in the macOS runbook. The wgpu peer compiled and linted on that machine but has
+not yet been physically exercised, so no behavioral comparison is recorded here.
+
 ## Fixed measurement configuration
 
 - **Machines.** Linux: x86-64 CachyOS desktop, i5-12400F (12 threads), RTX 3060 Ti

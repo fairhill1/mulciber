@@ -32,8 +32,9 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   titlebar-close shutdown all completed cleanly with validation-clean output; a separate automated
   path acquired and abandoned one drawable before submission, then recovered for 120 submitted
   frames and clean shutdown; display-change, multi-display, differing backing scale factors,
-  input, the macOS 26 / Metal 4 runtime, and broader Apple-silicon hardware evidence remain
-  outstanding).
+  input transitions are implemented as an AppKit-first experimental slice but physical input
+  evidence, the macOS 26 / Metal 4 rendering runtime, and broader Apple-silicon hardware evidence
+  remain outstanding).
 - [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
   an Nvidia RTX 3060 Ti; the window resizes smoothly, rendering remains functional, and driving
   redraw from `WM_SIZE` improved measured callback spacing from about 27 ms to 9 ms and looked
@@ -184,6 +185,14 @@ redraw delivery inside its nested sizing loop. The extracted path passed the aut
 and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at revision `044ae86`,
 completing the initial peer platform-spine evidence without broadening the support claim. See the
 [experimental platform contract](api-platform-contract.md).
+
+Input extraction progress: AppKit now translates ordered physical-key, modifier, logical pointer,
+button, precise/coarse scroll, and focus transitions through the existing fallible platform pump.
+The separate `mulciber-input-cube` visibly consumes those transitions without introducing snapshot
+or runtime policy, with an equivalent `wgpu-input-cube` preserved beside the unchanged minimal
+graphics comparison pair. This is an AppKit-first design experiment; physical macOS evidence and all
+Win32, Wayland, and X11 implementations remain pending, so no cross-platform input support is
+claimed. See the [experimental input contract](input-contract.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame

@@ -92,6 +92,7 @@ PFN_vkBindImageMemory
 PFN_vkFreeMemory
 PFN_vkMapMemory
 PFN_vkQueuePresentKHR
+PFN_vkReleaseSwapchainImagesKHR
 PFN_vkQueueSubmit2
 PFN_vkResetCommandBuffer
 PFN_vkResetFences
@@ -420,6 +421,7 @@ VkPipelineStageFlags2
 VkPipelineVertexInputStateCreateInfo
 VkPipelineViewportStateCreateInfo
 VkPresentInfoKHR
+VkReleaseSwapchainImagesInfoKHR
 VkSwapchainPresentFenceInfoKHR
 VkQueue
 VkQueueFlagBits

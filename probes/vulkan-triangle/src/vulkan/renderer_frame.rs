@@ -33,10 +33,17 @@ impl Renderer {
         }
 
         let mut image_index = 0;
-        let acquire_fence = if self.device.adapter.swapchain_maintenance1 {
+        let abandon_acquired_frame = self.frame_abandonment.should_abandon();
+        let acquire_semaphore = if abandon_acquired_frame {
             ptr::null_mut()
         } else {
+            self.image_available
+        };
+        let acquire_fence = if abandon_acquired_frame || !self.device.adapter.swapchain_maintenance1
+        {
             self.acquire_fence
+        } else {
+            ptr::null_mut()
         };
         let operation_started = Instant::now();
         // SAFETY: Swapchain and semaphore are live; output is writable.
@@ -48,7 +55,7 @@ impl Renderer {
                 self.device.handle,
                 self.swapchain,
                 self.acquire_timeout,
-                self.image_available,
+                acquire_semaphore,
                 acquire_fence,
                 &raw mut image_index,
             )
@@ -80,6 +87,9 @@ impl Renderer {
         }
 
         let image_slot = image_index as usize;
+        if !acquire_fence.is_null() {
+            self.wait_and_reset_fence(acquire_fence, "image-acquisition fence")?;
+        }
         if self.device.adapter.swapchain_maintenance1 {
             if self.present_pending[image_slot] {
                 self.wait_and_reset_fence(
@@ -88,13 +98,21 @@ impl Renderer {
                 )?;
                 self.present_pending[image_slot] = false;
             }
-        } else {
-            self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
-            if self.presented[image_slot] {
-                self.destroy_all_retired_swapchains();
-            }
+        } else if self.presented[image_slot] {
+            self.destroy_all_retired_swapchains();
         }
         trace_sample.acquire = operation_started.elapsed();
+
+        if abandon_acquired_frame {
+            let operation_started = Instant::now();
+            self.abandon_acquired_image(image_index, width, height)?;
+            self.frame_abandonment.record_abandonment();
+            trace_sample.recreate =
+                (!self.device.adapter.swapchain_maintenance1).then(|| operation_started.elapsed());
+            self.live_resize_trace
+                .finish(trace_started, trace_sample, false);
+            return Ok(false);
+        }
 
         let view = *self
             .views
@@ -187,9 +205,59 @@ impl Renderer {
         } else {
             check(result, "vkQueuePresentKHR")?;
         }
+        if matches!(result, vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR)
+            && self.frame_abandonment.record_presentation()
+        {
+            println!("Acquired-frame abandonment: recovery confirmed by a later presented frame");
+        }
         self.live_resize_trace
             .finish(trace_started, trace_sample, true);
         Ok(true)
+    }
+
+    fn abandon_acquired_image(
+        &mut self,
+        image_index: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), ProbeError> {
+        if self.device.adapter.swapchain_maintenance1 {
+            let release_info = vk::VkReleaseSwapchainImagesInfoKHR {
+                sType: vk::VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_KHR,
+                swapchain: self.swapchain,
+                imageIndexCount: 1,
+                pImageIndices: &raw const image_index,
+                ..Default::default()
+            };
+            // SAFETY: Acquisition completion was observed through the dedicated fence, no device
+            // work references this image, and the maintenance feature is enabled on the device.
+            check(
+                unsafe {
+                    self.device
+                        .functions
+                        .release_swapchain_images
+                        .expect("loaded maintenance function")(
+                        self.device.handle,
+                        &raw const release_info,
+                    )
+                },
+                "vkReleaseSwapchainImagesKHR",
+            )?;
+            println!(
+                "Acquired-frame abandonment: released image {image_index} without submission or \
+                 presentation via vkReleaseSwapchainImagesKHR"
+            );
+        } else {
+            // Base VK_KHR_swapchain cannot return an acquired image without presentation. Retiring
+            // this generation through oldSwapchain and later destroying it after all image uses
+            // have completed is the compatibility recovery boundary.
+            self.recreate_swapchain(width, height)?;
+            println!(
+                "Acquired-frame abandonment: retired the acquired image's swapchain generation \
+                 without submission or presentation"
+            );
+        }
+        Ok(())
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -793,7 +861,8 @@ impl Renderer {
             self.wait_for_frame()?;
             self.collect_frame_gpu_timestamps()?;
             self.report_gpu_timing();
-            return self.save_pipeline_cache();
+            self.save_pipeline_cache()?;
+            return self.frame_abandonment.require_recovery();
         }
 
         self.wait_for_frame()?;
@@ -848,7 +917,8 @@ impl Renderer {
             retired.present_pending.fill(false);
         }
         self.report_gpu_timing();
-        self.save_pipeline_cache()
+        self.save_pipeline_cache()?;
+        self.frame_abandonment.require_recovery()
     }
 
     pub(super) fn destroy_swapchain_resources(&mut self) {

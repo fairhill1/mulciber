@@ -6,6 +6,7 @@ use super::ProbeError;
 #[derive(Debug, Default)]
 pub(super) struct RunOptions {
     pub(super) frame_limit: Option<NonZeroU64>,
+    pub(super) abandon_acquired_frame_once: bool,
     pub(super) platform: Option<String>,
     pub(super) pipeline_cache: PipelineCacheOptions,
 }
@@ -35,6 +36,7 @@ pub(super) fn parse_run_options(
                         .map_err(|_| ProbeError("--frames requires a positive integer".into()))?,
                 );
             }
+            "--abandon-acquired-frame-once" => options.abandon_acquired_frame_once = true,
             "--platform" => {
                 let value = arguments
                     .next()
@@ -81,10 +83,12 @@ mod tests {
             "cache.bin".into(),
             "--frames".into(),
             "42".into(),
+            "--abandon-acquired-frame-once".into(),
             "--require-pipeline-cache-hits".into(),
         ])
         .expect("valid options");
         assert_eq!(options.frame_limit.map(NonZeroU64::get), Some(42));
+        assert!(options.abandon_acquired_frame_once);
         assert_eq!(
             options.pipeline_cache.path,
             Some(PathBuf::from("cache.bin"))

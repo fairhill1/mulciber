@@ -28,7 +28,7 @@ mod renderer_transfer;
 mod resize_trace;
 mod texture;
 
-use options::{PipelineCacheOptions, parse_run_options};
+use options::{RunOptions, parse_run_options};
 use pipeline_cache::{
     PipelineCacheIdentity, default_path as pipeline_cache_default_path, replace_file_atomically,
     uuid_hex as pipeline_cache_uuid_hex, validate_header as validate_pipeline_cache_header,
@@ -149,7 +149,7 @@ pub fn run() -> Result<(), ProbeError> {
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
     let device = DeviceContext::new(instance)?;
-    let mut renderer = Renderer::new(device, &window, &options.pipeline_cache)?;
+    let mut renderer = Renderer::new(device, &window, &options)?;
     let mut rendered_extent = window
         .client_extent()
         .map_err(|error| ProbeError(error.to_string()))?;
@@ -652,6 +652,7 @@ struct DeviceFns {
     get_swapchain_images: vk::PFN_vkGetSwapchainImagesKHR,
     acquire_next_image: vk::PFN_vkAcquireNextImageKHR,
     queue_present: vk::PFN_vkQueuePresentKHR,
+    release_swapchain_images: vk::PFN_vkReleaseSwapchainImagesKHR,
     create_image_view: vk::PFN_vkCreateImageView,
     destroy_image_view: vk::PFN_vkDestroyImageView,
     create_sampler: vk::PFN_vkCreateSampler,
@@ -712,7 +713,11 @@ struct DeviceFns {
 }
 
 impl DeviceFns {
-    unsafe fn load(instance: &InstanceContext, device: vk::VkDevice) -> Result<Self, ProbeError> {
+    unsafe fn load(
+        instance: &InstanceContext,
+        device: vk::VkDevice,
+        swapchain_maintenance1: bool,
+    ) -> Result<Self, ProbeError> {
         let get = instance
             .functions
             .get_device_proc_addr
@@ -749,6 +754,11 @@ impl DeviceFns {
             get_swapchain_images: load!(c"vkGetSwapchainImagesKHR"),
             acquire_next_image: load!(c"vkAcquireNextImageKHR"),
             queue_present: load!(c"vkQueuePresentKHR"),
+            release_swapchain_images: if swapchain_maintenance1 {
+                load!(c"vkReleaseSwapchainImagesKHR")
+            } else {
+                None
+            },
             create_image_view: load!(c"vkCreateImageView"),
             destroy_image_view: load!(c"vkDestroyImageView"),
             create_sampler: load!(c"vkCreateSampler"),
@@ -889,7 +899,8 @@ impl DeviceContext {
             "vkCreateDevice",
         )?;
         // SAFETY: `handle` is live and names/types are paired in the loader.
-        let functions = unsafe { DeviceFns::load(&instance, handle) }?;
+        let functions =
+            unsafe { DeviceFns::load(&instance, handle, adapter.swapchain_maintenance1) }?;
         let mut queue = ptr::null_mut();
         // SAFETY: Queue zero exists because one queue was requested from this family.
         unsafe {
@@ -1363,6 +1374,54 @@ impl PipelineCacheState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameAbandonmentState {
+    Disabled,
+    Pending,
+    AwaitingRecovery,
+    Recovered,
+}
+
+impl FrameAbandonmentState {
+    const fn new(requested: bool) -> Self {
+        if requested {
+            Self::Pending
+        } else {
+            Self::Disabled
+        }
+    }
+
+    const fn should_abandon(self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    fn record_abandonment(&mut self) {
+        debug_assert_eq!(*self, Self::Pending);
+        *self = Self::AwaitingRecovery;
+    }
+
+    fn record_presentation(&mut self) -> bool {
+        if *self == Self::AwaitingRecovery {
+            *self = Self::Recovered;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn require_recovery(self) -> Result<(), ProbeError> {
+        match self {
+            Self::Disabled | Self::Recovered => Ok(()),
+            Self::Pending => Err(ProbeError(
+                "requested acquired-frame abandonment never acquired an image".into(),
+            )),
+            Self::AwaitingRecovery => Err(ProbeError(
+                "acquired-frame abandonment was not followed by a presented recovery frame".into(),
+            )),
+        }
+    }
+}
+
 struct Renderer {
     device: DeviceContext,
     pipeline_cache: PipelineCacheState,
@@ -1422,6 +1481,7 @@ struct Renderer {
     retired: Vec<RetiredSwapchain>,
     recreate_after_present: bool,
     acquire_timeout: u64,
+    frame_abandonment: FrameAbandonmentState,
     live_resize_trace: LiveResizeTrace,
 }
 
@@ -1430,8 +1490,9 @@ impl Renderer {
     fn new(
         device: DeviceContext,
         window: &Window,
-        pipeline_cache_options: &PipelineCacheOptions,
+        options: &RunOptions,
     ) -> Result<Self, ProbeError> {
+        let pipeline_cache_options = &options.pipeline_cache;
         let depth_format = choose_depth_format(&device)?;
         require_offscreen_format(&device)?;
         let pipeline_cache_path = pipeline_cache_options
@@ -1508,10 +1569,14 @@ impl Renderer {
             retired: Vec::new(),
             recreate_after_present: false,
             acquire_timeout: platform::acquire_timeout(window),
+            frame_abandonment: FrameAbandonmentState::new(options.abandon_acquired_frame_once),
             live_resize_trace: LiveResizeTrace::from_environment(),
         };
         if renderer.live_resize_trace.is_enabled() {
             println!("Live resize timing trace enabled");
+        }
+        if renderer.frame_abandonment.should_abandon() {
+            println!("Acquired-frame abandonment: one-shot probe enabled");
         }
         renderer.create_pipeline_cache(pipeline_cache_options.rebuild)?;
         renderer.create_frame_resources()?;
@@ -2170,6 +2235,18 @@ mod tests {
     fn timestamp_delta_handles_queue_bit_width_wraparound() {
         assert_eq!(timestamp_tick_delta(1_000, 1_025, 64), 25);
         assert_eq!(timestamp_tick_delta(250, 7, 8), 13);
+    }
+
+    #[test]
+    fn frame_abandonment_requires_a_later_presentation() {
+        let mut state = FrameAbandonmentState::new(true);
+        assert!(state.should_abandon());
+        state.record_abandonment();
+        assert!(state.require_recovery().is_err());
+        assert!(state.record_presentation());
+        assert_eq!(state, FrameAbandonmentState::Recovered);
+        assert!(state.require_recovery().is_ok());
+        assert!(!state.record_presentation());
     }
 
     #[test]

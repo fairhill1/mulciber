@@ -148,6 +148,20 @@ cargo run -p mulciber-vulkan-triangle -- --platform x11 --frames 600
 Without `--platform`, the Linux triangle probe selects Wayland when `WAYLAND_DISPLAY` is set and
 X11 when only `DISPLAY` is set.
 
+Exercise the acquired-but-unsubmitted frame path separately:
+
+```sh
+cargo run -p mulciber-vulkan-triangle -- \
+  --abandon-acquired-frame-once --frames 120
+```
+
+On adapters with `VK_KHR_swapchain_maintenance1`, the probe acquires through a dedicated fence and
+returns the untouched image with `vkReleaseSwapchainImagesKHR`. The base-swapchain compatibility path
+retires the acquired image's complete swapchain generation instead. The run fails unless a later
+frame is submitted, presented, and shutdown completes without validation messages. Set
+`MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK=1` to exercise the compatibility path on a maintenance-
+capable adapter.
+
 The probe uploads geometry and a deterministic 8x8 checkerboard through temporary staging buffers
 into device-local buffers and either a directly sampled BC1 image or an RGBA8 fallback image. It
 copies the selected texture back and verifies every encoded or expanded byte before rendering through

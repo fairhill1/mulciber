@@ -173,8 +173,8 @@ fn run() -> Result<(), GameError> {
             Ok(encoded) => queue.submit_and_present(encoded, frame)?,
             Err(error) => {
                 // This must be an explicit, safe operation. Metal may release an unsubmitted
-                // drawable at a backend-owned autorelease boundary. Vulkan cannot inherit that
-                // behavior without evidence for how an acquired image is recovered.
+                // drawable at a backend-owned autorelease boundary. Vulkan either releases an
+                // unused image through swapchain maintenance or replaces its surface generation.
                 frame.abandon()?;
                 return Err(error);
             }
@@ -203,7 +203,7 @@ path must remain explainable without hidden global state.
 | Acquire a frame | Obtain a drawable from `nextDrawable`; temporary absence is normal. | Acquire a swapchain image with synchronization; outdated or suboptimal state may force recreation. | Acquisition distinguishes ready, temporarily unavailable, reconfigured, and fatal outcomes. |
 | Rebuild extent-dependent state | Drawable size follows backing pixels; the game recreates depth and other targets. | Swapchain extent/format/generation and application attachments may all change. | A graphics-owned generation tells the game exactly when its dependent state is stale. |
 | Submit and present | Encode presentation on a command buffer and retain it through completion. | Join acquire, render completion, queue submission, presentation, and later presentation retirement. | The ordinary operation consumes both encoded work and the scoped frame without exposing backend synchronization tokens. |
-| Abandon a frame | The validated probe releases one drawable at its autorelease boundary and later recovers. | Recovery after acquiring but never submitting/presenting is still unresolved. | No shared guarantee is finalized until Vulkan evidence exists; the operation stays explicit and fallible in this sketch. |
+| Abandon a frame | The validated probe releases one drawable at its autorelease boundary and later recovers. | The validated one-shot path acquires with a fence and no reusable presentation semaphore. Swapchain maintenance releases the unused image directly; the base path replaces and retires the complete swapchain generation. Both recover through later presentation. | Non-presentation is explicit and fallible. It may invalidate the surface generation even when platform metrics did not change, and the game does not receive a native release primitive. |
 | Shut down | Wait and inspect retained command buffers before releasing resources. | Wait for rendering and presentation ownership before destroying dependent objects. | Explicit shutdown drains the stronger native ownership condition and reports failure. |
 
 The shape is intentionally not a Metal command encoder renamed into a portable namespace, nor a
@@ -236,8 +236,9 @@ observe and leaves native mechanisms inside their backends.
   boundary.
 - Whether surface reconfiguration returns a separate acquisition outcome or a ready frame carrying a
   changed generation. The game must receive one unambiguous rebuild signal either way.
-- The exact safe behavior and recovery category for an acquired frame that is not presented. Vulkan
-  evidence is required before `abandon` becomes a contract.
+- Whether explicit non-presentation remains named `abandon` or is expressed by another consuming
+  operation. The established outcome is that it safely consumes the frame, may advance the graphics
+  surface generation, and reports a failure if native recovery cannot complete.
 - Whether full occlusion is a surface-unavailable fact, a pacing hint, or only platform visibility
   state. It must not silently stop unrelated game simulation.
 - Stable error categories, device-loss recovery, multi-window routing, and an owning runtime loop.

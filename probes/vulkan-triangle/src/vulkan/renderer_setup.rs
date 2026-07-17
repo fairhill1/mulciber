@@ -81,24 +81,24 @@ impl Renderer {
             },
             "vkCreateFence",
         )?;
-        if !self.device.adapter.swapchain_maintenance1 {
-            let acquire_fence_info = vk::VkFenceCreateInfo {
-                sType: vk::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                ..Default::default()
-            };
-            // SAFETY: Device/create info are valid; output is writable.
-            check(
-                unsafe {
-                    self.device.functions.create_fence.expect("loaded function")(
-                        self.device.handle,
-                        &raw const acquire_fence_info,
-                        ptr::null(),
-                        &raw mut self.acquire_fence,
-                    )
-                },
-                "vkCreateFence for image acquisition",
-            )?;
-        }
+        let acquire_fence_info = vk::VkFenceCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            ..Default::default()
+        };
+        // SAFETY: Device/create info are valid and output storage is writable. The maintenance path
+        // uses this fence only for an acquired frame that will be released without submission; the
+        // compatibility path also uses it to prove reacquisition completion.
+        check(
+            unsafe {
+                self.device.functions.create_fence.expect("loaded function")(
+                    self.device.handle,
+                    &raw const acquire_fence_info,
+                    ptr::null(),
+                    &raw mut self.acquire_fence,
+                )
+            },
+            "vkCreateFence for image acquisition",
+        )?;
         Ok(())
     }
 

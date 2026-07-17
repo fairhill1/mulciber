@@ -6309,6 +6309,30 @@ impl Default for VkSwapchainPresentFenceInfoKHR {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkReleaseSwapchainImagesInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub swapchain: VkSwapchainKHR,
+    pub imageIndexCount: u32,
+    pub pImageIndices: *const u32,
+}
+impl Default for VkReleaseSwapchainImagesInfoKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type PFN_vkReleaseSwapchainImagesKHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pReleaseInfo: *const VkReleaseSwapchainImagesInfoKHR,
+    ) -> VkResult,
+>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkDebugUtilsMessengerEXT_T {
     _unused: [u8; 0],
 }

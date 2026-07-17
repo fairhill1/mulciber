@@ -240,9 +240,11 @@ capability report, full `vulkaninfo`, and Cargo test output. Its runtime matrix 
 cache during the normal 600-frame run, expands it on forced 1x, requires read-only cross-process hits
 on native 4x and forced 1x, performs the resize smoke in strict mode, verifies that strict runs do not
 change the artifact, recovers copies with truncated, incompatible, and payload-damaged data, and
-runs once with caching disabled. It also forces RGBA8 through native 4x, forced 1x, and resize so a
-BC-capable adapter cannot hide fallback regressions. It then guides two interactive runs: lifecycle
-testing closed through the title bar, followed by an Alt+F4 shutdown test.
+runs once with caching disabled. It exercises acquired-frame non-presentation through both the native
+swapchain-maintenance path and the forced base-swapchain generation-replacement path. It also forces
+RGBA8 through native 4x, forced 1x, and resize so a BC-capable adapter cannot hide fallback
+regressions. It then guides two interactive runs: lifecycle testing closed through the title bar,
+followed by an Alt+F4 shutdown test.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP
@@ -258,11 +260,21 @@ $env:VK_LOADER_DEBUG = "error,warn"
 cargo run -q -p mulciber-vulkan-info -- --json
 cargo test -p mulciber-vulkan-triangle
 cargo run -p mulciber-vulkan-triangle -- --frames 600
+cargo run -p mulciber-vulkan-triangle -- --abandon-acquired-frame-once --frames 120
+$env:MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK = "1"
+cargo run -p mulciber-vulkan-triangle -- --abandon-acquired-frame-once --frames 120
+Remove-Item Env:MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK
 ```
 
 Success means exit code zero, a colored triangle was visible, and neither the Mulciber validation
 callback nor the loader printed a warning or error. Preserve the full output with the capability
 report for the machine.
+
+Each acquired-frame non-presentation run must report exactly one untouched acquired image, recovery
+after a later presentation, 120 submitted frames, and clean shutdown. The normal run uses
+`vkReleaseSwapchainImagesKHR` when maintenance is supported; the forced run must replace and retire
+the complete abandoned swapchain generation. The preferred validation script runs and archives both
+commands automatically.
 
 For an opt-in live-resize timing summary, set `MULCIBER_VULKAN_RESIZE_TRACE=1` before launching without a
 frame limit. Drag-resize, close the window, and preserve the printed callback, recreation, acquire,

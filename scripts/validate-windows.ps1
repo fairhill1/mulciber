@@ -276,6 +276,25 @@ try {
         Remove-Item Env:MULCIBER_VULKAN_FORCE_MSAA_1X -ErrorAction SilentlyContinue
     }
     $PipelineCacheHash = (Get-FileHash -Algorithm SHA256 $PipelineCachePath).Hash
+    $AbandonmentFrames = [Math]::Min($Frames, 120)
+    Invoke-NativeLogged $Probe @(
+        "--frames", $AbandonmentFrames.ToString(),
+        "--abandon-acquired-frame-once",
+        "--pipeline-cache", $PipelineCachePath,
+        "--require-pipeline-cache-hits"
+    ) "abandon-acquired-frame.log"
+    $env:MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK = "1"
+    try {
+        Invoke-NativeLogged $Probe @(
+            "--frames", $AbandonmentFrames.ToString(),
+            "--abandon-acquired-frame-once",
+            "--pipeline-cache", $PipelineCachePath,
+            "--require-pipeline-cache-hits"
+        ) "abandon-acquired-frame-fallback.log"
+    }
+    finally {
+        Remove-Item Env:MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK -ErrorAction SilentlyContinue
+    }
     $MissingCachePath = Join-Path $ArtifactDirectory "pipeline-cache-missing.bin"
     Invoke-NativeExpectedFailure $Probe @(
         "--frames", "1",
@@ -422,6 +441,8 @@ try {
     $RuntimeLogs = @(
         Join-Path $ArtifactDirectory "finite-run.log"
         Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
+        Join-Path $ArtifactDirectory "abandon-acquired-frame.log"
+        Join-Path $ArtifactDirectory "abandon-acquired-frame-fallback.log"
         Join-Path $ArtifactDirectory "pipeline-cache-strict-4x.log"
         Join-Path $ArtifactDirectory "pipeline-cache-strict-1x.log"
         Join-Path $ArtifactDirectory "pipeline-cache-strict-resize.log"

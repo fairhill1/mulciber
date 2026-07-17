@@ -10,6 +10,9 @@ retaining native window, loader, and Vulkan surface creation in separate modules
   before Vulkan instance/surface creation because Mulciber requires Vulkan 1.4.
 - Native Wayland and X11-through-XWayland Vulkan 1.4 capability results were recorded on physical
   Linux on 2026-07-16. Native Xorg and broader driver/hardware coverage remain pending.
+- One-shot acquired-frame non-presentation was physically exercised on native Wayland on
+  2026-07-17 through both `VK_KHR_swapchain_maintenance1` image release and the forced
+  base-swapchain generation-replacement path, followed by 120 presented recovery frames.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
 - The peer Vulkan triangle probe has runtime-selected Wayland and X11 platform modules behind a
   `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection. The Wayland module creates a
@@ -102,6 +105,35 @@ titlebar close, capturing 158 resize-trace samples (record + submit average 0.17
 acquisition average 0.005 ms) with no validation messages and a drained shutdown. This re-run
 retires the pending Wayland dispatch-path regression check from the earlier revision of this
 runbook.
+
+### Acquired-frame non-presentation evidence
+
+On 2026-07-17, a development tree based on revision
+`86dbb462e32f311a4cef7e6c8fbe6b663235412d` added a deterministic acquired-frame
+non-presentation path. It ran on the same physical native-Wayland RTX 3060 Ti system described
+above with the Khronos validation layer enabled:
+
+```sh
+target/debug/mulciber-vulkan-triangle \
+  --frames 120 --abandon-acquired-frame-once
+MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK=1 \
+  target/debug/mulciber-vulkan-triangle \
+  --frames 120 --abandon-acquired-frame-once
+```
+
+The default run acquired image zero with a dedicated fence and no image-available semaphore,
+submitted no command buffer, queued no presentation, and returned the untouched image through
+`vkReleaseSwapchainImagesKHR`. It then presented 120 later frames. The forced fallback run performed
+the same unused acquisition without the maintenance extension, created a replacement swapchain with
+the abandoned generation as `oldSwapchain`, retired that complete generation, and then presented
+120 later frames. Both runs exercised the full startup workload, loaded application-cache hits for
+all four pipelines, reported recovery after a later presentation, drained rendering and presentation
+ownership, emitted no validation warning or error, and exited zero.
+
+This establishes the two one-shot Vulkan recovery mechanisms on one Nvidia/Wayland tier. It is
+development-tree evidence without a validation archive, and it does not establish repeated
+non-presentation, non-Nvidia drivers, Windows behavior, abandonment during resize or suspension, or
+a naturally maintenance-less adapter.
 
 ### Initial X11 presentation evidence
 
@@ -232,6 +264,11 @@ Run from a native Wayland session after installing the Khronos validation layer:
 ```sh
 cargo run -p mulciber-vulkan-triangle
 MULCIBER_VULKAN_RESIZE_TRACE=1 cargo run -p mulciber-vulkan-triangle
+cargo run -p mulciber-vulkan-triangle -- \
+  --abandon-acquired-frame-once --frames 120
+MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK=1 \
+  cargo run -p mulciber-vulkan-triangle -- \
+  --abandon-acquired-frame-once --frames 120
 ```
 
 Confirm that server-side chrome and the rendered workload are visible. Physically exercise drag
@@ -240,6 +277,9 @@ validation message. A passing run must remain responsive during resize, recreate
 extent-dependent attachments, continue rendering after restore, and drain both GPU and presentation
 ownership during shutdown. These checks do not substitute for display-change, explicit zero-sized
 suspension, input, multi-display, or broader compositor/hardware coverage.
+The two finite non-presentation runs must each report exactly one untouched acquired image, later
+presentation recovery, 120 submitted frames, and clean shutdown. Record whether the native extension
+or forced generation-replacement path ran.
 
 ## X11 presentation run
 

@@ -53,6 +53,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   multi-display, and native Xorg coverage remain outstanding).
 - [x] Replace conventional device-idle swapchain retirement with tracked presentation completion
   using presentation fences when available and a deferred-retirement fallback.
+- [x] Prove one-shot Vulkan acquired-frame non-presentation through
+  `vkReleaseSwapchainImagesKHR` when swapchain maintenance is enabled and whole-generation
+  replacement on the base-swapchain fallback, followed by 120 presented recovery frames and clean
+  shutdown (physically exercised on native Wayland on the current Nvidia tier, with the compatibility
+  path forced).
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.

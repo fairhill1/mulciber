@@ -86,8 +86,11 @@ impl PhysicalExtent {
 pub struct WindowRevision(u64);
 
 impl WindowRevision {
+    // Only the AppKit backend constructs revisions today; peer platform modules will follow.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) const INITIAL: Self = Self(1);
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
@@ -108,6 +111,8 @@ pub struct WindowMetrics {
 }
 
 impl WindowMetrics {
+    // Only the AppKit backend constructs metrics today; peer platform modules will follow.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) const fn new(
         extent: PhysicalExtent,
         scale_factor: f64,
@@ -198,6 +203,8 @@ pub enum PumpStatus {
 pub struct PlatformError(String);
 
 impl PlatformError {
+    // Only the AppKit backend constructs platform errors today; peer platform modules will follow.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }

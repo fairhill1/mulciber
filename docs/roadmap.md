@@ -170,6 +170,13 @@ and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at rev
 completing the initial peer platform-spine evidence without broadening the support claim. See the
 [experimental platform contract](api-platform-contract.md).
 
+Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
+graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
+dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix
+physically passed after the integration, while the Metal path cross-host type-checks and lints but
+still requires a native macOS validation run. Device/resource/command ownership and the remaining
+decision row stay open. See the [experimental graphics contract](api-graphics-contract.md).
+
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.
 

@@ -8,6 +8,8 @@ whether the eventual API uses these exact constructors or enum names.
 The flow is written before graphics types are implemented so that native Metal and Vulkan object
 shapes do not become the public API by accident. It extends the already implemented experimental
 [`mulciber-platform` contract](api-platform-contract.md).
+The first implemented generation, acquisition, and disposition vocabulary is recorded in the
+[experimental graphics lifecycle contract](api-graphics-contract.md).
 
 ## Application view
 

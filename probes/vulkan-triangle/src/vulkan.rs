@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use mulciber::{FrameAcquire, FrameDisposition, SurfaceExtent, SurfaceInfo, SurfaceUnavailable};
+
 use crate::platform::{self, Window};
 use crate::vk;
 
@@ -60,6 +62,24 @@ const SCENE_QUERY_END: u32 = 5;
 const POST_QUERY_START: u32 = 6;
 const POST_QUERY_END: u32 = 7;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+fn next_surface_info(
+    current: Option<SurfaceInfo>,
+    extent: SurfaceExtent,
+) -> Result<SurfaceInfo, ProbeError> {
+    current
+        .map_or_else(
+            || SurfaceInfo::initial(extent),
+            |info| info.reconfigured(extent),
+        )
+        .ok_or_else(|| {
+            ProbeError(if extent.is_empty() {
+                "Vulkan produced an empty configured surface extent".into()
+            } else {
+                "Vulkan surface generation space is exhausted".into()
+            })
+        })
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1426,6 +1446,7 @@ struct Renderer {
     format: vk::VkFormat,
     depth_format: vk::VkFormat,
     extent: vk::VkExtent2D,
+    surface_info: Option<SurfaceInfo>,
     images: Vec<vk::VkImage>,
     views: Vec<vk::VkImageView>,
     offscreen: GpuImage,
@@ -1514,6 +1535,7 @@ impl Renderer {
             format: vk::VK_FORMAT_UNDEFINED,
             depth_format,
             extent: vk::VkExtent2D::default(),
+            surface_info: None,
             images: Vec::new(),
             views: Vec::new(),
             offscreen: GpuImage::default(),
@@ -2244,6 +2266,19 @@ mod tests {
         assert_eq!(state, FrameAbandonmentState::Recovered);
         assert!(state.require_recovery().is_ok());
         assert!(!state.record_presentation());
+    }
+
+    #[test]
+    fn swapchain_replacement_advances_the_graphics_generation() {
+        let extent = SurfaceExtent::new(960, 540);
+        let first = next_surface_info(None, extent).unwrap();
+        let second = next_surface_info(Some(first), extent).unwrap();
+        let resized = next_surface_info(Some(second), SurfaceExtent::new(1280, 720)).unwrap();
+
+        assert_eq!(first.generation().get(), 1);
+        assert_eq!(second.generation().get(), 2);
+        assert_eq!(resized.generation().get(), 3);
+        assert_eq!(resized.extent(), SurfaceExtent::new(1280, 720));
     }
 
     #[test]

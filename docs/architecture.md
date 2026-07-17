@@ -22,8 +22,9 @@ parallel and is not implied by the existence of public Rust items.
 The first extraction now gives `mulciber-platform` experimental peer AppKit, Win32, Wayland, and X11
 application, window, event, drawable-metrics, and borrowed-target implementations consumed by the
 Metal and Vulkan probes; their concrete decisions are recorded in the
-[platform contract](api-platform-contract.md). The extracted Win32 path awaits physical validation,
-and the `mulciber` graphics shell remains empty. Extraction does not create a stable API by default.
+[platform contract](api-platform-contract.md). The extracted Win32 path has passed its automated and
+physical validation, and the first graphics lifecycle vocabulary is recorded in the
+[graphics contract](api-graphics-contract.md). Extraction does not create a stable API by default.
 
 ## Unified contract and backend selection
 

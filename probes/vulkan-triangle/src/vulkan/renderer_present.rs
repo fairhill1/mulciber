@@ -1,7 +1,7 @@
 use super::{
-    OFFSCREEN_FORMAT, ProbeError, Renderer, check, check_enumeration, choose_composite_alpha,
-    choose_extent, choose_surface_format, color_subresource_range, depth_subresource_range, ptr,
-    vk,
+    OFFSCREEN_FORMAT, ProbeError, Renderer, SurfaceExtent, check, check_enumeration,
+    choose_composite_alpha, choose_extent, choose_surface_format, color_subresource_range,
+    depth_subresource_range, next_surface_info, ptr, vk,
 };
 
 impl Renderer {
@@ -75,6 +75,10 @@ impl Renderer {
         self.swapchain = swapchain;
         self.format = format.format;
         self.extent = extent;
+        self.surface_info = Some(next_surface_info(
+            self.surface_info,
+            SurfaceExtent::new(extent.width, extent.height),
+        )?);
         self.images = self.swapchain_images()?;
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];

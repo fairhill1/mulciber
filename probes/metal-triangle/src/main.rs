@@ -15,6 +15,9 @@ mod macos {
     use std::time::{Duration, Instant};
     use std::{env, num::NonZeroU64};
 
+    use mulciber::{
+        FrameAcquire, FrameDisposition, SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
+    };
     use mulciber_platform::{
         Application, LogicalSize, PhysicalExtent, PumpStatus, Window, WindowDescriptor,
         WindowEvent, WindowMetrics, integration,
@@ -308,6 +311,7 @@ mod macos {
         depth_texture: Object,
         depth_extent: (usize, usize),
         drawable_size: PhysicalExtent,
+        surface_info: Option<SurfaceInfo>,
         gpu_time_seconds: f64,
         gpu_timed_frames: u32,
         frame_abandonment: FrameAbandonment,
@@ -384,6 +388,7 @@ mod macos {
                     depth_texture: ptr::null_mut(),
                     depth_extent: (0, 0),
                     drawable_size: PhysicalExtent::default(),
+                    surface_info: None,
                     gpu_time_seconds: 0.0,
                     gpu_timed_frames: 0,
                     frame_abandonment: FrameAbandonment::new(options.abandon_acquired_frame_once),
@@ -454,26 +459,35 @@ mod macos {
                     objc::void_f64(self.layer, c"setContentsScale:", metrics.scale_factor());
                 }
 
-                let drawable = objc::object(self.layer, c"nextDrawable");
-                if drawable.is_null() {
-                    return Ok(false);
-                }
+                let drawable = match self.acquire_drawable() {
+                    FrameAcquire::Ready(drawable) => drawable,
+                    FrameAcquire::Unavailable(_) => return Ok(false),
+                    FrameAcquire::Reconfigured(_) => unreachable!(
+                        "Metal reconfiguration is recorded after inspecting the acquired drawable"
+                    ),
+                };
                 let drawable_texture =
                     required(objc::object(drawable, c"texture"), "drawable texture")?;
+                let drawable_extent = (
+                    objc::usize_value(drawable_texture, c"width"),
+                    objc::usize_value(drawable_texture, c"height"),
+                );
+                self.record_surface_info(drawable_extent)?;
                 if self.frame_abandonment.pending {
                     self.frame_abandonment.pending = false;
                     self.frame_abandonment.abandoned_drawables += 1;
                     println!(
                         "abandoned one acquired Metal drawable before command-buffer submission"
                     );
+                    let _disposition = FrameDisposition::Abandoned(
+                        self.surface_info
+                            .expect("a drawable has a configured surface generation")
+                            .generation(),
+                    );
                     // The drawable is autoreleased. Returning to `render_loop` drains the
                     // iteration's pool before another drawable is requested.
                     return Ok(false);
                 }
-                let drawable_extent = (
-                    objc::usize_value(drawable_texture, c"width"),
-                    objc::usize_value(drawable_texture, c"height"),
-                );
                 if drawable_extent != self.depth_extent {
                     self.multisample_color = create_multisample_texture(
                         self.device,
@@ -510,11 +524,56 @@ mod macos {
                 objc::void_object(command_buffer, c"presentDrawable:", drawable);
                 objc::void(command_buffer, c"commit");
                 self.track_submission(command_buffer)?;
+                let _disposition = FrameDisposition::Presented(
+                    self.surface_info
+                        .expect("a submitted drawable has a configured surface generation")
+                        .generation(),
+                );
                 if self.frame_abandonment.abandoned_drawables != 0 {
                     self.frame_abandonment.submitted_after = true;
                 }
                 Ok(true)
             }
+        }
+
+        fn acquire_drawable(&self) -> FrameAcquire<Object> {
+            // SAFETY: The layer remains alive for this Probe and the selector matches CAMetalLayer.
+            let drawable = unsafe { objc::object(self.layer, c"nextDrawable") };
+            if drawable.is_null() {
+                FrameAcquire::Unavailable(SurfaceUnavailable::DrawableUnavailable)
+            } else {
+                FrameAcquire::Ready(drawable)
+            }
+        }
+
+        fn record_surface_info(
+            &mut self,
+            drawable_extent: (usize, usize),
+        ) -> Result<(), ProbeError> {
+            let extent = SurfaceExtent::new(
+                u32::try_from(drawable_extent.0)
+                    .map_err(|_| ProbeError("Metal drawable width exceeds u32".into()))?,
+                u32::try_from(drawable_extent.1)
+                    .map_err(|_| ProbeError("Metal drawable height exceeds u32".into()))?,
+            );
+            if self.surface_info.map(SurfaceInfo::extent) == Some(extent) {
+                return Ok(());
+            }
+            self.surface_info = Some(
+                self.surface_info
+                    .map_or_else(
+                        || SurfaceInfo::initial(extent),
+                        |info| info.reconfigured(extent),
+                    )
+                    .ok_or_else(|| {
+                        ProbeError(if extent.is_empty() {
+                            "Metal produced an empty drawable extent".into()
+                        } else {
+                            "Metal surface generation space is exhausted".into()
+                        })
+                    })?,
+            );
+            Ok(())
         }
 
         fn prepare_uniforms(&mut self) -> Result<Object, ProbeError> {

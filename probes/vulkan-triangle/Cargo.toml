@@ -11,4 +11,5 @@ version.workspace = true
 workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+mulciber = { path = "../../crates/mulciber" }
 mulciber-platform = { path = "../../crates/mulciber-platform" }

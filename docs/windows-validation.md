@@ -5,6 +5,14 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+A development tree based on revision `c101e08` then extracted physical surface extents,
+graphics-owned generations, acquisition outcomes, and frame dispositions into `mulciber`; the Vulkan
+probe consumed those types in swapchain creation, acquisition, reconfiguration, presentation, and
+both non-presentation paths. The complete automated matrix passed on 2026-07-17 on the same Windows
+11 / RTX 3060 Ti tier without validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260717-124258.zip`. This is automated Vulkan evidence, not a
+new physical lifecycle, visual, multi-display, or Metal claim.
+
 The development tree after `mulciber-platform` 0.1.0 moves Win32 application/window ownership,
 thread-message dispatch, client metrics, nested live-resize redraw callbacks, and borrowed Vulkan
 surface handles into the platform crate. Both Vulkan probes consume that implementation and

@@ -102,6 +102,14 @@ and hardware breadth remain governed by the viability gates.
 
 ## Questions the extraction must resolve before support
 
+The first experimental graphics vocabulary now represents physical surface extents, graphics-owned
+surface generations, unavailable/reconfigured acquisition outcomes, and presented/abandoned frame
+dispositions in `mulciber`. The Metal and Vulkan probes consume these shared facts without sharing
+native objects or mechanisms. The Windows Vulkan validation matrix passed after integration at
+development revision `c101e08` plus the working changes, including native and forced acquired-frame
+abandonment recovery. The Metal path cross-host type-checks and lints; native macOS validation remains
+required before this becomes cross-backend physical evidence.
+
 These questions must be resolved before the affected portion of the API is treated as a supported
 contract. Experimental types may test a candidate answer under the extraction plan; their existence
 is not a resolution by itself.

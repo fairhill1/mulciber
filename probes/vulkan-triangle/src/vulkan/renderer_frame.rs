@@ -1,8 +1,8 @@
 use super::{
-    FRAME_SLOT_COUNT, FrameUniform, Instant, LiveResizeSample, POST_QUERY_END, POST_QUERY_START,
-    ProbeError, Renderer, SCENE_QUERY_END, SCENE_QUERY_START, SHADOW_MAP_SIZE, SHADOW_QUERY_END,
-    SHADOW_QUERY_START, UINT64_MAX, check, color_subresource_range, command_buffer_submit_info,
-    depth_subresource_range, mem, ptr, vk,
+    FRAME_SLOT_COUNT, FrameAcquire, FrameDisposition, FrameUniform, Instant, LiveResizeSample,
+    POST_QUERY_END, POST_QUERY_START, ProbeError, Renderer, SCENE_QUERY_END, SCENE_QUERY_START,
+    SHADOW_MAP_SIZE, SHADOW_QUERY_END, SHADOW_QUERY_START, SurfaceUnavailable, UINT64_MAX, check,
+    color_subresource_range, command_buffer_submit_info, depth_subresource_range, mem, ptr, vk,
 };
 
 impl Renderer {
@@ -61,12 +61,11 @@ impl Renderer {
             )
         };
         frame_trace("image acquired");
-        if acquire == vk::VK_NOT_READY || acquire == vk::VK_TIMEOUT {
-            self.live_resize_trace
-                .finish(trace_started, trace_sample, false);
-            return Ok(false);
-        }
-        if acquire == vk::VK_ERROR_OUT_OF_DATE_KHR {
+        let acquisition = if acquire == vk::VK_NOT_READY {
+            FrameAcquire::Unavailable(SurfaceUnavailable::DrawableUnavailable)
+        } else if acquire == vk::VK_TIMEOUT {
+            FrameAcquire::Unavailable(SurfaceUnavailable::TimedOut)
+        } else if acquire == vk::VK_ERROR_OUT_OF_DATE_KHR {
             trace_sample.acquire = operation_started.elapsed();
             let operation_started = Instant::now();
             self.recreate_swapchain(width, height)?;
@@ -76,15 +75,26 @@ impl Renderer {
                     .recreate
                     .map_or(recreate, |previous| previous + recreate),
             );
-            self.live_resize_trace
-                .finish(trace_started, trace_sample, false);
-            return Ok(false);
-        }
-        if acquire == vk::VK_SUBOPTIMAL_KHR {
-            self.recreate_after_present = true;
+            FrameAcquire::Reconfigured(
+                self.surface_info
+                    .expect("swapchain recreation records surface information"),
+            )
         } else {
-            check(acquire, "vkAcquireNextImageKHR")?;
-        }
+            if acquire == vk::VK_SUBOPTIMAL_KHR {
+                self.recreate_after_present = true;
+            } else {
+                check(acquire, "vkAcquireNextImageKHR")?;
+            }
+            FrameAcquire::Ready(image_index)
+        };
+        image_index = match acquisition {
+            FrameAcquire::Ready(image_index) => image_index,
+            FrameAcquire::Unavailable(_) | FrameAcquire::Reconfigured(_) => {
+                self.live_resize_trace
+                    .finish(trace_started, trace_sample, false);
+                return Ok(false);
+            }
+        };
 
         let image_slot = image_index as usize;
         if !acquire_fence.is_null() {
@@ -107,6 +117,11 @@ impl Renderer {
             let operation_started = Instant::now();
             self.abandon_acquired_image(image_index, width, height)?;
             self.frame_abandonment.record_abandonment();
+            let _disposition = FrameDisposition::Abandoned(
+                self.surface_info
+                    .expect("an acquired image has a configured surface generation")
+                    .generation(),
+            );
             trace_sample.recreate =
                 (!self.device.adapter.swapchain_maintenance1).then(|| operation_started.elapsed());
             self.live_resize_trace
@@ -209,6 +224,13 @@ impl Renderer {
             && self.frame_abandonment.record_presentation()
         {
             println!("Acquired-frame abandonment: recovery confirmed by a later presented frame");
+        }
+        if matches!(result, vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR) {
+            let _disposition = FrameDisposition::Presented(
+                self.surface_info
+                    .expect("a presented image has a configured surface generation")
+                    .generation(),
+            );
         }
         self.live_resize_trace
             .finish(trace_started, trace_sample, true);

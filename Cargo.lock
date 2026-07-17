@@ -14,6 +14,7 @@ version = "0.0.0"
 name = "mulciber-metal-triangle"
 version = "0.0.0"
 dependencies = [
+ "mulciber",
  "mulciber-platform",
 ]
 
@@ -32,5 +33,6 @@ dependencies = [
 name = "mulciber-vulkan-triangle"
 version = "0.0.0"
 dependencies = [
+ "mulciber",
  "mulciber-platform",
 ]

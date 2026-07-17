@@ -105,8 +105,18 @@ control compositor variance.
 **Correctness.** Both implementations passed 120-frame four-sample and 60-frame forced one-sample
 finite runs with zero validation output (Mulciber with its required Khronos layer; wgpu with
 internal validation plus `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`) and exited zero.
-Deterministic readback comparison remains an open gap as pre-registered. Interactive visual
-parity and drag-feel observation by the operator are pending and will be appended.
+Deterministic readback comparison remains an open gap as pre-registered.
+
+**Operator drag observation (2026-07-17, revision `0eadc70`, high-polling mouse).** Both
+implementations ran correctly side by side. During interactive drag-resize the `wgpu-cube` window
+trailed the pointer severely while the Mulciber cube tracked it — the same FIFO-backpressure
+pathology Mulciber exhibited before its backend gained paced extent-driven reconfiguration
+(committed sizes outrun FIFO presentation on Wayland; see [Linux validation](linux-validation.md)).
+Both sides ran the pre-registered `PresentMode::Fifo`; wgpu applications commonly avoid the
+symptom by selecting mailbox/no-vsync presentation, which sidesteps rather than solves the
+vsynced-path behavior. On the canonical vsynced path this is a concrete Mulciber lifecycle
+advantage; a wgpu-side application-level mitigation (resize debouncing) is possible but is
+application bookkeeping the Mulciber contract owns internally.
 
 **Lifecycle (identical 350-step / 10 ms KWin storm via `comparisons/harness/run-resize-storm.sh`).**
 

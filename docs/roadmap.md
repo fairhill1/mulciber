@@ -160,8 +160,10 @@ fallback, and acquired-frame abandonment/recovery controls.
   keep device/queue/command topology private until the representative slice forces it.
 - [ ] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
-- [ ] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
-  and shutdown conformance tests.
+- [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
+  and shutdown conformance tests: `probes/api-conformance` asserts thirteen cases across those
+  categories and exits nonzero on divergence; per-platform runs are recorded in the validation
+  ledgers as they are exercised.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
   dependency-tree, size, and clean-build measurements are recorded in the

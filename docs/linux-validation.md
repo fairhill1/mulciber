@@ -89,6 +89,16 @@ This is automated, single-machine, single-display native Wayland evidence plus o
 drag-resize smoke. Extracted-slice X11, native Xorg, minimize/restore, display-change,
 multi-display, and broader hardware coverage remain unrecorded.
 
+### Conformance probe evidence
+
+`mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and
+RTX 3060 Ti tier on 2026-07-17: four creation-time invalid-usage rejections, draw-time non-finite
+transform rejection, explicit abandonment, superseded-generation target rejection followed by a
+rebuilt-target presentation (this driver's abandonment path replaced the generation, so the stale
+branch executed rather than the stable-generation branch), fallible shutdown, observable forced
+one-sample reopening, mixed-session handle rejection, one-sample presentation, and a second
+fallible shutdown. Exit code zero with no validation output.
+
 ### Single-backend build evidence
 
 At revision `7d25d1f` on the x86-64 CachyOS machine below (i5-12400F, 12 threads, Rust 1.97.0,

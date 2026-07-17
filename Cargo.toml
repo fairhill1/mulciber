@@ -9,6 +9,7 @@ members = [
     "probes/metal-info",
     "probes/metal-triangle",
     "probes/api-clear",
+    "probes/api-conformance",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

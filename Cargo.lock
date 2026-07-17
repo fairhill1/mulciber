@@ -139,6 +139,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-api-conformance"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-api-cube"
 version = "0.0.0"
 dependencies = [

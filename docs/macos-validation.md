@@ -1,5 +1,21 @@
 # macOS AppKit/Metal validation runbook
 
+## Render-target reclamation evidence
+
+Revision `884c9d2` introduced stale-generation render-target reclamation into the Metal textured
+session after native KDE Wayland resize evidence exposed unbounded per-generation retention (see
+the [Linux validation runbook](linux-validation.md)). On 2026-07-17, that revision was pulled onto
+the Apple M2 / macOS 15.7.7 machine over SSH: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` all passed,
+compiling and linting the changed Metal session natively. With `MTL_DEBUG_LAYER=1`,
+`mulciber-api-cube --frames 120 --abandon-acquired-frame-once` selected the 4x path, abandoned one
+drawable, recovered, and presented 120 frames; `--frames 120 --force-one-sample` presented 120
+frames on the 1x path. Both exited zero with only the validation-enabled banner.
+
+These static-window runs never advanced the surface generation, so the Metal reclamation branch
+itself remains unexercised: physical resize, backing-scale change, and lifecycle evidence for the
+reclamation change are still pending on this machine.
+
 ## Textured cube checkpoint evidence
 
 The resource-backed same-source cube was compiled and linted natively on the Apple M2 / macOS

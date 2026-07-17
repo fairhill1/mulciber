@@ -95,4 +95,57 @@ Task 6 (native differentiation) is Gate 4 scope; task 7 (integrated runtime) is 
 ## Results
 
 Results are recorded only below this line, after the protocol above was committed, each tagged
-with the Mulciber revision and dates. No results yet.
+with the Mulciber revision and dates.
+
+### Linux, wgpu+winit, 2026-07-17, Mulciber revision `7698e26`
+
+All runs on the pre-registered Linux machine in one native KDE Wayland session, back to back to
+control compositor variance.
+
+**Correctness.** Both implementations passed 120-frame four-sample and 60-frame forced one-sample
+finite runs with zero validation output (Mulciber with its required Khronos layer; wgpu with
+internal validation plus `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`) and exited zero.
+Deterministic readback comparison remains an open gap as pre-registered. Interactive visual
+parity and drag-feel observation by the operator are pending and will be appended.
+
+**Lifecycle (identical 350-step / 10 ms KWin storm via `comparisons/harness/run-resize-storm.sh`).**
+
+| Measure | Mulciber `api-cube` | `wgpu-cube` |
+| --- | --- | --- |
+| Exit status | 0 | 0 |
+| Distinct sizes committed (generations / configures) | 211 | 109 |
+| Presented frames over the whole run | 694 | 437 |
+
+Mulciber presented ~1.6x the frames while tracking ~2x the distinct sizes under the same
+server-side walk. An earlier same-day run of the Mulciber side alone (recorded in
+[Linux validation](linux-validation.md)) presented 1114 frames, so absolute counts vary
+meaningfully between sessions; the paired same-session run above is the comparative datum, and
+future storm results should always be recorded as same-session pairs.
+
+**Cost (default release profiles, cold builds, no compiler cache).**
+
+| Measure | Mulciber `examples/cube` | `wgpu-cube` |
+| --- | --- | --- |
+| Cold release build | 1.2 s | 28.3 s |
+| Binary as built | 644,200 B | 12,248,944 B |
+| Binary stripped | 499,504 B | 8,755,352 B |
+| Unique crates in `cargo tree` | 4 | 144 |
+| `target/` after one release build | 16 MiB | 607 MiB |
+
+**Application size (shared 33-line WGSL module counted once, listed separately).**
+
+| Source | Lines |
+| --- | --- |
+| Mulciber `examples/cube` (`main.rs` + `scene.rs`) | 129 + 74 |
+| Mulciber `probes/api-cube` (adds `--frames`/abandonment/fallback controls) | 186 (+ shared `scene.rs`) |
+| `wgpu-cube` (`main.rs` + `scene.rs`) | 527 + 82 |
+
+`wgpu-cube` includes the `--frames`/`--force-one-sample` controls (roughly forty lines), so its
+fair line comparison sits between the Mulciber example and probe; on either basis the wgpu side
+is two to four times larger, with the difference concentrated in device/surface plumbing,
+pipeline and bind-group declaration, and resize/acquire-outcome handling that Mulciber owns
+behind its contract.
+
+**Not yet recorded.** CPU frame-time distributions, process memory, macOS (Metal 3, 60 Hz) and
+Windows repeats, failure-diagnosis judging (task 5), and operator visual confirmation. Each will
+be appended under this protocol.

@@ -22,12 +22,18 @@ sed "s/%NEEDLE%/$needle/g" "$script_dir/resize-storm.js" > "$generated"
 app_pid=$!
 sleep 2
 
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript comparison-storm > /dev/null 2>&1 || true
 script_id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$generated" comparison-storm)
+if [ "$script_id" -lt 0 ]; then
+    kill "$app_pid" 2>/dev/null || true
+    echo "failed to load the storm script (id $script_id)" >&2
+    exit 1
+fi
 qdbus6 org.kde.KWin "/Scripting/Script$script_id" org.kde.kwin.Script.run 2>/dev/null \
     || qdbus6 org.kde.KWin "/$script_id" org.kde.kwin.Script.run
 
-wait "$app_pid"
-status=$?
+status=0
+wait "$app_pid" || status=$?
 qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript comparison-storm > /dev/null 2>&1 || true
 rm -f "$generated"
 

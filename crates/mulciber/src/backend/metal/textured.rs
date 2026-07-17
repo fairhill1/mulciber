@@ -80,7 +80,6 @@ pub(crate) struct TexturedSession<'window> {
     textures: Vec<TextureResource>,
     pipelines: Vec<PipelineResource>,
     targets: Vec<TargetResource>,
-    deferred_token: Option<TexturedFrameToken>,
 }
 
 impl<'window> TexturedSession<'window> {
@@ -112,7 +111,6 @@ impl<'window> TexturedSession<'window> {
                 textures: Vec::new(),
                 pipelines: Vec::new(),
                 targets: Vec::new(),
-                deferred_token: None,
             },
             if sample_count == 4 {
                 SampleCount::Four
@@ -130,7 +128,6 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
-        self.flush_deferred_abandon()?;
         let acquisition = self.surface.acquire_drawable(metrics)?;
         self.reclaim_stale_targets();
         Ok(acquisition.map_ready(TexturedFrameToken))
@@ -392,19 +389,15 @@ impl<'window> TexturedSession<'window> {
         Ok(FrameDisposition::Abandoned(generation))
     }
 
+    #[allow(clippy::unused_self)]
     pub(crate) fn defer_abandon(&mut self, token: TexturedFrameToken) {
-        self.deferred_token = Some(token);
-    }
-
-    fn flush_deferred_abandon(&mut self) -> Result<(), GraphicsError> {
-        if let Some(token) = self.deferred_token.take() {
-            self.abandon(token)?;
-        }
-        Ok(())
+        // Metal abandonment is an inline drawable release at the token's autorelease boundary.
+        // The token must NOT be stored for a later flush: its pool would then outlive the
+        // enclosing AppKit autorelease scope, which is a fatal pool-nesting violation.
+        drop(token);
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
-        self.flush_deferred_abandon()?;
         let result = self.surface.finish_last_submission();
         self.destroy_resources();
         let surface = unsafe { ptr::read(&raw const self.surface) };

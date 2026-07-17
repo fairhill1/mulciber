@@ -160,7 +160,9 @@ impl<'window> Cases<'window> {
                 self.pass("zero-dimension texture rejected");
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
-                let mesh = graphics.device.create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?;
+                let mesh = graphics
+                    .device
+                    .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?;
                 let texture = graphics
                     .device
                     .create_rgba8_srgb_texture(2, 2, &[255_u8; 16])?;

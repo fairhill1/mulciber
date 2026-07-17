@@ -29,6 +29,20 @@ abandonment, recovery) and `--frames 120 --force-one-sample` each presented 120 
 zero with only the validation-enabled banner. These were again static-window runs; the physical
 resize/lifecycle pass on the reshaped acquisition remains pending.
 
+## Conformance probe evidence
+
+The first `mulciber-api-conformance` run on this machine (2026-07-17, `MTL_DEBUG_LAYER=1`) caught
+a fatal Metal-only defect no earlier run had reached: the textured session stored a dropped
+frame's token — autorelease pool included — for a deferred flush, so the pool outlived its
+enclosing AppKit autorelease scope and Objective-C aborted with an invalid pool-nesting error the
+first time the Drop-abandonment path executed. The fix releases the drawable inline in
+`defer_abandon`, since Metal abandonment is an infallible drawable release at the token's
+autorelease boundary and there is nothing to defer. After the fix the probe passes twelve asserted
+cases under Metal API validation with exit zero. Metal runs the stable-generation branch
+(abandonment does not replace the generation), while the Linux Vulkan driver's base-swapchain
+abandonment replaces it and asserts the superseded-target rejection as a thirteenth case — the
+same game-facing outcomes over different native machinery.
+
 ## Single-backend build evidence
 
 At revision `7d25d1f` on the Apple M2 (8 cores, macOS 15.7.7, Rust 1.97.0, default release

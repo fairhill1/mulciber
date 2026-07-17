@@ -171,7 +171,10 @@ identified four Mulciber frictions, all platform-shape rather than graphics-shap
 out of the `pump_events` closure (it proposed a `Result`-returning event callback), the
 copy-pasted initial-metrics wait, the manual render-target rebuild line (retained deliberately as
 the application's one point of generation awareness), and `ClearColor`'s fallible constructor on
-literals. Threat to validity: the reviewer is the same model family that co-developed the API, so
-this counts as one blind model review under the protocol's model-evaluator clause, not
-independent confirmation. The pump-error and initial-metrics items are accepted as platform-layer
-API work; the review's line-count attribution matches the recorded application-size table.
+literals. Attribution per the operator: most of Mulciber was developed with a different vendor's
+model (ChatGPT), while the reviewer shares a model family with the current assistant that
+authored the acquisition reshape and this comparison — so family-correlated taste is a partial
+threat for the newest API surface specifically, and this counts as one blind model review, not
+independent confirmation. The pump-error and initial-metrics items are accepted as
+platform-layer API work; the review's line-count attribution matches the recorded
+application-size table.

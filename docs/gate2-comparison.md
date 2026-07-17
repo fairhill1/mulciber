@@ -159,3 +159,19 @@ behind its contract.
 **Not yet recorded.** CPU frame-time distributions, process memory, macOS (Metal 3, 60 Hz) and
 Windows repeats, failure-diagnosis judging (task 5), and operator visual confirmation. Each will
 be appended under this protocol.
+
+**Blind model ergonomics review (2026-07-17, revision `2b90fc4`).** A no-context Claude Fable 5
+instance was given both application sources unlabeled and asked which is more ergonomic. It chose
+the Mulciber example "and it's not close," crediting the four resource one-liners against roughly
+250 lines of wgpu descriptor/bind-group/pipeline declaration, the single draw-and-present
+operation making MSAA store-op and resolve mistakes unrepresentable, the declare-intent
+`DeviceRequest` with an observable selection report, and the two-arm acquisition match against
+wgpu's six-variant surface state machine "every wgpu app reimplements slightly wrong." It
+identified four Mulciber frictions, all platform-shape rather than graphics-shape: error plumbing
+out of the `pump_events` closure (it proposed a `Result`-returning event callback), the
+copy-pasted initial-metrics wait, the manual render-target rebuild line (retained deliberately as
+the application's one point of generation awareness), and `ClearColor`'s fallible constructor on
+literals. Threat to validity: the reviewer is the same model family that co-developed the API, so
+this counts as one blind model review under the protocol's model-evaluator clause, not
+independent confirmation. The pump-error and initial-metrics items are accepted as platform-layer
+API work; the review's line-count attribution matches the recorded application-size table.

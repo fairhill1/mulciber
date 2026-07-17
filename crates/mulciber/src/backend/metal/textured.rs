@@ -131,9 +131,9 @@ impl<'window> TexturedSession<'window> {
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
         self.flush_deferred_abandon()?;
-        self.surface
-            .acquire_drawable(metrics)
-            .map(|acquisition| acquisition.map_ready(TexturedFrameToken))
+        let acquisition = self.surface.acquire_drawable(metrics)?;
+        self.reclaim_stale_targets();
+        Ok(acquisition.map_ready(TexturedFrameToken))
     }
 
     pub(crate) fn create_mesh(
@@ -277,10 +277,34 @@ impl<'window> TexturedSession<'window> {
         resource_id(self.pipelines.len(), "pipeline")
     }
 
+    /// Releases the session's references to render targets from superseded surface generations.
+    ///
+    /// Draws reject targets that do not match the acquired generation, and committed command
+    /// buffers retain the textures they reference, so releasing the session's reference cannot
+    /// free storage still owned by in-flight GPU work. Reclaimed entries keep their identifiers
+    /// with null textures and are rejected if drawn.
+    fn reclaim_stale_targets(&mut self) {
+        let current = self.surface.info().generation();
+        for target in &mut self.targets {
+            if target.info.generation().get() >= current.get() || target.depth.is_null() {
+                continue;
+            }
+            unsafe {
+                if !target.multisample_color.is_null() {
+                    objc::void(target.multisample_color, c"release");
+                }
+                objc::void(target.depth, c"release");
+            }
+            target.multisample_color = ptr::null_mut();
+            target.depth = ptr::null_mut();
+        }
+    }
+
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
     ) -> Result<u32, GraphicsError> {
+        self.reclaim_stale_targets();
         let width = usize::try_from(info.extent().width())
             .map_err(|_| GraphicsError::new("target width exceeds usize"))?;
         let height = usize::try_from(info.extent().height())
@@ -293,13 +317,19 @@ impl<'window> TexturedSession<'window> {
             self.sample_count,
         )?;
         let multisample_color = if self.sample_count == 4 {
-            create_target_texture(
+            match create_target_texture(
                 self.surface.device,
                 PIXEL_FORMAT_BGRA8_UNORM_SRGB,
                 width,
                 height,
                 4,
-            )?
+            ) {
+                Ok(color) => color,
+                Err(failure) => {
+                    unsafe { objc::void(depth, c"release") };
+                    return Err(failure);
+                }
+            }
         } else {
             ptr::null_mut()
         };
@@ -329,6 +359,11 @@ impl<'window> TexturedSession<'window> {
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "render targets do not match acquired Metal generation",
+            ));
+        }
+        if self.targets[target].depth.is_null() {
+            return Err(GraphicsError::new(
+                "render targets were reclaimed by a newer surface generation",
             ));
         }
         unsafe {
@@ -500,7 +535,9 @@ impl<'window> TexturedSession<'window> {
                 if !target.multisample_color.is_null() {
                     objc::void(target.multisample_color, c"release");
                 }
-                objc::void(target.depth, c"release");
+                if !target.depth.is_null() {
+                    objc::void(target.depth, c"release");
+                }
             }
             for mesh in self.meshes.drain(..) {
                 objc::void(mesh.indirect, c"release");

@@ -48,7 +48,7 @@ struct PipelineResource {
 struct TargetResource {
     info: SurfaceInfo,
     multisample_color: Option<Image>,
-    depth: Image,
+    depth: Option<Image>,
 }
 
 pub(crate) struct TexturedSession<'window> {
@@ -123,6 +123,7 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
         self.flush_deferred_abandon()?;
         let acquisition = self.surface.acquire_image(metrics)?;
+        self.reclaim_stale_targets();
         let info = self.surface.info();
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
@@ -258,10 +259,33 @@ impl<'window> TexturedSession<'window> {
         resource_id(self.pipelines.len(), "pipeline")
     }
 
+    /// Destroys image storage for render targets from superseded surface generations.
+    ///
+    /// The surface generation advances only inside swapchain recreation, which first waits on the
+    /// in-flight frame fence, and draws reject targets that do not match the acquired generation.
+    /// A target older than the current generation therefore cannot be referenced by submitted GPU
+    /// work, so its storage is reclaimed instead of growing until shutdown across live resizes.
+    fn reclaim_stale_targets(&mut self) {
+        let current = self.surface.info().generation();
+        let surface = &self.surface;
+        for target in &mut self.targets {
+            if target.info.generation().get() >= current.get() {
+                continue;
+            }
+            if let Some(color) = target.multisample_color.take() {
+                destroy_image(surface, color);
+            }
+            if let Some(depth) = target.depth.take() {
+                destroy_image(surface, depth);
+            }
+        }
+    }
+
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
     ) -> Result<u32, GraphicsError> {
+        self.reclaim_stale_targets();
         let mut properties = vk::VkFormatProperties::default();
         unsafe {
             self.surface
@@ -315,7 +339,7 @@ impl<'window> TexturedSession<'window> {
         self.targets.push(TargetResource {
             info,
             multisample_color,
-            depth,
+            depth: Some(depth),
         });
         resource_id(self.targets.len(), "render target")
     }
@@ -622,6 +646,10 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
     ) -> Result<(), GraphicsError> {
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+        let target_depth = self.targets[target_index]
+            .depth
+            .ok_or_else(|| error("render targets were reclaimed by a newer surface generation"))?;
+        let multisample_color = self.targets[target_index].multisample_color;
         let image = self.surface.swapchain.images[slot];
         let view = self.surface.swapchain.views[slot];
         let old_layout = if self.surface.swapchain.initialized[slot] {
@@ -681,7 +709,7 @@ impl<'window> TexturedSession<'window> {
             color_subresource_range(),
         );
         let depth_barrier = image_barrier(
-            self.targets[target_index].depth.handle,
+            target_depth.handle,
             vk::VK_IMAGE_LAYOUT_UNDEFINED,
             vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             vk::VK_PIPELINE_STAGE_2_NONE,
@@ -691,22 +719,18 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             depth_subresource_range(),
         );
-        let multisample_barrier =
-            self.targets[target_index]
-                .multisample_color
-                .as_ref()
-                .map(|color| {
-                    image_barrier(
-                        color.handle,
-                        vk::VK_IMAGE_LAYOUT_UNDEFINED,
-                        vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        vk::VK_PIPELINE_STAGE_2_NONE,
-                        vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        vk::VK_ACCESS_2_NONE,
-                        vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                        color_subresource_range(),
-                    )
-                });
+        let multisample_barrier = multisample_color.map(|color| {
+            image_barrier(
+                color.handle,
+                vk::VK_IMAGE_LAYOUT_UNDEFINED,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_NONE,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_NONE,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                color_subresource_range(),
+            )
+        });
         if let Some(multisample_barrier) = multisample_barrier {
             pipeline_barriers(
                 &self.surface,
@@ -715,7 +739,6 @@ impl<'window> TexturedSession<'window> {
         } else {
             pipeline_barriers(&self.surface, &[color_barrier, depth_barrier]);
         }
-        let multisample_color = self.targets[target_index].multisample_color.as_ref();
         let color_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             imageView: multisample_color.map_or(view, |color| color.view),
@@ -742,7 +765,7 @@ impl<'window> TexturedSession<'window> {
         };
         let depth_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            imageView: self.targets[target_index].depth.view,
+            imageView: target_depth.view,
             imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
             storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -900,7 +923,9 @@ impl<'window> TexturedSession<'window> {
                 if let Some(color) = target.multisample_color {
                     destroy_image_device(device, color);
                 }
-                destroy_image_device(device, target.depth);
+                if let Some(depth) = target.depth {
+                    destroy_image_device(device, depth);
+                }
             }
             for mesh in self.meshes.drain(..) {
                 destroy_buffer_device(device, mesh.vertices);
@@ -1035,6 +1060,19 @@ fn create_buffer(
         },
         "vkCreateBuffer for textured slice",
     )?;
+    if let Err(failure) = complete_buffer_storage(surface, &mut buffer, bytes) {
+        destroy_buffer(surface, buffer);
+        return Err(failure);
+    }
+    Ok(buffer)
+}
+
+fn complete_buffer_storage(
+    surface: &ClearSurface<'_>,
+    buffer: &mut Buffer,
+    bytes: &[u8],
+) -> Result<(), GraphicsError> {
+    let device = surface.device();
     let mut requirements = vk::VkMemoryRequirements::default();
     unsafe {
         device
@@ -1054,7 +1092,7 @@ fn create_buffer(
         memoryTypeIndex: memory_type,
         ..Default::default()
     };
-    if let Err(failure) = check(
+    check(
         unsafe {
             device.functions.allocate_memory.expect("loaded function")(
                 device.handle,
@@ -1064,10 +1102,7 @@ fn create_buffer(
             )
         },
         "vkAllocateMemory for buffer",
-    ) {
-        destroy_buffer(surface, buffer);
-        return Err(failure);
-    }
+    )?;
     check(
         unsafe {
             device
@@ -1080,9 +1115,9 @@ fn create_buffer(
         "vkBindBufferMemory",
     )?;
     if !bytes.is_empty() {
-        write_buffer(surface, &buffer, bytes)?;
+        write_buffer(surface, buffer, bytes)?;
     }
-    Ok(buffer)
+    Ok(())
 }
 
 fn write_buffer(
@@ -1155,6 +1190,21 @@ fn create_image(
         },
         "vkCreateImage for textured slice",
     )?;
+    if let Err(failure) = complete_image_storage(device, &mut image, format, aspect) {
+        // SAFETY: The device is live and the destroy helper skips null child handles left by
+        // partial construction.
+        unsafe { destroy_image_device(device, image) };
+        return Err(failure);
+    }
+    Ok(image)
+}
+
+fn complete_image_storage(
+    device: &super::Device,
+    image: &mut Image,
+    format: vk::VkFormat,
+    aspect: u32,
+) -> Result<(), GraphicsError> {
     let mut requirements = vk::VkMemoryRequirements::default();
     unsafe {
         device
@@ -1220,7 +1270,7 @@ fn create_image(
         },
         "vkCreateImageView for textured slice",
     )?;
-    Ok(image)
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

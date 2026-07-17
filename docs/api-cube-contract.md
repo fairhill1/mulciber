@@ -41,9 +41,15 @@ not a claim that Vulkan and Metal have identical native object graphs.
 multisample color storage. A target from an older surface generation is rejected instead of being
 silently stretched or rebound.
 
-Native resource destruction is session-coordinated. The first implementation may retain dropped
-resource allocations until drained shutdown; immediate reclamation is not part of this checkpoint.
-This conservative rule prevents resource destruction racing GPU or presentation-engine ownership.
+Native resource destruction is session-coordinated. Meshes, textures, and pipelines may retain
+dropped allocations until drained shutdown; immediate reclamation is not part of this checkpoint.
+Render targets are the exception: a target from a superseded surface generation is reclaimed by the
+session because continuous live resize would otherwise grow device memory without bound. This is
+safe without new synchronization because draws reject targets that do not match the acquired
+generation, and each backend already guarantees stale targets are free of GPU ownership—Vulkan
+generation advances happen only after the in-flight frame fence is awaited, and Metal command
+buffers retain the textures they reference until completion. Reclaimed targets keep their
+identifiers and are rejected if drawn.
 
 An acquired `Frame` owns exactly one drawable or swapchain image. Presenting consumes it. Explicit
 abandonment consumes it through the backend-specific safe path. Dropping it performs the same

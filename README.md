@@ -71,26 +71,32 @@ compile time:
 
 ```sh
 cargo run -p mulciber-clear
-cargo run -p mulciber-clear -- --frames 120 --abandon-acquired-frame-once
 ```
 
-The second form is the finite validation path. It abandons one acquired frame without rendering,
-recovers through a later presentation, and performs fallible shutdown. This is an unstable design
-experiment and a checkpoint on the way to the representative textured depth-tested slice, not a
-supported graphics API or a new release commitment.
+This is an unstable design experiment and a checkpoint on the way to the representative textured
+depth-tested slice, not a supported graphics API or a new release commitment.
 
 The resource-backed checkpoint uses one safe Rust application and one WGSL shader source to render
 a spinning indexed, textured, depth-tested cube through native Vulkan or Metal:
 
 ```sh
 cargo run -p mulciber-cube
-cargo run -p mulciber-cube -- --frames 120 --abandon-acquired-frame-once
-cargo run -p mulciber-cube -- --frames 120 --force-one-sample
 ```
 
-Mulciber prefers 4x MSAA and reports a fallback to 1x. `mulciber-shader` is a separate offline
-development tool that turns WGSL into validated, cached native artifacts; Naga is not in the
-application's normal or runtime dependency graph.
+The examples are ordinary interactive programs without validation-only command-line controls. The
+cube uses `glam` locally for concise transform math; neither Mulciber crate depends on it. Mulciber
+prefers 4x MSAA and reports a fallback to 1x. `mulciber-shader` is a separate offline development tool
+that turns WGSL into validated, cached native artifacts; Naga is not in the application's normal or
+runtime dependency graph.
+
+Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
+probes instead of the examples:
+
+```sh
+cargo run -p mulciber-api-clear -- --frames 120 --abandon-acquired-frame-once
+cargo run -p mulciber-api-cube -- --frames 120 --abandon-acquired-frame-once
+cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
+```
 
 ## Current probes
 

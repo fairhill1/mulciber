@@ -138,7 +138,9 @@ first-class support claim.
 
 The current implementation checkpoint is the same-source spinning textured cube described in the
 [textured-cube API contract](api-cube-contract.md). It is the resource-backed successor to the native
-clear-surface checkpoint, not a replacement for the advanced backend probes.
+clear-surface checkpoint, not a replacement for the advanced backend probes. Ordinary clear and cube
+examples remain interactive and free of validation switches; explicit public-API probes own finite,
+fallback, and acquired-frame abandonment/recovery controls.
 
 - [x] Define the experimental-extraction threshold, unresolved design decisions, comparison targets,
   tasks, measurements, single-backend scoring, and stop conditions.

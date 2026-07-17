@@ -265,14 +265,26 @@ try {
         "mulciber-clear"
     ) "cargo-build-clear.log"
     $ClearExample = Join-Path $RepositoryRoot "target\debug\mulciber-clear.exe"
-    $ClearFrames = [Math]::Min($Frames, 120)
-    Invoke-NativeLogged $ClearExample @(
-        "--frames", $ClearFrames.ToString(),
-        "--abandon-acquired-frame-once"
-    ) "clear-abandon-recovery.log"
     Invoke-AutomatedResizeSmoke `
         -Probe $ClearExample `
         -LogPrefix "clear-resize"
+
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
+        "mulciber-api-clear"
+    ) "cargo-test-api-clear.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "mulciber-api-clear"
+    ) "cargo-build-api-clear.log"
+    $ClearProbe = Join-Path $RepositoryRoot "target\debug\mulciber-api-clear.exe"
+    $ClearFrames = [Math]::Min($Frames, 120)
+    Invoke-NativeLogged $ClearProbe @(
+        "--frames", $ClearFrames.ToString(),
+        "--abandon-acquired-frame-once"
+    ) "clear-abandon-recovery.log"
 
     Invoke-NativeLogged "cargo" @(
         "test",
@@ -285,18 +297,30 @@ try {
         "mulciber-cube"
     ) "cargo-build-cube.log"
     $CubeExample = Join-Path $RepositoryRoot "target\debug\mulciber-cube.exe"
-    $CubeFrames = [Math]::Min($Frames, 120)
-    Invoke-NativeLogged $CubeExample @(
-        "--frames", $CubeFrames.ToString(),
-        "--abandon-acquired-frame-once"
-    ) "cube-4x-abandon-recovery.log"
-    Invoke-NativeLogged $CubeExample @(
-        "--frames", $CubeFrames.ToString(),
-        "--force-one-sample"
-    ) "cube-1x.log"
     Invoke-AutomatedResizeSmoke `
         -Probe $CubeExample `
         -LogPrefix "cube-resize"
+
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
+        "mulciber-api-cube"
+    ) "cargo-test-api-cube.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "mulciber-api-cube"
+    ) "cargo-build-api-cube.log"
+    $CubeProbe = Join-Path $RepositoryRoot "target\debug\mulciber-api-cube.exe"
+    $CubeFrames = [Math]::Min($Frames, 120)
+    Invoke-NativeLogged $CubeProbe @(
+        "--frames", $CubeFrames.ToString(),
+        "--abandon-acquired-frame-once"
+    ) "cube-4x-abandon-recovery.log"
+    Invoke-NativeLogged $CubeProbe @(
+        "--frames", $CubeFrames.ToString(),
+        "--force-one-sample"
+    ) "cube-1x.log"
 
     # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.

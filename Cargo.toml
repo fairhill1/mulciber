@@ -8,6 +8,8 @@ members = [
     "examples/cube",
     "probes/metal-info",
     "probes/metal-triangle",
+    "probes/api-clear",
+    "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",
 ]

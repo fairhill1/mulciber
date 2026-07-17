@@ -75,6 +75,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "glam"
+version = "0.33.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f22fb22f065b308be0d8724e3706c7fa3fc2a6c7d6899df4cad7860e7a75436"
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -125,6 +131,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-api-clear"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
+name = "mulciber-api-cube"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-clear"
 version = "0.0.0"
 dependencies = [
@@ -136,6 +159,7 @@ dependencies = [
 name = "mulciber-cube"
 version = "0.0.0"
 dependencies = [
+ "glam",
  "mulciber",
  "mulciber-platform",
 ]

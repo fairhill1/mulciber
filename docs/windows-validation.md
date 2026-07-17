@@ -20,6 +20,14 @@ rotating checkerboard cube correctly through aggressive drag-resize and one mini
 then closed normally. This is single-display physical visual, resize, minimize/restore, and close
 evidence; it is not multi-display or broader hardware evidence.
 
+After the user-facing examples were separated from validation-only controls, the complete automated
+matrix passed again on 2026-07-17 on the same Windows 11 / RTX 3060 Ti tier. The ordinary clear and
+cube examples each completed four-size automated resize and `WM_CLOSE` shutdown. The public-API
+clear probe abandoned generation 2 and recovered for 120 presentations; the cube probe recovered
+from abandonment for 120 preferred-4x presentations and separately completed 120 forced-1x
+presentations. Evidence: `validation-artifacts/windows-vulkan-20260717-152610.zip`. This rerun is
+automated evidence, not a new physical visual, multi-display, or broader hardware claim.
+
 A clear-only Gate 2 checkpoint based on revision `2d24f8f` plus the uncommitted extraction changes
 passed the automated preflight on 2026-07-17 on the same Windows 11 / RTX 3060 Ti tier. The
 same-source `mulciber-clear` application selected Vulkan, abandoned one acquired image by replacing
@@ -299,9 +307,10 @@ RGBA8 through native 4x, forced 1x, and resize so a BC-capable adapter cannot hi
 regressions. It then guides two interactive runs: lifecycle testing closed through the title bar,
 followed by an Alt+F4 shutdown test.
 
-The automated matrix also builds the same-source clear example, exercises one acquired-frame
-abandonment followed by presented recovery, and drives it through the four-size resize smoke before
-closing it through `WM_CLOSE`.
+The automated matrix builds the ordinary same-source clear and cube examples and drives each through
+the four-size resize smoke before closing it through `WM_CLOSE`. Separate public-API clear and cube
+probes own finite execution, acquired-frame abandonment followed by presented recovery, and the
+cube's forced 1x path so validation controls do not leak into user-facing examples.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP

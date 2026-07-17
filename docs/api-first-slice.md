@@ -42,10 +42,12 @@ choosing a Vulkan device that cannot present to the window.
 
 ## Complete candidate flow
 
-The example deliberately includes capability choice, uploads, resize-dependent resources, temporary
-surface unavailability, presentation, explicit frame non-presentation, and fallible shutdown. Shader
-artifacts are backend-selected checked-in inputs for this slice; authoring-language policy remains
-outside its scope.
+The representative slice deliberately includes capability choice, uploads, resize-dependent
+resources, temporary surface unavailability, presentation, explicit frame non-presentation, and
+fallible shutdown. The ordinary example demonstrates the application path; a companion probe owns
+validation-only fallback, non-presentation, and finite-run controls. Shader artifacts are
+backend-selected checked-in inputs for this slice; authoring-language policy remains outside its
+scope.
 
 ```rust,ignore
 use mulciber::{
@@ -255,11 +257,12 @@ observe and leaves native mechanisms inside their backends.
 
 ## Acceptance test for the implementation
 
-The representative compiling example must use the same application source on Metal/AppKit and Vulkan with
-Win32, Wayland, or X11. It must contain no ordinary application `unsafe`, report its chosen 4x or 1x
-sample path, render a textured depth-tested scene, rebuild correctly across lifecycle changes, handle
-temporary surface unavailability, explicitly exercise frame non-presentation, and complete fallible
-shutdown without native validation output.
+The representative compiling example must use the same application source on Metal/AppKit and Vulkan
+with Win32, Wayland, or X11. It must contain no ordinary application `unsafe`, report its chosen 4x or
+1x sample path, render a textured depth-tested scene, rebuild correctly across lifecycle changes,
+handle temporary surface unavailability, and complete fallible shutdown without native validation
+output. A companion public-API probe must explicitly exercise frame non-presentation and forced
+fallback without adding backend branches to either application path.
 
 Metal-only and Vulkan-only builds are scored separately with portability receiving no credit. This
 flow survives only if it removes meaningful unsafe ownership or lifecycle/synchronization burden

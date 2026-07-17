@@ -1,6 +1,6 @@
 [package]
-name = "mulciber-cube"
-description = "Same-source textured spinning cube through Mulciber's native Metal and Vulkan backends"
+name = "mulciber-api-cube"
+description = "Validation harness for Mulciber's public textured-cube API slice"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

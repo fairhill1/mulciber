@@ -31,6 +31,9 @@ MTL_DEBUG_LAYER=1 cargo run -p mulciber-clear -- \
   --frames 120 --abandon-acquired-frame-once
 ```
 
+That command records the tested revision. Validation-only controls have since moved unchanged to
+`mulciber-api-clear`; the ordinary `mulciber-clear` example is now interactive-only.
+
 The user then ran the requested interactive clear smoke independently with `MTL_DEBUG_LAYER=1` and
 reported that it worked without an issue. The observed solid blue/teal output is the intended
 full-surface clear, not a missing triangle. This records a validation-enabled physical smoke of the

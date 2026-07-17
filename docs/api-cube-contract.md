@@ -9,7 +9,7 @@ fallbacks.
 
 ## Checkpoint
 
-The example must:
+The ordinary example must:
 
 - open a surface-compatible native device;
 - report the selected backend and either four-sample MSAA or the observable one-sample fallback;
@@ -17,8 +17,12 @@ The example must:
 - create a depth-tested textured pipeline from a target-selected offline shader artifact;
 - recreate extent-dependent color and depth targets after surface generation changes;
 - render a perspective-correct spinning cube and present it;
-- safely abandon an acquired frame and submit a later recovery frame; and
 - drain native GPU and presentation ownership during fallible shutdown.
+
+The companion public-API validation probe must additionally select both the preferred four-sample
+and forced one-sample paths, safely abandon an acquired frame, submit later recovery frames, and
+support finite automated execution. Those controls are evidence machinery, not normal application
+behavior, and do not belong in the example.
 
 Ordinary example source must not contain Metal/Vulkan or AppKit/Win32/Wayland/X11 branches. It has
 one WGSL shader source. The separately installed `mulciber-shader` development tool emits cached
@@ -90,5 +94,6 @@ and stale render targets are rejected before native calls where practical. Valid
 Metal debug-layer warnings and errors fail their validation runs.
 
 Acceptance requires automated Windows preflight plus physical visual, resize, abandonment/recovery,
-and lifecycle evidence on each available target. A single machine or display is never recorded as
-broader coverage.
+and lifecycle evidence on each available target. Automated abandonment, fallback, and finite-run
+coverage comes from the public-API probe; the example remains interactive. A single machine or
+display is never recorded as broader coverage.

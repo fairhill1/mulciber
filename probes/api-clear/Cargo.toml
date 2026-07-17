@@ -1,6 +1,6 @@
 [package]
-name = "mulciber-cube"
-description = "Same-source textured spinning cube through Mulciber's native Metal and Vulkan backends"
+name = "mulciber-api-clear"
+description = "Validation harness for Mulciber's public clear API slice"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,6 @@ version.workspace = true
 publish = false
 
 [dependencies]
-glam = { version = "0.33.2", default-features = false, features = ["std"] }
 mulciber = { path = "../../crates/mulciber" }
 mulciber-platform = { path = "../../crates/mulciber-platform" }
 

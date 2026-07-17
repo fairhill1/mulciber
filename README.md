@@ -1,5 +1,8 @@
 # Mulciber
 
+[![crates.io](https://img.shields.io/crates/v/mulciber.svg)](https://crates.io/crates/mulciber)
+[![docs.rs](https://docs.rs/mulciber/badge.svg)](https://docs.rs/mulciber)
+
 Mulciber is a native game platform for Vulkan and Metal.
 
 ## Why Mulciber?

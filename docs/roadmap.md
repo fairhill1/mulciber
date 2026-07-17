@@ -201,9 +201,13 @@ Textured checkpoint progress: `examples/cube` now uses one safe Rust source and 
 through distinct public `Device`, `Queue`, and `Surface` owners plus mesh, texture, pipeline,
 generation-bound render-target, and owned-frame handles. Native Vulkan and Metal runs have exercised
 indexed texture sampling, depth, preferred 4x MSAA, forced 1x, explicit abandonment/recovery, and
-fallible drained shutdown. Naga is confined to the separate offline `mulciber-shader` tool. Final
-checkboxes remain open until the updated Windows matrix and physical visual/resize/lifecycle evidence
-are recorded and the provisional resource-retention/command vocabulary is reviewed.
+fallible drained shutdown. Naga is confined to the separate offline `mulciber-shader` tool. Native
+KDE Wayland resize evidence forced two corrections: render targets from superseded surface
+generations are now reclaimed instead of retained until shutdown, and Wayland extent-driven
+reconfiguration is paced so continuous resize cannot outrun FIFO presentation (see the
+[Linux validation runbook](linux-validation.md)). Final checkboxes remain open until the updated
+Windows matrix reruns, the Metal-side reclamation passes macOS validation, and the provisional
+resource-retention/command vocabulary is reviewed.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

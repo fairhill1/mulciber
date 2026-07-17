@@ -50,6 +50,36 @@ construction, native event pumping, Vulkan surface creation, presentation, and o
 through the extracted boundary. It is automated finite-run evidence, not a repeat of physical
 resize, minimize/restore, close, display-change, input, or visual-correctness coverage.
 
+### Extracted graphics slice resize evidence
+
+On 2026-07-17, an uncommitted development tree based on `09d2477` exercised the extracted
+same-source cube slice on the native KDE Wayland session and RTX 3060 Ti tier described below,
+the slice's first Linux execution record. An interactive drag-resize of `examples/cube` first
+reproduced two defects: retained per-generation render targets grew until `vkAllocateMemory`
+failed with -2 while validation reported one leaked `VkImage` from that failed image's partial
+construction, and unpaced per-configure swapchain recreation let FIFO presentation backlog make
+the window trail input by multiple seconds.
+
+After the fixes, on the same session with continuous server-side resizes driven through KWin's
+scripting interface:
+
+- `mulciber-api-cube --frames 120 --abandon-acquired-frame-once` and
+  `mulciber-api-cube --frames 120 --force-one-sample` each exited zero on native Wayland with no
+  validation output, covering 4x selection with abandonment recovery and the observable 1x
+  fallback.
+- With stale-generation render-target reclamation, a 110-step scripted resize walked surface
+  generations 2 through 111 across extents from 457x315 to roughly 1600x1000, presented 1201
+  frames, exited zero with no validation output, and whole-GPU memory samples stayed within
+  596-708 MiB across the storm instead of growing per generation.
+- With extent-driven reconfiguration pacing, a 350-step scripted resize at 10 ms intervals
+  produced 212 reconfigurations at the 16 ms Wayland pace, presented 544 frames, and exited zero
+  with no validation output. A subsequent interactive drag-resize of `examples/cube` tracked the
+  pointer without the earlier trailing.
+
+This is automated, single-machine, single-display native Wayland evidence plus one interactive
+drag-resize smoke. Extracted-slice X11, native Xorg, minimize/restore, display-change,
+multi-display, and broader hardware coverage remain unrecorded.
+
 ## Recorded evidence
 
 Revision `d5a50a490063b99d04d5dcfc4282c39f883b1bbe` was exercised on a physical

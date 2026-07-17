@@ -89,18 +89,19 @@ prefers 4x MSAA and reports a fallback to 1x. `mulciber-shader` is a separate of
 that turns WGSL into validated, cached native artifacts; Naga is not in the application's normal or
 runtime dependency graph.
 
-The graphics-only cube above remains the minimal Gate 2 comparison application. A separate AppKit-
-first input checkpoint adds equivalent W/A/S/D or arrow-key rotation, primary-button dragging,
-scrolling, focus handling, Space spin toggle, and R reset through ordered `mulciber-platform`
-events:
+The graphics-only cube above remains the minimal Gate 2 comparison application. A separate native
+AppKit/Win32 input checkpoint adds equivalent W/A/S/D or arrow-key rotation, primary-button
+dragging, scrolling, focus handling, Space spin toggle, and R reset through ordered
+`mulciber-platform` events:
 
 ```sh
 cargo run -p mulciber-input-cube
 ```
 
 Its `wgpu`/`winit` peer is `comparisons/wgpu-input-cube`; the original graphics-only comparison pair
-remains unchanged for its recorded line counts. This is native design evidence, not cross-platform
-input support or the future runtime snapshot API; see the
+remains unchanged for its recorded line counts. AppKit and Win32 now implement the transition
+contract, while Wayland and X11 remain pending. This is native design evidence, not a stable
+cross-platform input claim or the future runtime snapshot API; see the
 [experimental input contract](docs/input-contract.md).
 
 A third, separate comparison pair exercises a real intermediate attachment and pass-to-pass

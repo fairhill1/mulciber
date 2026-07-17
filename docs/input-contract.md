@@ -1,8 +1,8 @@
 # Experimental input-transition contract
 
 This document records the first native input evidence added to `mulciber-platform`. The contract is
-an unstable AppKit-first experiment, not a cross-platform support claim and not the input-snapshot
-API planned for `mulciber-runtime`.
+an unstable AppKit/Win32 experiment, not a stable cross-platform support claim and not the
+input-snapshot API planned for `mulciber-runtime`.
 
 ## Scope
 
@@ -23,9 +23,9 @@ ordinary pointer evidence.
 
 ## Event delivery and ownership
 
-Input remains part of the game-owned platform pump. AppKit events are translated and delivered in
-native queue order before the pump's final `RedrawRequested`, so state changed by input is visible to
-that render opportunity. If an application handler fails, AppKit dispatch still advances while the
+Input remains part of the game-owned platform pump. Native events are translated and delivered in
+queue order before the pump's final `RedrawRequested`, so state changed by input is visible to that
+render opportunity. If an application handler fails, native dispatch still advances while the
 remaining translated events from that pump call are dropped, preserving the platform contract's
 existing error semantics.
 
@@ -41,8 +41,9 @@ delivery captured until its matching release, including when the pointer leaves 
 Focus loss clears that internal pointer capture and tells consumers to invalidate any held-state
 snapshot they maintain.
 
-Physical `KeyCode` values describe key positions rather than text. An unrecognized AppKit key code is
-preserved as `KeyCode::Unidentified` for diagnostics without treating its numeric value as portable.
+Physical `KeyCode` values describe key positions rather than text. An unrecognized backend key code
+is preserved as `KeyCode::Unidentified` for diagnostics without treating its numeric value as
+portable.
 
 ## AppKit implementation checkpoint
 
@@ -60,16 +61,35 @@ through ordinary `winit` events, while the original `wgpu-cube` also remains unc
 example constructs no snapshot layer; every visible change follows directly from a transition
 delivered before redraw.
 
+## Win32 implementation checkpoint
+
+The Win32 backend translates physical scan codes from `WM_KEYDOWN`, `WM_KEYUP`, and their system-key
+peers rather than treating keyboard-layout text as key identity. Modifier state comes from Win32's
+thread-local key state. `TranslateMessage` still runs as part of ordinary native dispatch, but the
+resulting `WM_CHAR` and `WM_SYSCHAR` messages are consumed because text entry, menu mnemonics, and IME
+composition are outside this render-window slice; this also prevents the default OS beep. Alt+F4 is
+explicitly preserved through `DefWindowProcW` so native close behavior remains intact.
+
+Pointer messages use signed top-left client coordinates. Button presses acquire Win32 pointer
+capture until every pressed button is released; capture loss synthesizes the missing releases for
+the public event stream. Wheel messages convert their screen-relative coordinates to the client
+space and retain coarse wheel-step units. Focus changes are retained even when they occur between
+pump callbacks, and focus loss clears internal pointer capture.
+
 ## Evidence and next pressure tests
 
 Unit tests cover the AppKit physical-key table, modifier translation, extra pointer-button identity,
-focus delegate state, and existing lifecycle behavior. Physical evidence must exercise key presses
-and repeats, modifiers, primary drag including an outside-window release, coarse or precise scroll,
-focus loss/reacquisition, resize, minimize/restore, and titlebar close in one captured session.
+focus delegate state, Win32 scan-code navigation/numpad distinctions, signed pointer coordinates,
+extended-button identity, and existing lifecycle behavior. On 2026-07-18, the combined showcase was
+physically exercised on Windows 11 / Intel UHD 620: W/A/S/D and arrow rotation, Space pause/resume,
+R reset, two-axis primary drag, wheel zoom, resize, and title-bar close behaved correctly, key input
+produced no default OS beep, and the process exited zero. That focused pass did not exercise repeats,
+modifier transitions, outside-window release, focus loss/reacquisition, minimize/restore,
+maximize/restore, or multi-display behavior.
 
-No shared input claim follows from AppKit alone. Before stabilizing names or snapshot behavior:
+Before stabilizing names or snapshot behavior:
 
-1. implement and physically exercise Win32 transitions;
+1. complete the remaining Win32 pressure tests listed above;
 2. implement Wayland keyboard/pointer support with explicit keymap ownership and compositor protocol
    behavior rather than assuming AppKit key identities or pointer capture;
 3. implement and exercise the X11 peer, preserving its different focus and event-selection rules;

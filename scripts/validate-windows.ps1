@@ -131,6 +131,11 @@ public static class MulciberValidationWin32
     public static extern bool SetWindowPos(
         IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+        uint flags, uint timeoutMilliseconds, out IntPtr result);
+
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 }
@@ -172,11 +177,18 @@ public static class MulciberValidationWin32
         for ($Cycle = 0; $Cycle -lt $ResizeCycles; $Cycle++) {
             foreach ($Size in @(@(640, 360), @(1200, 700), @(320, 240), @(960, 540))) {
                 $Resized = [MulciberValidationWin32]::SetWindowPos(
-                    $Window, [IntPtr]::Zero, 80, 80, $Size[0], $Size[1], 0x0014)
+                    $Window, [IntPtr]::Zero, 80, 80, $Size[0], $Size[1], 0x4014)
                 if (-not $Resized) {
                     throw "SetWindowPos failed during automated resize smoke"
                 }
                 Start-Sleep -Milliseconds $ResizeDelayMilliseconds
+                $MessageResult = [IntPtr]::Zero
+                $Responsive = [MulciberValidationWin32]::SendMessageTimeout(
+                    $Window, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero,
+                    0x0023, 5000, [ref]$MessageResult)
+                if ($Responsive -eq [IntPtr]::Zero) {
+                    throw "Vulkan probe stopped responding during automated resize smoke"
+                }
             }
         }
         if (-not [MulciberValidationWin32]::PostMessage(

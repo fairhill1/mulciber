@@ -187,12 +187,17 @@ and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at rev
 completing the initial peer platform-spine evidence without broadening the support claim. See the
 [experimental platform contract](api-platform-contract.md).
 
-Input extraction progress: AppKit now translates ordered physical-key, modifier, logical pointer,
-button, precise/coarse scroll, and focus transitions through the existing fallible platform pump.
-The separate `mulciber-input-cube` visibly consumes those transitions without introducing snapshot
-or runtime policy, with an equivalent `wgpu-input-cube` preserved beside the unchanged minimal
-graphics comparison pair. This is an AppKit-first design experiment; physical macOS evidence and all
-Win32, Wayland, and X11 implementations remain pending, so no cross-platform input support is
+Input extraction progress: AppKit and Win32 now translate ordered physical-key, modifier, logical
+pointer, button, precise/coarse scroll, and focus transitions through the existing fallible platform
+pump. Win32 derives physical identity from scan codes, retains pointer capture through button
+release, converts wheel screen coordinates to top-left client coordinates, and consumes translated
+character messages because text/IME is outside this gameplay slice. The separate
+`mulciber-input-cube` visibly consumes those transitions without introducing snapshot or runtime
+policy, with an equivalent `wgpu-input-cube` preserved beside the unchanged minimal graphics
+comparison pair. The combined showcase passed focused physical keyboard, primary-drag, wheel,
+reset, resize, close, and no-default-beep checks on Windows 11 / Intel UHD 620. Modifier/repeat,
+focus-loss, outside-window release, minimize/restore, and multi-display evidence remains pending on
+that tier, as do Wayland and X11 implementations, so no stable cross-platform input support is
 claimed. See the [experimental input contract](input-contract.md).
 
 Two-pass extraction progress: a separate postprocess comparison now renders the textured scene into

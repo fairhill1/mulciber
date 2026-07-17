@@ -8,7 +8,8 @@ use std::ptr::{self, NonNull};
 use std::rc::Rc;
 
 use crate::{
-    PhysicalExtent, PlatformError, PumpStatus, WindowDescriptor, WindowEvent, WindowMetrics,
+    ButtonState, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PlatformError,
+    PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent, WindowMetrics,
     WindowRevision,
 };
 
@@ -29,15 +30,43 @@ const CW_USEDEFAULT: c_int = i32::MIN;
 const IDC_ARROW: *const u16 = 32_512_usize as *const u16;
 const PM_REMOVE: u32 = 0x0001;
 const SW_SHOW: c_int = 5;
+const VK_CAPITAL: usize = 0x14;
+const VK_CONTROL: usize = 0x11;
+const VK_F4: usize = 0x73;
+const VK_LWIN: usize = 0x5B;
+const VK_MENU: usize = 0x12;
+const VK_RWIN: usize = 0x5C;
+const VK_SHIFT: usize = 0x10;
+const WM_CAPTURECHANGED: u32 = 0x0215;
+const WM_CHAR: u32 = 0x0102;
 const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
 const WM_ENTERSIZEMOVE: u32 = 0x0231;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+const WM_KILLFOCUS: u32 = 0x0008;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const WM_MBUTTONUP: u32 = 0x0208;
+const WM_MOUSEHWHEEL: u32 = 0x020E;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_MOUSEWHEEL: u32 = 0x020A;
 const WM_NCCREATE: u32 = 0x0081;
 const WM_NCDESTROY: u32 = 0x0082;
 const WM_QUIT: u32 = 0x0012;
+const WM_RBUTTONDOWN: u32 = 0x0204;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_SETFOCUS: u32 = 0x0007;
 const WM_SIZE: u32 = 0x0005;
+const WM_SYSCHAR: u32 = 0x0106;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
 const WM_TIMER: u32 = 0x0113;
+const WM_XBUTTONDOWN: u32 = 0x020B;
+const WM_XBUTTONUP: u32 = 0x020C;
+const WHEEL_DELTA: f64 = 120.0;
 const GWLP_USERDATA: c_int = -21;
 const LIVE_RESIZE_TIMER: usize = 1;
 const LIVE_RESIZE_INTERVAL_MS: u32 = 16;
@@ -147,13 +176,18 @@ unsafe extern "system" {
     fn DefWindowProcW(window: Hwnd, message: u32, w_param: Wparam, l_param: Lparam) -> Lresult;
     fn DestroyWindow(window: Hwnd) -> i32;
     fn DispatchMessageW(message: *const Msg) -> Lresult;
+    fn GetCapture() -> Hwnd;
     fn GetClientRect(window: Hwnd, rect: *mut Rect) -> i32;
+    fn GetKeyState(virtual_key: c_int) -> i16;
     fn GetWindowLongPtrW(window: Hwnd, index: c_int) -> isize;
     fn IsWindow(window: Hwnd) -> i32;
     fn KillTimer(window: Hwnd, event: usize) -> i32;
     fn LoadCursorW(instance: Hinstance, cursor_name: *const u16) -> Hcursor;
     fn PeekMessageW(message: *mut Msg, window: Hwnd, min: u32, max: u32, remove: u32) -> i32;
     fn RegisterClassExW(class: *const WindowClassExW) -> Atom;
+    fn ReleaseCapture() -> i32;
+    fn ScreenToClient(window: Hwnd, point: *mut Point) -> i32;
+    fn SetCapture(window: Hwnd) -> Hwnd;
     fn ShowWindow(window: Hwnd, command: c_int) -> i32;
     fn SetTimer(window: Hwnd, event: usize, milliseconds: u32, callback: *const c_void) -> usize;
     fn SetWindowLongPtrW(window: Hwnd, index: c_int, value: isize) -> isize;
@@ -281,6 +315,10 @@ where
             "live-resize timer failed with Win32 error {timer_error}"
         )));
     }
+    // Focus can change while no callback is registered (including during ShowWindow). Reconcile
+    // the retained state once per pump so the public stream still observes the transition.
+    // SAFETY: The window and callback registration are live on this thread.
+    unsafe { dispatch_focus_transition(window.handle.as_ptr(), &window.state) };
     if quit_requested || window.state.close_requested.get() || !window.is_open() {
         if !window.state.close_reported.replace(true) {
             // SAFETY: Registration above owns a live exclusive handler borrow on this thread.
@@ -323,6 +361,11 @@ struct WindowState {
     revision: Cell<WindowRevision>,
     last_extent: Cell<PhysicalExtent>,
     last_metrics: Cell<Option<WindowMetrics>>,
+    focused: Cell<bool>,
+    last_focused: Cell<bool>,
+    last_modifiers: Cell<Modifiers>,
+    captured_pointer_buttons: Cell<u16>,
+    last_pointer_position: Cell<LogicalPosition>,
     close_requested: Cell<bool>,
     close_reported: Cell<bool>,
 }
@@ -339,6 +382,11 @@ impl WindowState {
             revision: Cell::new(WindowRevision::INITIAL),
             last_extent: Cell::new(PhysicalExtent::default()),
             last_metrics: Cell::new(None),
+            focused: Cell::new(false),
+            last_focused: Cell::new(false),
+            last_modifiers: Cell::new(Modifiers::default()),
+            captured_pointer_buttons: Cell::new(0),
+            last_pointer_position: Cell::new(LogicalPosition::default()),
             close_requested: Cell::new(false),
             close_reported: Cell::new(false),
         }
@@ -542,6 +590,10 @@ unsafe extern "system" fn window_procedure(
     w_param: Wparam,
     l_param: Lparam,
 ) -> Lresult {
+    // SAFETY: Win32 calls this procedure synchronously on the owning window thread.
+    if let Some(result) = unsafe { handle_input_message(window, message, w_param, l_param) } {
+        return result;
+    }
     match message {
         WM_NCCREATE => {
             // SAFETY: Win32 supplies a live CREATESTRUCTW for WM_NCCREATE. The creation parameter
@@ -633,6 +685,457 @@ unsafe fn state_for_window(window: Hwnd) -> Option<&'static WindowState> {
     // during WM_NCDESTROY before that box can be dropped.
     let pointer = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) } as *const WindowState;
     unsafe { pointer.as_ref() }
+}
+
+unsafe fn handle_input_message(
+    window: Hwnd,
+    message: u32,
+    w_param: Wparam,
+    l_param: Lparam,
+) -> Option<Lresult> {
+    let state = unsafe { state_for_window(window) };
+    match message {
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            if let Some(state) = state {
+                state.focused.set(message == WM_SETFOCUS);
+                // SAFETY: Focus messages are synchronous. If creation changes focus before a
+                // callback exists, the next pump reconciles the retained value.
+                unsafe { dispatch_focus_transition(window, state) };
+            }
+            Some(0)
+        }
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            if let Some(state) = state {
+                // SAFETY: Keyboard messages are delivered on the window thread.
+                unsafe { dispatch_keyboard_event(state, message, w_param, l_param) };
+            }
+            if message == WM_SYSKEYDOWN
+                && w_param == VK_F4
+                && l_param.cast_unsigned() & (1 << 29) != 0
+            {
+                // SAFETY: Preserve native Alt+F4 after reporting the physical key press.
+                Some(unsafe { DefWindowProcW(window, message, w_param, l_param) })
+            } else {
+                Some(0)
+            }
+        }
+        // TranslateMessage derives these from physical key messages. Text and IME are a separate
+        // future contract; consuming them prevents the render-only window's default OS beep.
+        WM_CHAR | WM_SYSCHAR => Some(0),
+        WM_MOUSEMOVE => {
+            if let Some(state) = state {
+                let position = pointer_position(l_param);
+                state.last_pointer_position.set(position);
+                // SAFETY: Pointer messages are synchronous while pump registration is live.
+                unsafe {
+                    dispatch_input_event(
+                        state,
+                        InputEvent::PointerMoved {
+                            position,
+                            modifiers: win32_modifiers(),
+                        },
+                    );
+                }
+            }
+            Some(0)
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
+        | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            if let Some(state) = state
+                && let Some((button, mask, button_state)) = pointer_button(message, w_param)
+            {
+                // SAFETY: Capture remains confined to this live window's thread.
+                unsafe {
+                    dispatch_pointer_button(window, state, button, mask, button_state, l_param);
+                }
+            }
+            Some(Lresult::from(matches!(
+                message,
+                WM_XBUTTONDOWN | WM_XBUTTONUP
+            )))
+        }
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            if let Some(state) = state {
+                // SAFETY: Screen coordinates are converted against this live window.
+                unsafe { dispatch_scroll_event(window, state, message, w_param, l_param) };
+            }
+            Some(0)
+        }
+        WM_CAPTURECHANGED => {
+            if let Some(state) = state {
+                // SAFETY: Win32 already transferred capture; reconcile retained button state.
+                unsafe { release_captured_buttons(state) };
+            }
+            Some(0)
+        }
+        _ => None,
+    }
+}
+
+unsafe fn dispatch_focus_transition(window: Hwnd, state: &WindowState) {
+    if state.event_callback.get().is_none() || state.last_focused.get() == state.focused.get() {
+        return;
+    }
+    let focused = state.focused.get();
+    state.last_focused.set(focused);
+    // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+    unsafe { dispatch_input_event(state, InputEvent::FocusChanged { focused }) };
+    if focused {
+        // SAFETY: This is the window thread, so the thread-local key state is authoritative.
+        unsafe { dispatch_modifiers_if_changed(state, win32_modifiers()) };
+    } else {
+        state.captured_pointer_buttons.set(0);
+        state.last_modifiers.set(Modifiers::default());
+        // SAFETY: Capture, if present, belongs to this window on the current thread.
+        if unsafe { GetCapture() } == window {
+            unsafe { ReleaseCapture() };
+        }
+    }
+}
+
+unsafe fn dispatch_keyboard_event(
+    state: &WindowState,
+    message: u32,
+    virtual_key: Wparam,
+    l_param: Lparam,
+) {
+    // SAFETY: Keyboard messages are being handled on their owning window thread.
+    let modifiers = unsafe { win32_modifiers() };
+    if is_modifier_key(virtual_key) {
+        // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+        unsafe { dispatch_modifiers_if_changed(state, modifiers) };
+        return;
+    }
+    let parameter_bits = l_param.cast_unsigned();
+    let scan_code =
+        u8::try_from((parameter_bits >> 16) & 0xff).expect("masked Win32 scan code fits u8");
+    let extended = parameter_bits & (1 << 24) != 0;
+    let state_value = if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    };
+    let repeat = state_value == ButtonState::Pressed && l_param & (1 << 30) != 0;
+    // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+    unsafe {
+        dispatch_input_event(
+            state,
+            InputEvent::Keyboard {
+                key: win32_key_code(scan_code, extended),
+                state: state_value,
+                repeat,
+                modifiers,
+            },
+        );
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn win32_key_code(scan_code: u8, extended: bool) -> KeyCode {
+    match (scan_code, extended) {
+        (0x01, _) => KeyCode::Escape,
+        (0x02, _) => KeyCode::Digit1,
+        (0x03, _) => KeyCode::Digit2,
+        (0x04, _) => KeyCode::Digit3,
+        (0x05, _) => KeyCode::Digit4,
+        (0x06, _) => KeyCode::Digit5,
+        (0x07, _) => KeyCode::Digit6,
+        (0x08, _) => KeyCode::Digit7,
+        (0x09, _) => KeyCode::Digit8,
+        (0x0a, _) => KeyCode::Digit9,
+        (0x0b, _) => KeyCode::Digit0,
+        (0x0c, _) => KeyCode::Minus,
+        (0x0d, _) => KeyCode::Equal,
+        (0x0e, _) => KeyCode::Backspace,
+        (0x0f, _) => KeyCode::Tab,
+        (0x10, _) => KeyCode::KeyQ,
+        (0x11, _) => KeyCode::KeyW,
+        (0x12, _) => KeyCode::KeyE,
+        (0x13, _) => KeyCode::KeyR,
+        (0x14, _) => KeyCode::KeyT,
+        (0x15, _) => KeyCode::KeyY,
+        (0x16, _) => KeyCode::KeyU,
+        (0x17, _) => KeyCode::KeyI,
+        (0x18, _) => KeyCode::KeyO,
+        (0x19, _) => KeyCode::KeyP,
+        (0x1a, _) => KeyCode::BracketLeft,
+        (0x1b, _) => KeyCode::BracketRight,
+        (0x1c, false) => KeyCode::Enter,
+        (0x1c, true) => KeyCode::NumpadEnter,
+        (0x1e, _) => KeyCode::KeyA,
+        (0x1f, _) => KeyCode::KeyS,
+        (0x20, _) => KeyCode::KeyD,
+        (0x21, _) => KeyCode::KeyF,
+        (0x22, _) => KeyCode::KeyG,
+        (0x23, _) => KeyCode::KeyH,
+        (0x24, _) => KeyCode::KeyJ,
+        (0x25, _) => KeyCode::KeyK,
+        (0x26, _) => KeyCode::KeyL,
+        (0x27, _) => KeyCode::Semicolon,
+        (0x28, _) => KeyCode::Quote,
+        (0x29, _) => KeyCode::Backquote,
+        (0x2b, _) => KeyCode::Backslash,
+        (0x2c, _) => KeyCode::KeyZ,
+        (0x2d, _) => KeyCode::KeyX,
+        (0x2e, _) => KeyCode::KeyC,
+        (0x2f, _) => KeyCode::KeyV,
+        (0x30, _) => KeyCode::KeyB,
+        (0x31, _) => KeyCode::KeyN,
+        (0x32, _) => KeyCode::KeyM,
+        (0x33, _) => KeyCode::Comma,
+        (0x34, _) => KeyCode::Period,
+        (0x35, false) => KeyCode::Slash,
+        (0x35, true) => KeyCode::NumpadDivide,
+        (0x37, false) => KeyCode::NumpadMultiply,
+        (0x39, _) => KeyCode::Space,
+        (0x3b, _) => KeyCode::F1,
+        (0x3c, _) => KeyCode::F2,
+        (0x3d, _) => KeyCode::F3,
+        (0x3e, _) => KeyCode::F4,
+        (0x3f, _) => KeyCode::F5,
+        (0x40, _) => KeyCode::F6,
+        (0x41, _) => KeyCode::F7,
+        (0x42, _) => KeyCode::F8,
+        (0x43, _) => KeyCode::F9,
+        (0x44, _) => KeyCode::F10,
+        (0x47, false) => KeyCode::Numpad7,
+        (0x47, true) => KeyCode::Home,
+        (0x48, false) => KeyCode::Numpad8,
+        (0x48, true) => KeyCode::ArrowUp,
+        (0x49, false) => KeyCode::Numpad9,
+        (0x49, true) => KeyCode::PageUp,
+        (0x4a, false) => KeyCode::NumpadSubtract,
+        (0x4b, false) => KeyCode::Numpad4,
+        (0x4b, true) => KeyCode::ArrowLeft,
+        (0x4c, false) => KeyCode::Numpad5,
+        (0x4d, false) => KeyCode::Numpad6,
+        (0x4d, true) => KeyCode::ArrowRight,
+        (0x4e, false) => KeyCode::NumpadAdd,
+        (0x4f, false) => KeyCode::Numpad1,
+        (0x4f, true) => KeyCode::End,
+        (0x50, false) => KeyCode::Numpad2,
+        (0x50, true) => KeyCode::ArrowDown,
+        (0x51, false) => KeyCode::Numpad3,
+        (0x51, true) => KeyCode::PageDown,
+        (0x52, false) => KeyCode::Numpad0,
+        (0x52, true) => KeyCode::Insert,
+        (0x53, false) => KeyCode::NumpadDecimal,
+        (0x53, true) => KeyCode::Delete,
+        (0x57, _) => KeyCode::F11,
+        (0x58, _) => KeyCode::F12,
+        (0x64, _) => KeyCode::F13,
+        (0x65, _) => KeyCode::F14,
+        (0x66, _) => KeyCode::F15,
+        (0x67, _) => KeyCode::F16,
+        (0x68, _) => KeyCode::F17,
+        (0x69, _) => KeyCode::F18,
+        (0x6a, _) => KeyCode::F19,
+        (0x6b, _) => KeyCode::F20,
+        _ => KeyCode::Unidentified(u32::from(scan_code) | u32::from(extended) << 8),
+    }
+}
+
+fn is_modifier_key(virtual_key: Wparam) -> bool {
+    matches!(
+        virtual_key,
+        VK_SHIFT | VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN | VK_CAPITAL
+    )
+}
+
+unsafe fn win32_modifiers() -> Modifiers {
+    let mut bits = 0;
+    // SAFETY: GetKeyState reads thread-local keyboard state and accepts these documented keys.
+    if unsafe { key_is_down(VK_SHIFT) } {
+        bits |= Modifiers::SHIFT;
+    }
+    if unsafe { key_is_down(VK_CONTROL) } {
+        bits |= Modifiers::CONTROL;
+    }
+    if unsafe { key_is_down(VK_MENU) } {
+        bits |= Modifiers::ALT;
+    }
+    if unsafe { key_is_down(VK_LWIN) || key_is_down(VK_RWIN) } {
+        bits |= Modifiers::SUPER;
+    }
+    if unsafe { GetKeyState(c_int::try_from(VK_CAPITAL).expect("virtual key fits c_int")) } & 1 != 0
+    {
+        bits |= Modifiers::CAPS_LOCK;
+    }
+    Modifiers::from_bits(bits)
+}
+
+unsafe fn key_is_down(virtual_key: Wparam) -> bool {
+    // SAFETY: The virtual key fits c_int and GetKeyState has no pointer preconditions.
+    let virtual_key = c_int::try_from(virtual_key).expect("virtual key fits c_int");
+    (unsafe { GetKeyState(virtual_key) }) < 0
+}
+
+unsafe fn dispatch_modifiers_if_changed(state: &WindowState, modifiers: Modifiers) {
+    if state.last_modifiers.replace(modifiers) != modifiers {
+        // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+        unsafe { dispatch_input_event(state, InputEvent::ModifiersChanged(modifiers)) };
+    }
+}
+
+fn pointer_position(l_param: Lparam) -> LogicalPosition {
+    let packed = l_param.cast_unsigned();
+    let x = f64::from(low_word(packed).cast_signed());
+    let y = f64::from(high_word(packed).cast_signed());
+    LogicalPosition::new(x, y)
+}
+
+fn low_word(value: usize) -> u16 {
+    u16::try_from(value & 0xffff).expect("masked Win32 low word fits u16")
+}
+
+fn high_word(value: usize) -> u16 {
+    u16::try_from((value >> 16) & 0xffff).expect("masked Win32 high word fits u16")
+}
+
+fn pointer_button(message: u32, w_param: Wparam) -> Option<(PointerButton, u16, ButtonState)> {
+    let state = if matches!(
+        message,
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+    ) {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    };
+    match message {
+        WM_LBUTTONDOWN | WM_LBUTTONUP => Some((PointerButton::Primary, 1 << 0, state)),
+        WM_RBUTTONDOWN | WM_RBUTTONUP => Some((PointerButton::Secondary, 1 << 1, state)),
+        WM_MBUTTONDOWN | WM_MBUTTONUP => Some((PointerButton::Middle, 1 << 2, state)),
+        WM_XBUTTONDOWN | WM_XBUTTONUP => match high_word(w_param) {
+            1 => Some((PointerButton::Other(3), 1 << 3, state)),
+            2 => Some((PointerButton::Other(4), 1 << 4, state)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+unsafe fn dispatch_pointer_button(
+    window: Hwnd,
+    state: &WindowState,
+    button: PointerButton,
+    mask: u16,
+    button_state: ButtonState,
+    l_param: Lparam,
+) {
+    let position = pointer_position(l_param);
+    state.last_pointer_position.set(position);
+    match button_state {
+        ButtonState::Pressed => {
+            state
+                .captured_pointer_buttons
+                .set(state.captured_pointer_buttons.get() | mask);
+            // SAFETY: The handle identifies the window currently receiving this button press.
+            unsafe { SetCapture(window) };
+        }
+        ButtonState::Released => {
+            state
+                .captured_pointer_buttons
+                .set(state.captured_pointer_buttons.get() & !mask);
+        }
+    }
+    // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+    unsafe {
+        dispatch_input_event(
+            state,
+            InputEvent::PointerButton {
+                button,
+                state: button_state,
+                position,
+                modifiers: win32_modifiers(),
+            },
+        );
+    }
+    if button_state == ButtonState::Released
+        && state.captured_pointer_buttons.get() == 0
+        && unsafe { GetCapture() } == window
+    {
+        // SAFETY: This window owns capture and has no remaining pressed pointer buttons.
+        unsafe { ReleaseCapture() };
+    }
+}
+
+unsafe fn dispatch_scroll_event(
+    window: Hwnd,
+    state: &WindowState,
+    message: u32,
+    w_param: Wparam,
+    l_param: Lparam,
+) {
+    let packed = l_param.cast_unsigned();
+    let mut point = Point {
+        x: i32::from(low_word(packed).cast_signed()),
+        y: i32::from(high_word(packed).cast_signed()),
+    };
+    // SAFETY: The point is writable and the handle identifies this live window.
+    if unsafe { ScreenToClient(window, &raw mut point) } == 0 {
+        return;
+    }
+    let mut client = Rect::default();
+    // SAFETY: The rectangle is writable and the handle identifies this live window.
+    if unsafe { GetClientRect(window, &raw mut client) } == 0
+        || point.x < client.left
+        || point.y < client.top
+        || point.x >= client.right
+        || point.y >= client.bottom
+    {
+        return;
+    }
+    let steps = f64::from(high_word(w_param).cast_signed()) / WHEEL_DELTA;
+    let delta = if message == WM_MOUSEHWHEEL {
+        ScrollDelta::Coarse { x: steps, y: 0.0 }
+    } else {
+        ScrollDelta::Coarse { x: 0.0, y: steps }
+    };
+    let position = LogicalPosition::new(f64::from(point.x), f64::from(point.y));
+    state.last_pointer_position.set(position);
+    // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+    unsafe {
+        dispatch_input_event(
+            state,
+            InputEvent::Scroll {
+                delta,
+                position,
+                modifiers: win32_modifiers(),
+            },
+        );
+    }
+}
+
+unsafe fn release_captured_buttons(state: &WindowState) {
+    let masks = state.captured_pointer_buttons.replace(0);
+    let position = state.last_pointer_position.get();
+    for (mask, button) in [
+        (1 << 0, PointerButton::Primary),
+        (1 << 1, PointerButton::Secondary),
+        (1 << 2, PointerButton::Middle),
+        (1 << 3, PointerButton::Other(3)),
+        (1 << 4, PointerButton::Other(4)),
+    ] {
+        if masks & mask != 0 {
+            // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+            unsafe {
+                dispatch_input_event(
+                    state,
+                    InputEvent::PointerButton {
+                        button,
+                        state: ButtonState::Released,
+                        position,
+                        modifiers: win32_modifiers(),
+                    },
+                );
+            }
+        }
+    }
+}
+
+unsafe fn dispatch_input_event(state: &WindowState, event: InputEvent) {
+    // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+    unsafe { invoke_event_callback(state, WindowEvent::Input(event)) };
 }
 
 unsafe fn dispatch_window_events(window: Hwnd, state: &WindowState) {
@@ -787,8 +1290,14 @@ pub mod integration {
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowSlot, metrics_transition};
-    use crate::{PhysicalExtent, WindowEvent, WindowMetrics, WindowRevision};
+    use super::{
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_XBUTTONDOWN, WindowSlot, metrics_transition,
+        pointer_button, pointer_position, win32_key_code,
+    };
+    use crate::{
+        ButtonState, KeyCode, LogicalPosition, PhysicalExtent, PointerButton, WindowEvent,
+        WindowMetrics, WindowRevision,
+    };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
         WindowMetrics::new(PhysicalExtent::new(960, 540), 1.0, revision)
@@ -819,5 +1328,40 @@ mod tests {
         assert!(slot.claim().is_err());
         drop(lease);
         assert!(slot.claim().is_ok());
+    }
+
+    #[test]
+    fn physical_key_mapping_distinguishes_navigation_and_numpad_keys() {
+        assert_eq!(win32_key_code(0x11, false), KeyCode::KeyW);
+        assert_eq!(win32_key_code(0x48, true), KeyCode::ArrowUp);
+        assert_eq!(win32_key_code(0x48, false), KeyCode::Numpad8);
+        assert_eq!(win32_key_code(0x1c, true), KeyCode::NumpadEnter);
+        assert_eq!(win32_key_code(0x6b, false), KeyCode::F20);
+        assert_eq!(win32_key_code(0x7f, true), KeyCode::Unidentified(0x17f));
+    }
+
+    #[test]
+    fn pointer_coordinates_preserve_signed_client_positions() {
+        let packed = (i32::from(-7_i16) << 16) | i32::from((-11_i16).cast_unsigned());
+        assert_eq!(
+            pointer_position(isize::try_from(packed).expect("packed coordinates fit LPARAM")),
+            LogicalPosition::new(-11.0, -7.0)
+        );
+    }
+
+    #[test]
+    fn pointer_button_mapping_preserves_state_and_extended_identity() {
+        assert_eq!(
+            pointer_button(WM_LBUTTONDOWN, 0),
+            Some((PointerButton::Primary, 1, ButtonState::Pressed))
+        );
+        assert_eq!(
+            pointer_button(WM_LBUTTONUP, 0),
+            Some((PointerButton::Primary, 1, ButtonState::Released))
+        );
+        assert_eq!(
+            pointer_button(WM_XBUTTONDOWN, 2 << 16),
+            Some((PointerButton::Other(4), 1 << 4, ButtonState::Pressed))
+        );
     }
 }

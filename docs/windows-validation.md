@@ -32,6 +32,28 @@ Vulkan backend and 4x sample count, with no validation or loader messages. Evide
 visual and drag-resize evidence for the focused postprocess example; it does not cover input,
 minimize/restore, maximize/restore, Alt+F4, or multi-display behavior.
 
+A focused Win32 input follow-up used a development tree based on revision `3b03bb8` on the same
+Windows 11 Home / Intel UHD 620 tier. Native strict workspace clippy and all workspace tests passed;
+the platform suite included scan-code navigation/numpad distinctions, signed client coordinates,
+and extended-button identity. The combined postprocess/input showcase then physically exercised
+W/A/S/D and arrow rotation, Space pause/resume, R reset, primary-button drag on both axes, wheel
+zoom, and drag resize. The operator accepted every control, key presses produced no default OS beep,
+title-bar close exited zero, and the captured log contained only the selected Vulkan backend and 4x
+sample count. Evidence: `validation-artifacts/windows-vulkan-input-visual-20260718-014428.zip`.
+This focused single-display pass did not exercise key repeat, modifier transitions,
+outside-window release, focus loss/reacquisition, minimize/restore, maximize/restore, Alt+F4, or
+multi-display behavior.
+
+A same-tree `-SkipInteractive` matrix rerun was attempted after that focused pass but is not counted
+as passing evidence. Its clear, cube, and postprocess automated resize/close smokes completed, then
+the original synchronous cross-process resize controller blocked indefinitely during the first full
+probe resize smoke. Replacing that controller call with asynchronous `SetWindowPos` plus a bounded
+`SendMessageTimeout` responsiveness check let a focused four-size full-probe diagnostic close and
+exit zero. A clean matrix retry later stopped advancing during an ordinary 600-frame full-probe run,
+before the bounded resize controller was involved, and was terminated rather than left on the
+interactive desktop. The previously recorded complete Intel matrix remains the Vulkan checkpoint;
+this input change claims only the native tests and focused physical/resize evidence above.
+
 The in-progress resource-backed cube checkpoint ran natively on 2026-07-17 on the Windows 11 / RTX
 3060 Ti tier. The preferred Vulkan path selected 4x MSAA, uploaded indexed geometry and an RGBA8 sRGB
 checkerboard, created a WGSL-derived native pipeline and depth/MSAA targets, abandoned one acquired

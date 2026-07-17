@@ -61,31 +61,37 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             };
             let result: Result<(), Box<dyn Error>> = (|| {
-                match graphics.surface.acquire(metrics)? {
-                    FrameAcquire::Ready(frame) => {
-                        let info = frame.surface_info();
-                        let aspect = info.extent().width() as f32 / info.extent().height() as f32;
-                        graphics.queue.draw_textured_and_present(
-                            frame,
-                            TexturedDraw {
-                                mesh: &mesh,
-                                texture: &texture,
-                                pipeline: &pipeline,
-                                targets: &targets,
-                                model_view_projection: transform(
-                                    started.elapsed().as_secs_f32(),
-                                    aspect,
-                                ),
-                                clear,
-                            },
-                        )?;
-                    }
-                    FrameAcquire::Unavailable(_) => {}
-                    FrameAcquire::Reconfigured(info) => {
-                        targets = graphics.device.create_render_targets(info)?;
+                loop {
+                    match graphics.surface.acquire(metrics)? {
+                        FrameAcquire::Ready(frame) => {
+                            let info = frame.surface_info();
+                            let aspect =
+                                info.extent().width() as f32 / info.extent().height() as f32;
+                            graphics.queue.draw_textured_and_present(
+                                frame,
+                                TexturedDraw {
+                                    mesh: &mesh,
+                                    texture: &texture,
+                                    pipeline: &pipeline,
+                                    targets: &targets,
+                                    model_view_projection: transform(
+                                        started.elapsed().as_secs_f32(),
+                                        aspect,
+                                    ),
+                                    clear,
+                                },
+                            )?;
+                            return Ok(());
+                        }
+                        FrameAcquire::Unavailable(_) => return Ok(()),
+                        // Rebuild extent-dependent targets and acquire again in the same redraw so
+                        // every reconfigured size presents immediately; deferring to the next pump
+                        // leaves the committed window contents trailing a live resize.
+                        FrameAcquire::Reconfigured(info) => {
+                            targets = graphics.device.create_render_targets(info)?;
+                        }
                     }
                 }
-                Ok(())
             })();
             if let Err(error) = result {
                 failure = Some(error);

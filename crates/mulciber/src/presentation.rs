@@ -120,6 +120,8 @@ pub enum SurfaceUnavailable {
     DrawableUnavailable,
     /// A bounded native acquisition attempt expired without producing a frame.
     TimedOut,
+    /// Reconfiguration for a changed extent is deliberately paced; retry on a later acquisition.
+    ReconfigurationPaced,
 }
 
 /// The result of attempting to acquire a surface-scoped frame.

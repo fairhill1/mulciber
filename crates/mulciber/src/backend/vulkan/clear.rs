@@ -1,7 +1,9 @@
 use core::ffi::{CStr, c_char, c_void};
 use core::marker::PhantomData;
+use core::time::Duration;
 use core::{mem, ptr};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 use std::vec::Vec;
 use std::{eprintln, format, vec};
 
@@ -31,6 +33,8 @@ pub(crate) struct ClearSurface<'window> {
     frame_pending: bool,
     info: SurfaceInfo,
     recreate_after_present: bool,
+    resize_pace: Duration,
+    last_resize_recreate: Option<Instant>,
     deferred_error: Option<GraphicsError>,
     _target: PhantomData<SurfaceTarget<'window>>,
 }
@@ -54,6 +58,7 @@ impl<'window> ClearSurface<'window> {
             ));
         }
         VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
+        let resize_pace = platform::resize_commit_interval(&target);
         let entry = Entry::load()?;
         let instance = Instance::new(entry, &target)?;
         let device = Device::new(instance)?;
@@ -69,6 +74,8 @@ impl<'window> ClearSurface<'window> {
             frame_pending: false,
             info: SurfaceInfo::initial(extent).expect("extent was checked"),
             recreate_after_present: false,
+            resize_pace,
+            last_resize_recreate: None,
             deferred_error: None,
             _target: PhantomData,
         };
@@ -107,7 +114,24 @@ impl<'window> ClearSurface<'window> {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
         }
         if extent != self.info.extent() || self.recreate_after_present {
+            let resized = extent != self.info.extent();
+            // Pace extent-driven recreation where the platform requires it: replacement swapchains
+            // provide images immediately, so without pacing a continuous resize commits new-size
+            // buffers faster than FIFO presentation drains them and the window trails input.
+            if resized
+                && !self.resize_pace.is_zero()
+                && self
+                    .last_resize_recreate
+                    .is_some_and(|recreated| recreated.elapsed() < self.resize_pace)
+            {
+                return Ok(FrameAcquire::Unavailable(
+                    SurfaceUnavailable::ReconfigurationPaced,
+                ));
+            }
             self.recreate_swapchain(extent, true)?;
+            if resized && !self.resize_pace.is_zero() {
+                self.last_resize_recreate = Some(Instant::now());
+            }
             return Ok(FrameAcquire::Reconfigured(self.info));
         }
 

@@ -39,8 +39,9 @@ the complete presentation generation. Suspension without graphics reconfiguratio
 The shared acquisition outcome distinguishes:
 
 - a ready, surface-scoped frame;
-- temporary unavailability because the window is suspended, the native drawable is absent, or a
-  bounded acquisition timed out; and
+- temporary unavailability because the window is suspended, the native drawable is absent, a
+  bounded acquisition timed out, or extent-driven reconfiguration is deliberately paced where the
+  platform's presentation path would otherwise let a continuous resize outrun FIFO presentation; and
 - successful graphics reconfiguration that requires application-owned extent-dependent resources to
   be rebuilt before acquiring again.
 

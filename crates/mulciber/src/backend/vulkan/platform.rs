@@ -1,4 +1,5 @@
 use core::ffi::CStr;
+use core::time::Duration;
 use core::{mem, ptr};
 
 use mulciber_platform::SurfaceTarget;
@@ -39,6 +40,28 @@ pub(super) fn create_surface_name(target: &SurfaceTarget<'_>) -> &'static CStr {
             mulciber_platform::integration::LinuxSurfaceTarget::X11 { .. } => {
                 c"vkCreateXlibSurfaceKHR"
             }
+        }
+    }
+}
+
+pub(super) fn resize_commit_interval(target: &SurfaceTarget<'_>) -> Duration {
+    #[cfg(target_os = "windows")]
+    {
+        // Win32's nested sizing loop already gates each interactive resize step.
+        let _ = target;
+        Duration::ZERO
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Wayland swapchain recreation bypasses FIFO acquisition backpressure: every replacement
+        // swapchain provides images immediately, so an unpaced client commits one new-size buffer
+        // per configure and the compositor's FIFO presentation backlog grows without bound during
+        // a drag. X11's `_NET_WM_SYNC_REQUEST` counter already gates each interactive resize step.
+        match native_target(target) {
+            mulciber_platform::integration::LinuxSurfaceTarget::Wayland { .. } => {
+                Duration::from_millis(16)
+            }
+            mulciber_platform::integration::LinuxSurfaceTarget::X11 { .. } => Duration::ZERO,
         }
     }
 }

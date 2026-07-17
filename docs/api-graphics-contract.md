@@ -68,9 +68,12 @@ evidence of successful shutdown.
 ## First code boundary
 
 The initial checked-in code contains only the shared extent, generation, surface-information,
-unavailability, acquisition, and disposition vocabulary. Both validated native probes must use these
-facts before `mulciber` gains device, resource, encoder, or pipeline types. This keeps the first public
-surface small enough to delete or redesign if the native integrations expose a mismatch.
+unavailability, acquisition, and disposition vocabulary. Both native probes consume these facts. At
+revision `931b0dc`, the integrated Vulkan path passed the Windows matrix and the integrated Metal path
+passed native archive rebuild/reuse, acquired-frame abandonment, and physical resize/lifecycle
+validation on an Apple M2. This is cross-backend evidence for the experimental vocabulary, not a
+stability claim. `mulciber` gains no device, resource, encoder, or pipeline types until the next slice
+earns them.
 
 ## Still deliberately open
 

@@ -39,7 +39,11 @@ revision `044ae86`; scale/display-change evidence remains pending. The
 [experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
 peer-platform work. The [first graphics-slice flow](docs/api-first-slice.md) reviews the intended
 outside-in application experience against both native call sequences without committing graphics
-type names. `mulciber`'s graphics API remains empty.
+type names. `mulciber` now contains a deliberately small experimental graphics lifecycle vocabulary:
+physical surface extents, graphics-owned surface generations, nonfatal acquisition outcomes, and
+presented/abandoned frame dispositions. Both native probes consume it and passed their Windows and
+macOS validation matrices after integration; device, resource, command, and synchronization types
+remain unextracted.
 
 ## Direction
 

@@ -20,6 +20,9 @@ milestone and records what has actually been exercised.
   metrics, and window metric revisions into `mulciber-platform`. Development runs based on revision
   `449c01c` exercised the full Metal probe, acquired-frame abandonment, and a new physical lifecycle
   pass through that boundary; see below. No new display coverage is inferred.
+- The first experimental graphics lifecycle extraction is now natively validated at revision
+  `931b0dc`: the Metal probe consumed `mulciber` surface generations, acquisition outcomes, and frame
+  dispositions through finite archive, abandonment, and physical lifecycle passes; see below.
 - The primary evidence machine runs macOS 15.7.7 with a Metal 3 device family. The roadmap's
   macOS 26 / Metal 4 runtime comparison was recorded against a second machine (Apple M5, macOS
   26.5.2); see below. The capability probe detects Metal 4 objects through the Objective-C
@@ -148,6 +151,41 @@ frames at 0.951 ms average GPU frame time, and exited zero. Neither emitted vali
 the enabled banner. This is automated construction, rendering, and exceptional non-submission evidence
 only; hide/restore and titlebar close must be repeated physically before claiming those behaviors for
 the delegate-backed revision.
+
+### Experimental graphics lifecycle extraction regression
+
+Revision `931b0dc6b03540818e918784e44ca1ad78bbaf0e` was exercised on 2026-07-17 on the
+Apple M2 MacBook Air described above: macOS 15.7.7 build 24G720, 8 GPU cores, one built-in
+2560x1664 Retina display, and Rust 1.97.0. The working tree was clean before capture. The structural
+preflight, including `git diff --check`, passed natively.
+
+This revision made the Metal probe consume `mulciber`'s experimental physical surface extent,
+graphics-owned surface generation, acquisition outcome, and frame disposition vocabulary. Three
+finite runs completed with `MTL_DEBUG_LAYER=1` and no validation output beyond the enabled banner:
+
+- The 600-frame archive-rebuild run generated four strict pipeline hits, reported 0.368 ms pipeline
+  creation and 1.002 ms average GPU frame time, and exited zero.
+- A fresh 600-frame process loaded the archive with four strict hits, reported 0.497 ms pipeline
+  creation and 0.923 ms average GPU frame time, and exited zero.
+- The acquired-frame abandonment path loaded four strict hits, abandoned exactly one drawable,
+  reported recovery after later submission, completed 120 submitted frames at 0.953 ms average GPU
+  frame time, and exited zero.
+
+An interactive run then loaded four strict hits and ran under the same validation layer. The user
+physically exercised continuous resize including very small sizes, minimize/restore, zoom/restore,
+full occlusion/reveal, and titlebar close, and reported correct rendering with no visual or lifecycle
+issue. Shutdown exited zero after 1,906 rendered frames at 0.942 ms average GPU frame time, with no
+validation output beyond the enabled banner.
+
+This establishes single-display physical regression evidence for the extracted platform and graphics
+lifecycle boundaries on one Apple M2. It does not establish display-change, multi-display, a differing
+backing scale factor, an explicit zero-sized drawable, Metal 4 rendering, or broader Apple-silicon
+hardware coverage. Resize cadence was accepted visually and was not instrumented.
+
+The ignored evidence archive is
+`validation-artifacts/macos-graphics-lifecycle-20260717-151027.tar.gz` with SHA-256
+`adb727443397184de2c0ae70ec883068bb7ba41068aca6ead3022c453c1390e1`. It contains the exact
+revision/toolchain status, OS and display inventory, and verbatim finite and interactive logs.
 
 ### macOS 26 / Metal 4 capability comparison
 

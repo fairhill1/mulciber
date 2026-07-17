@@ -1,5 +1,28 @@
 # macOS AppKit/Metal validation runbook
 
+## Clear checkpoint evidence
+
+A clear-only Gate 2 checkpoint based on revision `2d24f8f` plus the uncommitted extraction changes
+was compiled and linted natively on 2026-07-17 on the Apple M2 / macOS 15.7.7 machine below. The
+same-source `mulciber-clear` application initially exposed an AppKit startup difference: drawable
+metrics were not yet available immediately after showing the window. Startup now obtains the first
+metrics through the platform event contract instead of assuming synchronous availability.
+
+With that correction, this command enabled Metal API Validation, explicitly abandoned one acquired
+drawable, recovered for 120 presented clear frames, and completed fallible shutdown without Metal
+diagnostics:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-clear -- \
+  --frames 120 --abandon-acquired-frame-once
+```
+
+The user then ran the requested interactive clear smoke independently with `MTL_DEBUG_LAYER=1` and
+reported that it worked without an issue. The observed solid blue/teal output is the intended
+full-surface clear, not a missing triangle. This records a validation-enabled physical smoke of the
+new application; no separate output archive was captured. Display change, multi-display/backing-scale,
+and broader Apple-silicon/macOS tiers remain untested by this checkpoint.
+
 The macOS probes exercise Metal directly through the Objective-C runtime with no Rust package
 dependencies. This runbook captures the physical evidence required for the AppKit presentation
 milestone and records what has actually been exercised.

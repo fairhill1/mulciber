@@ -10,5 +10,8 @@ version.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+mulciber = { path = "../../crates/mulciber" }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 mulciber-platform = { path = "../../crates/mulciber-platform" }

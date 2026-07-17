@@ -11,6 +11,12 @@ shapes do not become the public API by accident. It extends the already implemen
 The first implemented generation, acquisition, and disposition vocabulary is recorded in the
 [experimental graphics lifecycle contract](api-graphics-contract.md).
 
+The compiling `examples/clear` checkpoint deliberately implements only window creation, native
+surface-compatible device selection, clear, presentation, reconfiguration, abandonment, and
+shutdown. It collapses backend objects into `ClearSurface` so this document's candidate device,
+queue, resource, and command topology remains open until the textured/depth implementation puts real
+pressure on it.
+
 ## Application view
 
 The first slice should let a game express this ownership and lifecycle:
@@ -191,7 +197,7 @@ fn run() -> Result<(), GameError> {
 }
 ```
 
-This is intentionally more explicit than the eventual clear-only example. Convenience constructors
+This is intentionally more explicit than the implemented clear-only checkpoint. Convenience constructors
 may shorten resource upload or default pipeline setup later, but the complete ownership and recovery
 path must remain explainable without hidden global state.
 
@@ -249,7 +255,7 @@ observe and leaves native mechanisms inside their backends.
 
 ## Acceptance test for the implementation
 
-The eventual compiling example must use the same application source on Metal/AppKit and Vulkan with
+The representative compiling example must use the same application source on Metal/AppKit and Vulkan with
 Win32, Wayland, or X11. It must contain no ordinary application `unsafe`, report its chosen 4x or 1x
 sample path, render a textured depth-tested scene, rebuild correctly across lifecycle changes, handle
 temporary surface unavailability, explicitly exercise frame non-presentation, and complete fallible

@@ -59,21 +59,42 @@ Dropping a frame without consuming it is not undefined behavior and must not str
 next fallible operation reports that deferred failure. Explicit abandonment is the ordinary path
 because it can report failure immediately.
 
+### The clear checkpoint keeps topology private
+
+The first compiling graphics application uses `ClearSurface`, a scoped `ClearFrame`, and a normalized
+linear `ClearColor`. `ClearSurface` temporarily owns the target-selected device, queue, command, and
+presentation machinery as one private native unit. This proves creation, generation changes,
+acquisition, one rendering operation, presentation, abandonment, and shutdown without prematurely
+creating general resource or command types.
+
+This collapsed owner is evidence, not the final answer to the open context/device/queue topology.
+The representative textured/depth slice must expose uploads, resources, pipelines, and more than one
+operation; that pressure will determine which objects deserve independent public ownership.
+
 ### Shutdown is explicit
 
 Surface shutdown drains presentation ownership before device shutdown drains remaining GPU work. Both
 operations are fallible. `Drop` remains best-effort cleanup for partial construction and unwinding, not
 evidence of successful shutdown.
 
-## First code boundary
+## Current code boundary
 
 The initial checked-in code contains only the shared extent, generation, surface-information,
 unavailability, acquisition, and disposition vocabulary. Both native probes consume these facts. At
 revision `931b0dc`, the integrated Vulkan path passed the Windows matrix and the integrated Metal path
 passed native archive rebuild/reuse, acquired-frame abandonment, and physical resize/lifecycle
 validation on an Apple M2. This is cross-backend evidence for the experimental vocabulary, not a
-stability claim. `mulciber` gains no device, resource, encoder, or pipeline types until the next slice
-earns them.
+stability claim.
+
+The next checkpoint adds the same-source `examples/clear` application and target-selected native
+implementations. On Vulkan, a dedicated acquisition fence makes both presentation and abandonment
+legal choices after acquisition; the base-swapchain abandonment path replaces the whole generation,
+and old swapchains use the validated deferred-reacquisition retirement rule. On Metal, a scoped
+autorelease pool owns the drawable, a labeled command buffer performs an sRGB clear, and the surface
+retains that buffer through completion. The Windows automated preflight passed this path on the RTX
+3060 Ti tier on 2026-07-17. The same source also abandoned one Metal drawable, recovered for 120
+presented frames, and shut down with Metal API Validation enabled on the Apple M2 tier. No general
+device, resource, encoder, or pipeline types have been added.
 
 ## Still deliberately open
 
@@ -84,5 +105,6 @@ earns them.
 - Upload, resource-use, command-encoding, binding, and shader-artifact vocabulary.
 - Safe native capability reach and interoperation.
 
-The next implementation step is a validation-clean clear-only application through both native
-backends, followed by the representative textured depth-tested slice.
+The clear checkpoint now has validation-enabled finite and physical smoke evidence on Metal plus the
+automated Vulkan evidence above. The next implementation step is the representative textured
+depth-tested slice.

@@ -1,5 +1,15 @@
+#![allow(
+    clippy::missing_panics_doc,
+    clippy::missing_safety_doc,
+    clippy::must_use_candidate,
+    clippy::new_without_default,
+    clippy::not_unsafe_ptr_arg_deref
+)]
+
+use std::borrow::ToOwned;
 use std::ffi::{CStr, c_char, c_void};
 use std::mem;
+use std::string::String;
 
 pub type Object = *mut c_void;
 type Selector = *mut c_void;

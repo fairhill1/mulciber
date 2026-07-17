@@ -7,7 +7,7 @@ mod platform;
 #[path = "linux.rs"]
 mod platform;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-mod vk;
+use mulciber::integration::vulkan as vk;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod vulkan;
 

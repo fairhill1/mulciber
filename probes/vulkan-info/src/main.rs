@@ -9,8 +9,7 @@ mod native;
 #[path = "linux.rs"]
 mod native;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-#[path = "../../vulkan-triangle/src/vk.rs"]
-mod vk;
+use mulciber::integration::vulkan as vk;
 
 mod report;
 

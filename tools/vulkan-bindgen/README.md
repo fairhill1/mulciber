@@ -9,7 +9,7 @@ directory together under one include root, then run:
 
 ```sh
 cargo run --manifest-path tools/vulkan-bindgen/Cargo.toml -- \
-  /path/to/headers probes/vulkan-triangle/src/vk.rs
+  /path/to/headers crates/mulciber/src/backend/vulkan/vk.rs
 ```
 
 Generation targets the Windows x86-64 C ABI even when the tool runs on another host.

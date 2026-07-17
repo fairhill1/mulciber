@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/mulciber",
     "crates/mulciber-platform",
+    "examples/clear",
     "probes/metal-info",
     "probes/metal-triangle",
     "probes/vulkan-info",

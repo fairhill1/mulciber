@@ -26,6 +26,11 @@ Metal and Vulkan probes; their concrete decisions are recorded in the
 physical validation, and the first graphics lifecycle vocabulary is recorded in the
 [graphics contract](api-graphics-contract.md). Extraction does not create a stable API by default.
 
+The first compiling graphics checkpoint intentionally exposes one narrow `ClearSurface` owner rather
+than speculative context, device, queue, or encoder types. Its Metal and Vulkan modules retain their
+different drawable/swapchain ownership and completion machinery. The textured/depth slice will
+decide which internal objects earn separate public types.
+
 ## Unified contract and backend selection
 
 Ordinary game code uses one platform and graphics contract. Metal/AppKit and Vulkan with Win32,
@@ -58,8 +63,9 @@ Build tools may use a broader dependency set because they do not ship in the gam
 runtime code must remain inspectable and reproducible from pinned inputs. Dependency additions record
 their purpose, alternatives, transitive packages, and removal boundary in an architecture decision.
 
-The Vulkan probe applies this boundary directly. Its checked-in Rust ABI is generated from pinned
-Khronos headers; the Linux triangle consumes only the local `mulciber-platform` crate. No third-party
+The Vulkan implementation applies this boundary directly. Its checked-in Rust ABI is generated from pinned
+Khronos headers and shared by `mulciber` and the validation probes; the Linux paths consume only local
+Mulciber crates. No third-party
 Rust package enters the probe. `tools/vulkan-bindgen` is a separate Cargo workspace; its
 libclang/bindgen graph is used only when regenerating that file and cannot enter Mulciber's runtime
 lockfile or binary.

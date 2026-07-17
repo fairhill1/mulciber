@@ -147,6 +147,9 @@ first-class support claim.
   by peer AppKit, Win32, Wayland, and X11 modules.
 - [ ] Extract owned device, queue, buffer, texture, pipeline, command, synchronization, and
   presentation types into `mulciber` with Metal and Vulkan implementations.
+- [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
+  Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;
+  keep device/queue/command topology private until the representative slice forces it.
 - [ ] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [ ] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
@@ -177,6 +180,16 @@ passed after integration, followed by native Metal archive rebuild/reuse, acquir
 and physical resize/lifecycle validation on an Apple M2 at revision `931b0dc`. Device/resource/command
 ownership and the remaining decision row stay open. See the
 [experimental graphics contract](api-graphics-contract.md).
+
+Clear checkpoint progress: `examples/clear` now drives target-selected native Metal/AppKit or Vulkan
+from one safe application source. The Vulkan path passed the Windows automated matrix on 2026-07-17,
+including acquired-frame abandonment followed by recovery, four resize reconfigurations, 145 clear
+presentations, validation-clean output, and orderly shutdown on the RTX 3060 Ti tier. On the Apple M2
+tier, the same source passed native compilation and strict lints, abandoned one acquired drawable,
+recovered for 120 presented frames, and shut down under Metal API Validation without diagnostics. A
+separate user-run interactive smoke with `MTL_DEBUG_LAYER=1` also worked as expected and displayed the
+intended solid clear. This checkpoint does not settle general device, queue, resource, or command
+ownership and does not complete the textured depth-tested item.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

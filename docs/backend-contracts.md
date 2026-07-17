@@ -111,6 +111,16 @@ revision, native Metal archive rebuild/reuse and acquired-frame abandonment runs
 API validation on an Apple M2, followed by a physical resize/lifecycle pass with clean shutdown. This
 is cross-backend physical evidence for the experimental vocabulary, not a stable support claim.
 
+The next clear-only checkpoint implements those facts behind one temporary `ClearSurface` owner. Its
+Vulkan path preserves independently fenced acquisition, whole-generation abandonment on the base
+swapchain path, deferred presentation retirement, dynamic-rendering synchronization, and explicit
+shutdown; the Metal peer preserves drawable autorelease ownership and command-buffer completion.
+The Windows automated preflight passed abandonment recovery and resize on 2026-07-17. On the same
+date, the Apple M2 path passed one drawable abandonment, 120 recovery presentations, and shutdown
+under Metal API Validation; a separate validation-enabled user-run interactive smoke also worked as
+expected. This checkpoint deliberately does not answer the resource, device/queue topology, or
+command-vocabulary questions below.
+
 These questions must be resolved before the affected portion of the API is treated as a supported
 contract. Experimental types may test a candidate answer under the extraction plan; their existence
 is not a resolution by itself.
@@ -136,7 +146,9 @@ is not a resolution by itself.
 
 ## Evidence still blocking Gate 1
 
-- Physical AppKit resize, minimize/restore, maximize/zoom, display-change, and shutdown evidence.
+- Additional AppKit display-change, multi-display/backing-scale, macOS 26 / Metal 4, and broader
+  Apple-silicon hardware evidence; resize, minimize/restore, zoom/restore, occlusion/reveal, and
+  shutdown are physically established on the current Apple M2 tier for the full probe.
 - Complete Wayland XDG-shell evidence for display changes, explicit zero-sized suspension, input,
   and broader compositors/hardware; the KDE Plasma presentation/resize/lifecycle path is
   physically established through the runtime dispatch layer. X11 presentation is physically

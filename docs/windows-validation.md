@@ -5,6 +5,15 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+A clear-only Gate 2 checkpoint based on revision `2d24f8f` plus the uncommitted extraction changes
+passed the automated preflight on 2026-07-17 on the same Windows 11 / RTX 3060 Ti tier. The
+same-source `mulciber-clear` application selected Vulkan, abandoned one acquired image by replacing
+the base swapchain generation, recovered for 10 presented frames, then passed automated resize at
+four window sizes with generations 2 through 5 and 145 total clear presentations. Shutdown reported
+zero Vulkan validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260717-140130.zip`. This is automated clear-path evidence, not
+physical visual, lifecycle, multi-display, broader hardware, or Metal evidence.
+
 A development tree based on revision `c101e08` then extracted physical surface extents,
 graphics-owned generations, acquisition outcomes, and frame dispositions into `mulciber`; the Vulkan
 probe consumed those types in swapchain creation, acquisition, reconfiguration, presentation, and
@@ -274,6 +283,10 @@ swapchain-maintenance path and the forced base-swapchain generation-replacement 
 RGBA8 through native 4x, forced 1x, and resize so a BC-capable adapter cannot hide fallback
 regressions. It then guides two interactive runs: lifecycle testing closed through the title bar,
 followed by an Alt+F4 shutdown test.
+
+The automated matrix also builds the same-source clear example, exercises one acquired-frame
+abandonment followed by presented recovery, and drives it through the four-size resize smoke before
+closing it through `WM_CLOSE`.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP

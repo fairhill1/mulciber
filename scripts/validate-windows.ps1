@@ -254,6 +254,26 @@ try {
         "mulciber-vulkan-triangle"
     ) "cargo-build.log"
 
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
+        "mulciber-clear"
+    ) "cargo-test-clear.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "mulciber-clear"
+    ) "cargo-build-clear.log"
+    $ClearExample = Join-Path $RepositoryRoot "target\debug\mulciber-clear.exe"
+    $ClearFrames = [Math]::Min($Frames, 120)
+    Invoke-NativeLogged $ClearExample @(
+        "--frames", $ClearFrames.ToString(),
+        "--abandon-acquired-frame-once"
+    ) "clear-abandon-recovery.log"
+    Invoke-AutomatedResizeSmoke `
+        -Probe $ClearExample `
+        -LogPrefix "clear-resize"
+
     # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.
     $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-triangle.exe"
@@ -440,6 +460,9 @@ try {
 
     $RuntimeLogs = @(
         Join-Path $ArtifactDirectory "finite-run.log"
+        Join-Path $ArtifactDirectory "clear-abandon-recovery.log"
+        Join-Path $ArtifactDirectory "clear-resize.log"
+        Join-Path $ArtifactDirectory "clear-resize.stderr.log"
         Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame-fallback.log"

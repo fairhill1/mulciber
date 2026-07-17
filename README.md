@@ -42,8 +42,11 @@ outside-in application experience against both native call sequences without com
 type names. `mulciber` now contains a deliberately small experimental graphics lifecycle vocabulary:
 physical surface extents, graphics-owned surface generations, nonfatal acquisition outcomes, and
 presented/abandoned frame dispositions. Both native probes consume it and passed their Windows and
-macOS validation matrices after integration; device, resource, command, and synchronization types
-remain unextracted.
+macOS validation matrices after integration. A same-source clear-only example now exercises that
+contract through target-selected native Metal or Vulkan without application `unsafe`; its temporary
+`ClearSurface` owner deliberately keeps device, queue, command, and presentation machinery internal
+until the textured/depth slice supplies enough evidence to separate them well. General device,
+resource, command, and synchronization types remain unextracted.
 
 ## Direction
 
@@ -60,6 +63,21 @@ See [the project vision](docs/vision.md), [viability gates](docs/viability-gates
 [API extraction and comparison plan](docs/api-extraction-plan.md),
 [experimental graphics lifecycle contract](docs/api-graphics-contract.md),
 [pinned references](docs/references.md), and [implementation roadmap](docs/roadmap.md).
+
+## Experimental clear slice
+
+On Windows, Linux, or Apple-silicon macOS, the same application source selects the native backend at
+compile time:
+
+```sh
+cargo run -p mulciber-clear
+cargo run -p mulciber-clear -- --frames 120 --abandon-acquired-frame-once
+```
+
+The second form is the finite validation path. It abandons one acquired frame without rendering,
+recovers through a later presentation, and performs fallible shutdown. This is an unstable design
+experiment and a checkpoint on the way to the representative textured depth-tested slice, not a
+supported graphics API or a new release commitment.
 
 ## Current probes
 

@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-clear"
+description = "Same-source native Metal/Vulkan clear lifecycle example"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 //! Renders an indexed, textured, depth-tested scene through native Apple APIs.
 
 #[cfg(target_os = "macos")]
-mod objc;
+use mulciber::integration::metal_objc as objc;
 
 #[cfg(target_os = "macos")]
 mod macos {

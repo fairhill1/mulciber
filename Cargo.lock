@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "mulciber"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "mulciber-metal-info"
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-platform"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "mulciber-vulkan-info"

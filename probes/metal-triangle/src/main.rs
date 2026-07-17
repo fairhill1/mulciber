@@ -462,9 +462,6 @@ mod macos {
                 let drawable = match self.acquire_drawable() {
                     FrameAcquire::Ready(drawable) => drawable,
                     FrameAcquire::Unavailable(_) => return Ok(false),
-                    FrameAcquire::Reconfigured(_) => unreachable!(
-                        "Metal reconfiguration is recorded after inspecting the acquired drawable"
-                    ),
                 };
                 let drawable_texture =
                     required(objc::object(drawable, c"texture"), "drawable texture")?;

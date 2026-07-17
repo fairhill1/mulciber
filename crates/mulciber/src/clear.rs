@@ -81,10 +81,13 @@ impl<'window> ClearSurface<'window> {
 
     /// Acquires a scoped frame for the supplied current window metrics.
     ///
+    /// Reconfiguration for changed metrics happens inside acquisition, so a ready frame always
+    /// matches the supplied metrics.
+    ///
     /// # Errors
     ///
     /// Returns an error for fatal native acquisition, deferred abandonment, validation, or device
-    /// failures. Temporary suspension and successful reconfiguration are nonfatal outcomes.
+    /// failures. Temporary unavailability is a nonfatal outcome.
     pub fn acquire(
         &mut self,
         metrics: WindowMetrics,

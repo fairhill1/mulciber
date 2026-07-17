@@ -125,29 +125,12 @@ fn run() -> Result<(), GameError> {
 
         // WindowRevision is platform-owned input. SurfaceGeneration is graphics-owned output: it
         // may change because of native acquisition results even without another window revision.
+        // Reconfiguration happens inside acquisition, so a ready frame always matches the
+        // requested metrics and reports the generation dependent resources must match.
         let mut frame = match surface.acquire(window_metrics)? {
             FrameAcquire::Ready(frame) => frame,
             FrameAcquire::Unavailable(reason) => {
                 record_temporary_surface_state(reason);
-                continue;
-            }
-            FrameAcquire::Reconfigured(new_info) => {
-                surface_info = new_info;
-                depth = DepthTarget::new(
-                    &device,
-                    surface_info.extent(),
-                    selected_samples,
-                )?;
-                if pipeline_format != surface_info.color_format() {
-                    pipeline_format = surface_info.color_format();
-                    pipeline = device.create_graphics_pipeline(GraphicsPipelineDescriptor {
-                        color_format: pipeline_format,
-                        depth_format: depth.format(),
-                        samples: selected_samples,
-                        shaders: checked_in_shader_artifacts(),
-                        ..GraphicsPipelineDescriptor::default()
-                    })?;
-                }
                 continue;
             }
         };
@@ -210,7 +193,7 @@ path must remain explainable without hidden global state.
 | Create context and target | Connect to AppKit, create a view, later attach a configured `CAMetalLayer`. | Create `VkInstance`, create the platform `VkSurfaceKHR`, then query physical-device and queue presentation support. | Surface-compatible selection is correct without application backend branches. |
 | Select required and optional capabilities | Query device families, selectors, formats, sample counts, and resource options. | Query API version, features, extensions, formats, memory, queue families, and surface support. | Required facts reject startup; optional facts produce an inspectable selection report. |
 | Create resources and upload | Choose storage modes and encode/copy through Metal buffers, textures, and command buffers. | Choose memory types, stage data, encode copies, and establish the required layout/access dependencies. | Safe resource ownership and game-intent usage produce validation-clean native work. |
-| Acquire a frame | Obtain a drawable from `nextDrawable`; temporary absence is normal. | Acquire a swapchain image with synchronization; outdated or suboptimal state may force recreation. | Acquisition distinguishes ready, temporarily unavailable, reconfigured, and fatal outcomes. |
+| Acquire a frame | Obtain a drawable from `nextDrawable`; temporary absence is normal. | Acquire a swapchain image with synchronization; outdated or suboptimal state may force recreation. | Acquisition reconfigures internally and distinguishes ready, temporarily unavailable, and fatal outcomes; a ready frame reports the generation dependent state must match. |
 | Rebuild extent-dependent state | Drawable size follows backing pixels; the game recreates depth and other targets. | Swapchain extent/format/generation and application attachments may all change. | A graphics-owned generation tells the game exactly when its dependent state is stale. |
 | Submit and present | Encode presentation on a command buffer and retain it through completion. | Join acquire, render completion, queue submission, presentation, and later presentation retirement. | The ordinary operation consumes both encoded work and the scoped frame without exposing backend synchronization tokens. |
 | Abandon a frame | The validated probe releases one drawable at its autorelease boundary and later recovers. | The validated one-shot path acquires with a fence and no reusable presentation semaphore. Swapchain maintenance releases the unused image directly; the base path replaces and retires the complete swapchain generation. Both recover through later presentation. | Non-presentation is explicit and fallible. It may invalidate the surface generation even when platform metrics did not change, and the game does not receive a native release primitive. |
@@ -244,8 +227,10 @@ observe and leaves native mechanisms inside their backends.
   encoding. The first implementation must measure the bookkeeping and synchronization consequences.
 - The final resource-use vocabulary and how much backend hazard control belongs in the safe advanced
   boundary.
-- Whether surface reconfiguration returns a separate acquisition outcome or a ready frame carrying a
-  changed generation. The game must receive one unambiguous rebuild signal either way.
+- Resolved: surface reconfiguration does not return a separate acquisition outcome. Acquisition
+  reconfigures internally and a ready frame carries the changed generation; the frame-versus-resource
+  generation mismatch is the game's one unambiguous rebuild signal, enforced by draw-time rejection.
+  See the [API slice decision ledger](api-slice-decisions.md).
 - Whether explicit non-presentation remains named `abandon` or is expressed by another consuming
   operation. The established outcome is that it safely consumes the frame, may advance the graphics
   surface generation, and reports a failure if native recovery cannot complete.

@@ -34,16 +34,25 @@ Metal configuration or Vulkan swapchain advances the generation even when its ex
 Vulkan's base-swapchain acquired-frame abandonment fallback also advances it because that path replaces
 the complete presentation generation. Suspension without graphics reconfiguration does not advance it.
 
-### Acquisition has explicit nonfatal outcomes
+### Acquisition reconfigures internally and has explicit nonfatal outcomes
 
 The shared acquisition outcome distinguishes:
 
-- a ready, surface-scoped frame;
+- a ready, surface-scoped frame; and
 - temporary unavailability because the window is suspended, the native drawable is absent, a
   bounded acquisition timed out, or extent-driven reconfiguration is deliberately paced where the
-  platform's presentation path would otherwise let a continuous resize outrun FIFO presentation; and
-- successful graphics reconfiguration that requires application-owned extent-dependent resources to
-  be rebuilt before acquiring again.
+  platform's presentation path would otherwise let a continuous resize outrun FIFO presentation.
+
+Reconfiguration for changed metrics happens inside acquisition, so a ready frame always matches the
+requested metrics. Its surface information may therefore report a newer generation than the
+application's extent-dependent resources; the mismatch is the one rebuild signal, and a draw into
+mismatched resources is rejected. A separate reconfigured outcome was tried first and rejected: both
+validated native probes already reconfigure inside their own frame machinery, and the separate
+outcome made deferring the rebuilt frame to the next redraw the ergonomic default, which physically
+measured as window contents trailing a continuous Wayland resize. Under an identical scripted
+350-step resize storm, folding reconfiguration into acquisition kept the same paced generation count
+(210 versus 212) while presented frames rose from 544 to 1114 because no redraw is spent on a
+reconfiguration round-trip.
 
 Native result codes remain structured diagnostics but do not become the ordinary application state
 machine.
@@ -101,8 +110,6 @@ device, resource, encoder, or pipeline types have been added.
 
 - Whether context, selection, and device opening are separate public values or one constructor flow.
 - Final error categories and native diagnostic payloads.
-- Whether reconfiguration remains a separate acquisition outcome or a ready frame carrying changed
-  surface information.
 - Upload, resource-use, command-encoding, binding, and shader-artifact vocabulary.
 - Safe native capability reach and interoperation.
 

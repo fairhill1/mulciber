@@ -75,10 +75,9 @@ impl Renderer {
                     .recreate
                     .map_or(recreate, |previous| previous + recreate),
             );
-            FrameAcquire::Reconfigured(
-                self.surface_info
-                    .expect("swapchain recreation records surface information"),
-            )
+            // The replacement swapchain provides no image this iteration; the caller acquires
+            // from it on the next render.
+            FrameAcquire::Unavailable(SurfaceUnavailable::DrawableUnavailable)
         } else {
             if acquire == vk::VK_SUBOPTIMAL_KHR {
                 self.recreate_after_present = true;
@@ -89,7 +88,7 @@ impl Renderer {
         };
         image_index = match acquisition {
             FrameAcquire::Ready(image_index) => image_index,
-            FrameAcquire::Unavailable(_) | FrameAcquire::Reconfigured(_) => {
+            FrameAcquire::Unavailable(_) => {
                 self.live_resize_trace
                     .finish(trace_started, trace_sample, false);
                 return Ok(false);

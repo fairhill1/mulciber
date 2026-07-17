@@ -147,8 +147,10 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [x] Write the complete application-facing flow before committing to public type names, covering
   window creation, capability requests, device/surface creation, rendering, resize/suspension, frame
   completion, and fallible shutdown.
-- [ ] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame
-  presentation/non-presentation, resource-use vocabulary, error recovery, and safe native reach.
+- [x] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame
+  presentation/non-presentation, resource-use vocabulary, error recovery, and safe native reach in
+  the [API slice decision ledger](api-slice-decisions.md); native reach is recorded as a deliberate
+  non-exposure with a binding constraint, and final error categories remain explicitly open.
 - [x] Extract the minimal event, window, display, and lifecycle spine into `mulciber-platform`, backed
   by peer AppKit, Win32, Wayland, and X11 modules.
 - [ ] Extract owned device, queue, buffer, texture, pipeline, command, synchronization, and
@@ -184,8 +186,10 @@ graphics-owned surface generations, nonfatal acquisition outcomes, and presented
 dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix
 passed after integration, followed by native Metal archive rebuild/reuse, acquired-frame abandonment,
 and physical resize/lifecycle validation on an Apple M2 at revision `931b0dc`. Device/resource/command
-ownership and the remaining decision row stay open. See the
-[experimental graphics contract](api-graphics-contract.md).
+ownership stays open. The slice's decision rows are now recorded in the
+[API slice decision ledger](api-slice-decisions.md); acquisition was reshaped so reconfiguration
+happens inside it after the separate reconfigured outcome measurably made trailing live resize the
+default application shape. See the [experimental graphics contract](api-graphics-contract.md).
 
 Clear checkpoint progress: `examples/clear` now drives target-selected native Metal/AppKit or Vulkan
 from one safe application source. The Vulkan path passed the Windows automated matrix on 2026-07-17,

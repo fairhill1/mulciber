@@ -113,69 +113,77 @@ impl<'window> ClearSurface<'window> {
         if extent.is_empty() {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
         }
-        if extent != self.info.extent() || self.recreate_after_present {
-            let resized = extent != self.info.extent();
-            // Pace extent-driven recreation where the platform requires it: replacement swapchains
-            // provide images immediately, so without pacing a continuous resize commits new-size
-            // buffers faster than FIFO presentation drains them and the window trails input.
-            if resized
-                && !self.resize_pace.is_zero()
-                && self
-                    .last_resize_recreate
-                    .is_some_and(|recreated| recreated.elapsed() < self.resize_pace)
-            {
+        // Reconfiguration happens inside acquisition so a ready frame always matches the requested
+        // extent. The second attempt covers a replacement swapchain that immediately goes out of
+        // date; anything beyond that is reported as unavailable and retried on a later redraw.
+        for _attempt in 0..2 {
+            if extent != self.info.extent() || self.recreate_after_present {
+                let resized = extent != self.info.extent();
+                // Pace extent-driven recreation where the platform requires it: replacement
+                // swapchains provide images immediately, so without pacing a continuous resize
+                // commits new-size buffers faster than FIFO presentation drains them and the
+                // window trails input.
+                if resized
+                    && !self.resize_pace.is_zero()
+                    && self
+                        .last_resize_recreate
+                        .is_some_and(|recreated| recreated.elapsed() < self.resize_pace)
+                {
+                    return Ok(FrameAcquire::Unavailable(
+                        SurfaceUnavailable::ReconfigurationPaced,
+                    ));
+                }
+                self.recreate_swapchain(extent, true)?;
+                if resized && !self.resize_pace.is_zero() {
+                    self.last_resize_recreate = Some(Instant::now());
+                }
+            }
+
+            let mut image_index = 0;
+            let result = unsafe {
+                // SAFETY: The swapchain, semaphore, fence, and output pointer are live and idle.
+                self.device()
+                    .functions
+                    .acquire_next_image
+                    .expect("loaded function")(
+                    self.device().handle,
+                    self.swapchain.handle,
+                    platform::acquire_timeout(),
+                    self.image_available,
+                    self.acquire_fence,
+                    &raw mut image_index,
+                )
+            };
+            if result == vk::VK_NOT_READY {
                 return Ok(FrameAcquire::Unavailable(
-                    SurfaceUnavailable::ReconfigurationPaced,
+                    SurfaceUnavailable::DrawableUnavailable,
                 ));
             }
-            self.recreate_swapchain(extent, true)?;
-            if resized && !self.resize_pace.is_zero() {
-                self.last_resize_recreate = Some(Instant::now());
+            if result == vk::VK_TIMEOUT {
+                return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::TimedOut));
             }
-            return Ok(FrameAcquire::Reconfigured(self.info));
+            if result == vk::VK_ERROR_OUT_OF_DATE_KHR {
+                self.recreate_after_present = true;
+                continue;
+            }
+            if result == vk::VK_SUBOPTIMAL_KHR {
+                self.recreate_after_present = true;
+            } else {
+                check(result, "vkAcquireNextImageKHR")?;
+            }
+            self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
+            let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+            if slot >= self.swapchain.images.len() {
+                return Err(error("driver returned an invalid swapchain image index"));
+            }
+            if self.swapchain.presented[slot] {
+                self.destroy_all_retired_swapchains();
+            }
+            return Ok(FrameAcquire::Ready(image_index));
         }
-
-        let mut image_index = 0;
-        let result = unsafe {
-            // SAFETY: The swapchain, semaphore, fence, and output pointer are live and idle.
-            self.device()
-                .functions
-                .acquire_next_image
-                .expect("loaded function")(
-                self.device().handle,
-                self.swapchain.handle,
-                platform::acquire_timeout(),
-                self.image_available,
-                self.acquire_fence,
-                &raw mut image_index,
-            )
-        };
-        if result == vk::VK_NOT_READY {
-            return Ok(FrameAcquire::Unavailable(
-                SurfaceUnavailable::DrawableUnavailable,
-            ));
-        }
-        if result == vk::VK_TIMEOUT {
-            return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::TimedOut));
-        }
-        if result == vk::VK_ERROR_OUT_OF_DATE_KHR {
-            self.recreate_swapchain(extent, true)?;
-            return Ok(FrameAcquire::Reconfigured(self.info));
-        }
-        if result == vk::VK_SUBOPTIMAL_KHR {
-            self.recreate_after_present = true;
-        } else {
-            check(result, "vkAcquireNextImageKHR")?;
-        }
-        self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
-        let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
-        if slot >= self.swapchain.images.len() {
-            return Err(error("driver returned an invalid swapchain image index"));
-        }
-        if self.swapchain.presented[slot] {
-            self.destroy_all_retired_swapchains();
-        }
-        Ok(FrameAcquire::Ready(image_index))
+        Ok(FrameAcquire::Unavailable(
+            SurfaceUnavailable::DrawableUnavailable,
+        ))
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {

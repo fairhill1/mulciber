@@ -27,18 +27,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return;
             };
             let result: Result<(), Box<dyn Error>> = (|| {
-                loop {
-                    match surface.acquire(metrics)? {
-                        FrameAcquire::Ready(frame) => {
-                            frame.clear_and_present(color)?;
-                            return Ok(());
-                        }
-                        FrameAcquire::Unavailable(_) => return Ok(()),
-                        // Acquire again in the same redraw after reconfiguration so a live resize
-                        // presents at each new size instead of trailing the drag.
-                        FrameAcquire::Reconfigured(_) => {}
+                match surface.acquire(metrics)? {
+                    FrameAcquire::Ready(frame) => {
+                        frame.clear_and_present(color)?;
                     }
+                    FrameAcquire::Unavailable(_) => {}
                 }
+                Ok(())
             })();
             if let Err(error) = result {
                 failure = Some(error);

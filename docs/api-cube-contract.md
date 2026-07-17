@@ -51,9 +51,12 @@ generation advances happen only after the in-flight frame fence is awaited, and 
 buffers retain the textures they reference until completion. Reclaimed targets keep their
 identifiers and are rejected if drawn.
 
-An acquired `Frame` owns exactly one drawable or swapchain image. Presenting consumes it. Explicit
-abandonment consumes it through the backend-specific safe path. Dropping it performs the same
-best-effort abandonment and defers any failure to the next surface operation.
+An acquired `Frame` owns exactly one drawable or swapchain image. Acquisition reconfigures the
+surface internally for changed window metrics, so a ready frame always matches the requested
+metrics and its surface information is the generation render targets must match; the application
+rebuilds targets when the frame reports different information. Presenting consumes the frame.
+Explicit abandonment consumes it through the backend-specific safe path. Dropping it performs the
+same best-effort abandonment and defers any failure to the next surface operation.
 
 ## First command vocabulary
 

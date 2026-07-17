@@ -12,9 +12,14 @@ compiling and linting the changed Metal session natively. With `MTL_DEBUG_LAYER=
 drawable, recovered, and presented 120 frames; `--frames 120 --force-one-sample` presented 120
 frames on the 1x path. Both exited zero with only the validation-enabled banner.
 
-These static-window runs never advanced the surface generation, so the Metal reclamation branch
-itself remains unexercised: physical resize, backing-scale change, and lifecycle evidence for the
-reclamation change are still pending on this machine.
+These static-window runs never advanced the surface generation, so they left the Metal reclamation
+branch unexercised. Later on 2026-07-17 the operator interactively resized the cube slice on this
+machine at `286fcfb` and reported correct behavior with no misrendering or failure, which is the
+first physical exercise of Metal generation advancement with reclamation; the exact binary,
+validation-layer state, and output were not captured, so this is an operator report rather than a
+recorded validation run. The subsequent acquisition reshape (reconfiguration folded into
+acquisition) changes this resize path again, so a captured physical resize/lifecycle pass on the
+reshaped code remains pending on this machine.
 
 ## Textured cube checkpoint evidence
 

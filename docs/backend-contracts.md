@@ -103,8 +103,8 @@ and hardware breadth remain governed by the viability gates.
 ## Questions the extraction must resolve before support
 
 The first experimental graphics vocabulary now represents physical surface extents, graphics-owned
-surface generations, unavailable/reconfigured acquisition outcomes, and presented/abandoned frame
-dispositions in `mulciber`. The Metal and Vulkan probes consume these shared facts without sharing
+surface generations, ready/unavailable acquisition outcomes with internal reconfiguration, and
+presented/abandoned frame dispositions in `mulciber`. The Metal and Vulkan probes consume these shared facts without sharing
 native objects or mechanisms. The Windows Vulkan validation matrix passed after integration at
 revision `931b0dc`, including native and forced acquired-frame abandonment recovery. At the same
 revision, native Metal archive rebuild/reuse and acquired-frame abandonment runs passed under Metal

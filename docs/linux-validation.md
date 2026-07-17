@@ -76,6 +76,15 @@ scripting interface:
   with no validation output. A subsequent interactive drag-resize of `examples/cube` tracked the
   pointer without the earlier trailing.
 
+On the same day and session, an uncommitted tree based on `286fcfb` folded reconfiguration into
+acquisition (removing the separate reconfigured outcome). Under the identical 350-step / 10 ms
+KWin-scripted storm, `mulciber-api-cube` walked 210 paced surface generations, presented 1114
+frames — up from 544 under the separate-outcome shape, because no redraw is spent on a
+reconfiguration round-trip — and exited zero with no validation output. Finite reruns of
+`--frames 90 --abandon-acquired-frame-once` (generation replacement recovered through the
+frame/target mismatch rebuild), `--frames 60 --force-one-sample`, and the api-clear abandonment
+run also exited zero.
+
 This is automated, single-machine, single-display native Wayland evidence plus one interactive
 drag-resize smoke. Extracted-slice X11, native Xorg, minimize/restore, display-change,
 multi-display, and broader hardware coverage remain unrecorded.

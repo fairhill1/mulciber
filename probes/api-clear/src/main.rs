@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut surface = ClearSurface::new(window.surface_target(), initial_metrics)?;
     let color = ClearColor::new(0.035, 0.14, 0.23, 1.0).expect("constant is normalized");
     let mut presented = 0_u64;
+    let mut last_generation = Some(surface.info().generation());
     let mut abandon_pending = options.abandon_once;
     let mut failure: Option<Box<dyn Error>> = None;
 
@@ -46,18 +47,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                         );
                     }
                     FrameAcquire::Ready(frame) => {
+                        let info = frame.surface_info();
+                        if last_generation != Some(info.generation()) {
+                            last_generation = Some(info.generation());
+                            println!(
+                                "surface generation {} configured at {}x{}",
+                                info.generation().get(),
+                                info.extent().width(),
+                                info.extent().height()
+                            );
+                        }
                         frame.clear_and_present(color)?;
                         presented += 1;
                     }
                     FrameAcquire::Unavailable(_) => {}
-                    FrameAcquire::Reconfigured(info) => {
-                        println!(
-                            "surface generation {} configured at {}x{}",
-                            info.generation().get(),
-                            info.extent().width(),
-                            info.extent().height()
-                        );
-                    }
                 }
                 Ok(())
             })();

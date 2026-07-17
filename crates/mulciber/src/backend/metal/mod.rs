@@ -122,13 +122,14 @@ impl<'window> ClearSurface<'window> {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
         };
         if extent != self.info.extent() {
+            // Reconfiguration happens inside acquisition: the layer is resized and the drawable
+            // acquired below already belongs to the advanced generation.
             // SAFETY: The layer is live on AppKit's main thread and the aggregate ABI matches.
             unsafe { configure_layer(self.layer, metrics) };
             self.info = self
                 .info
                 .reconfigured(extent)
                 .ok_or_else(|| GraphicsError::new("Metal surface generation space is exhausted"))?;
-            return Ok(FrameAcquire::Reconfigured(self.info));
         }
 
         let pool = AutoreleasePool::new();
@@ -153,6 +154,8 @@ impl<'window> ClearSurface<'window> {
                 .map_err(|_| GraphicsError::new("Metal drawable height exceeds u32"))?,
         );
         if drawable_extent != self.info.extent() {
+            // The drawable is authoritative: adopt its extent as a new generation and hand the
+            // drawable out as a ready frame of that generation.
             self.info = self.info.reconfigured(drawable_extent).ok_or_else(|| {
                 GraphicsError::new(if drawable_extent.is_empty() {
                     "Metal produced an empty drawable extent"
@@ -160,7 +163,6 @@ impl<'window> ClearSurface<'window> {
                     "Metal surface generation space is exhausted"
                 })
             })?;
-            return Ok(FrameAcquire::Reconfigured(self.info));
         }
 
         Ok(FrameAcquire::Ready(MetalFrameToken {

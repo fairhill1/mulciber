@@ -75,13 +75,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match graphics.surface.acquire(metrics)? {
                     FrameAcquire::Ready(frame) if abandon_pending => {
                         frame.abandon()?;
-                        targets = graphics
-                            .device
-                            .create_render_targets(graphics.surface.info()?)?;
                         abandon_pending = false;
                     }
                     FrameAcquire::Ready(frame) => {
                         let info = frame.surface_info();
+                        if info != targets.info() {
+                            targets = graphics.device.create_render_targets(info)?;
+                            println!(
+                                "surface generation {} configured at {}x{}",
+                                info.generation().get(),
+                                info.extent().width(),
+                                info.extent().height()
+                            );
+                        }
                         let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                         graphics.queue.draw_textured_and_present(
                             frame,
@@ -100,15 +106,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                         presented += 1;
                     }
                     FrameAcquire::Unavailable(_) => {}
-                    FrameAcquire::Reconfigured(info) => {
-                        targets = graphics.device.create_render_targets(info)?;
-                        println!(
-                            "surface generation {} configured at {}x{}",
-                            info.generation().get(),
-                            info.extent().width(),
-                            info.extent().height()
-                        );
-                    }
                 }
                 Ok(())
             })();

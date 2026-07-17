@@ -126,6 +126,10 @@ pub enum SurfaceUnavailable {
 
 /// The result of attempting to acquire a surface-scoped frame.
 ///
+/// Surface reconfiguration happens inside acquisition: a ready frame always matches the requested
+/// window metrics, and its surface information may therefore report a newer generation than the
+/// application's extent-dependent resources, which must then be rebuilt before drawing.
+///
 /// `F` is the backend-owned frame representation. It will become Mulciber's concrete scoped frame
 /// type only after both native backends consume this lifecycle contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,8 +139,6 @@ pub enum FrameAcquire<F> {
     Ready(F),
     /// The surface is temporarily unavailable; the device remains usable.
     Unavailable(SurfaceUnavailable),
-    /// The surface was reconfigured and application-owned dependent resources must be rebuilt.
-    Reconfigured(SurfaceInfo),
 }
 
 impl<F> FrameAcquire<F> {
@@ -145,7 +147,6 @@ impl<F> FrameAcquire<F> {
         match self {
             Self::Ready(frame) => FrameAcquire::Ready(map(frame)),
             Self::Unavailable(reason) => FrameAcquire::Unavailable(reason),
-            Self::Reconfigured(info) => FrameAcquire::Reconfigured(info),
         }
     }
 }
@@ -204,11 +205,6 @@ mod tests {
         assert_eq!(
             FrameAcquire::<u32>::Unavailable(SurfaceUnavailable::TimedOut).map_ready(u64::from),
             FrameAcquire::Unavailable(SurfaceUnavailable::TimedOut)
-        );
-        let info = SurfaceInfo::initial(SurfaceExtent::new(960, 540)).unwrap();
-        assert_eq!(
-            FrameAcquire::<u32>::Reconfigured(info).map_ready(u64::from),
-            FrameAcquire::Reconfigured(info)
         );
     }
 

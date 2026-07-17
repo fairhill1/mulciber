@@ -324,6 +324,10 @@ impl<'window> Surface<'window> {
 
     /// Acquires one owned native frame token for current window metrics.
     ///
+    /// Reconfiguration for changed metrics happens inside acquisition: a ready frame always
+    /// matches the requested metrics, and its surface information reports the generation that
+    /// render targets must match.
+    ///
     /// # Errors
     ///
     /// Returns fatal native acquisition, deferred abandonment, validation, or device failures.
@@ -379,6 +383,17 @@ pub struct RenderTargets {
     session: u64,
     id: u32,
     info: SurfaceInfo,
+}
+
+impl RenderTargets {
+    /// Surface information these targets were created for.
+    ///
+    /// Recreate the targets when an acquired frame reports different surface information; a draw
+    /// into mismatched targets is rejected.
+    #[must_use]
+    pub const fn info(&self) -> SurfaceInfo {
+        self.info
+    }
 }
 
 /// Resources and dynamic data for one textured indexed draw.

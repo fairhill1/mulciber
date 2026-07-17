@@ -28,7 +28,7 @@ shadow_vertex_sha256 = "6a6393501daf970fb915c133ca87be72c02781ea0a8edaecf394d9d0
 
 [cube_shader]
 compiler = "naga 30.0.0"
-target_environment = "vulkan1.4"
+target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "93556c3cd20184dacdfa2bd5c65dfdc981dbab42044a926eb5b72359447572c7"
 vulkan_artifact_sha256 = "6248a2970f0d1c81c62aa5d2e785762a7a81830dacd2415eb08cd17e25c9aacc"
@@ -36,7 +36,7 @@ metal_artifact_sha256 = "986cd8c811af3a7686ba2a08d76b78897c51a4bb174c9b1834d0ae8
 
 [postprocess_shader]
 compiler = "naga 30.0.0"
-target_environment = "vulkan1.4"
+target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "d34a0524ac63b107d5db5ef1485f408cfcacb08f3cdc30dc292027b5120c0666"
 vulkan_artifact_sha256 = "ac9efc0e14ab02006bd00afd8ad980352d3e130dd1cd1f38b941285ecb9ad230"

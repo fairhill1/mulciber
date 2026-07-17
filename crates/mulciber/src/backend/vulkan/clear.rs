@@ -17,6 +17,7 @@ use crate::{
 
 pub(crate) const BACKEND_NAME: &str = "Vulkan";
 
+const API_VERSION_1_3: u32 = make_api_version(0, 1, 3, 0);
 const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT64_MAX: u64 = u64::MAX;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -24,7 +25,6 @@ static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 pub(crate) struct ClearSurface<'window> {
     device: Option<Device>,
     swapchain: Swapchain,
-    retired: Vec<Swapchain>,
     command_pool: vk::VkCommandPool,
     command_buffer: vk::VkCommandBuffer,
     image_available: vk::VkSemaphore,
@@ -65,7 +65,6 @@ impl<'window> ClearSurface<'window> {
         let mut surface = Self {
             device: Some(device),
             swapchain: Swapchain::default(),
-            retired: Vec::new(),
             command_pool: ptr::null_mut(),
             command_buffer: ptr::null_mut(),
             image_available: ptr::null_mut(),
@@ -176,9 +175,6 @@ impl<'window> ClearSurface<'window> {
             if slot >= self.swapchain.images.len() {
                 return Err(error("driver returned an invalid swapchain image index"));
             }
-            if self.swapchain.presented[slot] {
-                self.destroy_all_retired_swapchains();
-            }
             return Ok(FrameAcquire::Ready(image_index));
         }
         Ok(FrameAcquire::Unavailable(
@@ -264,6 +260,21 @@ impl<'window> ClearSurface<'window> {
         advance_generation: bool,
     ) -> Result<(), GraphicsError> {
         self.wait_for_frame()?;
+        if !self.swapchain.handle.is_null() {
+            // Base `VK_KHR_swapchain` has no presentation-completion fence. Follow the conventional
+            // compatibility path before each reconfiguration while only one generation exists;
+            // this avoids accumulating presentation-owned swapchains during a resize storm.
+            check(
+                unsafe {
+                    self.device()
+                        .functions
+                        .device_wait_idle
+                        .expect("loaded function")(self.device().handle)
+                },
+                "vkDeviceWaitIdle before swapchain recreation",
+            )?;
+            self.frame_pending = false;
+        }
         let device = self.device();
         let mut capabilities = vk::VkSurfaceCapabilitiesKHR::default();
         check(
@@ -335,7 +346,7 @@ impl<'window> ClearSurface<'window> {
         }
         let old = mem::replace(&mut self.swapchain, next);
         if !old.handle.is_null() {
-            self.retired.push(old);
+            destroy_swapchain(self.device(), old);
         }
         self.info = if advance_generation {
             self.info
@@ -475,12 +486,6 @@ impl<'window> ClearSurface<'window> {
                 .queue_present
                 .expect("loaded function")(self.device().queue, &raw const present)
         };
-        if matches!(
-            result,
-            vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR
-        ) {
-            self.swapchain.presented[slot] = true;
-        }
         if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
             self.recreate_after_present = true;
         } else {
@@ -669,14 +674,6 @@ impl<'window> ClearSurface<'window> {
         )
     }
 
-    fn destroy_all_retired_swapchains(&mut self) {
-        if let Some(device) = self.device.as_ref() {
-            for swapchain in self.retired.drain(..) {
-                destroy_swapchain(device, swapchain);
-            }
-        }
-    }
-
     fn finish(&mut self) -> Result<(), GraphicsError> {
         let mut result = self.wait_for_frame();
         if let Some(device) = self.device.as_ref()
@@ -701,13 +698,9 @@ impl<'window> ClearSurface<'window> {
     }
 
     fn destroy(&mut self) {
-        let retired = mem::take(&mut self.retired);
         let Some(device) = self.device.as_ref() else {
             return;
         };
-        for swapchain in retired {
-            destroy_swapchain(device, swapchain);
-        }
         destroy_swapchain(device, mem::take(&mut self.swapchain));
         unsafe {
             // SAFETY: Device idle was requested and each owned child is destroyed once.
@@ -795,11 +788,11 @@ struct Swapchain {
     views: Vec<vk::VkImageView>,
     render_finished: Vec<vk::VkSemaphore>,
     initialized: Vec<bool>,
-    presented: Vec<bool>,
 }
 
 struct Entry {
     _library: VulkanLibrary,
+    api_version: u32,
     get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
     enumerate_instance_version: vk::PFN_vkEnumerateInstanceVersion,
     enumerate_instance_layer_properties: vk::PFN_vkEnumerateInstanceLayerProperties,
@@ -820,6 +813,7 @@ impl Entry {
         let get = get_instance_proc_addr.expect("loaded function");
         let mut entry = Self {
             _library: library,
+            api_version: 0,
             get_instance_proc_addr,
             enumerate_instance_version: None,
             enumerate_instance_layer_properties: None,
@@ -859,13 +853,14 @@ impl Entry {
             },
             "vkEnumerateInstanceVersion",
         )?;
-        if version < API_VERSION_1_4 {
+        if version < API_VERSION_1_3 {
             return Err(error(format!(
-                "Vulkan loader exposes {}.{}, but Mulciber requires 1.4",
+                "Vulkan loader exposes {}.{}, but Mulciber requires 1.3",
                 version >> 22,
                 (version >> 12) & 0x3ff
             )));
         }
+        entry.api_version = version.min(API_VERSION_1_4);
         Ok(entry)
     }
 
@@ -963,7 +958,7 @@ impl Instance {
             applicationVersion: 0,
             pEngineName: c"Mulciber".as_ptr(),
             engineVersion: 0,
-            apiVersion: API_VERSION_1_4,
+            apiVersion: entry.api_version,
             ..Default::default()
         };
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
@@ -1316,6 +1311,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
     )?;
     devices.truncate(count as usize);
     let mut candidates = Vec::new();
+    let mut rejections = Vec::new();
     for handle in devices {
         let mut properties = vk::VkPhysicalDeviceProperties::default();
         unsafe {
@@ -1324,13 +1320,18 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                 .get_physical_device_properties
                 .expect("loaded function")(handle, &raw mut properties);
         }
-        if properties.apiVersion < API_VERSION_1_4
-            || !device_extensions(instance, handle)?.iter().any(|name| {
-                name == vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME
-                    .strip_suffix(&[0])
-                    .expect("NUL suffix")
-            })
-        {
+        let name = std::string::String::from_utf8_lossy(&fixed_c_string(&properties.deviceName))
+            .into_owned();
+        if properties.apiVersion < API_VERSION_1_3 {
+            rejections.push(format!("{name}: API version is below Vulkan 1.3"));
+            continue;
+        }
+        if !device_extensions(instance, handle)?.iter().any(|name| {
+            name == vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME
+                .strip_suffix(&[0])
+                .expect("NUL suffix")
+        }) {
+            rejections.push(format!("{name}: VK_KHR_swapchain is unavailable"));
             continue;
         }
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
@@ -1351,6 +1352,10 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
         if features13.dynamicRendering == vk::VK_FALSE
             || features13.synchronization2 == vk::VK_FALSE
         {
+            rejections.push(format!(
+                "{name}: dynamicRendering={} synchronization2={}",
+                features13.dynamicRendering, features13.synchronization2
+            ));
             continue;
         }
         let mut family_count = 0;
@@ -1371,6 +1376,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                 handle, &raw mut family_count, families.as_mut_ptr()
             );
         }
+        let mut found_queue = false;
         for (index, family) in families.iter().enumerate() {
             if family.queueCount == 0 || family.queueFlags & vk::VK_QUEUE_GRAPHICS_BIT as u32 == 0 {
                 continue;
@@ -1391,6 +1397,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                 "vkGetPhysicalDeviceSurfaceSupportKHR",
             )?;
             if supported == vk::VK_TRUE {
+                found_queue = true;
                 let score = match properties.deviceType {
                     vk::VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU => 2,
                     vk::VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU => 1,
@@ -1415,9 +1422,19 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                 break;
             }
         }
+        if !found_queue {
+            rejections.push(format!(
+                "{name}: no queue family supports graphics and presentation to this surface"
+            ));
+        }
     }
     candidates.sort_by_key(|candidate| candidate.0);
-    candidates.pop().map(|(_, adapter)| adapter).ok_or_else(|| error("no Vulkan 1.4 graphics/present adapter supports dynamic rendering and synchronization2"))
+    candidates.pop().map(|(_, adapter)| adapter).ok_or_else(|| {
+        error(format!(
+            "no Vulkan 1.3 adapter satisfies the presentation baseline: {}",
+            rejections.join("; ")
+        ))
+    })
 }
 
 fn populate_swapchain(device: &Device, swapchain: &mut Swapchain) -> Result<(), GraphicsError> {
@@ -1455,7 +1472,6 @@ fn populate_swapchain(device: &Device, swapchain: &mut Swapchain) -> Result<(), 
             .push(create_semaphore(device, "render-finished semaphore")?);
     }
     swapchain.initialized = vec![false; swapchain.images.len()];
-    swapchain.presented = vec![false; swapchain.images.len()];
     Ok(())
 }
 
@@ -1792,6 +1808,7 @@ fn check_enumeration(result: vk::VkResult, operation: &str) -> Result<(), Graphi
 fn error(message: impl Into<std::string::String>) -> GraphicsError {
     GraphicsError::new(message)
 }
+
 const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {
     (variant << 29) | (major << 22) | (minor << 12) | patch
 }
@@ -1845,7 +1862,7 @@ impl VulkanLibrary {
             let handle = unsafe { LoadLibraryW(name.as_ptr()) };
             if handle.is_null() {
                 Err(error(
-                    "could not load vulkan-1.dll; install a Vulkan 1.4 driver",
+                    "could not load vulkan-1.dll; install a Vulkan 1.3 driver",
                 ))
             } else {
                 Ok(Self(handle))
@@ -1856,7 +1873,7 @@ impl VulkanLibrary {
             let handle = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
             if handle.is_null() {
                 Err(error(
-                    "could not load libvulkan.so.1; install a Vulkan 1.4 loader and driver",
+                    "could not load libvulkan.so.1; install a Vulkan 1.3 loader and driver",
                 ))
             } else {
                 Ok(Self(handle))

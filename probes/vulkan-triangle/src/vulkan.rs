@@ -41,6 +41,7 @@ use texture::{
     missing_bc1_requirements, select_texture, texture_mode_from_environment,
 };
 
+const API_VERSION_1_3: u32 = make_api_version(0, 1, 3, 0);
 const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
@@ -161,7 +162,7 @@ pub fn run() -> Result<(), ProbeError> {
     let mut application = platform::Application::new(options.platform.as_deref())
         .map_err(|error| ProbeError(error.to_string()))?;
     let window = application
-        .create_window("Mulciber — native Vulkan 1.4", 960, 540, true)
+        .create_window("Mulciber — native Vulkan 1.3+", 960, 540, true)
         .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
@@ -264,6 +265,7 @@ const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u
 
 struct Entry {
     _library: VulkanLibrary,
+    api_version: u32,
     get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
     enumerate_instance_version: vk::PFN_vkEnumerateInstanceVersion,
     enumerate_instance_layer_properties: vk::PFN_vkEnumerateInstanceLayerProperties,
@@ -317,32 +319,34 @@ impl Entry {
 
         let entry = Self {
             _library: library,
+            api_version: 0,
             get_instance_proc_addr,
             enumerate_instance_version,
             enumerate_instance_layer_properties,
             enumerate_instance_extension_properties,
             create_instance,
         };
-        entry.require_version()?;
+        let mut entry = entry;
+        entry.api_version = entry.require_version()?;
         Ok(entry)
     }
 
-    fn require_version(&self) -> Result<(), ProbeError> {
+    fn require_version(&self) -> Result<u32, ProbeError> {
         let mut version = 0;
         // SAFETY: The output pointer is writable and the loaded function has the generated ABI.
         check(
             unsafe { self.enumerate_instance_version.expect("loaded function")(&raw mut version) },
             "vkEnumerateInstanceVersion",
         )?;
-        if version < API_VERSION_1_4 {
+        if version < API_VERSION_1_3 {
             return Err(ProbeError(format!(
-                "Vulkan loader exposes {}.{}.{}, but Mulciber requires 1.4",
+                "Vulkan loader exposes {}.{}.{}, but Mulciber requires 1.3",
                 version >> 22,
                 (version >> 12) & 0x3ff,
                 version & 0xfff
             )));
         }
-        Ok(())
+        Ok(version.min(API_VERSION_1_4))
     }
 
     unsafe fn instance_proc<T: Copy>(
@@ -372,7 +376,7 @@ impl VulkanLibrary {
             let library = unsafe { LoadLibraryW(name.as_ptr()) };
             if library.is_null() {
                 Err(ProbeError(
-                    "could not load vulkan-1.dll; install a Vulkan 1.4 driver".into(),
+                    "could not load vulkan-1.dll; install a Vulkan 1.3 driver".into(),
                 ))
             } else {
                 Ok(Self(library))
@@ -384,7 +388,7 @@ impl VulkanLibrary {
             let library = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
             if library.is_null() {
                 Err(ProbeError(
-                    "could not load libvulkan.so.1; install a Vulkan 1.4 loader and driver".into(),
+                    "could not load libvulkan.so.1; install a Vulkan 1.3 loader and driver".into(),
                 ))
             } else {
                 Ok(Self(library))
@@ -513,7 +517,7 @@ impl InstanceContext {
             applicationVersion: 0,
             pEngineName: c"Mulciber".as_ptr(),
             engineVersion: 0,
-            apiVersion: API_VERSION_1_4,
+            apiVersion: entry.api_version,
             ..Default::default()
         };
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
@@ -1040,7 +1044,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                 .expect("loaded function")(device, &raw mut properties);
         }
         let extensions = device_extensions(instance, device)?;
-        if properties.apiVersion < API_VERSION_1_4
+        if properties.apiVersion < API_VERSION_1_3
             || !extensions.iter().any(|name| {
                 name == vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME
                     .strip_suffix(&[0])
@@ -1197,12 +1201,12 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
     let (_, adapter, name) = candidates.pop().ok_or_else(|| {
         if texture_mode == TextureMode::Bc1 && !texture_rejections.is_empty() {
             ProbeError(format!(
-                "no Vulkan 1.4 graphics/present adapter satisfies required BC1 mode: {}",
+                "no Vulkan 1.3 graphics/present adapter satisfies required BC1 mode: {}",
                 texture_rejections.join("; ")
             ))
         } else {
             ProbeError(
-                "no Vulkan 1.4 graphics/present adapter satisfies Mulciber's baseline".into(),
+                "no Vulkan 1.3 graphics/present adapter satisfies Mulciber's baseline".into(),
             )
         }
     })?;

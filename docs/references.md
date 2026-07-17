@@ -5,8 +5,8 @@ documentation to identify later capabilities.
 
 ## Vulkan
 
-- API baseline: Vulkan 1.4.
-- Reviewed specification: Vulkan 1.4.356, generated 2026-07-03.
+- API baseline: Vulkan 1.3 with `dynamicRendering` and `synchronization2`; request 1.4 when exposed.
+- Reviewed specification and binding source: Vulkan 1.4.356, generated 2026-07-03.
 - Specification source commit: `73836865422f9e28e17069a96cceef6d0ece1ff8`.
 - Canonical specification: <https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html>
 - Source repository: <https://github.com/KhronosGroup/Vulkan-Docs>

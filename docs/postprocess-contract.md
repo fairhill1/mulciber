@@ -53,11 +53,28 @@ Vulkan allocates scene color with color-attachment and sampled usage. Dynamic re
 resolves it, then a synchronization2 image barrier changes it from color-attachment output/write to
 fragment-shader sampled/read before the fullscreen pass. The swapchain image follows its existing
 acquire, color-attachment, present, and retirement path. The Vulkan implementation compiles and
-lints for the Windows target, but this checkpoint has no physical Vulkan execution evidence yet.
+lints for the Windows target and has automated physical execution evidence on the Intel Vulkan 1.3
+tier described below.
 
 The single WGSL source is compiled offline by Naga 30.0.0. The Vulkan module was validated for
-`vulkan1.4` with the repository-pinned SPIRV-Tools v2026.2 build; source and native artifact hashes
+`vulkan1.3` with the repository-pinned SPIRV-Tools v2026.2 build; source and native artifact hashes
 are recorded in `vulkan-toolchain.lock.toml`.
+
+## Windows Vulkan checkpoint
+
+On 2026-07-18, `mulciber-postprocess-cube` built and ran on Windows 11 Home build 22000 with an Intel
+UHD Graphics 620, driver 31.0.101.2115, Vulkan device API 1.3.215, and loader/validation 1.4.350. The
+adapter selected four samples and naturally lacked `VK_KHR_swapchain_maintenance1`. The example
+passed 100 rapid resize transitions at 10 ms spacing. The conventional extensionless path waited
+idle before each reconfiguration while only one swapchain generation existed, then retired it after
+creating the replacement. The example closed through `WM_CLOSE`, exited zero, and emitted no Vulkan
+validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260718-010202.zip`. This proves physical execution, bounded
+single-generation retirement, and automated resize/close behavior for the extracted two-pass path.
+A focused manual run then kept the auto-spinning result live through drag resize and closed through
+the title bar with exit zero and no validation output. Evidence:
+`validation-artifacts/windows-vulkan-postprocess-visual-20260718-010637.zip`. Input, broader lifecycle,
+multi-display, and additional driver tiers remain separate evidence gaps.
 
 ## macOS comparison checkpoint
 

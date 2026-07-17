@@ -5,6 +5,33 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+A development tree based on revision `4c12c55` lowered the Vulkan compatibility baseline to 1.3
+while continuing to request 1.4 from capable loaders. Its complete automated matrix passed on
+2026-07-18 on Windows 11 Home build 22000 with an Intel UHD Graphics 620, driver 31.0.101.2115,
+Vulkan device API 1.3.215, and loader/validation 1.4.350. The capability report selected the adapter
+without baseline failures and reported dynamic rendering, synchronization2, maintenance4, and BC
+compression, while `VK_KHR_swapchain_maintenance1` was naturally absent. The run therefore exercised
+the deferred reacquisition retirement path without an override, including acquired-frame abandonment
+and recovery. The full 120-frame matrix passed preferred 4x and forced 1x MSAA, BC1 and forced RGBA8,
+strict pipeline-cache hits, resize, damaged-cache recovery, and cache-disabled correctness. The
+ordinary clear and cube examples each passed four automated extents. The two-pass postprocess example
+passed 100 rapid resize transitions at 10 ms spacing. Its base-swapchain compatibility path waited
+idle before each reconfiguration while only one generation existed, then retired that generation
+after creating its replacement; it therefore neither accumulated swapchains nor suppressed redraws.
+All three examples handled `WM_CLOSE`, destroyed their Vulkan surface before deferred Win32 window
+destruction, exited zero, and emitted no Vulkan validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260718-010202.zip`. This is automated single-display evidence;
+it does not claim manual visual correctness, interactive lifecycle coverage, multi-display behavior,
+or other Intel driver/hardware tiers.
+
+A focused manual follow-up ran the auto-spinning two-pass postprocess cube on the same Intel tier.
+Continuous drag resize remained live after the automated retirement fixes, the rendered result was
+accepted by the operator, and title-bar close exited zero. The captured log contains only the selected
+Vulkan backend and 4x sample count, with no validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-postprocess-visual-20260718-010637.zip`. This is single-display
+visual and drag-resize evidence for the focused postprocess example; it does not cover input,
+minimize/restore, maximize/restore, Alt+F4, or multi-display behavior.
+
 The in-progress resource-backed cube checkpoint ran natively on 2026-07-17 on the Windows 11 / RTX
 3060 Ti tier. The preferred Vulkan path selected 4x MSAA, uploaded indexed geometry and an RGBA8 sRGB
 checkerboard, created a WGSL-derived native pipeline and depth/MSAA targets, abandoned one acquired
@@ -274,7 +301,8 @@ modulation across the triangle. No validation or loader messages were emitted. E
 
 ## Setup
 
-Install a current vendor driver exposing Vulkan 1.4, Rust 1.97, and a Vulkan SDK containing
+Install a current vendor driver exposing Vulkan 1.3 or newer with dynamic rendering and
+synchronization2, Rust 1.97, and a Vulkan SDK containing
 `VK_LAYER_KHRONOS_validation` and `vulkaninfo`. No SDK library is needed to build Mulciber because the
 probe loads `vulkan-1.dll` at runtime.
 
@@ -307,10 +335,12 @@ RGBA8 through native 4x, forced 1x, and resize so a BC-capable adapter cannot hi
 regressions. It then guides two interactive runs: lifecycle testing closed through the title bar,
 followed by an Alt+F4 shutdown test.
 
-The automated matrix builds the ordinary same-source clear and cube examples and drives each through
-the four-size resize smoke before closing it through `WM_CLOSE`. Separate public-API clear and cube
-probes own finite execution, acquired-frame abandonment followed by presented recovery, and the
-cube's forced 1x path so validation controls do not leak into user-facing examples.
+The automated matrix builds the ordinary same-source clear, cube, and postprocess-cube examples. It
+drives clear and cube through the four-size resize smoke, then drives postprocess through 25 cycles of
+those four extents at 10 ms spacing to exercise compatibility retirement pressure before closing each
+through `WM_CLOSE`. Separate public-API clear and cube probes own finite execution, acquired-frame
+abandonment followed by presented recovery, and the cube's forced 1x path so validation controls do
+not leak into user-facing examples.
 
 Every native command must exit successfully, the probe treats every validation warning/error as a
 failure, and the script checks the captured logs again. The result is written to a timestamped ZIP

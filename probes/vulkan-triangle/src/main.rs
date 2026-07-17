@@ -1,4 +1,4 @@
-//! Renders a triangle through native platform windows and Vulkan 1.4 APIs.
+//! Renders a triangle through native platform windows and Vulkan 1.3+ APIs.
 
 #[cfg(target_os = "windows")]
 #[path = "win32.rs"]

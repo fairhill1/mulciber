@@ -63,7 +63,7 @@ Adapter selection queries the promoted
 logical device enables that same Vulkan 1.3 field only when supported; chaining the older standalone
 feature struct alongside `VkPhysicalDeviceVulkan13Features` is invalid.
 
-Pipeline creation feedback is core in the Vulkan 1.4 baseline and does not require a separate feature
+Pipeline creation feedback is core in the Vulkan 1.3 baseline and does not require a separate feature
 bit. Every graphics and compute create info should chain a `VkPipelineCreationFeedbackCreateInfo`
 with whole-pipeline feedback storage. Per-stage feedback is useful diagnostics but is not necessary
 to prove the artifact slice.

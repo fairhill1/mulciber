@@ -9,7 +9,7 @@ mulciber-shader build src/scene.wgsl --target vulkan --output artifacts/scene.vu
 mulciber-shader build src/scene.wgsl --target metal --output artifacts/scene.metal.shaderbin
 ```
 
-Vulkan generation requires `spirv-val` and validates against `vulkan1.4`. Metal generation runs on
+Vulkan generation requires `spirv-val` and validates against `vulkan1.3`. Metal generation runs on
 macOS and requires Xcode's `metal` and `metallib` tools. The initial compiler deliberately accepts
 only Naga's validation-backed cross-backend feature intersection; unsupported advanced shaders fail
 instead of requesting a second user-authored source.

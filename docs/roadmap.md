@@ -35,18 +35,19 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   input transitions are implemented as an AppKit-first experimental slice but physical input
   evidence, the macOS 26 / Metal 4 rendering runtime, and broader Apple-silicon hardware evidence
   remain outstanding).
-- [ ] Win32 window with a Vulkan 1.4 swapchain and triangle (physically exercised on Windows 11 and
+- [ ] Win32 window with a Vulkan 1.3+ swapchain and triangle (physically exercised on Windows 11 and
   an Nvidia RTX 3060 Ti; the window resizes smoothly, rendering remains functional, and driving
   redraw from `WM_SIZE` improved measured callback spacing from about 27 ms to 9 ms and looked
   noticeably better; presentation-fence retirement and the forced deferred fallback are physically
-  exercised, while a naturally extension-less adapter, multi-display behavior, and the GTX
-  1060-class baseline remain outstanding).
-- [ ] Wayland XDG-shell window with a Vulkan 1.4 swapchain and triangle (implemented and physically
+  exercised, and an Intel Vulkan 1.3 tier naturally exercised the extensionless paths plus API-level
+  single-generation retirement; multi-display behavior and the GTX 1060-class baseline remain
+  outstanding).
+- [ ] Wayland XDG-shell window with a Vulkan 1.3+ swapchain and triangle (implemented and physically
   exercised on KDE Plasma/Wayland with server-side decorations, validation-clean rendering,
   responsive paced resize, minimize/restore, maximize/restore, titlebar close, and clean Vulkan/XDG
   shutdown; display-change, explicit zero-sized suspension, input, and broader compositor/hardware
   evidence remain outstanding).
-- [ ] X11 window with a Vulkan 1.4 swapchain and triangle (implemented as a runtime-selected peer
+- [ ] X11 window with a Vulkan 1.3+ swapchain and triangle (implemented as a runtime-selected peer
   of the Wayland module with `WM_DELETE_WINDOW`, structure-notification, and
   `_NET_WM_SYNC_REQUEST` interactive-resize handling; physically exercised on KDE Plasma through
   XWayland with validation-clean unlocked 75 Hz pacing, live drag resize, minimize/restore,
@@ -199,9 +200,13 @@ generation-bound resolved color and samples it in a fullscreen grade/vignette pa
 checkpoint adds dedicated postprocess target/pipeline handles and one fixed two-pass queue operation;
 it deliberately does not generalize into a command encoder from one sequence. Metal and the wgpu
 peer passed physical validation-layer visual smokes on the Apple M2 tier. The Vulkan implementation
-compiles and lints for Win32, including its explicit color-write-to-fragment-sample transition, but
-physical Vulkan execution remains pending. The minimal cube and input pairs stay unchanged. See the
-[experimental postprocess contract](postprocess-contract.md).
+compiles and lints for Win32, including its explicit color-write-to-fragment-sample transition, and
+passed 100 rapid automated resize transitions plus close without validation messages on an Intel UHD
+620 exposing Vulkan 1.3.215. The extensionless API path retained live redraw while bounding resize
+retirement to one old generation at a time. A focused manual follow-up also kept the auto-spinning
+postprocess result live through drag resize and closed cleanly through the title bar. Broader Vulkan
+lifecycle, input, multi-display, and driver-tier observations remain pending. The minimal cube and
+input pairs stay unchanged. See the [experimental postprocess contract](postprocess-contract.md).
 
 A fourth presentation-oriented showcase pair composes the existing input controller with the
 two-pass operation without adding public or backend API. It preserves the three focused baselines

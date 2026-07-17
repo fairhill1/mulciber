@@ -135,7 +135,7 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
         self.flush_deferred_abandon()?;
         let acquisition = self.surface.acquire_image(metrics)?;
-        self.reclaim_stale_targets();
+        self.reclaim_stale_targets()?;
         let info = self.surface.info();
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
@@ -286,7 +286,7 @@ impl<'window> TexturedSession<'window> {
     /// in-flight frame fence, and draws reject targets that do not match the acquired generation.
     /// A target older than the current generation therefore cannot be referenced by submitted GPU
     /// work, so its storage is reclaimed instead of growing until shutdown across live resizes.
-    fn reclaim_stale_targets(&mut self) {
+    fn reclaim_stale_targets(&mut self) -> Result<(), GraphicsError> {
         let current = self.surface.info().generation();
         let surface = &self.surface;
         for target in &mut self.targets {
@@ -300,10 +300,12 @@ impl<'window> TexturedSession<'window> {
                 destroy_image(surface, depth);
             }
         }
+        let mut reclaimed_postprocess_target = false;
         for target in &mut self.postprocess_targets {
             if target.info.generation().get() >= current.get() {
                 continue;
             }
+            reclaimed_postprocess_target = true;
             if let Some(color) = target.multisample_color.take() {
                 destroy_image(surface, color);
             }
@@ -314,13 +316,32 @@ impl<'window> TexturedSession<'window> {
                 destroy_image(surface, depth);
             }
         }
+        if reclaimed_postprocess_target {
+            let device = self.surface.device();
+            for pipeline in &mut self.postprocess_pipelines {
+                let replacement = create_postprocess_descriptor_pool(device)?;
+                unsafe {
+                    device
+                        .functions
+                        .destroy_descriptor_pool
+                        .expect("loaded function")(
+                        device.handle,
+                        pipeline.descriptor_pool,
+                        ptr::null(),
+                    );
+                }
+                pipeline.descriptor_pool = replacement;
+                pipeline.bindings.clear();
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
     ) -> Result<u32, GraphicsError> {
-        self.reclaim_stale_targets();
+        self.reclaim_stale_targets()?;
         let mut properties = vk::VkFormatProperties::default();
         unsafe {
             self.surface
@@ -383,7 +404,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         info: SurfaceInfo,
     ) -> Result<u32, GraphicsError> {
-        self.reclaim_stale_targets();
+        self.reclaim_stale_targets()?;
         let extent = info.extent();
         let scene_color = create_image(
             &self.surface,
@@ -1613,12 +1634,6 @@ impl ClearSurface<'_> {
                 .queue_present
                 .expect("loaded function")(self.device().queue, &raw const present)
         };
-        if matches!(
-            result,
-            vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR
-        ) {
-            self.swapchain.presented[slot] = true;
-        }
         if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
             self.recreate_after_present = true;
         } else {
@@ -2338,6 +2353,13 @@ fn create_postprocess_pipeline(
         },
         "vkCreateSampler for postprocess pipeline",
     )?;
+    resource.descriptor_pool = create_postprocess_descriptor_pool(device)?;
+    Ok(resource)
+}
+
+fn create_postprocess_descriptor_pool(
+    device: &super::Device,
+) -> Result<vk::VkDescriptorPool, GraphicsError> {
     let pool_sizes = [
         pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
@@ -2350,6 +2372,7 @@ fn create_postprocess_pipeline(
         pPoolSizes: pool_sizes.as_ptr(),
         ..Default::default()
     };
+    let mut pool = ptr::null_mut();
     check(
         unsafe {
             device
@@ -2359,12 +2382,12 @@ fn create_postprocess_pipeline(
                 device.handle,
                 &raw const pool_info,
                 ptr::null(),
-                &raw mut resource.descriptor_pool,
+                &raw mut pool,
             )
         },
         "vkCreateDescriptorPool for postprocess pipeline",
     )?;
-    Ok(resource)
+    Ok(pool)
 }
 
 fn find_memory_type(device: &super::Device, compatible: u32, required: u32) -> Option<u32> {

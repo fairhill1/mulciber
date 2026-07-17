@@ -281,7 +281,7 @@ where
             "live-resize timer failed with Win32 error {timer_error}"
         )));
     }
-    if quit_requested || !window.is_open() {
+    if quit_requested || window.state.close_requested.get() || !window.is_open() {
         if !window.state.close_reported.replace(true) {
             // SAFETY: Registration above owns a live exclusive handler borrow on this thread.
             unsafe { invoke_event_callback(&window.state, WindowEvent::CloseRequested) };
@@ -323,6 +323,7 @@ struct WindowState {
     revision: Cell<WindowRevision>,
     last_extent: Cell<PhysicalExtent>,
     last_metrics: Cell<Option<WindowMetrics>>,
+    close_requested: Cell<bool>,
     close_reported: Cell<bool>,
 }
 
@@ -338,6 +339,7 @@ impl WindowState {
             revision: Cell::new(WindowRevision::INITIAL),
             last_extent: Cell::new(PhysicalExtent::default()),
             last_metrics: Cell::new(None),
+            close_requested: Cell::new(false),
             close_reported: Cell::new(false),
         }
     }
@@ -600,8 +602,12 @@ unsafe extern "system" fn window_procedure(
             0
         }
         WM_CLOSE => {
-            // SAFETY: Win32 supplied this live window handle.
-            unsafe { DestroyWindow(window) };
+            // Keep the HWND alive until `Window` drops. Graphics surfaces borrow it, so reporting
+            // the close first lets the application retire presentation work and destroy the
+            // surface before native window destruction.
+            if let Some(state) = unsafe { state_for_window(window) } {
+                state.close_requested.set(true);
+            }
             0
         }
         WM_DESTROY => {

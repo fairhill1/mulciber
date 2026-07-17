@@ -6,7 +6,7 @@ by the native probes.
 ## Windows
 
 - Windows 10 or 11 on x86-64.
-- Vulkan 1.4 from the installed GPU vendor driver.
+- Vulkan 1.3 from the installed GPU vendor driver; Mulciber requests 1.4 when available.
 - Nvidia Pascal / GeForce GTX 1060-class hardware remains in the baseline when using a current
   conformant driver.
 - Win32 owns windows, input, display enumeration, and the event loop.
@@ -15,7 +15,7 @@ by the native probes.
 ## Linux
 
 - Linux on x86-64.
-- Vulkan 1.4 from a conformant proprietary or Mesa driver.
+- Vulkan 1.3 from a conformant proprietary or Mesa driver; Mulciber requests 1.4 when available.
 - Wayland with XDG shell is first class.
 - X11 is a separate first-class platform backend, not a Wayland compatibility assumption.
 

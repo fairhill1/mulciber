@@ -6,8 +6,9 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 ## Current status
 
 - X11 and Wayland compile, lint, link, and pass their shared report tests on x86-64 Linux.
-- WSLg can create both native client objects, but its Vulkan loader reports 1.3.275 and is rejected
-  before Vulkan instance/surface creation because Mulciber requires Vulkan 1.4.
+- WSLg previously created both native client objects and reported Vulkan 1.3.275, but the former
+  Vulkan 1.4 gate rejected it before instance/surface creation. The new feature-checked 1.3 baseline
+  requires a WSLg rerun before any execution claim is made.
 - Native Wayland and X11-through-XWayland Vulkan 1.4 capability results were recorded on physical
   Linux on 2026-07-16. Native Xorg and broader driver/hardware coverage remain pending.
 - One-shot acquired-frame non-presentation was physically exercised on native Wayland on
@@ -285,7 +286,8 @@ multi-display, and broader hardware/driver coverage remain outstanding.
 ## Machine requirements
 
 - Physical x86-64 Linux installation.
-- A conformant Vulkan 1.4 loader and vendor or Mesa driver.
+- A conformant Vulkan 1.3-or-newer loader and vendor or Mesa driver with dynamic rendering and
+  synchronization2.
 - `vulkaninfo` and the Khronos validation layer for the later presentation probes.
 - Xlib client libraries for the X11 path.
 - `libwayland-client` and a reachable compositor for the Wayland path.

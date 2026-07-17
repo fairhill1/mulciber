@@ -170,9 +170,9 @@ mod platform {
         fn new(window: &Window) -> Result<Self, ProbeError> {
             let entry = Entry::load()?;
             let loader_version = entry.loader_version()?;
-            if loader_version < API_VERSION_1_4 {
+            if loader_version < API_VERSION_1_3 {
                 return Err(ProbeError(format!(
-                    "Vulkan loader exposes {}, but Mulciber capability reporting requires 1.4",
+                    "Vulkan loader exposes {}, but Mulciber capability reporting requires 1.3",
                     version_string(loader_version)
                 )));
             }
@@ -189,7 +189,7 @@ mod platform {
             let application = vk::VkApplicationInfo {
                 sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
                 pApplicationName: c"Mulciber Vulkan capability report".as_ptr(),
-                apiVersion: API_VERSION_1_4,
+                apiVersion: loader_version.min(API_VERSION_1_4),
                 ..Default::default()
             };
             let enabled_extensions = [c"VK_KHR_surface".as_ptr(), surface_extension.as_ptr()];
@@ -372,7 +372,7 @@ mod platform {
                     println!("selected adapter: {index} ({})", self.adapters[index].name);
                 }
                 None => {
-                    println!("selected adapter: none (Mulciber Vulkan 1.4 baseline unavailable)");
+                    println!("selected adapter: none (Mulciber Vulkan 1.3 baseline unavailable)");
                 }
             }
             for (index, adapter) in self.adapters.iter().enumerate() {
@@ -565,9 +565,9 @@ mod platform {
                 maintenance4: features13.maintenance4 == vk::VK_TRUE,
             };
             let mut baseline_failures = Vec::new();
-            if properties.apiVersion < API_VERSION_1_4 {
+            if properties.apiVersion < API_VERSION_1_3 {
                 baseline_failures.push(format!(
-                    "API {} is below required Vulkan 1.4",
+                    "API {} is below required Vulkan 1.3",
                     version_string(properties.apiVersion)
                 ));
             }

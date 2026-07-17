@@ -50,7 +50,7 @@ resource, command, and synchronization types remain unextracted.
 
 ## Direction
 
-- Vulkan 1.4 on Windows and Linux.
+- Vulkan 1.3 on Windows and Linux, requesting Vulkan 1.4 when the loader exposes it.
 - Metal 3 on Apple silicon as the compatibility baseline.
 - Metal 4 as an SDK- and capability-gated path.
 - Native Win32, AppKit, Wayland, and X11 platform implementations.
@@ -192,7 +192,7 @@ texture, and intentionally submit and present nothing for it. The per-frame auto
 then drained, and the run fails unless later rendering submits successfully. This makes the
 otherwise exceptional frame-abandonment path observable without weakening normal validation.
 
-On Windows, after installing a Vulkan 1.4 driver and the Khronos validation layer:
+On Windows, after installing a Vulkan 1.3-or-newer driver and the Khronos validation layer:
 
 ```sh
 cargo run -p mulciber-vulkan-info
@@ -201,8 +201,16 @@ cargo run -q -p mulciber-vulkan-info -- --json
 
 The capability probe creates a hidden Win32 surface and reports every Vulkan adapter, memory heaps,
 queue families, core workload features and limits, device extensions, surface formats, present
-modes, and explicit Mulciber Vulkan 1.4 baseline failures. The `--json` form emits the versioned report
+modes, and explicit Mulciber Vulkan 1.3 baseline failures. The `--json` form emits the versioned report
 used for cross-machine comparisons and adapter-tier evidence.
+
+The automated Windows matrix also passes on an Intel UHD Graphics 620 with driver 31.0.101.2115 and
+device API 1.3.215. That adapter naturally lacks `VK_KHR_swapchain_maintenance1`, so the run supplies
+real compatibility-path evidence rather than only a forced fallback on Vulkan 1.4 hardware. The
+same archive includes automated resize/close execution of the extracted two-pass postprocess
+example, including 100 rapid resize transitions through its single-generation retirement path; see
+the [Windows validation runbook](docs/windows-validation.md) for the subsequent focused visual
+drag-resize pass, exact scope, and remaining lifecycle gaps.
 
 On Linux, the same report has explicit X11 and Wayland paths:
 

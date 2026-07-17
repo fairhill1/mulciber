@@ -19,7 +19,7 @@ const METAL_KIND: u32 = 2;
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShaderTarget {
-    /// Vulkan 1.4 with SPIR-V 1.4 modules.
+    /// Vulkan 1.3+ with SPIR-V 1.4 modules.
     Vulkan,
     /// Metal 3.1 with an Apple metallib.
     Metal,
@@ -51,7 +51,7 @@ impl std::error::Error for ShaderBuildError {}
 
 /// Compiles one WGSL module and writes an opaque Mulciber artifact.
 ///
-/// Vulkan output is checked with `spirv-val --target-env vulkan1.4` before packaging. Metal output
+/// Vulkan output is checked with `spirv-val --target-env vulkan1.3` before packaging. Metal output
 /// is compiled and linked with Xcode's `metal` and `metallib` tools. Resource bindings preserve
 /// their WGSL binding number independently in Metal's buffer, texture, and sampler namespaces.
 ///
@@ -121,7 +121,7 @@ fn compile_vulkan(
         .map_err(|error| fail(format!("write validation SPIR-V: {error}")))?;
     let validation = run(
         Command::new("spirv-val")
-            .args(["--target-env", "vulkan1.4"])
+            .args(["--target-env", "vulkan1.3"])
             .arg(&validation_path),
         "validate generated SPIR-V",
     );

@@ -111,7 +111,13 @@ function Invoke-AutomatedResizeSmoke {
 
         [string[]]$ProbeArguments = @(),
 
-        [string]$LogPrefix = "resize-smoke"
+        [string]$LogPrefix = "resize-smoke",
+
+        [ValidateRange(1, 100)]
+        [int]$ResizeCycles = 1,
+
+        [ValidateRange(1, 5000)]
+        [int]$ResizeDelayMilliseconds = 450
     )
 
     if (-not ("MulciberValidationWin32" -as [type])) {
@@ -134,11 +140,21 @@ public static class MulciberValidationWin32
     $StandardOutput = Join-Path $ArtifactDirectory "$LogPrefix.log"
     $StandardError = Join-Path $ArtifactDirectory "$LogPrefix.stderr.log"
     Write-Host "> $Probe $($ProbeArguments -join ' ') (automated resize smoke)"
-    $Process = Start-Process -FilePath $Probe `
-        -ArgumentList $ProbeArguments `
-        -RedirectStandardOutput $StandardOutput `
-        -RedirectStandardError $StandardError `
-        -PassThru
+    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $StartInfo.FileName = $Probe
+    $StartInfo.Arguments = (($ProbeArguments | ForEach-Object {
+                '"' + $_.Replace('"', '\"') + '"'
+            }) -join ' ')
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    $Process = New-Object System.Diagnostics.Process
+    $Process.StartInfo = $StartInfo
+    if (-not $Process.Start()) {
+        throw "automated resize smoke could not start the Vulkan probe"
+    }
+    $StandardOutputTask = $Process.StandardOutput.ReadToEndAsync()
+    $StandardErrorTask = $Process.StandardError.ReadToEndAsync()
     try {
         $Window = [IntPtr]::Zero
         for ($Attempt = 0; $Attempt -lt 50 -and $Window -eq [IntPtr]::Zero; $Attempt++) {
@@ -153,13 +169,15 @@ public static class MulciberValidationWin32
             throw "automated resize smoke could not find the Vulkan window"
         }
 
-        foreach ($Size in @(@(640, 360), @(1200, 700), @(320, 240), @(960, 540))) {
-            $Resized = [MulciberValidationWin32]::SetWindowPos(
-                $Window, [IntPtr]::Zero, 80, 80, $Size[0], $Size[1], 0x0014)
-            if (-not $Resized) {
-                throw "SetWindowPos failed during automated resize smoke"
+        for ($Cycle = 0; $Cycle -lt $ResizeCycles; $Cycle++) {
+            foreach ($Size in @(@(640, 360), @(1200, 700), @(320, 240), @(960, 540))) {
+                $Resized = [MulciberValidationWin32]::SetWindowPos(
+                    $Window, [IntPtr]::Zero, 80, 80, $Size[0], $Size[1], 0x0014)
+                if (-not $Resized) {
+                    throw "SetWindowPos failed during automated resize smoke"
+                }
+                Start-Sleep -Milliseconds $ResizeDelayMilliseconds
             }
-            Start-Sleep -Milliseconds 450
         }
         if (-not [MulciberValidationWin32]::PostMessage(
             $Window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
@@ -168,6 +186,7 @@ public static class MulciberValidationWin32
         if (-not $Process.WaitForExit(10000)) {
             throw "Vulkan probe did not exit after automated resize smoke"
         }
+        $Process.WaitForExit()
         if ($Process.ExitCode -ne 0) {
             throw "automated resize smoke exited with code $($Process.ExitCode)"
         }
@@ -177,12 +196,13 @@ public static class MulciberValidationWin32
             $Process.Kill()
             $Process.WaitForExit()
         }
-        if (Test-Path $StandardOutput) {
-            Get-Content $StandardOutput | Write-Host
-        }
-        if (Test-Path $StandardError) {
-            Get-Content $StandardError | Write-Host
-        }
+        $StandardOutputTask.Wait()
+        $StandardErrorTask.Wait()
+        [System.IO.File]::WriteAllText($StandardOutput, $StandardOutputTask.Result)
+        [System.IO.File]::WriteAllText($StandardError, $StandardErrorTask.Result)
+        $StandardOutputTask.Result | Write-Host
+        $StandardErrorTask.Result | Write-Host
+        $Process.Dispose()
     }
 }
 
@@ -300,6 +320,23 @@ try {
     Invoke-AutomatedResizeSmoke `
         -Probe $CubeExample `
         -LogPrefix "cube-resize"
+
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
+        "mulciber-postprocess-cube"
+    ) "cargo-test-postprocess-cube.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "mulciber-postprocess-cube"
+    ) "cargo-build-postprocess-cube.log"
+    $PostprocessExample = Join-Path $RepositoryRoot "target\debug\mulciber-postprocess-cube.exe"
+    Invoke-AutomatedResizeSmoke `
+        -Probe $PostprocessExample `
+        -LogPrefix "postprocess-cube-resize" `
+        -ResizeCycles 25 `
+        -ResizeDelayMilliseconds 10
 
     Invoke-NativeLogged "cargo" @(
         "test",
@@ -511,6 +548,10 @@ try {
         Join-Path $ArtifactDirectory "clear-abandon-recovery.log"
         Join-Path $ArtifactDirectory "clear-resize.log"
         Join-Path $ArtifactDirectory "clear-resize.stderr.log"
+        Join-Path $ArtifactDirectory "cube-resize.log"
+        Join-Path $ArtifactDirectory "cube-resize.stderr.log"
+        Join-Path $ArtifactDirectory "postprocess-cube-resize.log"
+        Join-Path $ArtifactDirectory "postprocess-cube-resize.stderr.log"
         Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame-fallback.log"

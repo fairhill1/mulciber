@@ -94,37 +94,63 @@ impl Application {
 
     /// Dispatches queued display events and reports game-facing lifecycle events for `window`.
     ///
+    /// The first handler error stops delivery of this call's remaining events; platform state
+    /// still advances so a later pump does not replay the dropped events.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the display connection or native event pump fails.
-    pub fn pump_events(
+    /// Returns a converted platform error when the display connection or native event pump fails,
+    /// otherwise the first error returned by `handler`.
+    pub fn pump_events<E>(
         &mut self,
         window: &Window,
-        mut handler: impl FnMut(WindowEvent),
-    ) -> Result<PumpStatus, PlatformError> {
-        let open = match &window.native {
-            NativeWindow::Wayland(native) => native.pump_events()?,
-            NativeWindow::X11(native) => native.pump_events()?,
-        };
-        if !open {
-            if !window.close_reported.replace(true) {
-                handler(WindowEvent::CloseRequested);
+        mut handler: impl FnMut(WindowEvent) -> Result<(), E>,
+    ) -> Result<PumpStatus, E>
+    where
+        E: From<PlatformError>,
+    {
+        let mut handler_error = None;
+        let status = pump_native_events(window, |event| {
+            if handler_error.is_some() {
+                return;
             }
-            window.last_metrics.set(None);
-            return Ok(PumpStatus::Exit);
+            if let Err(error) = handler(event) {
+                handler_error = Some(error);
+            }
+        })?;
+        match handler_error {
+            Some(error) => Err(error),
+            None => Ok(status),
         }
-
-        let previous = window.last_metrics.get();
-        let current = window.current_window_metrics();
-        if let Some(event) = metrics_transition(previous, current) {
-            handler(event);
-        }
-        if let Some(metrics) = current {
-            handler(WindowEvent::RedrawRequested(metrics));
-        }
-        window.last_metrics.set(current);
-        Ok(PumpStatus::Continue)
     }
+}
+
+fn pump_native_events(
+    window: &Window,
+    mut handler: impl FnMut(WindowEvent),
+) -> Result<PumpStatus, PlatformError> {
+    let open = match &window.native {
+        NativeWindow::Wayland(native) => native.pump_events()?,
+        NativeWindow::X11(native) => native.pump_events()?,
+    };
+    if !open {
+        if !window.close_reported.replace(true) {
+            handler(WindowEvent::CloseRequested);
+        }
+        window.last_metrics.set(None);
+        return Ok(PumpStatus::Exit);
+    }
+
+    let previous = window.last_metrics.get();
+    let current = window.current_window_metrics();
+    if let Some(event) = metrics_transition(previous, current) {
+        handler(event);
+    }
+    if let Some(metrics) = current {
+        handler(WindowEvent::RedrawRequested(metrics));
+    }
+    window.last_metrics.set(current);
+    Ok(PumpStatus::Continue)
 }
 
 enum NativeWindow {

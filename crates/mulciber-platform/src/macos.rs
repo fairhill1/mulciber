@@ -196,10 +196,37 @@ impl Application {
 
     /// Dispatches queued native events and reports game-facing lifecycle events for `window`.
     ///
+    /// The first handler error stops delivery of this call's remaining events; platform state
+    /// still advances so a later pump does not replay the dropped events.
+    ///
     /// # Errors
     ///
-    /// Returns an error when a required `AppKit` event object or autorelease pool is unavailable.
-    pub fn pump_events(
+    /// Returns a converted platform error when a required `AppKit` event object or autorelease
+    /// pool is unavailable, otherwise the first error returned by `handler`.
+    pub fn pump_events<E>(
+        &mut self,
+        window: &Window,
+        mut handler: impl FnMut(WindowEvent) -> Result<(), E>,
+    ) -> Result<PumpStatus, E>
+    where
+        E: From<PlatformError>,
+    {
+        let mut handler_error = None;
+        let status = self.pump_native_events(window, |event| {
+            if handler_error.is_some() {
+                return;
+            }
+            if let Err(error) = handler(event) {
+                handler_error = Some(error);
+            }
+        })?;
+        match handler_error {
+            Some(error) => Err(error),
+            None => Ok(status),
+        }
+    }
+
+    fn pump_native_events(
         &mut self,
         window: &Window,
         mut handler: impl FnMut(WindowEvent),

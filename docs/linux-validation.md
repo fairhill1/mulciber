@@ -99,6 +99,15 @@ branch executed rather than the stable-generation branch), fallible shutdown, ob
 one-sample reopening, mixed-session handle rejection, one-sample presentation, and a second
 fallible shutdown. Exit code zero with no validation output.
 
+Later on 2026-07-17, an uncommitted tree based on `ccfc4d7` reshaped the platform pump contract
+(fallible event handler returning the first application error, platform-owned
+`wait_for_first_metrics`) and added the const `ClearColor::opaque` constructor. On the same
+machine and session, the conformance probe repeated all thirteen cases, and `mulciber-api-cube
+--frames 120` passed on both native Wayland and XWayland (`DISPLAY` path) with
+`mulciber-api-clear --frames 60 --abandon-acquired-frame-once` recovering through abandonment,
+all exiting zero with no validation output. These are finite static-window runs; no new
+interactive lifecycle evidence is claimed for the reshaped pump error path.
+
 ### Single-backend build evidence
 
 At revision `7d25d1f` on the x86-64 CachyOS machine below (i5-12400F, 12 threads, Rust 1.97.0,

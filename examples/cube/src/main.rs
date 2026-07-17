@@ -9,13 +9,12 @@ use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, SampleCount, ShaderArtifact,
     TexturedDraw,
 };
-use mulciber_platform::{
-    Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
-};
+use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
 use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, transform};
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cube.shaderbin"));
+const CLEAR: ClearColor = ClearColor::opaque(0.025, 0.035, 0.055);
 
 #[allow(clippy::cast_precision_loss)]
 fn main() -> Result<(), Box<dyn Error>> {
@@ -24,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Mulciber — same-source textured cube",
         LogicalSize::new(960, 540),
     ))?;
-    let initial_metrics = wait_for_initial_metrics(&mut application, &window)?;
+    let initial_metrics = application.wait_for_first_metrics(&window)?;
     let mut graphics = OpenedGraphics::open(
         window.surface_target(),
         initial_metrics,
@@ -48,52 +47,39 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut targets = graphics
         .device
         .create_render_targets(graphics.surface.info()?)?;
-    let clear = ClearColor::new(0.025, 0.035, 0.055, 1.0).expect("constant is normalized");
     let started = Instant::now();
-    let mut failure: Option<Box<dyn Error>> = None;
 
     loop {
-        let status = application.pump_events(&window, |event| {
-            if failure.is_some() {
-                return;
-            }
+        let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
             let WindowEvent::RedrawRequested(metrics) = event else {
-                return;
+                return Ok(());
             };
-            let result: Result<(), Box<dyn Error>> = (|| {
-                match graphics.surface.acquire(metrics)? {
-                    FrameAcquire::Ready(frame) => {
-                        let info = frame.surface_info();
-                        if info != targets.info() {
-                            targets = graphics.device.create_render_targets(info)?;
-                        }
-                        let aspect = info.extent().width() as f32 / info.extent().height() as f32;
-                        graphics.queue.draw_textured_and_present(
-                            frame,
-                            TexturedDraw {
-                                mesh: &mesh,
-                                texture: &texture,
-                                pipeline: &pipeline,
-                                targets: &targets,
-                                model_view_projection: transform(
-                                    started.elapsed().as_secs_f32(),
-                                    aspect,
-                                ),
-                                clear,
-                            },
-                        )?;
+            match graphics.surface.acquire(metrics)? {
+                FrameAcquire::Ready(frame) => {
+                    let info = frame.surface_info();
+                    if info != targets.info() {
+                        targets = graphics.device.create_render_targets(info)?;
                     }
-                    FrameAcquire::Unavailable(_) => {}
+                    let aspect = info.extent().width() as f32 / info.extent().height() as f32;
+                    graphics.queue.draw_textured_and_present(
+                        frame,
+                        TexturedDraw {
+                            mesh: &mesh,
+                            texture: &texture,
+                            pipeline: &pipeline,
+                            targets: &targets,
+                            model_view_projection: transform(
+                                started.elapsed().as_secs_f32(),
+                                aspect,
+                            ),
+                            clear: CLEAR,
+                        },
+                    )?;
                 }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                failure = Some(error);
+                FrameAcquire::Unavailable(_) => {}
             }
+            Ok(())
         })?;
-        if let Some(error) = failure.take() {
-            return Err(error);
-        }
         if status == PumpStatus::Exit {
             break;
         }
@@ -101,29 +87,4 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     graphics.shutdown()?;
     Ok(())
-}
-
-fn wait_for_initial_metrics(
-    application: &mut Application,
-    window: &Window,
-) -> Result<WindowMetrics, Box<dyn Error>> {
-    loop {
-        if let Some(metrics) = window.rendering_metrics() {
-            return Ok(metrics);
-        }
-        let mut initial_metrics = None;
-        let status = application.pump_events(window, |event| {
-            if let WindowEvent::RenderingResumed(metrics) | WindowEvent::RedrawRequested(metrics) =
-                event
-            {
-                initial_metrics = Some(metrics);
-            }
-        })?;
-        if let Some(metrics) = initial_metrics {
-            return Ok(metrics);
-        }
-        if status == PumpStatus::Exit {
-            return Err("window closed before drawable metrics became available".into());
-        }
-    }
 }

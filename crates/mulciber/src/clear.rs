@@ -17,6 +17,29 @@ impl ClearColor {
         components: [0.0, 0.0, 0.0, 1.0],
     };
 
+    /// Creates an opaque clear color from finite components in the inclusive `0.0..=1.0` range.
+    ///
+    /// Intended for literal colors: evaluated in const context, an invalid component fails at
+    /// compile time instead of forcing a runtime unwrap.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a component is not finite or lies outside the inclusive `0.0..=1.0` range.
+    #[must_use]
+    pub const fn opaque(red: f32, green: f32, blue: f32) -> Self {
+        #[allow(clippy::manual_range_contains)]
+        const fn normalized(component: f32) -> f32 {
+            assert!(
+                component >= 0.0 && component <= 1.0,
+                "clear color components must be finite and within 0.0..=1.0",
+            );
+            component
+        }
+        Self {
+            components: [normalized(red), normalized(green), normalized(blue), 1.0],
+        }
+    }
+
     /// Creates a clear color when every component is finite and in the inclusive `0.0..=1.0`
     /// range.
     #[must_use]
@@ -151,5 +174,17 @@ mod tests {
         assert!(ClearColor::new(-0.01, 0.5, 1.0, 1.0).is_none());
         assert!(ClearColor::new(0.0, 1.01, 1.0, 1.0).is_none());
         assert!(ClearColor::new(0.0, f32::NAN, 1.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn opaque_constructor_matches_the_fallible_path() {
+        const COLOR: ClearColor = ClearColor::opaque(0.2, 0.4, 0.6);
+        assert_eq!(Some(COLOR), ClearColor::new(0.2, 0.4, 0.6, 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "clear color components must be finite")]
+    fn opaque_constructor_rejects_out_of_range_components() {
+        let _ = ClearColor::opaque(1.5, 0.0, 0.0);
     }
 }

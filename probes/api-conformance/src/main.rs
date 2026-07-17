@@ -49,34 +49,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Mulciber — public API conformance",
         LogicalSize::new(640, 400),
     ))?;
-    let initial_metrics = wait_for_initial_metrics(&mut application, &window)?;
+    let initial_metrics = application.wait_for_first_metrics(&window)?;
     let mut cases = Cases::new(&window, initial_metrics)?;
     let started = Instant::now();
-    let mut outcome: Option<Result<u32, Box<dyn Error>>> = None;
+    let mut passed = None;
 
-    while outcome.is_none() {
+    while passed.is_none() {
         if started.elapsed().as_secs() > 60 {
             return Err("conformance run exceeded its 60 second budget".into());
         }
-        let status = application.pump_events(&window, |event| {
-            if outcome.is_some() {
-                return;
+        let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
+            if passed.is_some() {
+                return Ok(());
             }
             let WindowEvent::RedrawRequested(metrics) = event else {
-                return;
+                return Ok(());
             };
-            match cases.advance(metrics) {
-                Ok(true) => outcome = Some(Ok(cases.passed)),
-                Ok(false) => {}
-                Err(error) => outcome = Some(Err(error)),
+            if cases.advance(metrics)? {
+                passed = Some(cases.passed);
             }
+            Ok(())
         })?;
         if status == PumpStatus::Exit {
             return Err("window closed before the conformance cases completed".into());
         }
     }
 
-    let passed = outcome.expect("loop exits only with an outcome")?;
+    let passed = passed.expect("loop exits only after every case passed");
     println!("conformance: {passed} case(s) passed");
     Ok(())
 }
@@ -421,31 +420,6 @@ fn expect_error(
                 )
                 .into())
             }
-        }
-    }
-}
-
-fn wait_for_initial_metrics(
-    application: &mut Application,
-    window: &Window,
-) -> Result<WindowMetrics, Box<dyn Error>> {
-    loop {
-        if let Some(metrics) = window.rendering_metrics() {
-            return Ok(metrics);
-        }
-        let mut initial_metrics = None;
-        let status = application.pump_events(window, |event| {
-            if let WindowEvent::RenderingResumed(metrics) | WindowEvent::RedrawRequested(metrics) =
-                event
-            {
-                initial_metrics = Some(metrics);
-            }
-        })?;
-        if let Some(metrics) = initial_metrics {
-            return Ok(metrics);
-        }
-        if status == PumpStatus::Exit {
-            return Err("window closed before drawable metrics became available".into());
         }
     }
 }

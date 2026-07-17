@@ -10,8 +10,8 @@ use mulciber_platform::integration::{
     LinuxPlatform, LinuxSurfaceTarget, application, native_surface_target,
 };
 use mulciber_platform::{
-    Application as PlatformApplication, LogicalSize, PumpStatus, Window as PlatformWindow,
-    WindowDescriptor,
+    Application as PlatformApplication, LogicalSize, PlatformError, PumpStatus,
+    Window as PlatformWindow, WindowDescriptor,
 };
 
 use crate::vk;
@@ -78,7 +78,7 @@ impl Application {
         F: FnMut(),
     {
         self.platform
-            .pump_events(&window.0, |_| {})
+            .pump_events(&window.0, |_| Ok::<(), PlatformError>(()))
             .map(|status| status == PumpStatus::Continue)
             .map_err(|error| WindowError(error.to_string()))
     }

@@ -39,9 +39,16 @@ ordinary application code can accidentally violate.
 
 ### Game-owned loop with native event pumping
 
-The game calls `Application::pump_events` and receives translated events through a callback. This
+The game calls `Application::pump_events` and receives translated events through a fallible
+callback: the handler returns `Result<(), E>` for any application error type convertible from
+`PlatformError`, and the pump returns the first handler error once native dispatch completes. This
 keeps the game in control of its architecture while leaving room for a native backend to invoke redraw
-during nested or modal event processing. AppKit, Win32, Wayland, and X11 emit `RedrawRequested` after
+during nested or modal event processing — including propagating an application error out of Win32's
+nested interactive-sizing loop, which every application previously restated with a local error slot.
+After a handler error, the remaining events of that pump call are dropped and platform state still
+advances, matching the semantics the per-application error slots had. `Application::
+wait_for_first_metrics` likewise owns the startup wait for first drawable metrics that every correct
+application previously copy-pasted. AppKit, Win32, Wayland, and X11 emit `RedrawRequested` after
 queued events are dispatched whenever the surface is drawable. Win32 temporarily registers the
 handler while dispatching messages, allowing `WM_SIZE` and a window timer to deliver redraw requests
 synchronously inside its nested interactive-sizing loop. Its Vulkan adapter renders only those

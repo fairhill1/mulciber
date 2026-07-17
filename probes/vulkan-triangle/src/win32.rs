@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use mulciber_platform::integration::{Win32SurfaceTarget, in_live_resize, native_surface_target};
 use mulciber_platform::{
-    Application as PlatformApplication, LogicalSize, PumpStatus, Window as PlatformWindow,
-    WindowDescriptor, WindowEvent,
+    Application as PlatformApplication, LogicalSize, PlatformError, PumpStatus,
+    Window as PlatformWindow, WindowDescriptor, WindowEvent,
 };
 
 use crate::vk;
@@ -74,6 +74,7 @@ impl Application {
                 if matches!(event, WindowEvent::RedrawRequested(_)) && in_live_resize(&window.0) {
                     live_resize();
                 }
+                Ok::<(), PlatformError>(())
             })
             .map(|status| status == PumpStatus::Continue)
             .map_err(|error| WindowError(error.to_string()))

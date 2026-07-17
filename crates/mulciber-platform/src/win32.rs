@@ -209,73 +209,95 @@ impl Application {
     ///
     /// `RedrawRequested` can be delivered from inside Win32's nested interactive-resize loop before
     /// this method returns. The handler must therefore leave the window and application alive for
-    /// the complete call.
+    /// the complete call. The first handler error stops delivery of this call's remaining events —
+    /// including nested-sizing-loop redraws — and is returned once native dispatch completes;
+    /// platform state still advances so a later pump does not replay the dropped events.
     ///
     /// # Errors
     ///
-    /// Returns an error when native extent queries or the live-resize timer fail.
-    pub fn pump_events<F>(
+    /// Returns a converted platform error when native extent queries or the live-resize timer
+    /// fail, otherwise the first error returned by `handler`.
+    pub fn pump_events<E>(
         &mut self,
         window: &Window,
-        mut handler: F,
-    ) -> Result<PumpStatus, PlatformError>
+        mut handler: impl FnMut(WindowEvent) -> Result<(), E>,
+    ) -> Result<PumpStatus, E>
     where
-        F: FnMut(WindowEvent),
+        E: From<PlatformError>,
     {
-        debug_assert!(window.state.event_callback.get().is_none());
-        window.state.timer_error.set(0);
-        window.state.callback_error.borrow_mut().take();
-        window
-            .state
-            .event_context
-            .set(ptr::from_mut(&mut handler).cast());
-        window.state.event_callback.set(Some(invoke_callback::<F>));
-        let _registration = CallbackRegistration {
-            state: &window.state,
-        };
-
-        let mut quit_requested = false;
-        let mut message = Msg::default();
-        // SAFETY: The message buffer is writable; retrieved messages are initialized by Win32 and
-        // dispatched synchronously while callback registration remains live.
-        unsafe {
-            while PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                if message.message == WM_QUIT {
-                    quit_requested = true;
-                    break;
-                }
-                TranslateMessage(&raw const message);
-                DispatchMessageW(&raw const message);
+        let mut handler_error = None;
+        let status = pump_native_events(window, |event| {
+            if handler_error.is_some() {
+                return;
             }
-        }
-
-        if let Some(error) = window.state.callback_error.borrow_mut().take() {
-            return Err(error);
-        }
-        let timer_error = window.state.timer_error.get();
-        if timer_error != 0 {
-            return Err(PlatformError::new(format!(
-                "live-resize timer failed with Win32 error {timer_error}"
-            )));
-        }
-        if quit_requested || !window.is_open() {
-            if !window.state.close_reported.replace(true) {
-                // SAFETY: Registration above owns a live exclusive handler borrow on this thread.
-                unsafe { invoke_event_callback(&window.state, WindowEvent::CloseRequested) };
+            if let Err(error) = handler(event) {
+                handler_error = Some(error);
             }
-            window.state.last_metrics.set(None);
-            return Ok(PumpStatus::Exit);
+        })?;
+        match handler_error {
+            Some(error) => Err(error),
+            None => Ok(status),
         }
+    }
+}
 
-        // Normal frame opportunity after queued messages. Nested live-resize opportunities were
-        // already delivered synchronously by the window procedure.
-        // SAFETY: The window and callback registration are live for this synchronous dispatch.
-        unsafe { dispatch_window_events(window.handle.as_ptr(), &window.state) };
-        if let Some(error) = window.state.callback_error.borrow_mut().take() {
-            Err(error)
-        } else {
-            Ok(PumpStatus::Continue)
+fn pump_native_events<F>(window: &Window, mut handler: F) -> Result<PumpStatus, PlatformError>
+where
+    F: FnMut(WindowEvent),
+{
+    debug_assert!(window.state.event_callback.get().is_none());
+    window.state.timer_error.set(0);
+    window.state.callback_error.borrow_mut().take();
+    window
+        .state
+        .event_context
+        .set(ptr::from_mut(&mut handler).cast());
+    window.state.event_callback.set(Some(invoke_callback::<F>));
+    let _registration = CallbackRegistration {
+        state: &window.state,
+    };
+
+    let mut quit_requested = false;
+    let mut message = Msg::default();
+    // SAFETY: The message buffer is writable; retrieved messages are initialized by Win32 and
+    // dispatched synchronously while callback registration remains live.
+    unsafe {
+        while PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            if message.message == WM_QUIT {
+                quit_requested = true;
+                break;
+            }
+            TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
         }
+    }
+
+    if let Some(error) = window.state.callback_error.borrow_mut().take() {
+        return Err(error);
+    }
+    let timer_error = window.state.timer_error.get();
+    if timer_error != 0 {
+        return Err(PlatformError::new(format!(
+            "live-resize timer failed with Win32 error {timer_error}"
+        )));
+    }
+    if quit_requested || !window.is_open() {
+        if !window.state.close_reported.replace(true) {
+            // SAFETY: Registration above owns a live exclusive handler borrow on this thread.
+            unsafe { invoke_event_callback(&window.state, WindowEvent::CloseRequested) };
+        }
+        window.state.last_metrics.set(None);
+        return Ok(PumpStatus::Exit);
+    }
+
+    // Normal frame opportunity after queued messages. Nested live-resize opportunities were
+    // already delivered synchronously by the window procedure.
+    // SAFETY: The window and callback registration are live for this synchronous dispatch.
+    unsafe { dispatch_window_events(window.handle.as_ptr(), &window.state) };
+    if let Some(error) = window.state.callback_error.borrow_mut().take() {
+        Err(error)
+    } else {
+        Ok(PumpStatus::Continue)
     }
 }
 

@@ -10,9 +10,12 @@ every name remains an unstable Gate 2 experiment.
 
 Decided. `mulciber-platform` owns a main/creating-thread-confined `Application` and `Window`; the
 game calls `Application::pump_events` and receives translated lifecycle, redraw, metric, and close
-events through a callback, keeping its own architecture. Platform types are neither `Send` nor
-`Sync`, so native-thread ownership is structural. Nested native dispatch (the Win32 sizing loop) may
-deliver redraw inside the pump. Recorded in the
+events through a fallible callback whose first error the pump returns, keeping its own architecture
+without a per-application error slot. Platform types are neither `Send` nor `Sync`, so
+native-thread ownership is structural. Nested native dispatch (the Win32 sizing loop) may deliver
+redraw inside the pump; handler errors propagate out of that nesting through the platform layer.
+The platform also owns the startup wait for first drawable metrics
+(`Application::wait_for_first_metrics`). Recorded in the
 [experimental platform contract](api-platform-contract.md).
 
 ## Object topology

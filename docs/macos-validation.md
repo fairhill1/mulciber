@@ -43,6 +43,17 @@ cases under Metal API validation with exit zero. Metal runs the stable-generatio
 abandonment replaces it and asserts the superseded-target rejection as a thirteenth case — the
 same game-facing outcomes over different native machinery.
 
+Later on 2026-07-17, the platform pump-contract reshape (fallible event handler, platform-owned
+`wait_for_first_metrics`, const `ClearColor::opaque`) was validated on this machine over SSH as
+an applied patch of the uncommitted tree based on `ccfc4d7` (the checkout was then restored
+clean): workspace clippy and tests passed natively, and with `MTL_DEBUG_LAYER=1` the conformance
+probe repeated its twelve Metal cases, `mulciber-api-cube --frames 120` presented 120 frames,
+`mulciber-api-clear --frames 60 --abandon-acquired-frame-once` recovered through abandonment, and
+`mulciber-metal-triangle --abandon-acquired-frame-once --frames 120` abandoned one drawable and
+submitted 120 frames at 0.834 ms average GPU frame time. All exited zero with only the
+validation-enabled banner; these are finite static-window runs. The checkout on this machine was
+renamed from `~/dev/zinc_platform-cube` to `~/dev/mulciber` the same day.
+
 ## Single-backend build evidence
 
 At revision `7d25d1f` on the Apple M2 (8 cores, macOS 15.7.7, Rust 1.97.0, default release

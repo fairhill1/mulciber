@@ -19,8 +19,8 @@ mod macos {
         FrameAcquire, FrameDisposition, SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
     };
     use mulciber_platform::{
-        Application, LogicalSize, PhysicalExtent, PumpStatus, Window, WindowDescriptor,
-        WindowEvent, WindowMetrics, integration,
+        Application, LogicalSize, PhysicalExtent, PlatformError, PumpStatus, Window,
+        WindowDescriptor, WindowEvent, WindowMetrics, integration,
     };
 
     use crate::objc::{self, AutoreleasePool, ClearColor, Object, Origin3, Size, Size3};
@@ -437,6 +437,7 @@ mod macos {
                     if let WindowEvent::RedrawRequested(metrics) = event {
                         redraw_metrics = Some(metrics);
                     }
+                    Ok::<(), PlatformError>(())
                 })
                 .map_err(|error| ProbeError(format!("pump platform events: {error}")))?;
             Ok((status, redraw_metrics))

@@ -4,9 +4,9 @@ use std::env;
 use std::error::Error;
 
 use mulciber::{ClearColor, ClearSurface, FrameAcquire};
-use mulciber_platform::{
-    Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
-};
+use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
+
+const COLOR: ClearColor = ClearColor::opaque(0.035, 0.14, 0.23);
 
 struct Options {
     frame_limit: Option<u64>,
@@ -20,57 +20,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         "Mulciber clear API validation",
         LogicalSize::new(960, 540),
     ))?;
-    let initial_metrics = wait_for_initial_metrics(&mut application, &window)?;
+    let initial_metrics = application.wait_for_first_metrics(&window)?;
     let mut surface = ClearSurface::new(window.surface_target(), initial_metrics)?;
-    let color = ClearColor::new(0.035, 0.14, 0.23, 1.0).expect("constant is normalized");
     let mut presented = 0_u64;
     let mut last_generation = Some(surface.info().generation());
     let mut abandon_pending = options.abandon_once;
-    let mut failure: Option<Box<dyn Error>> = None;
 
     loop {
-        let status = application.pump_events(&window, |event| {
-            if failure.is_some() {
-                return;
-            }
+        let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
             let WindowEvent::RedrawRequested(metrics) = event else {
-                return;
+                return Ok(());
             };
-            let result: Result<(), Box<dyn Error>> = (|| {
-                match surface.acquire(metrics)? {
-                    FrameAcquire::Ready(frame) if abandon_pending => {
-                        let disposition = frame.abandon()?;
-                        abandon_pending = false;
+            match surface.acquire(metrics)? {
+                FrameAcquire::Ready(frame) if abandon_pending => {
+                    let disposition = frame.abandon()?;
+                    abandon_pending = false;
+                    println!(
+                        "abandoned generation {}; waiting for a recovery presentation",
+                        disposition.generation().get()
+                    );
+                }
+                FrameAcquire::Ready(frame) => {
+                    let info = frame.surface_info();
+                    if last_generation != Some(info.generation()) {
+                        last_generation = Some(info.generation());
                         println!(
-                            "abandoned generation {}; waiting for a recovery presentation",
-                            disposition.generation().get()
+                            "surface generation {} configured at {}x{}",
+                            info.generation().get(),
+                            info.extent().width(),
+                            info.extent().height()
                         );
                     }
-                    FrameAcquire::Ready(frame) => {
-                        let info = frame.surface_info();
-                        if last_generation != Some(info.generation()) {
-                            last_generation = Some(info.generation());
-                            println!(
-                                "surface generation {} configured at {}x{}",
-                                info.generation().get(),
-                                info.extent().width(),
-                                info.extent().height()
-                            );
-                        }
-                        frame.clear_and_present(color)?;
-                        presented += 1;
-                    }
-                    FrameAcquire::Unavailable(_) => {}
+                    frame.clear_and_present(COLOR)?;
+                    presented += 1;
                 }
-                Ok(())
-            })();
-            if let Err(error) = result {
-                failure = Some(error);
+                FrameAcquire::Unavailable(_) => {}
             }
+            Ok(())
         })?;
-        if let Some(error) = failure.take() {
-            return Err(error);
-        }
         if status == PumpStatus::Exit
             || options
                 .frame_limit
@@ -86,31 +73,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     surface.shutdown()?;
     println!("presented {presented} clear frame(s)");
     Ok(())
-}
-
-fn wait_for_initial_metrics(
-    application: &mut Application,
-    window: &Window,
-) -> Result<WindowMetrics, Box<dyn Error>> {
-    loop {
-        if let Some(metrics) = window.rendering_metrics() {
-            return Ok(metrics);
-        }
-        let mut initial_metrics = None;
-        let status = application.pump_events(window, |event| {
-            if let WindowEvent::RenderingResumed(metrics) | WindowEvent::RedrawRequested(metrics) =
-                event
-            {
-                initial_metrics = Some(metrics);
-            }
-        })?;
-        if let Some(metrics) = initial_metrics {
-            return Ok(metrics);
-        }
-        if status == PumpStatus::Exit {
-            return Err("window closed before drawable metrics became available".into());
-        }
-    }
 }
 
 fn options() -> Result<Options, Box<dyn Error>> {

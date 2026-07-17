@@ -178,3 +178,24 @@ threat for the newest API surface specifically, and this counts as one blind mod
 independent confirmation. The pump-error and initial-metrics items are accepted as
 platform-layer API work; the review's line-count attribution matches the recorded
 application-size table.
+
+**Disposition of the blind-review frictions (2026-07-17, uncommitted tree on `ccfc4d7`).** Three
+of the four frictions were fixed in the platform and graphics layers rather than per application:
+`pump_events` now takes a fallible handler (`FnMut(WindowEvent) -> Result<(), E>` for any error
+type convertible from `PlatformError`) and returns the first handler error after native dispatch
+completes — deleting the error-slot/IIFE idiom from every binary, including across Win32's nested
+sizing loop; `Application::wait_for_first_metrics` owns the startup metrics wait previously
+copy-pasted into five binaries; and `ClearColor::opaque` is a const constructor that turns an
+invalid literal into a compile-time failure, removing the `.expect` on constants. The fourth —
+the manual render-target rebuild — is retained deliberately as recorded above: it is the
+application's single point of generation awareness, and its forget-it failure mode is a precise
+draw-time validation error rather than corruption; recorded here as an open tension instead of a
+fix. After the reshape, `examples/cube` `main.rs` is 90 lines (from 129) with `scene.rs`
+unchanged; the pre-registered size table above keeps its original revision's figures. The changed
+pump contract was revalidated the same day: Linux Wayland and XWayland finite runs (conformance
+13/13, 120-frame cube, clear abandonment/recovery) under the Khronos layer, and macOS Metal runs
+over SSH (conformance 12/12 per the recorded Metal baseline, 120-frame cube, clear
+abandonment/recovery, `metal-triangle` 120-frame abandonment run) under `MTL_DEBUG_LAYER=1`, all
+exiting zero with no validation output; Win32 and macOS additionally compile and lint clean from
+Linux via `--target`. Physical interactive lifecycle evidence for the new pump error path is not
+claimed.

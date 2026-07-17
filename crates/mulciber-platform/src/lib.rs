@@ -222,6 +222,46 @@ pub enum PumpStatus {
     Exit,
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+impl Application {
+    /// Pumps native events until `window` first reports drawable metrics.
+    ///
+    /// Every correct application needs drawable metrics before opening graphics, so this wait is
+    /// owned here instead of being restated by each application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native event pump fails or when the window closes before it
+    /// becomes drawable.
+    pub fn wait_for_first_metrics(
+        &mut self,
+        window: &Window,
+    ) -> Result<WindowMetrics, PlatformError> {
+        loop {
+            if let Some(metrics) = window.rendering_metrics() {
+                return Ok(metrics);
+            }
+            let mut first = None;
+            let status = self.pump_events(window, |event| {
+                if let WindowEvent::RenderingResumed(metrics)
+                | WindowEvent::RedrawRequested(metrics) = event
+                {
+                    first = Some(metrics);
+                }
+                Ok::<(), PlatformError>(())
+            })?;
+            if let Some(metrics) = first {
+                return Ok(metrics);
+            }
+            if status == PumpStatus::Exit {
+                return Err(PlatformError::new(
+                    "window closed before drawable metrics became available",
+                ));
+            }
+        }
+    }
+}
+
 /// A platform creation or lifecycle error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlatformError(String);

@@ -125,7 +125,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "mulciber"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "mulciber-platform",
 ]
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-platform"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "mulciber-shader"

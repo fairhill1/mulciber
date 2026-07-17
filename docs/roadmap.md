@@ -143,7 +143,7 @@ first-class support claim.
   completion, and fallible shutdown.
 - [ ] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame
   presentation/non-presentation, resource-use vocabulary, error recovery, and safe native reach.
-- [ ] Extract the minimal event, window, display, and lifecycle spine into `mulciber-platform`, backed
+- [x] Extract the minimal event, window, display, and lifecycle spine into `mulciber-platform`, backed
   by peer AppKit, Win32, Wayland, and X11 modules.
 - [ ] Extract owned device, queue, buffer, texture, pipeline, command, synchronization, and
   presentation types into `mulciber` with Metal and Vulkan implementations.
@@ -165,8 +165,9 @@ and physical sizing, window metric revisions, lifecycle/redraw events, and borro
 targets now live in `mulciber-platform` and drive the full Metal and Vulkan probes. AppKit supplies
 backing scale; Linux and the initial Win32 extraction intentionally report `1.0` pending
 scale/display-change evidence. Win32 cross-compiles and lints from Linux, including synchronous
-redraw delivery inside its nested sizing loop, but the platform-spine item remains open until the
-extracted path passes automated and physical Windows validation. See the
+redraw delivery inside its nested sizing loop. The extracted path passed the automated Windows matrix
+and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at revision `044ae86`,
+completing the initial peer platform-spine evidence without broadening the support claim. See the
 [experimental platform contract](api-platform-contract.md).
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion

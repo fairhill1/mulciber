@@ -30,8 +30,9 @@ no credit in the Metal-only and Vulkan-only viability evaluations.
 
 The first extracted boundary moves peer AppKit, Win32, Wayland, and X11 application/window, event,
 and drawable-metrics ownership into `mulciber-platform`; the full Metal and Vulkan probes are its
-executable consumers. The Win32 extraction cross-compiles from Linux and awaits a batched physical
-Windows validation run before the platform-spine milestone or a new crate release is claimed. The
+executable consumers. The Win32 extraction first cross-compiled from Linux and then passed the
+required automated matrix and physical live-resize/lifecycle checks on Windows 11 / RTX 3060 Ti at
+revision `044ae86`; scale/display-change evidence remains pending. The
 [experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
 peer-platform work. The [first graphics-slice flow](docs/api-first-slice.md) reviews the intended
 outside-in application experience against both native call sequences without committing graphics

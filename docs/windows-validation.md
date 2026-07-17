@@ -8,10 +8,23 @@ physical Windows evidence required for each supported hardware and driver tier.
 The development tree after `mulciber-platform` 0.1.0 moves Win32 application/window ownership,
 thread-message dispatch, client metrics, nested live-resize redraw callbacks, and borrowed Vulkan
 surface handles into the platform crate. Both Vulkan probes consume that implementation and
-cross-compile and lint cleanly for `x86_64-pc-windows-msvc` from Linux. This is implementation and
-cross-target evidence only. Before updating the platform-spine milestone or publishing the next
-crate version, run the preferred automated validation below and physically repeat live resize,
-minimize/restore, maximize/restore, titlebar close, and Alt+F4 shutdown on Windows.
+cross-compile and lint cleanly for `x86_64-pc-windows-msvc` from Linux.
+
+The extracted path was physically validated on 2026-07-17 at revision `044ae86` on Windows 11 / RTX
+3060 Ti. The preferred automated matrix passed with Vulkan loader/validation 1.4.350, including the
+finite and automated-resize runs, native and forced acquired-frame abandonment recovery, the
+pipeline-cache matrix, forced 1x MSAA, and forced RGBA8 paths. A separate traced lifecycle run covered
+continuous resize including very small extents, minimize/restore, maximize/restore, and titlebar
+close; the nested resize callback rendered all 2,662 attempts, with 12.927 ms average callback
+spacing and 11.787 ms average across 1,912 swapchain recreations. Alt+F4 then closed a separate run.
+All processes exited zero without Vulkan validation or loader messages.
+
+During rapid edge resize, a narrow black-and-white bar could appear briefly, most visibly on the
+right while shrinking from the left. Registering the class with full horizontal/vertical redraw was
+physically tested, did not change the artifact, and was reverted. The Vulkan Cube demo showed the same
+artifact on this Windows/driver stack, so it is recorded as a non-blocking compositor/driver-time
+observation rather than an extraction regression. Multi-display behavior was not recorded.
+Evidence: `validation-artifacts/windows-vulkan-20260717-120410.zip`.
 
 The first physical run was recorded on 2026-07-16 at commit
 `1972ad486d4bbd8a76c714aca86513c60419ba2a`: Windows 11 Pro build 26200, Nvidia GeForce RTX 3060 Ti,

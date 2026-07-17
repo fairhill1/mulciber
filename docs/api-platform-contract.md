@@ -158,20 +158,22 @@ evidence.
 
 The development tree after `mulciber-platform` 0.1.0 then moved Win32 window and event ownership into
 the platform crate. Both Vulkan consumers and the platform tests compile and lint cleanly for
-`x86_64-pc-windows-msvc` from Linux. This proves target structure and Rust/Win32 ABI compilation only;
-it does not establish construction, nested resize callbacks, Vulkan presentation, lifecycle, or
-shutdown until the physical Windows validation below is completed.
+`x86_64-pc-windows-msvc` from Linux. At revision `044ae86`, the full automated Windows matrix then
+passed physically on Windows 11 / RTX 3060 Ti, followed by live resize, minimize/restore,
+maximize/restore, titlebar close, and a separate Alt+F4 shutdown run. The nested resize path rendered
+all 2,662 traced attempts and exited without Vulkan validation or loader messages. A narrow
+black-and-white edge artifact remained during rapid resize, most visibly on the right while shrinking
+from the left; the Vulkan Cube demo showed the same artifact on this machine. Multi-display
+behavior was not recorded. Evidence: `validation-artifacts/windows-vulkan-20260717-120410.zip`.
 
 ## Required next evidence
 
-1. Run the extracted Win32 path through the automated validation matrix and physically repeat nested
-   live resize, minimize/restore, maximize/restore, titlebar close, and Alt+F4 shutdown.
-2. Resolve whether full occlusion is a rendering-suspension state or a separate render-policy event
+1. Resolve whether full occlusion is a rendering-suspension state or a separate render-policy event
    once the runtime contract is tested.
-3. Prove scale/display changes advance window revisions correctly on hardware with the necessary
+2. Prove scale/display changes advance window revisions correctly on hardware with the necessary
    displays.
-4. Physically repeat hide/restore and titlebar close after the delegate-backed close-tracking change.
-5. Define the graphics-owned presentation generation and replace the hidden AppKit bridge's probe use
+3. Physically repeat hide/restore and titlebar close after the delegate-backed close-tracking change.
+4. Define the graphics-owned presentation generation and replace the hidden AppKit bridge's probe use
    with safe `mulciber` surface creation when the graphics extraction begins.
-6. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
+5. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
    other Gate 2 targets in the extraction plan.

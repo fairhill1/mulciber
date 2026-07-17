@@ -14,10 +14,10 @@ retaining native window, loader, and Vulkan surface creation in separate modules
   2026-07-17 through both `VK_KHR_swapchain_maintenance1` image release and the forced
   base-swapchain generation-replacement path, followed by 120 presented recovery frames.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
-- The peer Vulkan triangle probe has runtime-selected Wayland and X11 platform modules behind a
-  `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection. The Wayland module creates a
-  real XDG-shell toplevel, requests server-side decorations, presents through
-  `VK_KHR_wayland_surface`, coalesces configure events, and paces resize swapchain commits. Its
+- The Vulkan triangle probe consumes runtime-selected peer Wayland and X11 modules from
+  `mulciber-platform`, behind a `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection.
+  The Wayland module creates a real XDG-shell toplevel, requests server-side decorations, presents
+  through `VK_KHR_wayland_surface`, coalesces configure events, and paces resize swapchain commits. Its
   event pump takes socket input through the libwayland `wl_display_prepare_read` /
   `wl_display_read_events` protocol; see the presentation-stall correction below for why a
   blocking `wl_display_dispatch` is incorrect on this connection.
@@ -31,6 +31,24 @@ The capability results complete the two capability-inventory ports. The Wayland 
 remains incomplete pending display-change, explicit zero-sized suspension, input, and broader
 compositor/hardware evidence. The X11 presentation item remains incomplete pending native Xorg,
 display-change, input, multi-display, and broader hardware evidence.
+
+### Platform extraction smoke evidence
+
+On 2026-07-17, an uncommitted development tree based on `e573d68` moved the triangle probe's native
+Wayland and X11 window/event implementations into `mulciber-platform` and left Vulkan surface
+creation in a narrow probe adapter over borrowed native handles. On the native KDE Wayland session
+and RTX 3060 Ti tier described below, these finite runs each presented 120 frames and exited zero
+with no validation warning/error callbacks:
+
+```sh
+target/debug/mulciber-vulkan-triangle --platform wayland --frames 120
+target/debug/mulciber-vulkan-triangle --platform x11 --frames 120
+```
+
+The first run used native Wayland; the second used XWayland from the same session. This confirms
+construction, native event pumping, Vulkan surface creation, presentation, and orderly shutdown
+through the extracted boundary. It is automated finite-run evidence, not a repeat of physical
+resize, minimize/restore, close, display-change, input, or visual-correctness coverage.
 
 ## Recorded evidence
 

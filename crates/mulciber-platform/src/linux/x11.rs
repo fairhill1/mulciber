@@ -1,9 +1,15 @@
 use std::cell::Cell;
-use std::ffi::{CString, c_char, c_int, c_long, c_uint, c_ulong};
-use std::fmt;
+use std::ffi::{CString, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::ptr;
 
-use crate::vk;
+use crate::PlatformError;
+
+#[repr(C)]
+struct Display {
+    _unused: [u8; 0],
+}
+
+type XWindow = c_ulong;
 
 type Atom = c_ulong;
 type Status = c_int;
@@ -20,12 +26,12 @@ const PROP_MODE_REPLACE: c_int = 0;
 
 #[link(name = "X11")]
 unsafe extern "C" {
-    fn XOpenDisplay(display_name: *const c_char) -> *mut vk::Display;
-    fn XDefaultScreen(display: *mut vk::Display) -> c_int;
-    fn XRootWindow(display: *mut vk::Display, screen_number: c_int) -> vk::Window;
+    fn XOpenDisplay(display_name: *const c_char) -> *mut Display;
+    fn XDefaultScreen(display: *mut Display) -> c_int;
+    fn XRootWindow(display: *mut Display, screen_number: c_int) -> XWindow;
     fn XCreateSimpleWindow(
-        display: *mut vk::Display,
-        parent: vk::Window,
+        display: *mut Display,
+        parent: XWindow,
         x: c_int,
         y: c_int,
         width: c_uint,
@@ -33,38 +39,27 @@ unsafe extern "C" {
         border_width: c_uint,
         border: c_ulong,
         background: c_ulong,
-    ) -> vk::Window;
-    fn XSetWindowBackgroundPixmap(
-        display: *mut vk::Display,
-        window: vk::Window,
-        pixmap: c_ulong,
-    ) -> c_int;
-    fn XStoreName(
-        display: *mut vk::Display,
-        window: vk::Window,
-        window_name: *const c_char,
-    ) -> c_int;
-    fn XSelectInput(display: *mut vk::Display, window: vk::Window, event_mask: c_long) -> c_int;
-    fn XInternAtom(
-        display: *mut vk::Display,
-        atom_name: *const c_char,
-        only_if_exists: c_int,
-    ) -> Atom;
+    ) -> XWindow;
+    fn XSetWindowBackgroundPixmap(display: *mut Display, window: XWindow, pixmap: c_ulong)
+    -> c_int;
+    fn XStoreName(display: *mut Display, window: XWindow, window_name: *const c_char) -> c_int;
+    fn XSelectInput(display: *mut Display, window: XWindow, event_mask: c_long) -> c_int;
+    fn XInternAtom(display: *mut Display, atom_name: *const c_char, only_if_exists: c_int) -> Atom;
     fn XSetWMProtocols(
-        display: *mut vk::Display,
-        window: vk::Window,
+        display: *mut Display,
+        window: XWindow,
         protocols: *mut Atom,
         count: c_int,
     ) -> Status;
-    fn XMapWindow(display: *mut vk::Display, window: vk::Window) -> c_int;
-    fn XFlush(display: *mut vk::Display) -> c_int;
-    fn XPending(display: *mut vk::Display) -> c_int;
-    fn XNextEvent(display: *mut vk::Display, event: *mut XEvent) -> c_int;
-    fn XDestroyWindow(display: *mut vk::Display, window: vk::Window) -> c_int;
-    fn XCloseDisplay(display: *mut vk::Display) -> c_int;
+    fn XMapWindow(display: *mut Display, window: XWindow) -> c_int;
+    fn XFlush(display: *mut Display) -> c_int;
+    fn XPending(display: *mut Display) -> c_int;
+    fn XNextEvent(display: *mut Display, event: *mut XEvent) -> c_int;
+    fn XDestroyWindow(display: *mut Display, window: XWindow) -> c_int;
+    fn XCloseDisplay(display: *mut Display) -> c_int;
     fn XChangeProperty(
-        display: *mut vk::Display,
-        window: vk::Window,
+        display: *mut Display,
+        window: XWindow,
         property: Atom,
         kind: Atom,
         format: c_int,
@@ -84,18 +79,18 @@ struct XSyncValue {
 #[link(name = "Xext")]
 unsafe extern "C" {
     fn XSyncQueryExtension(
-        display: *mut vk::Display,
+        display: *mut Display,
         event_base: *mut c_int,
         error_base: *mut c_int,
     ) -> c_int;
     fn XSyncInitialize(
-        display: *mut vk::Display,
+        display: *mut Display,
         major_version: *mut c_int,
         minor_version: *mut c_int,
     ) -> Status;
-    fn XSyncCreateCounter(display: *mut vk::Display, initial: XSyncValue) -> c_ulong;
-    fn XSyncSetCounter(display: *mut vk::Display, counter: c_ulong, value: XSyncValue) -> Status;
-    fn XSyncDestroyCounter(display: *mut vk::Display, counter: c_ulong) -> Status;
+    fn XSyncCreateCounter(display: *mut Display, initial: XSyncValue) -> c_ulong;
+    fn XSyncSetCounter(display: *mut Display, counter: c_ulong, value: XSyncValue) -> Status;
+    fn XSyncDestroyCounter(display: *mut Display, counter: c_ulong) -> Status;
 }
 
 #[repr(C)]
@@ -104,15 +99,15 @@ struct XConfigureEvent {
     kind: c_int,
     serial: c_ulong,
     send_event: c_int,
-    display: *mut vk::Display,
-    event: vk::Window,
-    window: vk::Window,
+    display: *mut Display,
+    event: XWindow,
+    window: XWindow,
     x: c_int,
     y: c_int,
     width: c_int,
     height: c_int,
     border_width: c_int,
-    above: vk::Window,
+    above: XWindow,
     override_redirect: c_int,
 }
 
@@ -122,8 +117,8 @@ struct XClientMessageEvent {
     kind: c_int,
     serial: c_ulong,
     send_event: c_int,
-    display: *mut vk::Display,
-    window: vk::Window,
+    display: *mut Display,
+    window: XWindow,
     message_type: Atom,
     format: c_int,
     data: [c_long; 5],
@@ -138,17 +133,6 @@ union XEvent {
     padding: [c_long; XEVENT_PADDING_WORDS],
 }
 
-#[derive(Debug)]
-pub struct WindowError(String);
-
-impl fmt::Display for WindowError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for WindowError {}
-
 struct WindowState {
     width: Cell<u32>,
     height: Cell<u32>,
@@ -156,9 +140,9 @@ struct WindowState {
     pending_sync: Cell<Option<XSyncValue>>,
 }
 
-pub struct Window {
-    display: *mut vk::Display,
-    handle: vk::Window,
+pub(super) struct Window {
+    display: *mut Display,
+    handle: XWindow,
     wm_protocols: Atom,
     wm_delete: Atom,
     wm_sync_request: Atom,
@@ -167,14 +151,19 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(title: &str, width: u32, height: u32, visible: bool) -> Result<Self, WindowError> {
+    pub(super) fn new(
+        title: &str,
+        width: u32,
+        height: u32,
+        visible: bool,
+    ) -> Result<Self, PlatformError> {
         let title = CString::new(title)
-            .map_err(|_| WindowError("X11 window title contains an interior NUL".into()))?;
+            .map_err(|_| PlatformError::new("X11 window title contains an interior NUL"))?;
         // SAFETY: A null display name asks Xlib to use the DISPLAY environment variable.
         let display = unsafe { XOpenDisplay(ptr::null()) };
         if display.is_null() {
-            return Err(WindowError(
-                "XOpenDisplay failed; ensure DISPLAY names a reachable X11 server".into(),
+            return Err(PlatformError::new(
+                "XOpenDisplay failed; ensure DISPLAY names a reachable X11 server",
             ));
         }
         // SAFETY: The display connection is live for these Xlib calls.
@@ -186,7 +175,7 @@ impl Window {
         if handle == 0 {
             // SAFETY: The display was opened above and no window was created.
             unsafe { XCloseDisplay(display) };
-            return Err(WindowError("XCreateSimpleWindow returned no window".into()));
+            return Err(PlatformError::new("XCreateSimpleWindow returned no window"));
         }
         // A `None` background stops the server from clearing every resize step to the solid
         // background color before the next presented frame arrives, which reads as whole-window
@@ -228,15 +217,15 @@ impl Window {
         Ok(window)
     }
 
-    fn register_wm_protocols(&mut self) -> Result<(), WindowError> {
+    fn register_wm_protocols(&mut self) -> Result<(), PlatformError> {
         // SAFETY: The display is live and both atom names are NUL-terminated.
         unsafe {
             self.wm_protocols = XInternAtom(self.display, c"WM_PROTOCOLS".as_ptr(), FALSE);
             self.wm_delete = XInternAtom(self.display, c"WM_DELETE_WINDOW".as_ptr(), FALSE);
         }
         if self.wm_protocols == 0 || self.wm_delete == 0 {
-            return Err(WindowError(
-                "XInternAtom returned no WM_PROTOCOLS/WM_DELETE_WINDOW atom".into(),
+            return Err(PlatformError::new(
+                "XInternAtom returned no WM_PROTOCOLS/WM_DELETE_WINDOW atom",
             ));
         }
         self.create_sync_counter();
@@ -245,8 +234,8 @@ impl Window {
         // SAFETY: The display/window are live and the protocol array outlives the call.
         if unsafe { XSetWMProtocols(self.display, self.handle, protocols.as_mut_ptr(), count) } == 0
         {
-            return Err(WindowError(
-                "XSetWMProtocols failed to register WM_DELETE_WINDOW".into(),
+            return Err(PlatformError::new(
+                "XSetWMProtocols failed to register WM_DELETE_WINDOW",
             ));
         }
         Ok(())
@@ -361,16 +350,12 @@ impl Window {
         }
     }
 
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn client_extent(&self) -> Result<(u32, u32), WindowError> {
-        Ok((self.state.width.get(), self.state.height.get()))
+    pub(super) fn client_extent(&self) -> (u32, u32) {
+        (self.state.width.get(), self.state.height.get())
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    pub fn pump_events<F>(&self, _live_resize: &mut F) -> Result<bool, WindowError>
-    where
-        F: FnMut(),
-    {
+    pub(super) fn pump_events(&self) -> Result<bool, PlatformError> {
         // X11 delivers resize as ordinary queued ConfigureNotify events instead of a nested native
         // resize loop, so the live-resize callback contract has nothing to drive here. Xlib pushes
         // fatal connection errors through its process-exiting default I/O handler rather than a
@@ -401,11 +386,11 @@ impl Window {
         Ok(!self.state.closed.get())
     }
 
-    pub(crate) const fn display(&self) -> *mut vk::Display {
-        self.display
+    pub(super) const fn display(&self) -> *mut c_void {
+        self.display.cast()
     }
 
-    pub(crate) const fn handle(&self) -> vk::Window {
+    pub(super) const fn handle(&self) -> u64 {
         self.handle
     }
 }
@@ -425,20 +410,4 @@ impl Drop for Window {
             }
         }
     }
-}
-
-pub(crate) unsafe fn create_surface(
-    function: vk::PFN_vkCreateXlibSurfaceKHR,
-    instance: vk::VkInstance,
-    window: &Window,
-    surface: *mut vk::VkSurfaceKHR,
-) -> vk::VkResult {
-    let info = vk::VkXlibSurfaceCreateInfoKHR {
-        sType: vk::VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
-        dpy: window.display(),
-        window: window.handle(),
-        ..Default::default()
-    };
-    // SAFETY: The X11 window/instance are live, output is writable, and the function type matches.
-    unsafe { function.expect("loaded function")(instance, &raw const info, ptr::null(), surface) }
 }

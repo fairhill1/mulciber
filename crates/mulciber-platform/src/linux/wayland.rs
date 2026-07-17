@@ -1,9 +1,18 @@
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::fmt;
 use std::ptr;
 
-use crate::vk;
+use crate::PlatformError;
+
+#[repr(C)]
+struct WlDisplay {
+    _unused: [u8; 0],
+}
+
+#[repr(C)]
+struct WlSurface {
+    _unused: [u8; 0],
+}
 
 const WL_DISPLAY_GET_REGISTRY: u32 = 1;
 const WL_REGISTRY_BIND: u32 = 0;
@@ -278,16 +287,16 @@ unsafe extern "C" {
     static wl_compositor_interface: WlInterface;
     static wl_surface_interface: WlInterface;
 
-    fn wl_display_connect(name: *const c_char) -> *mut vk::wl_display;
-    fn wl_display_disconnect(display: *mut vk::wl_display);
-    fn wl_display_roundtrip(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_dispatch_pending(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_flush(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_prepare_read(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_read_events(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_cancel_read(display: *mut vk::wl_display);
-    fn wl_display_get_fd(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_get_error(display: *mut vk::wl_display) -> c_int;
+    fn wl_display_connect(name: *const c_char) -> *mut WlDisplay;
+    fn wl_display_disconnect(display: *mut WlDisplay);
+    fn wl_display_roundtrip(display: *mut WlDisplay) -> c_int;
+    fn wl_display_dispatch_pending(display: *mut WlDisplay) -> c_int;
+    fn wl_display_flush(display: *mut WlDisplay) -> c_int;
+    fn wl_display_prepare_read(display: *mut WlDisplay) -> c_int;
+    fn wl_display_read_events(display: *mut WlDisplay) -> c_int;
+    fn wl_display_cancel_read(display: *mut WlDisplay);
+    fn wl_display_get_fd(display: *mut WlDisplay) -> c_int;
+    fn wl_display_get_error(display: *mut WlDisplay) -> c_int;
     fn wl_proxy_get_version(proxy: *mut c_void) -> u32;
     fn wl_proxy_add_listener(
         proxy: *mut c_void,
@@ -308,17 +317,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn poll(fds: *mut PollFd, count: usize, timeout: c_int) -> c_int;
 }
-
-#[derive(Debug)]
-pub struct WindowError(String);
-
-impl fmt::Display for WindowError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for WindowError {}
 
 #[derive(Default)]
 struct RegistryState {
@@ -341,11 +339,11 @@ struct WindowState {
     decoration_mode: Cell<u32>,
 }
 
-pub struct Window {
-    display: *mut vk::wl_display,
+pub(super) struct Window {
+    display: *mut WlDisplay,
     registry: *mut c_void,
     compositor: *mut c_void,
-    surface: *mut vk::wl_surface,
+    surface: *mut WlSurface,
     wm_base: *mut c_void,
     decoration_manager: *mut c_void,
     xdg_surface: *mut c_void,
@@ -356,15 +354,19 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(title: &str, width: u32, height: u32, _visible: bool) -> Result<Self, WindowError> {
+    pub(super) fn new(
+        title: &str,
+        width: u32,
+        height: u32,
+        _visible: bool,
+    ) -> Result<Self, PlatformError> {
         let title = CString::new(title)
-            .map_err(|_| WindowError("Wayland window title contains an interior NUL".into()))?;
+            .map_err(|_| PlatformError::new("Wayland window title contains an interior NUL"))?;
         // SAFETY: A null name asks libwayland-client to use WAYLAND_DISPLAY.
         let display = unsafe { wl_display_connect(ptr::null()) };
         if display.is_null() {
-            return Err(WindowError(
-                "wl_display_connect failed; ensure WAYLAND_DISPLAY names a reachable compositor"
-                    .into(),
+            return Err(PlatformError::new(
+                "wl_display_connect failed; ensure WAYLAND_DISPLAY names a reachable compositor",
             ));
         }
         let mut window = Self {
@@ -396,7 +398,7 @@ impl Window {
         Ok(window)
     }
 
-    fn create_registry(&mut self) -> Result<(), WindowError> {
+    fn create_registry(&mut self) -> Result<(), PlatformError> {
         // SAFETY: The display proxy is live and the registry interface comes from libwayland.
         self.registry = unsafe {
             wl_proxy_marshal_flags(
@@ -409,8 +411,8 @@ impl Window {
             )
         };
         if self.registry.is_null() {
-            return Err(WindowError(
-                "wl_display_get_registry returned no proxy".into(),
+            return Err(PlatformError::new(
+                "wl_display_get_registry returned no proxy",
             ));
         }
         // SAFETY: The listener and boxed callback state outlive the registry proxy.
@@ -422,7 +424,7 @@ impl Window {
             )
         } != 0
         {
-            return Err(WindowError("wl_registry_add_listener failed".into()));
+            return Err(PlatformError::new("wl_registry_add_listener failed"));
         }
         // SAFETY: The display remains connected and dispatches registry callbacks synchronously.
         if unsafe { wl_display_roundtrip(self.display) } < 0 {
@@ -431,15 +433,15 @@ impl Window {
         Ok(())
     }
 
-    fn bind_globals(&mut self) -> Result<(), WindowError> {
+    fn bind_globals(&mut self) -> Result<(), PlatformError> {
         let compositor_name = self
             .registry_state
             .compositor_name
-            .ok_or_else(|| WindowError("Wayland registry exposes no wl_compositor".into()))?;
+            .ok_or_else(|| PlatformError::new("Wayland registry exposes no wl_compositor"))?;
         let wm_base_name = self
             .registry_state
             .wm_base_name
-            .ok_or_else(|| WindowError("Wayland compositor exposes no xdg_wm_base".into()))?;
+            .ok_or_else(|| PlatformError::new("Wayland compositor exposes no xdg_wm_base"))?;
         // SAFETY: The registry announced both globals with at least protocol version one.
         unsafe {
             self.compositor = bind_global(
@@ -456,7 +458,7 @@ impl Window {
             );
         }
         if self.compositor.is_null() || self.wm_base.is_null() {
-            return Err(WindowError("binding Wayland shell globals failed".into()));
+            return Err(PlatformError::new("binding Wayland shell globals failed"));
         }
         if let Some(name) = self.registry_state.decoration_manager_name {
             // SAFETY: The registry announced this decoration-manager global and version.
@@ -469,8 +471,8 @@ impl Window {
                 )
             };
             if self.decoration_manager.is_null() {
-                return Err(WindowError(
-                    "binding zxdg_decoration_manager_v1 failed".into(),
+                return Err(PlatformError::new(
+                    "binding zxdg_decoration_manager_v1 failed",
                 ));
             }
         }
@@ -483,12 +485,12 @@ impl Window {
             )
         } != 0
         {
-            return Err(WindowError("xdg_wm_base_add_listener failed".into()));
+            return Err(PlatformError::new("xdg_wm_base_add_listener failed"));
         }
         Ok(())
     }
 
-    fn create_xdg_toplevel(&mut self, title: &CStr) -> Result<(), WindowError> {
+    fn create_xdg_toplevel(&mut self, title: &CStr) -> Result<(), PlatformError> {
         // SAFETY: The compositor proxy is live and supports create_surface in version one.
         self.surface = unsafe {
             wl_proxy_marshal_flags(
@@ -502,7 +504,7 @@ impl Window {
             .cast()
         };
         if self.surface.is_null() {
-            return Err(WindowError("wl_compositor_create_surface failed".into()));
+            return Err(PlatformError::new("wl_compositor_create_surface failed"));
         }
         // SAFETY: The shell and wl_surface proxies are live and unassigned to another role.
         self.xdg_surface = unsafe {
@@ -517,7 +519,7 @@ impl Window {
             )
         };
         if self.xdg_surface.is_null() {
-            return Err(WindowError("xdg_wm_base_get_xdg_surface failed".into()));
+            return Err(PlatformError::new("xdg_wm_base_get_xdg_surface failed"));
         }
         let state = (&raw mut *self.state).cast();
         // SAFETY: The listener and boxed state outlive the xdg_surface proxy.
@@ -529,7 +531,7 @@ impl Window {
             )
         } != 0
         {
-            return Err(WindowError("xdg_surface_add_listener failed".into()));
+            return Err(PlatformError::new("xdg_surface_add_listener failed"));
         }
         // SAFETY: The xdg_surface is live and does not yet have a role object.
         self.toplevel = unsafe {
@@ -543,7 +545,7 @@ impl Window {
             )
         };
         if self.toplevel.is_null() {
-            return Err(WindowError("xdg_surface_get_toplevel failed".into()));
+            return Err(PlatformError::new("xdg_surface_get_toplevel failed"));
         }
         // SAFETY: The listener and boxed state outlive the toplevel proxy.
         if unsafe {
@@ -554,7 +556,7 @@ impl Window {
             )
         } != 0
         {
-            return Err(WindowError("xdg_toplevel_add_listener failed".into()));
+            return Err(PlatformError::new("xdg_toplevel_add_listener failed"));
         }
         self.create_server_decoration()?;
         // SAFETY: Strings and proxies are live for each synchronous marshal operation.
@@ -586,7 +588,7 @@ impl Window {
         Ok(())
     }
 
-    fn create_server_decoration(&mut self) -> Result<(), WindowError> {
+    fn create_server_decoration(&mut self) -> Result<(), PlatformError> {
         if self.decoration_manager.is_null() {
             println!(
                 "Wayland decorations: compositor exposes no zxdg_decoration_manager_v1; window is client-undecorated"
@@ -606,8 +608,8 @@ impl Window {
             )
         };
         if self.decoration.is_null() {
-            return Err(WindowError(
-                "zxdg_decoration_manager_v1.get_toplevel_decoration failed".into(),
+            return Err(PlatformError::new(
+                "zxdg_decoration_manager_v1.get_toplevel_decoration failed",
             ));
         }
         // SAFETY: The listener and boxed state outlive the decoration proxy.
@@ -619,8 +621,8 @@ impl Window {
             )
         } != 0
         {
-            return Err(WindowError(
-                "zxdg_toplevel_decoration_v1_add_listener failed".into(),
+            return Err(PlatformError::new(
+                "zxdg_toplevel_decoration_v1_add_listener failed",
             ));
         }
         // SAFETY: The decoration proxy is live and server-side is a valid mode.
@@ -638,7 +640,7 @@ impl Window {
         Ok(())
     }
 
-    fn await_initial_configure(&self) -> Result<(), WindowError> {
+    fn await_initial_configure(&self) -> Result<(), PlatformError> {
         while self.state.pending_serial.get() == 0 && !self.state.closed.get() {
             // SAFETY: The display remains connected and callback state remains live.
             if unsafe { wl_display_roundtrip(self.display) } < 0 {
@@ -646,8 +648,8 @@ impl Window {
             }
         }
         if self.state.closed.get() {
-            Err(WindowError(
-                "Wayland compositor closed the window before initial configure".into(),
+            Err(PlatformError::new(
+                "Wayland compositor closed the window before initial configure",
             ))
         } else {
             self.apply_pending_configure();
@@ -676,15 +678,11 @@ impl Window {
         self.state.configured.set(true);
     }
 
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn client_extent(&self) -> Result<(u32, u32), WindowError> {
-        Ok((self.state.width.get(), self.state.height.get()))
+    pub(super) fn client_extent(&self) -> (u32, u32) {
+        (self.state.width.get(), self.state.height.get())
     }
 
-    pub fn pump_events<F>(&self, _live_resize: &mut F) -> Result<bool, WindowError>
-    where
-        F: FnMut(),
-    {
+    pub(super) fn pump_events(&self) -> Result<bool, PlatformError> {
         // SAFETY: The display and callback state remain live throughout event dispatch.
         if unsafe { wl_display_dispatch_pending(self.display) } < 0 {
             return Err(self.display_error("wl_display_dispatch_pending"));
@@ -713,9 +711,9 @@ impl Window {
                 // SAFETY: Every successful prepare_read requires one read_events or cancel_read.
                 unsafe { wl_display_cancel_read(self.display) };
                 return Err(if ready < 0 {
-                    WindowError("polling the Wayland display failed".into())
+                    PlatformError::new("polling the Wayland display failed")
                 } else {
-                    WindowError(format!(
+                    PlatformError::new(format!(
                         "Wayland display poll failed with revents {:#06x}",
                         descriptor.revents
                     ))
@@ -741,35 +739,19 @@ impl Window {
         Ok(!self.state.closed.get())
     }
 
-    pub(crate) const fn display(&self) -> *mut vk::wl_display {
-        self.display
+    pub(super) const fn display(&self) -> *mut c_void {
+        self.display.cast()
     }
 
-    pub(crate) const fn surface(&self) -> *mut vk::wl_surface {
-        self.surface
+    pub(super) const fn surface(&self) -> *mut c_void {
+        self.surface.cast()
     }
 
-    fn display_error(&self, operation: &str) -> WindowError {
+    fn display_error(&self, operation: &str) -> PlatformError {
         // SAFETY: The display remains allocated while errors are reported.
         let code = unsafe { wl_display_get_error(self.display) };
-        WindowError(format!("{operation} failed with Wayland error {code}"))
+        PlatformError::new(format!("{operation} failed with Wayland error {code}"))
     }
-}
-
-pub(crate) unsafe fn create_surface(
-    function: vk::PFN_vkCreateWaylandSurfaceKHR,
-    instance: vk::VkInstance,
-    window: &Window,
-    surface: *mut vk::VkSurfaceKHR,
-) -> vk::VkResult {
-    let info = vk::VkWaylandSurfaceCreateInfoKHR {
-        sType: vk::VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
-        display: window.display(),
-        surface: window.surface(),
-        ..Default::default()
-    };
-    // SAFETY: Wayland objects/instance are live, output is writable, and the function matches.
-    unsafe { function.expect("loaded function")(instance, &raw const info, ptr::null(), surface) }
 }
 
 impl Drop for Window {

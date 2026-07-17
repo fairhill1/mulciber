@@ -28,8 +28,9 @@ unified slice, the design decisions it must settle, and the direct-native, singl
 `wgpu`/`winit`, SDL3 GPU, Vulkano, and scoped raylib comparisons it must survive. Portability receives
 no credit in the Metal-only and Vulkan-only viability evaluations.
 
-The first extracted boundary moves AppKit application, window, event, and drawable-metrics ownership
-into `mulciber-platform`; the existing full Metal probe is its first executable consumer. The
+The first extracted boundary moves AppKit, Wayland, and X11 application/window, event, and
+drawable-metrics ownership into `mulciber-platform`; the full Metal and Vulkan probes are its
+executable consumers. Win32 remains in the Vulkan probe pending the peer extraction. The
 [experimental platform contract](docs/api-platform-contract.md) records the decisions and remaining
 peer-platform work. The [first graphics-slice flow](docs/api-first-slice.md) reviews the intended
 outside-in application experience against both native call sequences without committing graphics
@@ -132,9 +133,10 @@ cargo run -q -p mulciber-vulkan-info -- --platform wayland --json
 The X11 path creates a hidden Xlib window. The Wayland capability path discovers `wl_compositor`
 and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface capability queries.
 Both report paths are implemented and physically exercised on a Vulkan 1.4 Nvidia system: Wayland
-ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe has peer
-Wayland and X11 platform modules selected at runtime: an XDG-shell Wayland window with server-side
-decorations and paced resize commits, and an Xlib window with `WM_DELETE_WINDOW` handling,
+ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe consumes
+peer Wayland and X11 modules from `mulciber-platform`, selected at runtime: an XDG-shell Wayland
+window with server-side decorations and paced resize commits, and an Xlib window with
+`WM_DELETE_WINDOW` handling,
 structure-notification resize tracking, and `_NET_WM_SYNC_REQUEST` sync-gated interactive resize.
 Physical presentation, pacing, and lifecycle evidence for both paths is recorded in the
 [Linux validation runbook](docs/linux-validation.md). Native Xorg coverage, display changes,
@@ -175,9 +177,9 @@ dispatch writes a device-local storage buffer, the indirect draw command, and an
 It generates the image's complete mip chain with synchronized GPU blits, verifies the base and 1x1
 tail through host readback, then the fragment shader explicitly samples a generated mip. The probe
 loads the platform Vulkan loader dynamically (`vulkan-1.dll` on Windows or `libvulkan.so.1` on
-Linux) and has no Rust package dependencies. Validation is required and reported through
-`VK_EXT_debug_utils`. Colored debug-utils command regions identify the startup
-compute dispatch and each frame's shadow, scene, and post passes. When the selected queue exposes
+Linux); its Linux window integration depends only on the local `mulciber-platform` crate. Validation
+is required and reported through `VK_EXT_debug_utils`. Colored debug-utils command regions identify
+the startup compute dispatch and each frame's shadow, scene, and post passes. When the selected queue exposes
 timestamp bits, synchronization2 timestamp queries measure those same regions, account for counter
 wraparound, and print fence-safe startup and shutdown timing summaries; zero-bit queues retain labels
 and run without timing.

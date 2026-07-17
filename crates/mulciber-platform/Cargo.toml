@@ -2,10 +2,15 @@
 name = "mulciber-platform"
 description = "Native desktop platform layer for Mulciber"
 edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "windowing", "metal", "vulkan"]
 license.workspace = true
-publish = false
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
 rust-version.workspace = true
-version.workspace = true
+version = "0.1.0"
+categories = ["game-development", "graphics"]
+publish = ["crates-io"]
 
 [lints]
 workspace = true

@@ -219,19 +219,40 @@ impl Drop for CallbackRegistration<'_> {
     }
 }
 
-pub(crate) fn create_window(
-    title: &str,
-    width: u32,
-    height: u32,
-    visible: bool,
-    requested_platform: Option<&str>,
-) -> Result<Window, WindowError> {
-    if requested_platform.is_some_and(|platform| platform != "windows") {
-        return Err(WindowError(
-            "Windows supports only --platform windows".into(),
-        ));
+pub struct Application;
+
+impl Application {
+    pub fn new(requested_platform: Option<&str>) -> Result<Self, WindowError> {
+        if requested_platform.is_some_and(|platform| platform != "windows") {
+            return Err(WindowError(
+                "Windows supports only --platform windows".into(),
+            ));
+        }
+        Ok(Self)
     }
-    Window::new(title, width, height, visible)
+
+    #[allow(clippy::unused_self)]
+    pub fn create_window(
+        &self,
+        title: &str,
+        width: u32,
+        height: u32,
+        visible: bool,
+    ) -> Result<Window, WindowError> {
+        Window::new(title, width, height, visible)
+    }
+
+    #[allow(clippy::unused_self)]
+    pub fn pump_events<F>(
+        &mut self,
+        window: &Window,
+        live_resize: &mut F,
+    ) -> Result<bool, WindowError>
+    where
+        F: FnMut(),
+    {
+        window.pump_events(live_resize)
+    }
 }
 
 impl Window {

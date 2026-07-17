@@ -1,20 +1,22 @@
-//! Runtime-selected Linux presentation platform with peer Wayland and X11 modules.
+//! Vulkan integration adapter over `mulciber-platform`'s peer Wayland and X11 backends.
 
-use std::env;
 use std::ffi::CStr;
 use std::fmt;
 use std::mem;
+use std::ptr;
 use std::time::Duration;
+
+use mulciber_platform::integration::{
+    LinuxPlatform, LinuxSurfaceTarget, application, native_surface_target,
+};
+use mulciber_platform::{
+    Application as PlatformApplication, LogicalSize, PumpStatus, Window as PlatformWindow,
+    WindowDescriptor,
+};
 
 use crate::vk;
 
-#[path = "wayland.rs"]
-mod wayland;
-#[path = "x11.rs"]
-mod x11;
-
 pub(crate) type SurfaceFunction = vk::PFN_vkVoidFunction;
-
 #[derive(Debug)]
 pub struct WindowError(String);
 
@@ -26,112 +28,107 @@ impl fmt::Display for WindowError {
 
 impl std::error::Error for WindowError {}
 
-pub enum Window {
-    Wayland(wayland::Window),
-    X11(x11::Window),
+pub struct Application {
+    platform: PlatformApplication,
 }
 
-pub(crate) fn create_window(
-    title: &str,
-    width: u32,
-    height: u32,
-    visible: bool,
-    requested_platform: Option<&str>,
-) -> Result<Window, WindowError> {
-    let platform = match requested_platform {
-        Some("wayland") => "wayland",
-        Some("x11") => "x11",
-        Some(other) => {
-            return Err(WindowError(format!(
-                "unsupported Linux platform {other:?}; expected x11 or wayland"
-            )));
-        }
-        None if environment_is_set("WAYLAND_DISPLAY") => "wayland",
-        None if environment_is_set("DISPLAY") => "x11",
-        None => {
+impl Application {
+    pub fn new(requested_platform: Option<&str>) -> Result<Self, WindowError> {
+        let platform = match requested_platform {
+            Some("wayland") => application(LinuxPlatform::Wayland)
+                .map_err(|error| WindowError(error.to_string()))?,
+            Some("x11") => {
+                application(LinuxPlatform::X11).map_err(|error| WindowError(error.to_string()))?
+            }
+            Some(other) => {
+                return Err(WindowError(format!(
+                    "unsupported Linux platform {other:?}; expected x11 or wayland"
+                )));
+            }
+            None => PlatformApplication::new().map_err(|error| WindowError(error.to_string()))?,
+        };
+        Ok(Self { platform })
+    }
+
+    pub fn create_window(
+        &self,
+        title: &str,
+        width: u32,
+        height: u32,
+        visible: bool,
+    ) -> Result<Window, WindowError> {
+        if !visible {
             return Err(WindowError(
-                "no Wayland or X11 display is available; set WAYLAND_DISPLAY/DISPLAY or pass --platform"
-                    .into(),
+                "the Vulkan probe requires a visible Linux window".into(),
             ));
         }
-    };
-    match platform {
-        "wayland" => wayland::Window::new(title, width, height, visible)
-            .map(Window::Wayland)
-            .map_err(|error| WindowError(error.to_string())),
-        "x11" => x11::Window::new(title, width, height, visible)
-            .map(Window::X11)
-            .map_err(|error| WindowError(error.to_string())),
-        _ => unreachable!("platform was matched above"),
-    }
-}
-
-impl Window {
-    pub fn client_extent(&self) -> Result<(u32, u32), WindowError> {
-        match self {
-            Self::Wayland(window) => window
-                .client_extent()
-                .map_err(|error| WindowError(error.to_string())),
-            Self::X11(window) => window
-                .client_extent()
-                .map_err(|error| WindowError(error.to_string())),
-        }
+        let descriptor = WindowDescriptor::new(title, LogicalSize::new(width, height));
+        self.platform
+            .create_window(&descriptor)
+            .map(Window)
+            .map_err(|error| WindowError(error.to_string()))
     }
 
-    pub fn pump_events<F>(&self, live_resize: &mut F) -> Result<bool, WindowError>
+    pub fn pump_events<F>(
+        &mut self,
+        window: &Window,
+        _live_resize: &mut F,
+    ) -> Result<bool, WindowError>
     where
         F: FnMut(),
     {
-        match self {
-            Self::Wayland(window) => window
-                .pump_events(live_resize)
-                .map_err(|error| WindowError(error.to_string())),
-            Self::X11(window) => window
-                .pump_events(live_resize)
-                .map_err(|error| WindowError(error.to_string())),
-        }
+        self.platform
+            .pump_events(&window.0, |_| {})
+            .map(|status| status == PumpStatus::Continue)
+            .map_err(|error| WindowError(error.to_string()))
     }
 }
 
-pub(crate) const fn surface_extension(window: &Window) -> &'static CStr {
-    match window {
-        Window::Wayland(_) => c"VK_KHR_wayland_surface",
-        Window::X11(_) => c"VK_KHR_xlib_surface",
+pub struct Window(PlatformWindow);
+
+impl Window {
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn client_extent(&self) -> Result<(u32, u32), WindowError> {
+        Ok(self.0.rendering_metrics().map_or((0, 0), |metrics| {
+            let extent = metrics.extent();
+            (extent.width(), extent.height())
+        }))
     }
 }
 
-pub(crate) const fn surface_description(window: &Window) -> &'static str {
-    match window {
-        Window::Wayland(_) => "Wayland surface extension",
-        Window::X11(_) => "Xlib surface extension",
+pub(crate) fn surface_extension(window: &Window) -> &'static CStr {
+    match native_target(window) {
+        LinuxSurfaceTarget::Wayland { .. } => c"VK_KHR_wayland_surface",
+        LinuxSurfaceTarget::X11 { .. } => c"VK_KHR_xlib_surface",
     }
 }
 
-pub(crate) const fn create_surface_name(window: &Window) -> &'static CStr {
-    match window {
-        Window::Wayland(_) => c"vkCreateWaylandSurfaceKHR",
-        Window::X11(_) => c"vkCreateXlibSurfaceKHR",
+pub(crate) fn surface_description(window: &Window) -> &'static str {
+    match native_target(window) {
+        LinuxSurfaceTarget::Wayland { .. } => "Wayland surface extension",
+        LinuxSurfaceTarget::X11 { .. } => "Xlib surface extension",
     }
 }
 
-pub(crate) const fn acquire_timeout(window: &Window) -> u64 {
+pub(crate) fn create_surface_name(window: &Window) -> &'static CStr {
+    match native_target(window) {
+        LinuxSurfaceTarget::Wayland { .. } => c"vkCreateWaylandSurfaceKHR",
+        LinuxSurfaceTarget::X11 { .. } => c"vkCreateXlibSurfaceKHR",
+    }
+}
+
+pub(crate) fn acquire_timeout(_window: &Window) -> u64 {
     // Both Linux paths acquire without blocking: compositor-driven presentation may withhold
-    // images indefinitely (X11 presentation ultimately reaches a compositor under XWayland), and
-    // the render loop already treats VK_NOT_READY as a paced retry.
-    match window {
-        Window::Wayland(_) | Window::X11(_) => 0,
-    }
+    // images indefinitely, and the render loop already treats VK_NOT_READY as a paced retry.
+    0
 }
 
-pub(crate) const fn resize_commit_interval(window: &Window) -> Duration {
-    // Swapchain recreation supplies fresh images that bypass FIFO acquisition backpressure, so
-    // Wayland resize commits are paced; see the resize investigation in docs/linux-validation.md.
-    // X11 needs no client-side pacing: the `_NET_WM_SYNC_REQUEST` counter already gates each
-    // interactive resize step on the frame that answered it, and the added delay only widens the
-    // stale-content window the server shows between resize step and next presented frame.
-    match window {
-        Window::Wayland(_) => Duration::from_millis(16),
-        Window::X11(_) => Duration::ZERO,
+pub(crate) fn resize_commit_interval(window: &Window) -> Duration {
+    // Wayland swapchain recreation bypasses FIFO acquisition backpressure and needs frame pacing.
+    // X11's `_NET_WM_SYNC_REQUEST` counter already gates each interactive resize step.
+    match native_target(window) {
+        LinuxSurfaceTarget::Wayland { .. } => Duration::from_millis(16),
+        LinuxSurfaceTarget::X11 { .. } => Duration::ZERO,
     }
 }
 
@@ -141,24 +138,45 @@ pub(crate) unsafe fn create_surface(
     window: &Window,
     surface: *mut vk::VkSurfaceKHR,
 ) -> vk::VkResult {
-    match window {
-        Window::Wayland(window) => {
-            // SAFETY: The function was loaded by the Wayland Vulkan surface-creation name.
-            let function = unsafe { cast_function(function) };
-            // SAFETY: The typed function and native window variant match.
-            unsafe { wayland::create_surface(function, instance, window, surface) }
+    match native_target(window) {
+        LinuxSurfaceTarget::Wayland {
+            display,
+            surface: wayland_surface,
+        } => {
+            // SAFETY: The function was loaded by the Wayland surface-creation name.
+            let function: vk::PFN_vkCreateWaylandSurfaceKHR = unsafe { cast_function(function) };
+            let info = vk::VkWaylandSurfaceCreateInfoKHR {
+                sType: vk::VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+                display: display.as_ptr().cast(),
+                surface: wayland_surface.as_ptr().cast(),
+                ..Default::default()
+            };
+            // SAFETY: Native objects and instance are live, and the output pointer is writable.
+            unsafe {
+                function.expect("loaded function")(instance, &raw const info, ptr::null(), surface)
+            }
         }
-        Window::X11(window) => {
-            // SAFETY: The function was loaded by the Xlib Vulkan surface-creation name.
-            let function = unsafe { cast_function(function) };
-            // SAFETY: The typed function and native window variant match.
-            unsafe { x11::create_surface(function, instance, window, surface) }
+        LinuxSurfaceTarget::X11 { display, window } => {
+            // SAFETY: The function was loaded by the Xlib surface-creation name.
+            let function: vk::PFN_vkCreateXlibSurfaceKHR = unsafe { cast_function(function) };
+            let info = vk::VkXlibSurfaceCreateInfoKHR {
+                sType: vk::VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
+                dpy: display.as_ptr().cast(),
+                window,
+                ..Default::default()
+            };
+            // SAFETY: Native objects and instance are live, and the output pointer is writable.
+            unsafe {
+                function.expect("loaded function")(instance, &raw const info, ptr::null(), surface)
+            }
         }
     }
 }
 
-fn environment_is_set(name: &str) -> bool {
-    env::var_os(name).is_some_and(|value| !value.is_empty())
+fn native_target(window: &Window) -> LinuxSurfaceTarget {
+    let target = window.0.surface_target();
+    // SAFETY: The handles are copied and used only while `window` remains borrowed and alive.
+    unsafe { native_surface_target(&target) }
 }
 
 unsafe fn cast_function<T: Copy>(function: vk::PFN_vkVoidFunction) -> T {

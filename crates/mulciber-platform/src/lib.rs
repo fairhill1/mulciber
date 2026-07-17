@@ -1,8 +1,7 @@
 //! Native window, event, display, and lifecycle support for Mulciber.
 //!
-//! This API is experimental. Its first implementation extracts the `AppKit` ownership and window
-//! lifecycle proven by the native Metal probe. Peer Win32, Wayland, and X11 implementations will
-//! follow the same game-facing contract without sharing native machinery.
+//! This API is experimental. Its native `AppKit`, Wayland, and X11 implementations preserve their
+//! backend-specific ownership and lifecycle machinery behind the same game-facing contract.
 
 use core::fmt;
 
@@ -14,6 +13,15 @@ mod macos;
 pub use macos::integration;
 #[cfg(target_os = "macos")]
 pub use macos::{Application, SurfaceTarget, Window};
+
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use linux::integration;
+#[cfg(target_os = "linux")]
+pub use linux::{Application, SurfaceTarget, Window};
 
 /// A two-dimensional extent in logical window coordinates.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -86,11 +94,10 @@ impl PhysicalExtent {
 pub struct WindowRevision(u64);
 
 impl WindowRevision {
-    // Only the AppKit backend constructs revisions today; peer platform modules will follow.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     pub(crate) const INITIAL: Self = Self(1);
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     pub(crate) const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
     }
@@ -111,8 +118,7 @@ pub struct WindowMetrics {
 }
 
 impl WindowMetrics {
-    // Only the AppKit backend constructs metrics today; peer platform modules will follow.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     pub(crate) const fn new(
         extent: PhysicalExtent,
         scale_factor: f64,
@@ -203,8 +209,7 @@ pub enum PumpStatus {
 pub struct PlatformError(String);
 
 impl PlatformError {
-    // Only the AppKit backend constructs platform errors today; peer platform modules will follow.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }

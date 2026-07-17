@@ -19,11 +19,11 @@ parallel and is not implied by the existence of public Rust items.
 - `mulciber-shader` will eventually own offline compilation, reflection, and binding validation.
 - `mulciber-runtime` will eventually own timing, the game loop, jobs, and platform/GPU coordination.
 
-The first extraction now gives `mulciber-platform` an experimental AppKit application, window, event,
-drawable-metrics, and borrowed-target boundary consumed by the Metal probe; its concrete decisions
-are recorded in the [platform contract](api-platform-contract.md). Peer Win32, Wayland, and X11
-implementations remain in the Vulkan probe, and the `mulciber` graphics shell remains empty. Extraction
-does not create a stable API by default.
+The first extraction now gives `mulciber-platform` experimental peer AppKit, Wayland, and X11
+application, window, event, drawable-metrics, and borrowed-target implementations consumed by the
+Metal and Vulkan probes; their concrete decisions are recorded in the
+[platform contract](api-platform-contract.md). Win32 remains in the Vulkan probe, and the `mulciber`
+graphics shell remains empty. Extraction does not create a stable API by default.
 
 ## Unified contract and backend selection
 
@@ -58,8 +58,9 @@ runtime code must remain inspectable and reproducible from pinned inputs. Depend
 their purpose, alternatives, transitive packages, and removal boundary in an architecture decision.
 
 The Vulkan probe applies this boundary directly. Its checked-in Rust ABI is generated from pinned
-Khronos headers and has no package dependency. `tools/vulkan-bindgen` is a separate Cargo workspace;
-its libclang/bindgen graph is used only when regenerating that file and cannot enter Mulciber's runtime
+Khronos headers; the Linux triangle consumes only the local `mulciber-platform` crate. No third-party
+Rust package enters the probe. `tools/vulkan-bindgen` is a separate Cargo workspace; its
+libclang/bindgen graph is used only when regenerating that file and cannot enter Mulciber's runtime
 lockfile or binary.
 
 ## Safety boundary

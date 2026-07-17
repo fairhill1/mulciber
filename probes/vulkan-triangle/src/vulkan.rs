@@ -138,14 +138,11 @@ pub fn run() -> Result<(), ProbeError> {
     VALIDATION_MESSAGE_COUNT.store(0, Ordering::Relaxed);
     let options = parse_run_options(env::args().skip(1))?;
     let frame_limit = options.frame_limit;
-    let window = platform::create_window(
-        "Mulciber — native Vulkan 1.4",
-        960,
-        540,
-        true,
-        options.platform.as_deref(),
-    )
-    .map_err(|error| ProbeError(error.to_string()))?;
+    let mut application = platform::Application::new(options.platform.as_deref())
+        .map_err(|error| ProbeError(error.to_string()))?;
+    let window = application
+        .create_window("Mulciber — native Vulkan 1.4", 960, 540, true)
+        .map_err(|error| ProbeError(error.to_string()))?;
     let entry = Entry::load()?;
     let instance = InstanceContext::new(entry, &window)?;
     let device = DeviceContext::new(instance)?;
@@ -160,8 +157,8 @@ pub fn run() -> Result<(), ProbeError> {
         loop {
             let mut live_resize_error = None;
             let mut frame_limit_reached = false;
-            let keep_running = window
-                .pump_events(&mut || {
+            let keep_running = application
+                .pump_events(&window, &mut || {
                     if live_resize_error.is_some() || frame_limit_reached {
                         return;
                     }

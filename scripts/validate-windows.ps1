@@ -274,6 +274,30 @@ try {
         -Probe $ClearExample `
         -LogPrefix "clear-resize"
 
+    Invoke-NativeLogged "cargo" @(
+        "test",
+        "-p",
+        "mulciber-cube"
+    ) "cargo-test-cube.log"
+    Invoke-NativeLogged "cargo" @(
+        "build",
+        "-p",
+        "mulciber-cube"
+    ) "cargo-build-cube.log"
+    $CubeExample = Join-Path $RepositoryRoot "target\debug\mulciber-cube.exe"
+    $CubeFrames = [Math]::Min($Frames, 120)
+    Invoke-NativeLogged $CubeExample @(
+        "--frames", $CubeFrames.ToString(),
+        "--abandon-acquired-frame-once"
+    ) "cube-4x-abandon-recovery.log"
+    Invoke-NativeLogged $CubeExample @(
+        "--frames", $CubeFrames.ToString(),
+        "--force-one-sample"
+    ) "cube-1x.log"
+    Invoke-AutomatedResizeSmoke `
+        -Probe $CubeExample `
+        -LogPrefix "cube-resize"
+
     # Run the executable directly so runtime logs contain only Mulciber, Vulkan validation, and loader
     # output. Because VK_LOADER_DEBUG enables only error/warning classes, any such text is a failure.
     $Probe = Join-Path $RepositoryRoot "target\debug\mulciber-vulkan-triangle.exe"

@@ -1,5 +1,19 @@
 # macOS AppKit/Metal validation runbook
 
+## Textured cube checkpoint evidence
+
+The resource-backed same-source cube was compiled and linted natively on the Apple M2 / macOS
+15.7.7 machine on 2026-07-17. `mulciber-shader` compiled the single WGSL module through Naga 30 to
+MSL 3.1 and Xcode linked the cached metallib artifact. Its SHA-256 is
+`986cd8c811af3a7686ba2a08d76b78897c51a4bb174c9b1834d0ae8fddfb5345`.
+
+With `MTL_DEBUG_LAYER=1`, the preferred 4x MSAA path uploaded indexed cube geometry and an RGBA8
+sRGB checkerboard, created depth and memoryless multisample targets, explicitly abandoned one
+drawable, recovered, presented 240 frames, and drained shutdown. The forced 1x path then presented
+120 frames. Both runs exited zero and Metal emitted only its validation-enabled banner. This is
+finite native execution evidence, not user-confirmed visual correctness, resize/lifecycle,
+multi-display, or broader Apple hardware evidence.
+
 ## Clear checkpoint evidence
 
 A clear-only Gate 2 checkpoint based on revision `2d24f8f` plus the uncommitted extraction changes

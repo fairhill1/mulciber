@@ -5,6 +5,21 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+The in-progress resource-backed cube checkpoint ran natively on 2026-07-17 on the Windows 11 / RTX
+3060 Ti tier. The preferred Vulkan path selected 4x MSAA, uploaded indexed geometry and an RGBA8 sRGB
+checkerboard, created a WGSL-derived native pipeline and depth/MSAA targets, abandoned one acquired
+image with generation-safe target replacement, recovered, presented 240 frames, and shut down with
+zero Vulkan validation messages. A forced 1x path presented another 120 frames cleanly. The cached
+Vulkan artifact was validated against `vulkan1.4` by SPIRV-Tools v2026.2 and has SHA-256
+`6248a2970f0d1c81c62aa5d2e785762a7a81830dacd2415eb08cd17e25c9aacc`. The complete automated
+preflight then passed from the same development tree: its cube coverage repeated 120-frame 4x
+abandonment/recovery and forced-1x runs, then presented 144 frames across four automated window
+extents with generations 2 through 5. Evidence:
+`validation-artifacts/windows-vulkan-20260717-150401.zip`. A subsequent interactive run displayed the
+rotating checkerboard cube correctly through aggressive drag-resize and one minimize/restore cycle,
+then closed normally. This is single-display physical visual, resize, minimize/restore, and close
+evidence; it is not multi-display or broader hardware evidence.
+
 A clear-only Gate 2 checkpoint based on revision `2d24f8f` plus the uncommitted extraction changes
 passed the automated preflight on 2026-07-17 on the same Windows 11 / RTX 3060 Ti tier. The
 same-source `mulciber-clear` application selected Vulkan, abandoned one acquired image by replacing

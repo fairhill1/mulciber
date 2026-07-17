@@ -64,7 +64,7 @@ See [the project vision](docs/vision.md), [viability gates](docs/viability-gates
 [experimental graphics lifecycle contract](docs/api-graphics-contract.md),
 [pinned references](docs/references.md), and [implementation roadmap](docs/roadmap.md).
 
-## Experimental clear slice
+## Experimental graphics slices
 
 On Windows, Linux, or Apple-silicon macOS, the same application source selects the native backend at
 compile time:
@@ -78,6 +78,19 @@ The second form is the finite validation path. It abandons one acquired frame wi
 recovers through a later presentation, and performs fallible shutdown. This is an unstable design
 experiment and a checkpoint on the way to the representative textured depth-tested slice, not a
 supported graphics API or a new release commitment.
+
+The resource-backed checkpoint uses one safe Rust application and one WGSL shader source to render
+a spinning indexed, textured, depth-tested cube through native Vulkan or Metal:
+
+```sh
+cargo run -p mulciber-cube
+cargo run -p mulciber-cube -- --frames 120 --abandon-acquired-frame-once
+cargo run -p mulciber-cube -- --frames 120 --force-one-sample
+```
+
+Mulciber prefers 4x MSAA and reports a fallback to 1x. `mulciber-shader` is a separate offline
+development tool that turns WGSL into validated, cached native artifacts; Naga is not in the
+application's normal or runtime dependency graph.
 
 ## Current probes
 

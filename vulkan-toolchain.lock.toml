@@ -26,6 +26,14 @@ post_vertex_sha256 = "f4109c1e7ce8d273243908a2fa7ace7d8d22bc7c381d72b34cc7531d5b
 post_fragment_sha256 = "6de9d167528d552616b5e355181b58346ef60fdec2f92e089219429512d5f313"
 shadow_vertex_sha256 = "6a6393501daf970fb915c133ca87be72c02781ea0a8edaecf394d9d0e958ed4a"
 
+[cube_shader]
+compiler = "naga 30.0.0"
+target_environment = "vulkan1.4"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "93556c3cd20184dacdfa2bd5c65dfdc981dbab42044a926eb5b72359447572c7"
+vulkan_artifact_sha256 = "6248a2970f0d1c81c62aa5d2e785762a7a81830dacd2415eb08cd17e25c9aacc"
+metal_artifact_sha256 = "986cd8c811af3a7686ba2a08d76b78897c51a4bb174c9b1834d0ae8fddfb5345"
+
 [inputs]
 vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"
 vulkan_core_h_sha256 = "682de8fb5d47f9839d62732975e8c7d54f8d2e8c178d79977d698e34ebc64da9"

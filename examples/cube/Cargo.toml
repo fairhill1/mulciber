@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-cube"
+description = "Same-source textured spinning cube through Mulciber's native Metal and Vulkan backends"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

@@ -39,6 +39,13 @@ pub struct Origin3 {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Region3 {
+    pub origin: Origin3,
+    pub size: Size3,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Size3 {
     pub width: usize,
@@ -170,6 +177,12 @@ pub unsafe fn bool_value(receiver: Object, name: &CStr) -> bool {
     unsafe { function(receiver, selector(name)) }
 }
 
+pub unsafe fn bool_usize(receiver: Object, name: &CStr, argument: usize) -> bool {
+    let function: unsafe extern "C" fn(Object, Selector, usize) -> bool =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), argument) }
+}
+
 pub unsafe fn bool_object_out(
     receiver: Object,
     name: &CStr,
@@ -251,6 +264,28 @@ pub unsafe fn void_clear_color(receiver: Object, name: &CStr, argument: ClearCol
     let function: unsafe extern "C" fn(Object, Selector, ClearColor) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), argument) };
+}
+
+pub unsafe fn void_region_usize_bytes_usize(
+    receiver: Object,
+    name: &CStr,
+    region: Region3,
+    level: usize,
+    bytes: *const c_void,
+    bytes_per_row: usize,
+) {
+    let function: unsafe extern "C" fn(Object, Selector, Region3, usize, *const c_void, usize) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            region,
+            level,
+            bytes,
+            bytes_per_row,
+        );
+    }
 }
 
 pub unsafe fn void_object_two_usizes(

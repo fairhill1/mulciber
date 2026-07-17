@@ -1,0 +1,19 @@
+[package]
+name = "mulciber-shader"
+version = "0.1.1"
+description = "Offline single-source shader compiler for Mulciber's native Metal and Vulkan backends"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "graphics", "metal", "shaders", "vulkan"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+categories = ["command-line-utilities", "development-tools::build-utils", "game-development"]
+publish = ["crates-io"]
+
+[dependencies]
+naga = { version = "30.0.0", features = ["wgsl-in", "spv-out", "msl-out"] }
+
+[lints]
+workspace = true

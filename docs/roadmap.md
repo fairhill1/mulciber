@@ -136,6 +136,10 @@ Follow the [API extraction and comparison plan](api-extraction-plan.md). Gate 1'
 coverage continues in parallel; this milestone creates an explicitly unstable experiment, not a
 first-class support claim.
 
+The current implementation checkpoint is the same-source spinning textured cube described in the
+[textured-cube API contract](api-cube-contract.md). It is the resource-backed successor to the native
+clear-surface checkpoint, not a replacement for the advanced backend probes.
+
 - [x] Define the experimental-extraction threshold, unresolved design decisions, comparison targets,
   tasks, measurements, single-backend scoring, and stop conditions.
 - [x] Write the complete application-facing flow before committing to public type names, covering
@@ -190,6 +194,14 @@ recovered for 120 presented frames, and shut down under Metal API Validation wit
 separate user-run interactive smoke with `MTL_DEBUG_LAYER=1` also worked as expected and displayed the
 intended solid clear. This checkpoint does not settle general device, queue, resource, or command
 ownership and does not complete the textured depth-tested item.
+
+Textured checkpoint progress: `examples/cube` now uses one safe Rust source and one WGSL module
+through distinct public `Device`, `Queue`, and `Surface` owners plus mesh, texture, pipeline,
+generation-bound render-target, and owned-frame handles. Native Vulkan and Metal runs have exercised
+indexed texture sampling, depth, preferred 4x MSAA, forced 1x, explicit abandonment/recovery, and
+fallible drained shutdown. Naga is confined to the separate offline `mulciber-shader` tool. Final
+checkboxes remain open until the updated Windows matrix and physical visual/resize/lifecycle evidence
+are recorded and the provisional resource-retention/command vocabulary is reviewed.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

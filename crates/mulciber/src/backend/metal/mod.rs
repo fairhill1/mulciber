@@ -11,6 +11,8 @@ use crate::{
     SurfaceUnavailable,
 };
 
+pub(crate) const BACKEND_NAME: &str = "Metal";
+
 use objc::{AutoreleasePool, Object, Size};
 
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
@@ -102,6 +104,19 @@ impl<'window> ClearSurface<'window> {
         &'surface mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<ClearFrame<'surface, 'window>>, GraphicsError> {
+        self.acquire_drawable(metrics).map(|acquisition| {
+            acquisition.map_ready(|token| ClearFrame {
+                surface: self,
+                drawable: Some(token.drawable),
+                _pool: token.pool,
+            })
+        })
+    }
+
+    fn acquire_drawable(
+        &mut self,
+        metrics: WindowMetrics,
+    ) -> Result<FrameAcquire<MetalFrameToken>, GraphicsError> {
         self.finish_last_submission()?;
         let Ok(extent) = surface_extent(metrics) else {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
@@ -148,10 +163,10 @@ impl<'window> ClearSurface<'window> {
             return Ok(FrameAcquire::Reconfigured(self.info));
         }
 
-        Ok(FrameAcquire::Ready(ClearFrame {
-            surface: self,
-            drawable: Some(drawable),
-            _pool: pool,
+        Ok(FrameAcquire::Ready(MetalFrameToken {
+            drawable,
+            pool,
+            info: self.info,
         }))
     }
 
@@ -267,6 +282,15 @@ impl<'window> ClearSurface<'window> {
         }
     }
 }
+
+struct MetalFrameToken {
+    drawable: Object,
+    pool: AutoreleasePool,
+    info: SurfaceInfo,
+}
+
+mod textured;
+pub(crate) use textured::{TexturedFrameToken, TexturedSession};
 
 impl Drop for ClearSurface<'_> {
     fn drop(&mut self) {

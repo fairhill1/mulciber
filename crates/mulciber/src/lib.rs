@@ -10,7 +10,11 @@ extern crate std;
 mod backend;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod clear;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod graphics;
 mod presentation;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod shader;
 
 /// Hidden native ABI shared by Mulciber's backends and validation probes.
 ///
@@ -30,3 +34,10 @@ pub use presentation::{
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub use graphics::{
+    Device, DeviceRequest, DeviceSelection, Frame, Mesh, OpenedGraphics, Queue, RenderTargets,
+    SampleCount, Surface, Texture, TexturedDraw, TexturedPipeline, Vertex,
+};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub use shader::ShaderArtifact;

@@ -1,0 +1,1676 @@
+use core::ffi::c_void;
+use core::{mem, ptr, slice};
+use std::{format, vec::Vec};
+
+use mulciber_platform::{SurfaceTarget, WindowMetrics};
+
+use super::{ClearSurface, check, color_subresource_range, error, vk};
+use crate::{
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
+    ShaderArtifact, SurfaceInfo, Vertex,
+};
+
+const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
+
+#[derive(Clone, Copy, Default)]
+struct Buffer {
+    handle: vk::VkBuffer,
+    memory: vk::VkDeviceMemory,
+    size: vk::VkDeviceSize,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Image {
+    handle: vk::VkImage,
+    memory: vk::VkDeviceMemory,
+    view: vk::VkImageView,
+}
+
+struct MeshResource {
+    vertices: Buffer,
+    indices: Buffer,
+    indirect: Buffer,
+}
+
+struct TextureResource {
+    image: Image,
+    sampler: vk::VkSampler,
+}
+
+struct PipelineResource {
+    set_layout: vk::VkDescriptorSetLayout,
+    layout: vk::VkPipelineLayout,
+    pipeline: vk::VkPipeline,
+    descriptor_pool: vk::VkDescriptorPool,
+    bindings: Vec<(u32, vk::VkDescriptorSet)>,
+}
+
+struct TargetResource {
+    info: SurfaceInfo,
+    multisample_color: Option<Image>,
+    depth: Image,
+}
+
+pub(crate) struct TexturedSession<'window> {
+    surface: ClearSurface<'window>,
+    sample_count: vk::VkSampleCountFlagBits,
+    uniform: Buffer,
+    meshes: Vec<MeshResource>,
+    textures: Vec<TextureResource>,
+    pipelines: Vec<PipelineResource>,
+    targets: Vec<TargetResource>,
+    deferred_token: Option<TexturedFrameToken>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TexturedFrameToken {
+    image_index: u32,
+    info: SurfaceInfo,
+}
+
+impl TexturedFrameToken {
+    pub(crate) const fn info(&self) -> SurfaceInfo {
+        self.info
+    }
+}
+
+impl<'window> TexturedSession<'window> {
+    pub(crate) fn new(
+        target: SurfaceTarget<'window>,
+        metrics: WindowMetrics,
+        request: DeviceRequest,
+    ) -> Result<(Self, SampleCount), GraphicsError> {
+        let surface = ClearSurface::new(target, metrics)?;
+        let sample_count = if request.preferred_sample_count == SampleCount::Four
+            && surface.device().adapter.sample_count == vk::VK_SAMPLE_COUNT_4_BIT
+        {
+            vk::VK_SAMPLE_COUNT_4_BIT
+        } else {
+            vk::VK_SAMPLE_COUNT_1_BIT
+        };
+        let uniform = create_buffer(
+            &surface,
+            64,
+            vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
+            &[],
+        )?;
+        Ok((
+            Self {
+                surface,
+                sample_count,
+                uniform,
+                meshes: Vec::new(),
+                textures: Vec::new(),
+                pipelines: Vec::new(),
+                targets: Vec::new(),
+                deferred_token: None,
+            },
+            if sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+                SampleCount::Four
+            } else {
+                SampleCount::One
+            },
+        ))
+    }
+
+    pub(crate) const fn info(&self) -> SurfaceInfo {
+        self.surface.info()
+    }
+
+    pub(crate) fn acquire(
+        &mut self,
+        metrics: WindowMetrics,
+    ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
+        self.flush_deferred_abandon()?;
+        let acquisition = self.surface.acquire_image(metrics)?;
+        let info = self.surface.info();
+        Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
+    }
+
+    pub(crate) fn create_mesh(
+        &mut self,
+        vertices: &[Vertex],
+        indices: &[u16],
+    ) -> Result<u32, GraphicsError> {
+        let vertex_bytes = bytes_of_slice(vertices);
+        let index_bytes = bytes_of_slice(indices);
+        let draw = vk::VkDrawIndexedIndirectCommand {
+            indexCount: u32::try_from(indices.len())
+                .map_err(|_| error("mesh index count exceeds u32"))?,
+            instanceCount: 1,
+            firstIndex: 0,
+            vertexOffset: 0,
+            firstInstance: 0,
+        };
+        let vertices = create_buffer(
+            &self.surface,
+            vertex_bytes.len(),
+            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
+            vertex_bytes,
+        )?;
+        let indices = match create_buffer(
+            &self.surface,
+            index_bytes.len(),
+            vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT as u32,
+            index_bytes,
+        ) {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                destroy_buffer(&self.surface, vertices);
+                return Err(failure);
+            }
+        };
+        let indirect = match create_buffer(
+            &self.surface,
+            mem::size_of_val(&draw),
+            vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT as u32,
+            bytes_of(&draw),
+        ) {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                destroy_buffer(&self.surface, vertices);
+                destroy_buffer(&self.surface, indices);
+                return Err(failure);
+            }
+        };
+        self.meshes.push(MeshResource {
+            vertices,
+            indices,
+            indirect,
+        });
+        resource_id(self.meshes.len(), "mesh")
+    }
+
+    pub(crate) fn create_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<u32, GraphicsError> {
+        let staging = create_buffer(
+            &self.surface,
+            texels.len(),
+            vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
+            texels,
+        )?;
+        let image = match create_image(
+            &self.surface,
+            width,
+            height,
+            vk::VK_FORMAT_R8G8B8A8_SRGB,
+            (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+            vk::VK_SAMPLE_COUNT_1_BIT,
+        ) {
+            Ok(image) => image,
+            Err(failure) => {
+                destroy_buffer(&self.surface, staging);
+                return Err(failure);
+            }
+        };
+        let upload = self.upload_texture(&staging, &image, width, height);
+        destroy_buffer(&self.surface, staging);
+        if let Err(failure) = upload {
+            destroy_image(&self.surface, image);
+            return Err(failure);
+        }
+        let sampler_info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: vk::VK_FILTER_LINEAR,
+            minFilter: vk::VK_FILTER_LINEAR,
+            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            maxAnisotropy: 1.0,
+            maxLod: 0.0,
+            ..Default::default()
+        };
+        let mut sampler = ptr::null_mut();
+        if let Err(failure) = check(
+            unsafe {
+                self.surface
+                    .device()
+                    .functions
+                    .create_sampler
+                    .expect("loaded function")(
+                    self.surface.device().handle,
+                    &raw const sampler_info,
+                    ptr::null(),
+                    &raw mut sampler,
+                )
+            },
+            "vkCreateSampler for textured slice",
+        ) {
+            destroy_image(&self.surface, image);
+            return Err(failure);
+        }
+        self.textures.push(TextureResource { image, sampler });
+        resource_id(self.textures.len(), "texture")
+    }
+
+    pub(crate) fn create_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+    ) -> Result<u32, GraphicsError> {
+        let resource = create_pipeline(&self.surface, shader.payload(), self.sample_count)?;
+        self.pipelines.push(resource);
+        resource_id(self.pipelines.len(), "pipeline")
+    }
+
+    pub(crate) fn create_render_targets(
+        &mut self,
+        info: SurfaceInfo,
+    ) -> Result<u32, GraphicsError> {
+        let mut properties = vk::VkFormatProperties::default();
+        unsafe {
+            self.surface
+                .device()
+                .instance
+                .functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                self.surface.device().adapter.handle,
+                DEPTH_FORMAT,
+                &raw mut properties,
+            );
+        }
+        if properties.optimalTilingFeatures
+            & vk::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT as u32
+            == 0
+        {
+            return Err(error(
+                "adapter does not support D32_FLOAT depth attachments",
+            ));
+        }
+        let extent = info.extent();
+        let depth = create_image(
+            &self.surface,
+            extent.width(),
+            extent.height(),
+            DEPTH_FORMAT,
+            vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
+            vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
+            self.sample_count,
+        )?;
+        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+            match create_image(
+                &self.surface,
+                extent.width(),
+                extent.height(),
+                self.surface.swapchain.format,
+                vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
+                vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                self.sample_count,
+            ) {
+                Ok(image) => Some(image),
+                Err(failure) => {
+                    destroy_image(&self.surface, depth);
+                    return Err(failure);
+                }
+            }
+        } else {
+            None
+        };
+        self.targets.push(TargetResource {
+            info,
+            multisample_color,
+            depth,
+        });
+        resource_id(self.targets.len(), "render target")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        mesh: u32,
+        texture: u32,
+        pipeline: u32,
+        targets: u32,
+        transform: [[f32; 4]; 4],
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let mesh_index = resource_index(mesh, self.meshes.len(), "mesh")?;
+        let texture_index = resource_index(texture, self.textures.len(), "texture")?;
+        let pipeline_index = resource_index(pipeline, self.pipelines.len(), "pipeline")?;
+        let target_index = resource_index(targets, self.targets.len(), "render target")?;
+        if self.targets[target_index].info != token.info {
+            return Err(error(
+                "render targets do not match acquired Vulkan generation",
+            ));
+        }
+        write_buffer(&self.surface, &self.uniform, bytes_of(&transform))?;
+        let descriptor = self.descriptor_set(pipeline_index, texture_index, texture)?;
+        self.record_draw(
+            token.image_index,
+            mesh_index,
+            pipeline_index,
+            target_index,
+            descriptor,
+            clear,
+        )?;
+        self.surface.submit_recorded(token.image_index)
+    }
+
+    pub(crate) fn abandon(
+        &mut self,
+        _token: TexturedFrameToken,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.surface.abandon()
+    }
+
+    pub(crate) fn defer_abandon(&mut self, token: TexturedFrameToken) {
+        self.deferred_token = Some(token);
+    }
+
+    fn flush_deferred_abandon(&mut self) -> Result<(), GraphicsError> {
+        if let Some(token) = self.deferred_token.take() {
+            self.abandon(token)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
+        self.flush_deferred_abandon()?;
+        let result = self.surface.finish();
+        self.destroy_resources();
+        let surface = unsafe { ptr::read(&raw const self.surface) };
+        mem::forget(self);
+        result.and(surface.shutdown())
+    }
+
+    fn upload_texture(
+        &mut self,
+        staging: &Buffer,
+        image: &Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(), GraphicsError> {
+        self.begin_upload()?;
+        let to_transfer = image_barrier(
+            image.handle,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            color_subresource_range(),
+        );
+        pipeline_barrier(&self.surface, &to_transfer);
+        let region = vk::VkBufferImageCopy2 {
+            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+            imageSubresource: vk::VkImageSubresourceLayers {
+                aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                layerCount: 1,
+                ..Default::default()
+            },
+            imageExtent: vk::VkExtent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            ..Default::default()
+        };
+        let copy = vk::VkCopyBufferToImageInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+            srcBuffer: staging.handle,
+            dstImage: image.handle,
+            dstImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            regionCount: 1,
+            pRegions: &raw const region,
+            ..Default::default()
+        };
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .cmd_copy_buffer_to_image2
+                .expect("loaded function")(self.surface.command_buffer, &raw const copy);
+        }
+        let to_sampled = image_barrier(
+            image.handle,
+            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            color_subresource_range(),
+        );
+        pipeline_barrier(&self.surface, &to_sampled);
+        self.end_upload()
+    }
+
+    fn begin_upload(&mut self) -> Result<(), GraphicsError> {
+        self.surface.wait_for_frame()?;
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device.functions.reset_fences.expect("loaded function")(
+                    device.handle,
+                    1,
+                    &raw const self.surface.frame_fence,
+                )
+            },
+            "vkResetFences for resource upload",
+        )?;
+        check(
+            unsafe {
+                device
+                    .functions
+                    .reset_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer, 0)
+            },
+            "vkResetCommandBuffer for resource upload",
+        )?;
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(
+                    self.surface.command_buffer, &raw const begin
+                )
+            },
+            "vkBeginCommandBuffer for resource upload",
+        )
+    }
+
+    fn end_upload(&mut self) -> Result<(), GraphicsError> {
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer)
+            },
+            "vkEndCommandBuffer for resource upload",
+        )?;
+        let command = vk::VkCommandBufferSubmitInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            commandBuffer: self.surface.command_buffer,
+            ..Default::default()
+        };
+        let submit = vk::VkSubmitInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            commandBufferInfoCount: 1,
+            pCommandBufferInfos: &raw const command,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                device.functions.queue_submit2.expect("loaded function")(
+                    device.queue,
+                    1,
+                    &raw const submit,
+                    self.surface.frame_fence,
+                )
+            },
+            "vkQueueSubmit2 for resource upload",
+        )?;
+        self.surface.frame_pending = true;
+        self.surface.wait_for_frame()
+    }
+
+    fn descriptor_set(
+        &mut self,
+        pipeline_index: usize,
+        texture_index: usize,
+        texture_id: u32,
+    ) -> Result<vk::VkDescriptorSet, GraphicsError> {
+        if let Some((_, set)) = self.pipelines[pipeline_index]
+            .bindings
+            .iter()
+            .find(|(id, _)| *id == texture_id)
+        {
+            return Ok(*set);
+        }
+        let pipeline = &mut self.pipelines[pipeline_index];
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: pipeline.descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const pipeline.set_layout,
+            ..Default::default()
+        };
+        let mut set = ptr::null_mut();
+        check(
+            unsafe {
+                self.surface
+                    .device()
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.surface.device().handle,
+                    &raw const allocate,
+                    &raw mut set,
+                )
+            },
+            "vkAllocateDescriptorSets for texture",
+        )?;
+        let buffer = vk::VkDescriptorBufferInfo {
+            buffer: self.uniform.handle,
+            offset: 0,
+            range: 64,
+        };
+        let image = vk::VkDescriptorImageInfo {
+            sampler: ptr::null_mut(),
+            imageView: self.textures[texture_index].image.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        let sampler = vk::VkDescriptorImageInfo {
+            sampler: self.textures[texture_index].sampler,
+            ..Default::default()
+        };
+        let writes = [
+            descriptor_write(
+                set,
+                0,
+                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                (&raw const buffer).cast(),
+            ),
+            descriptor_write(
+                set,
+                1,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                (&raw const image).cast(),
+            ),
+            descriptor_write(
+                set,
+                2,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+                (&raw const sampler).cast(),
+            ),
+        ];
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.surface.device().handle,
+                3,
+                writes.as_ptr(),
+                0,
+                ptr::null(),
+            );
+        };
+        pipeline.bindings.push((texture_id, set));
+        Ok(set)
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )]
+    fn record_draw(
+        &mut self,
+        image_index: u32,
+        mesh_index: usize,
+        pipeline_index: usize,
+        target_index: usize,
+        descriptor: vk::VkDescriptorSet,
+        clear: ClearColor,
+    ) -> Result<(), GraphicsError> {
+        let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+        let image = self.surface.swapchain.images[slot];
+        let view = self.surface.swapchain.views[slot];
+        let old_layout = if self.surface.swapchain.initialized[slot] {
+            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        } else {
+            vk::VK_IMAGE_LAYOUT_UNDEFINED
+        };
+        self.surface.wait_for_frame()?;
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device.functions.reset_fences.expect("loaded function")(
+                    device.handle,
+                    1,
+                    &raw const self.surface.frame_fence,
+                )
+            },
+            "vkResetFences for textured frame",
+        )?;
+        check(
+            unsafe {
+                device
+                    .functions
+                    .reset_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer, 0)
+            },
+            "vkResetCommandBuffer for textured frame",
+        )?;
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(
+                    self.surface.command_buffer, &raw const begin
+                )
+            },
+            "vkBeginCommandBuffer for textured frame",
+        )?;
+        let color_barrier = image_barrier(
+            image,
+            old_layout,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            if old_layout == vk::VK_IMAGE_LAYOUT_UNDEFINED {
+                vk::VK_PIPELINE_STAGE_2_NONE
+            } else {
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+            },
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            color_subresource_range(),
+        );
+        let depth_barrier = image_barrier(
+            self.targets[target_index].depth.handle,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            depth_subresource_range(),
+        );
+        let multisample_barrier =
+            self.targets[target_index]
+                .multisample_color
+                .as_ref()
+                .map(|color| {
+                    image_barrier(
+                        color.handle,
+                        vk::VK_IMAGE_LAYOUT_UNDEFINED,
+                        vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        vk::VK_PIPELINE_STAGE_2_NONE,
+                        vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                        vk::VK_ACCESS_2_NONE,
+                        vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                        color_subresource_range(),
+                    )
+                });
+        if let Some(multisample_barrier) = multisample_barrier {
+            pipeline_barriers(
+                &self.surface,
+                &[color_barrier, depth_barrier, multisample_barrier],
+            );
+        } else {
+            pipeline_barriers(&self.surface, &[color_barrier, depth_barrier]);
+        }
+        let multisample_color = self.targets[target_index].multisample_color.as_ref();
+        let color_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: multisample_color.map_or(view, |color| color.view),
+            imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            resolveMode: if multisample_color.is_some() {
+                vk::VK_RESOLVE_MODE_AVERAGE_BIT
+            } else {
+                vk::VK_RESOLVE_MODE_NONE
+            },
+            resolveImageView: multisample_color.map_or(ptr::null_mut(), |_| view),
+            resolveImageLayout: if multisample_color.is_some() {
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            } else {
+                vk::VK_IMAGE_LAYOUT_UNDEFINED
+            },
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                color: vk::VkClearColorValue {
+                    float32: clear.components(),
+                },
+            },
+            ..Default::default()
+        };
+        let depth_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: self.targets[target_index].depth.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            clearValue: vk::VkClearValue {
+                depthStencil: vk::VkClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
+        let area = vk::VkRect2D {
+            offset: vk::VkOffset2D { x: 0, y: 0 },
+            extent: self.surface.swapchain.extent,
+        };
+        let rendering = vk::VkRenderingInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
+            renderArea: area,
+            layerCount: 1,
+            colorAttachmentCount: 1,
+            pColorAttachments: &raw const color_attachment,
+            pDepthAttachment: &raw const depth_attachment,
+            ..Default::default()
+        };
+        let viewport = vk::VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: area.extent.width as f32,
+            height: area.extent.height as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
+        };
+        let mesh = &self.meshes[mesh_index];
+        let pipeline = &self.pipelines[pipeline_index];
+        let offset = 0;
+        unsafe {
+            let functions = &device.functions;
+            functions.cmd_begin_rendering.expect("loaded function")(
+                self.surface.command_buffer,
+                &raw const rendering,
+            );
+            functions.cmd_bind_pipeline.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline.pipeline,
+            );
+            functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline.layout,
+                0,
+                1,
+                &raw const descriptor,
+                0,
+                ptr::null(),
+            );
+            functions.cmd_set_viewport.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const viewport,
+            );
+            functions.cmd_set_scissor.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const area,
+            );
+            functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const mesh.vertices.handle,
+                &raw const offset,
+            );
+            functions.cmd_bind_index_buffer.expect("loaded function")(
+                self.surface.command_buffer,
+                mesh.indices.handle,
+                0,
+                vk::VK_INDEX_TYPE_UINT16,
+            );
+            functions
+                .cmd_draw_indexed_indirect
+                .expect("loaded function")(
+                self.surface.command_buffer,
+                mesh.indirect.handle,
+                0,
+                1,
+                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indirect command size fits u32"),
+            );
+            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+        }
+        let present = image_barrier(
+            image,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            vk::VK_ACCESS_2_NONE,
+            color_subresource_range(),
+        );
+        pipeline_barrier(&self.surface, &present);
+        check(
+            unsafe {
+                device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer)
+            },
+            "vkEndCommandBuffer for textured frame",
+        )
+    }
+
+    fn destroy_resources(&mut self) {
+        let device = self.surface.device();
+        unsafe {
+            for pipeline in self.pipelines.drain(..) {
+                device.functions.destroy_pipeline.expect("loaded function")(
+                    device.handle,
+                    pipeline.pipeline,
+                    ptr::null(),
+                );
+                device
+                    .functions
+                    .destroy_pipeline_layout
+                    .expect("loaded function")(
+                    device.handle, pipeline.layout, ptr::null()
+                );
+                device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    device.handle,
+                    pipeline.descriptor_pool,
+                    ptr::null(),
+                );
+                device
+                    .functions
+                    .destroy_descriptor_set_layout
+                    .expect("loaded function")(
+                    device.handle, pipeline.set_layout, ptr::null()
+                );
+            }
+            for texture in self.textures.drain(..) {
+                device.functions.destroy_sampler.expect("loaded function")(
+                    device.handle,
+                    texture.sampler,
+                    ptr::null(),
+                );
+                destroy_image_device(device, texture.image);
+            }
+            for target in self.targets.drain(..) {
+                if let Some(color) = target.multisample_color {
+                    destroy_image_device(device, color);
+                }
+                destroy_image_device(device, target.depth);
+            }
+            for mesh in self.meshes.drain(..) {
+                destroy_buffer_device(device, mesh.vertices);
+                destroy_buffer_device(device, mesh.indices);
+                destroy_buffer_device(device, mesh.indirect);
+            }
+            destroy_buffer_device(device, mem::take(&mut self.uniform));
+        }
+
+        // `shutdown` moves the surface out and deliberately suppresses this
+        // session's destructor. Release the now-empty arenas' allocations here
+        // so that path does not retain their backing storage.
+        self.pipelines = Vec::new();
+        self.textures = Vec::new();
+        self.targets = Vec::new();
+        self.meshes = Vec::new();
+    }
+}
+
+impl Drop for TexturedSession<'_> {
+    fn drop(&mut self) {
+        let _ = self.surface.finish();
+        self.destroy_resources();
+    }
+}
+
+impl ClearSurface<'_> {
+    fn submit_recorded(&mut self, image_index: u32) -> Result<FrameDisposition, GraphicsError> {
+        let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+        let render_finished = self.swapchain.render_finished[slot];
+        let wait = vk::VkSemaphoreSubmitInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            semaphore: self.image_available,
+            stageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            ..Default::default()
+        };
+        let command = vk::VkCommandBufferSubmitInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            commandBuffer: self.command_buffer,
+            ..Default::default()
+        };
+        let signal = vk::VkSemaphoreSubmitInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            semaphore: render_finished,
+            stageMask: vk::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            ..Default::default()
+        };
+        let submit = vk::VkSubmitInfo2 {
+            sType: vk::VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            waitSemaphoreInfoCount: 1,
+            pWaitSemaphoreInfos: &raw const wait,
+            commandBufferInfoCount: 1,
+            pCommandBufferInfos: &raw const command,
+            signalSemaphoreInfoCount: 1,
+            pSignalSemaphoreInfos: &raw const signal,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                self.device()
+                    .functions
+                    .queue_submit2
+                    .expect("loaded function")(
+                    self.device().queue,
+                    1,
+                    &raw const submit,
+                    self.frame_fence,
+                )
+            },
+            "vkQueueSubmit2 for textured frame",
+        )?;
+        self.frame_pending = true;
+        self.swapchain.initialized[slot] = true;
+        let present = vk::VkPresentInfoKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            waitSemaphoreCount: 1,
+            pWaitSemaphores: &raw const render_finished,
+            swapchainCount: 1,
+            pSwapchains: &raw const self.swapchain.handle,
+            pImageIndices: &raw const image_index,
+            ..Default::default()
+        };
+        let result = unsafe {
+            self.device()
+                .functions
+                .queue_present
+                .expect("loaded function")(self.device().queue, &raw const present)
+        };
+        if matches!(
+            result,
+            vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR
+        ) {
+            self.swapchain.presented[slot] = true;
+        }
+        if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
+            self.recreate_after_present = true;
+        } else {
+            check(result, "vkQueuePresentKHR for textured frame")?;
+        }
+        Ok(FrameDisposition::Presented(self.info.generation()))
+    }
+}
+
+fn create_buffer(
+    surface: &ClearSurface<'_>,
+    size: usize,
+    usage: u32,
+    bytes: &[u8],
+) -> Result<Buffer, GraphicsError> {
+    let size =
+        u64::try_from(size).map_err(|_| error("buffer size exceeds Vulkan address space"))?;
+    let info = vk::VkBufferCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        size,
+        usage,
+        sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+        ..Default::default()
+    };
+    let device = surface.device();
+    let mut buffer = Buffer {
+        size,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.create_buffer.expect("loaded function")(
+                device.handle,
+                &raw const info,
+                ptr::null(),
+                &raw mut buffer.handle,
+            )
+        },
+        "vkCreateBuffer for textured slice",
+    )?;
+    let mut requirements = vk::VkMemoryRequirements::default();
+    unsafe {
+        device
+            .functions
+            .get_buffer_memory_requirements
+            .expect("loaded function")(device.handle, buffer.handle, &raw mut requirements);
+    };
+    let memory_type = find_memory_type(
+        device,
+        requirements.memoryTypeBits,
+        (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32,
+    )
+    .ok_or_else(|| error("no host-visible coherent Vulkan memory type"))?;
+    let allocate = vk::VkMemoryAllocateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        allocationSize: requirements.size,
+        memoryTypeIndex: memory_type,
+        ..Default::default()
+    };
+    if let Err(failure) = check(
+        unsafe {
+            device.functions.allocate_memory.expect("loaded function")(
+                device.handle,
+                &raw const allocate,
+                ptr::null(),
+                &raw mut buffer.memory,
+            )
+        },
+        "vkAllocateMemory for buffer",
+    ) {
+        destroy_buffer(surface, buffer);
+        return Err(failure);
+    }
+    check(
+        unsafe {
+            device
+                .functions
+                .bind_buffer_memory
+                .expect("loaded function")(
+                device.handle, buffer.handle, buffer.memory, 0
+            )
+        },
+        "vkBindBufferMemory",
+    )?;
+    if !bytes.is_empty() {
+        write_buffer(surface, &buffer, bytes)?;
+    }
+    Ok(buffer)
+}
+
+fn write_buffer(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    bytes: &[u8],
+) -> Result<(), GraphicsError> {
+    if u64::try_from(bytes.len()).map_err(|_| error("buffer write exceeds u64"))? > buffer.size {
+        return Err(error("buffer write exceeds allocation"));
+    }
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory",
+    )?;
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
+fn create_image(
+    surface: &ClearSurface<'_>,
+    width: u32,
+    height: u32,
+    format: vk::VkFormat,
+    usage: u32,
+    aspect: u32,
+    samples: vk::VkSampleCountFlagBits,
+) -> Result<Image, GraphicsError> {
+    let info = vk::VkImageCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        imageType: vk::VK_IMAGE_TYPE_2D,
+        format,
+        extent: vk::VkExtent3D {
+            width,
+            height,
+            depth: 1,
+        },
+        mipLevels: 1,
+        arrayLayers: 1,
+        samples,
+        tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+        usage,
+        sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+        initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+        ..Default::default()
+    };
+    let device = surface.device();
+    let mut image = Image::default();
+    check(
+        unsafe {
+            device.functions.create_image.expect("loaded function")(
+                device.handle,
+                &raw const info,
+                ptr::null(),
+                &raw mut image.handle,
+            )
+        },
+        "vkCreateImage for textured slice",
+    )?;
+    let mut requirements = vk::VkMemoryRequirements::default();
+    unsafe {
+        device
+            .functions
+            .get_image_memory_requirements
+            .expect("loaded function")(device.handle, image.handle, &raw mut requirements);
+    };
+    let memory_type = find_memory_type(
+        device,
+        requirements.memoryTypeBits,
+        vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+    )
+    .ok_or_else(|| error("no device-local Vulkan image memory type"))?;
+    let allocate = vk::VkMemoryAllocateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        allocationSize: requirements.size,
+        memoryTypeIndex: memory_type,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.allocate_memory.expect("loaded function")(
+                device.handle,
+                &raw const allocate,
+                ptr::null(),
+                &raw mut image.memory,
+            )
+        },
+        "vkAllocateMemory for image",
+    )?;
+    check(
+        unsafe {
+            device.functions.bind_image_memory.expect("loaded function")(
+                device.handle,
+                image.handle,
+                image.memory,
+                0,
+            )
+        },
+        "vkBindImageMemory",
+    )?;
+    let view_info = vk::VkImageViewCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        image: image.handle,
+        viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+        format,
+        subresourceRange: vk::VkImageSubresourceRange {
+            aspectMask: aspect,
+            levelCount: 1,
+            layerCount: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.create_image_view.expect("loaded function")(
+                device.handle,
+                &raw const view_info,
+                ptr::null(),
+                &raw mut image.view,
+            )
+        },
+        "vkCreateImageView for textured slice",
+    )?;
+    Ok(image)
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_pipeline(
+    surface: &ClearSurface<'_>,
+    bytes: &[u8],
+    sample_count: vk::VkSampleCountFlagBits,
+) -> Result<PipelineResource, GraphicsError> {
+    let device = surface.device();
+    let bindings = [
+        layout_binding(
+            0,
+            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
+        ),
+        layout_binding(
+            1,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+        ),
+        layout_binding(
+            2,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+        ),
+    ];
+    let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        bindingCount: 3,
+        pBindings: bindings.as_ptr(),
+        ..Default::default()
+    };
+    let mut resource = PipelineResource {
+        set_layout: ptr::null_mut(),
+        layout: ptr::null_mut(),
+        pipeline: ptr::null_mut(),
+        descriptor_pool: ptr::null_mut(),
+        bindings: Vec::new(),
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_descriptor_set_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const layout_info,
+                ptr::null(),
+                &raw mut resource.set_layout,
+            )
+        },
+        "vkCreateDescriptorSetLayout for textured pipeline",
+    )?;
+    let pipeline_layout = vk::VkPipelineLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        setLayoutCount: 1,
+        pSetLayouts: &raw const resource.set_layout,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_pipeline_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const pipeline_layout,
+                ptr::null(),
+                &raw mut resource.layout,
+            )
+        },
+        "vkCreatePipelineLayout for textured pipeline",
+    )?;
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let module_info = vk::VkShaderModuleCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        codeSize: bytes.len(),
+        pCode: words.as_ptr(),
+        ..Default::default()
+    };
+    let mut module = ptr::null_mut();
+    check(
+        unsafe {
+            device
+                .functions
+                .create_shader_module
+                .expect("loaded function")(
+                device.handle,
+                &raw const module_info,
+                ptr::null(),
+                &raw mut module,
+            )
+        },
+        "vkCreateShaderModule for cube",
+    )?;
+    let stages = [
+        shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, module, c"cube_vertex"),
+        shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, module, c"cube_fragment"),
+    ];
+    let binding = vk::VkVertexInputBindingDescription {
+        binding: 0,
+        stride: u32::try_from(mem::size_of::<Vertex>()).expect("vertex size fits u32"),
+        inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    let attributes = [
+        attribute(0, vk::VK_FORMAT_R32G32B32_SFLOAT, 0),
+        attribute(1, vk::VK_FORMAT_R32G32B32_SFLOAT, 12),
+        attribute(2, vk::VK_FORMAT_R32G32_SFLOAT, 24),
+    ];
+    let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount: 1,
+        pVertexBindingDescriptions: &raw const binding,
+        vertexAttributeDescriptionCount: 3,
+        pVertexAttributeDescriptions: attributes.as_ptr(),
+        ..Default::default()
+    };
+    let assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        ..Default::default()
+    };
+    let viewport = vk::VkPipelineViewportStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount: 1,
+        scissorCount: 1,
+        ..Default::default()
+    };
+    let raster = vk::VkPipelineRasterizationStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode: vk::VK_POLYGON_MODE_FILL,
+        cullMode: vk::VK_CULL_MODE_BACK_BIT as u32,
+        frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        lineWidth: 1.0,
+        ..Default::default()
+    };
+    let multisample = vk::VkPipelineMultisampleStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples: sample_count,
+        ..Default::default()
+    };
+    let depth = vk::VkPipelineDepthStencilStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable: vk::VK_TRUE,
+        depthWriteEnable: vk::VK_TRUE,
+        depthCompareOp: vk::VK_COMPARE_OP_LESS,
+        minDepthBounds: 0.0,
+        maxDepthBounds: 1.0,
+        ..Default::default()
+    };
+    let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
+        colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
+            | vk::VK_COLOR_COMPONENT_G_BIT
+            | vk::VK_COLOR_COMPONENT_B_BIT
+            | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
+        ..Default::default()
+    };
+    let blend = vk::VkPipelineColorBlendStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount: 1,
+        pAttachments: &raw const blend_attachment,
+        ..Default::default()
+    };
+    let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
+    let dynamic = vk::VkPipelineDynamicStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: 2,
+        pDynamicStates: dynamic_states.as_ptr(),
+        ..Default::default()
+    };
+    let color_format = surface.swapchain.format;
+    let rendering = vk::VkPipelineRenderingCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: &raw const color_format,
+        depthAttachmentFormat: DEPTH_FORMAT,
+        ..Default::default()
+    };
+    let pipeline_info = vk::VkGraphicsPipelineCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        pNext: (&raw const rendering).cast(),
+        stageCount: 2,
+        pStages: stages.as_ptr(),
+        pVertexInputState: &raw const vertex_input,
+        pInputAssemblyState: &raw const assembly,
+        pViewportState: &raw const viewport,
+        pRasterizationState: &raw const raster,
+        pMultisampleState: &raw const multisample,
+        pDepthStencilState: &raw const depth,
+        pColorBlendState: &raw const blend,
+        pDynamicState: &raw const dynamic,
+        layout: resource.layout,
+        basePipelineIndex: -1,
+        ..Default::default()
+    };
+    let result = check(
+        unsafe {
+            device
+                .functions
+                .create_graphics_pipelines
+                .expect("loaded function")(
+                device.handle,
+                ptr::null_mut(),
+                1,
+                &raw const pipeline_info,
+                ptr::null(),
+                &raw mut resource.pipeline,
+            )
+        },
+        "vkCreateGraphicsPipelines for cube",
+    );
+    unsafe {
+        device
+            .functions
+            .destroy_shader_module
+            .expect("loaded function")(device.handle, module, ptr::null());
+    };
+    result?;
+    let pool_sizes = [
+        pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
+        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
+        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLER),
+    ];
+    let pool_info = vk::VkDescriptorPoolCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        maxSets: 64,
+        poolSizeCount: 3,
+        pPoolSizes: pool_sizes.as_ptr(),
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_descriptor_pool
+                .expect("loaded function")(
+                device.handle,
+                &raw const pool_info,
+                ptr::null(),
+                &raw mut resource.descriptor_pool,
+            )
+        },
+        "vkCreateDescriptorPool for textured pipeline",
+    )?;
+    Ok(resource)
+}
+
+fn find_memory_type(device: &super::Device, compatible: u32, required: u32) -> Option<u32> {
+    let mut properties = vk::VkPhysicalDeviceMemoryProperties::default();
+    unsafe {
+        device
+            .instance
+            .functions
+            .get_physical_device_memory_properties
+            .expect("loaded function")(device.adapter.handle, &raw mut properties);
+    };
+    properties.memoryTypes[..usize::try_from(properties.memoryTypeCount).ok()?]
+        .iter()
+        .enumerate()
+        .find(|(index, memory)| {
+            compatible & (1_u32 << index) != 0 && memory.propertyFlags & required == required
+        })
+        .and_then(|(index, _)| u32::try_from(index).ok())
+}
+
+fn destroy_buffer(surface: &ClearSurface<'_>, buffer: Buffer) {
+    unsafe { destroy_buffer_device(surface.device(), buffer) }
+}
+unsafe fn destroy_buffer_device(device: &super::Device, buffer: Buffer) {
+    unsafe {
+        if !buffer.handle.is_null() {
+            device.functions.destroy_buffer.expect("loaded function")(
+                device.handle,
+                buffer.handle,
+                ptr::null(),
+            );
+        }
+        if !buffer.memory.is_null() {
+            device.functions.free_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                ptr::null(),
+            );
+        }
+    }
+}
+fn destroy_image(surface: &ClearSurface<'_>, image: Image) {
+    unsafe { destroy_image_device(surface.device(), image) }
+}
+unsafe fn destroy_image_device(device: &super::Device, image: Image) {
+    unsafe {
+        if !image.view.is_null() {
+            device
+                .functions
+                .destroy_image_view
+                .expect("loaded function")(device.handle, image.view, ptr::null());
+        }
+        if !image.handle.is_null() {
+            device.functions.destroy_image.expect("loaded function")(
+                device.handle,
+                image.handle,
+                ptr::null(),
+            );
+        }
+        if !image.memory.is_null() {
+            device.functions.free_memory.expect("loaded function")(
+                device.handle,
+                image.memory,
+                ptr::null(),
+            );
+        }
+    }
+}
+
+fn resource_id(length: usize, label: &str) -> Result<u32, GraphicsError> {
+    u32::try_from(length).map_err(|_| error(format!("{label} identity space is exhausted")))
+}
+fn resource_index(id: u32, length: usize, label: &str) -> Result<usize, GraphicsError> {
+    let index = usize::try_from(id)
+        .ok()
+        .and_then(|id| id.checked_sub(1))
+        .ok_or_else(|| error(format!("invalid {label} handle")))?;
+    (index < length)
+        .then_some(index)
+        .ok_or_else(|| error(format!("invalid {label} handle")))
+}
+fn bytes_of<T>(value: &T) -> &[u8] {
+    unsafe { slice::from_raw_parts(ptr::from_ref(value).cast(), mem::size_of::<T>()) }
+}
+fn bytes_of_slice<T>(values: &[T]) -> &[u8] {
+    unsafe { slice::from_raw_parts(values.as_ptr().cast(), mem::size_of_val(values)) }
+}
+const fn depth_subresource_range() -> vk::VkImageSubresourceRange {
+    vk::VkImageSubresourceRange {
+        aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
+        baseMipLevel: 0,
+        levelCount: 1,
+        baseArrayLayer: 0,
+        layerCount: 1,
+    }
+}
+#[allow(clippy::too_many_arguments)]
+fn image_barrier(
+    image: vk::VkImage,
+    old: vk::VkImageLayout,
+    new: vk::VkImageLayout,
+    src_stage: vk::VkPipelineStageFlags2,
+    dst_stage: vk::VkPipelineStageFlags2,
+    src_access: vk::VkAccessFlags2,
+    dst_access: vk::VkAccessFlags2,
+    range: vk::VkImageSubresourceRange,
+) -> vk::VkImageMemoryBarrier2 {
+    vk::VkImageMemoryBarrier2 {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        srcStageMask: src_stage,
+        srcAccessMask: src_access,
+        dstStageMask: dst_stage,
+        dstAccessMask: dst_access,
+        oldLayout: old,
+        newLayout: new,
+        srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        image,
+        subresourceRange: range,
+        ..Default::default()
+    }
+}
+fn pipeline_barrier(surface: &ClearSurface<'_>, barrier: &vk::VkImageMemoryBarrier2) {
+    pipeline_barriers(surface, slice::from_ref(barrier));
+}
+fn pipeline_barriers(surface: &ClearSurface<'_>, barriers: &[vk::VkImageMemoryBarrier2]) {
+    let dependency = vk::VkDependencyInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        imageMemoryBarrierCount: u32::try_from(barriers.len()).expect("barrier count fits u32"),
+        pImageMemoryBarriers: barriers.as_ptr(),
+        ..Default::default()
+    };
+    unsafe {
+        surface
+            .device()
+            .functions
+            .cmd_pipeline_barrier2
+            .expect("loaded function")(surface.command_buffer, &raw const dependency);
+    }
+}
+fn descriptor_write(
+    set: vk::VkDescriptorSet,
+    binding: u32,
+    descriptor_type: vk::VkDescriptorType,
+    info: *const c_void,
+) -> vk::VkWriteDescriptorSet {
+    let mut write = vk::VkWriteDescriptorSet {
+        sType: vk::VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        dstSet: set,
+        dstBinding: binding,
+        descriptorCount: 1,
+        descriptorType: descriptor_type,
+        ..Default::default()
+    };
+    if descriptor_type == vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER {
+        write.pBufferInfo = info.cast();
+    } else {
+        write.pImageInfo = info.cast();
+    }
+    write
+}
+const fn layout_binding(
+    binding: u32,
+    descriptor_type: vk::VkDescriptorType,
+    stages: u32,
+) -> vk::VkDescriptorSetLayoutBinding {
+    vk::VkDescriptorSetLayoutBinding {
+        binding,
+        descriptorType: descriptor_type,
+        descriptorCount: 1,
+        stageFlags: stages,
+        pImmutableSamplers: ptr::null(),
+    }
+}
+const fn pool_size(descriptor_type: vk::VkDescriptorType) -> vk::VkDescriptorPoolSize {
+    vk::VkDescriptorPoolSize {
+        type_: descriptor_type,
+        descriptorCount: 64,
+    }
+}
+const fn attribute(
+    location: u32,
+    format: vk::VkFormat,
+    offset: u32,
+) -> vk::VkVertexInputAttributeDescription {
+    vk::VkVertexInputAttributeDescription {
+        location,
+        binding: 0,
+        format,
+        offset,
+    }
+}
+fn shader_stage(
+    stage: vk::VkShaderStageFlagBits,
+    module: vk::VkShaderModule,
+    name: &core::ffi::CStr,
+) -> vk::VkPipelineShaderStageCreateInfo {
+    vk::VkPipelineShaderStageCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stage,
+        module,
+        pName: name.as_ptr(),
+        ..Default::default()
+    }
+}

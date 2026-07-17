@@ -4,4 +4,5 @@ pub mod vk;
 mod clear;
 mod platform;
 
+pub(crate) use clear::{BACKEND_NAME, TexturedFrameToken, TexturedSession};
 pub(crate) use clear::{ClearFrame, ClearSurface};

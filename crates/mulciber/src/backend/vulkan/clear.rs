@@ -13,6 +13,8 @@ use crate::{
     SurfaceUnavailable,
 };
 
+pub(crate) const BACKEND_NAME: &str = "Vulkan";
+
 const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT64_MAX: u64 = u64::MAX;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -83,6 +85,19 @@ impl<'window> ClearSurface<'window> {
         &mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<ClearFrame<'_, 'window>>, GraphicsError> {
+        self.acquire_image(metrics).map(|acquisition| {
+            acquisition.map_ready(|image_index| ClearFrame {
+                surface: self,
+                image_index,
+                disposed: false,
+            })
+        })
+    }
+
+    fn acquire_image(
+        &mut self,
+        metrics: WindowMetrics,
+    ) -> Result<FrameAcquire<u32>, GraphicsError> {
         if let Some(error) = self.deferred_error.take() {
             return Err(error);
         }
@@ -136,11 +151,7 @@ impl<'window> ClearSurface<'window> {
         if self.swapchain.presented[slot] {
             self.destroy_all_retired_swapchains();
         }
-        Ok(FrameAcquire::Ready(ClearFrame {
-            surface: self,
-            image_index,
-            disposed: false,
-        }))
+        Ok(FrameAcquire::Ready(image_index))
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
@@ -702,6 +713,9 @@ impl<'window> ClearSurface<'window> {
     }
 }
 
+mod textured;
+pub(crate) use textured::{TexturedFrameToken, TexturedSession};
+
 impl Drop for ClearSurface<'_> {
     fn drop(&mut self) {
         let _ = self.finish();
@@ -845,6 +859,8 @@ struct InstanceFns {
     destroy_surface: vk::PFN_vkDestroySurfaceKHR,
     enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
     get_physical_device_properties: vk::PFN_vkGetPhysicalDeviceProperties,
+    get_physical_device_format_properties: vk::PFN_vkGetPhysicalDeviceFormatProperties,
+    get_physical_device_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties,
     get_physical_device_features2: vk::PFN_vkGetPhysicalDeviceFeatures2,
     get_queue_family_properties: vk::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
     get_surface_support: vk::PFN_vkGetPhysicalDeviceSurfaceSupportKHR,
@@ -870,6 +886,8 @@ impl InstanceFns {
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
+            get_physical_device_format_properties: load!(c"vkGetPhysicalDeviceFormatProperties"),
+            get_physical_device_memory_properties: load!(c"vkGetPhysicalDeviceMemoryProperties"),
             get_physical_device_features2: load!(c"vkGetPhysicalDeviceFeatures2"),
             get_queue_family_properties: load!(c"vkGetPhysicalDeviceQueueFamilyProperties"),
             get_surface_support: load!(c"vkGetPhysicalDeviceSurfaceSupportKHR"),
@@ -1018,12 +1036,25 @@ impl Drop for Instance {
 struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
+    sample_count: vk::VkSampleCountFlagBits,
 }
 
 struct DeviceFns {
     destroy_device: vk::PFN_vkDestroyDevice,
     get_device_queue: vk::PFN_vkGetDeviceQueue,
     device_wait_idle: vk::PFN_vkDeviceWaitIdle,
+    create_buffer: vk::PFN_vkCreateBuffer,
+    destroy_buffer: vk::PFN_vkDestroyBuffer,
+    get_buffer_memory_requirements: vk::PFN_vkGetBufferMemoryRequirements,
+    create_image: vk::PFN_vkCreateImage,
+    destroy_image: vk::PFN_vkDestroyImage,
+    get_image_memory_requirements: vk::PFN_vkGetImageMemoryRequirements,
+    allocate_memory: vk::PFN_vkAllocateMemory,
+    free_memory: vk::PFN_vkFreeMemory,
+    bind_buffer_memory: vk::PFN_vkBindBufferMemory,
+    bind_image_memory: vk::PFN_vkBindImageMemory,
+    map_memory: vk::PFN_vkMapMemory,
+    unmap_memory: vk::PFN_vkUnmapMemory,
     create_swapchain: vk::PFN_vkCreateSwapchainKHR,
     destroy_swapchain: vk::PFN_vkDestroySwapchainKHR,
     get_swapchain_images: vk::PFN_vkGetSwapchainImagesKHR,
@@ -1031,6 +1062,20 @@ struct DeviceFns {
     queue_present: vk::PFN_vkQueuePresentKHR,
     create_image_view: vk::PFN_vkCreateImageView,
     destroy_image_view: vk::PFN_vkDestroyImageView,
+    create_sampler: vk::PFN_vkCreateSampler,
+    destroy_sampler: vk::PFN_vkDestroySampler,
+    create_descriptor_set_layout: vk::PFN_vkCreateDescriptorSetLayout,
+    destroy_descriptor_set_layout: vk::PFN_vkDestroyDescriptorSetLayout,
+    create_descriptor_pool: vk::PFN_vkCreateDescriptorPool,
+    destroy_descriptor_pool: vk::PFN_vkDestroyDescriptorPool,
+    allocate_descriptor_sets: vk::PFN_vkAllocateDescriptorSets,
+    update_descriptor_sets: vk::PFN_vkUpdateDescriptorSets,
+    create_shader_module: vk::PFN_vkCreateShaderModule,
+    destroy_shader_module: vk::PFN_vkDestroyShaderModule,
+    create_pipeline_layout: vk::PFN_vkCreatePipelineLayout,
+    destroy_pipeline_layout: vk::PFN_vkDestroyPipelineLayout,
+    create_graphics_pipelines: vk::PFN_vkCreateGraphicsPipelines,
+    destroy_pipeline: vk::PFN_vkDestroyPipeline,
     create_command_pool: vk::PFN_vkCreateCommandPool,
     destroy_command_pool: vk::PFN_vkDestroyCommandPool,
     allocate_command_buffers: vk::PFN_vkAllocateCommandBuffers,
@@ -1040,6 +1085,14 @@ struct DeviceFns {
     cmd_pipeline_barrier2: vk::PFN_vkCmdPipelineBarrier2,
     cmd_begin_rendering: vk::PFN_vkCmdBeginRendering,
     cmd_end_rendering: vk::PFN_vkCmdEndRendering,
+    cmd_bind_pipeline: vk::PFN_vkCmdBindPipeline,
+    cmd_bind_descriptor_sets: vk::PFN_vkCmdBindDescriptorSets,
+    cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
+    cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
+    cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
+    cmd_set_viewport: vk::PFN_vkCmdSetViewport,
+    cmd_set_scissor: vk::PFN_vkCmdSetScissor,
+    cmd_draw_indexed_indirect: vk::PFN_vkCmdDrawIndexedIndirect,
     create_semaphore: vk::PFN_vkCreateSemaphore,
     destroy_semaphore: vk::PFN_vkDestroySemaphore,
     create_fence: vk::PFN_vkCreateFence,
@@ -1069,6 +1122,18 @@ impl DeviceFns {
             destroy_device: load!(c"vkDestroyDevice"),
             get_device_queue: load!(c"vkGetDeviceQueue"),
             device_wait_idle: load!(c"vkDeviceWaitIdle"),
+            create_buffer: load!(c"vkCreateBuffer"),
+            destroy_buffer: load!(c"vkDestroyBuffer"),
+            get_buffer_memory_requirements: load!(c"vkGetBufferMemoryRequirements"),
+            create_image: load!(c"vkCreateImage"),
+            destroy_image: load!(c"vkDestroyImage"),
+            get_image_memory_requirements: load!(c"vkGetImageMemoryRequirements"),
+            allocate_memory: load!(c"vkAllocateMemory"),
+            free_memory: load!(c"vkFreeMemory"),
+            bind_buffer_memory: load!(c"vkBindBufferMemory"),
+            bind_image_memory: load!(c"vkBindImageMemory"),
+            map_memory: load!(c"vkMapMemory"),
+            unmap_memory: load!(c"vkUnmapMemory"),
             create_swapchain: load!(c"vkCreateSwapchainKHR"),
             destroy_swapchain: load!(c"vkDestroySwapchainKHR"),
             get_swapchain_images: load!(c"vkGetSwapchainImagesKHR"),
@@ -1076,6 +1141,20 @@ impl DeviceFns {
             queue_present: load!(c"vkQueuePresentKHR"),
             create_image_view: load!(c"vkCreateImageView"),
             destroy_image_view: load!(c"vkDestroyImageView"),
+            create_sampler: load!(c"vkCreateSampler"),
+            destroy_sampler: load!(c"vkDestroySampler"),
+            create_descriptor_set_layout: load!(c"vkCreateDescriptorSetLayout"),
+            destroy_descriptor_set_layout: load!(c"vkDestroyDescriptorSetLayout"),
+            create_descriptor_pool: load!(c"vkCreateDescriptorPool"),
+            destroy_descriptor_pool: load!(c"vkDestroyDescriptorPool"),
+            allocate_descriptor_sets: load!(c"vkAllocateDescriptorSets"),
+            update_descriptor_sets: load!(c"vkUpdateDescriptorSets"),
+            create_shader_module: load!(c"vkCreateShaderModule"),
+            destroy_shader_module: load!(c"vkDestroyShaderModule"),
+            create_pipeline_layout: load!(c"vkCreatePipelineLayout"),
+            destroy_pipeline_layout: load!(c"vkDestroyPipelineLayout"),
+            create_graphics_pipelines: load!(c"vkCreateGraphicsPipelines"),
+            destroy_pipeline: load!(c"vkDestroyPipeline"),
             create_command_pool: load!(c"vkCreateCommandPool"),
             destroy_command_pool: load!(c"vkDestroyCommandPool"),
             allocate_command_buffers: load!(c"vkAllocateCommandBuffers"),
@@ -1085,6 +1164,14 @@ impl DeviceFns {
             cmd_pipeline_barrier2: load!(c"vkCmdPipelineBarrier2"),
             cmd_begin_rendering: load!(c"vkCmdBeginRendering"),
             cmd_end_rendering: load!(c"vkCmdEndRendering"),
+            cmd_bind_pipeline: load!(c"vkCmdBindPipeline"),
+            cmd_bind_descriptor_sets: load!(c"vkCmdBindDescriptorSets"),
+            cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
+            cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
+            cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
+            cmd_set_viewport: load!(c"vkCmdSetViewport"),
+            cmd_set_scissor: load!(c"vkCmdSetScissor"),
+            cmd_draw_indexed_indirect: load!(c"vkCmdDrawIndexedIndirect"),
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
             create_fence: load!(c"vkCreateFence"),
@@ -1280,6 +1367,15 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                     Adapter {
                         handle,
                         queue_family: u32::try_from(index).expect("queue family index"),
+                        sample_count: if properties.limits.framebufferColorSampleCounts
+                            & properties.limits.framebufferDepthSampleCounts
+                            & vk::VK_SAMPLE_COUNT_4_BIT as u32
+                            != 0
+                        {
+                            vk::VK_SAMPLE_COUNT_4_BIT
+                        } else {
+                            vk::VK_SAMPLE_COUNT_1_BIT
+                        },
                     },
                 ));
                 break;

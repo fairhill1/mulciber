@@ -194,6 +194,20 @@ graphics comparison pair. This is an AppKit-first design experiment; physical ma
 Win32, Wayland, and X11 implementations remain pending, so no cross-platform input support is
 claimed. See the [experimental input contract](input-contract.md).
 
+Two-pass extraction progress: a separate postprocess comparison now renders the textured scene into
+generation-bound resolved color and samples it in a fullscreen grade/vignette pass. The public
+checkpoint adds dedicated postprocess target/pipeline handles and one fixed two-pass queue operation;
+it deliberately does not generalize into a command encoder from one sequence. Metal and the wgpu
+peer passed physical validation-layer visual smokes on the Apple M2 tier. The Vulkan implementation
+compiles and lints for Win32, including its explicit color-write-to-fragment-sample transition, but
+physical Vulkan execution remains pending. The minimal cube and input pairs stay unchanged. See the
+[experimental postprocess contract](postprocess-contract.md).
+
+A fourth presentation-oriented showcase pair composes the existing input controller with the
+two-pass operation without adding public or backend API. It preserves the three focused baselines
+while making interactive side-by-side Mulciber/wgpu review practical; its application line counts
+remain separate from the pre-registered Gate 2 figures.
+
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
 dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix

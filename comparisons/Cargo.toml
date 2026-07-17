@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["wgpu-cube", "wgpu-input-cube"]
+members = [
+    "wgpu-cube",
+    "wgpu-input-cube",
+    "wgpu-postprocess-cube",
+    "wgpu-showcase-cube",
+]
 
 [workspace.package]
 edition = "2021"

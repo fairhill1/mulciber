@@ -103,6 +103,28 @@ remains unchanged for its recorded line counts. This is native design evidence, 
 input support or the future runtime snapshot API; see the
 [experimental input contract](docs/input-contract.md).
 
+A third, separate comparison pair exercises a real intermediate attachment and pass-to-pass
+dependency without changing either earlier baseline. It renders the cube into resolved offscreen
+color, samples that image in a fullscreen grade/vignette pass, and then presents:
+
+```sh
+cargo run -p mulciber-postprocess-cube
+```
+
+Its peer is `comparisons/wgpu-postprocess-cube`. The Mulciber side deliberately exposes one narrow
+two-pass operation rather than claiming a general command encoder from a single new workload; see
+the [experimental postprocess contract](docs/postprocess-contract.md).
+
+For presentations and composability review, a fourth pair combines the proven input controls with
+the two-pass path while leaving all focused baselines intact:
+
+```sh
+cargo run -p mulciber-showcase-cube
+```
+
+Compare it with `comparisons/wgpu-showcase-cube`. Both start paused and use the same keyboard, drag,
+scroll, transform, shader, MSAA resolve, and fullscreen effect.
+
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:
 

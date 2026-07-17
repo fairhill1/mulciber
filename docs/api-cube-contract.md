@@ -43,13 +43,13 @@ silently stretched or rebound.
 
 Native resource destruction is session-coordinated. Meshes, textures, and pipelines may retain
 dropped allocations until drained shutdown; immediate reclamation is not part of this checkpoint.
-Render targets are the exception: a target from a superseded surface generation is reclaimed by the
-session because continuous live resize would otherwise grow device memory without bound. This is
-safe without new synchronization because draws reject targets that do not match the acquired
-generation, and each backend already guarantees stale targets are free of GPU ownership—Vulkan
-generation advances happen only after the in-flight frame fence is awaited, and Metal command
-buffers retain the textures they reference until completion. Reclaimed targets keep their
-identifiers and are rejected if drawn.
+Direct and postprocess render targets are the exception: a target from a superseded surface
+generation is reclaimed by the session because continuous live resize would otherwise grow device
+memory without bound. This is safe without new synchronization because draws reject targets that do
+not match the acquired generation, and each backend already guarantees stale targets are free of GPU
+ownership—Vulkan generation advances happen only after the in-flight frame fence is awaited, and
+Metal command buffers retain the textures they reference until completion. Reclaimed targets keep
+their identifiers and are rejected if drawn.
 
 An acquired `Frame` owns exactly one drawable or swapchain image. Acquisition reconfigures the
 surface internally for changed window metrics, so a ready frame always matches the requested
@@ -68,6 +68,13 @@ This is deliberately not named a general render pass or command encoder. A reusa
 will be extracted only after a second materially different operation provides evidence for its
 boundaries. The narrow operation must still validate that every handle belongs to the same session
 and that the render targets match the acquired surface generation.
+
+The later [two-pass postprocess checkpoint](postprocess-contract.md) supplies that second operation:
+resolved offscreen color becomes sampled input to a fullscreen pass. It initially adds dedicated
+`PostprocessTargets`, `PostprocessPipeline`, `PostprocessedDraw`, and one fixed two-pass queue method.
+That is deliberate pressure evidence rather than an immediate generalization: one sequence still
+does not settle arbitrary pass ordering, attachment load/store policy, multiple draws, transient
+allocation, or copy/compute integration.
 
 ## Fixed first-slice formats
 

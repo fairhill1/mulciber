@@ -58,8 +58,20 @@ struct PipelineResource {
     depth_state: Object,
 }
 
+struct PostprocessPipelineResource {
+    pipeline: Object,
+    sampler: Object,
+}
+
 struct TargetResource {
     info: SurfaceInfo,
+    multisample_color: Object,
+    depth: Object,
+}
+
+struct PostprocessTargetResource {
+    info: SurfaceInfo,
+    scene_color: Object,
     multisample_color: Object,
     depth: Object,
 }
@@ -79,7 +91,9 @@ pub(crate) struct TexturedSession<'window> {
     meshes: Vec<MeshResource>,
     textures: Vec<TextureResource>,
     pipelines: Vec<PipelineResource>,
+    postprocess_pipelines: Vec<PostprocessPipelineResource>,
     targets: Vec<TargetResource>,
+    postprocess_targets: Vec<PostprocessTargetResource>,
 }
 
 impl<'window> TexturedSession<'window> {
@@ -110,7 +124,9 @@ impl<'window> TexturedSession<'window> {
                 meshes: Vec::new(),
                 textures: Vec::new(),
                 pipelines: Vec::new(),
+                postprocess_pipelines: Vec::new(),
                 targets: Vec::new(),
+                postprocess_targets: Vec::new(),
             },
             if sample_count == 4 {
                 SampleCount::Four
@@ -274,6 +290,17 @@ impl<'window> TexturedSession<'window> {
         resource_id(self.pipelines.len(), "pipeline")
     }
 
+    pub(crate) fn create_postprocess_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+    ) -> Result<u32, GraphicsError> {
+        self.postprocess_pipelines.push(create_postprocess_pipeline(
+            self.surface.device,
+            shader.payload(),
+        )?);
+        resource_id(self.postprocess_pipelines.len(), "postprocess pipeline")
+    }
+
     /// Releases the session's references to render targets from superseded surface generations.
     ///
     /// Draws reject targets that do not match the acquired generation, and committed command
@@ -295,6 +322,21 @@ impl<'window> TexturedSession<'window> {
             target.multisample_color = ptr::null_mut();
             target.depth = ptr::null_mut();
         }
+        for target in &mut self.postprocess_targets {
+            if target.info.generation().get() >= current.get() || target.depth.is_null() {
+                continue;
+            }
+            unsafe {
+                if !target.multisample_color.is_null() {
+                    objc::void(target.multisample_color, c"release");
+                }
+                objc::void(target.scene_color, c"release");
+                objc::void(target.depth, c"release");
+            }
+            target.scene_color = ptr::null_mut();
+            target.multisample_color = ptr::null_mut();
+            target.depth = ptr::null_mut();
+        }
     }
 
     pub(crate) fn create_render_targets(
@@ -312,6 +354,7 @@ impl<'window> TexturedSession<'window> {
             width,
             height,
             self.sample_count,
+            TEXTURE_USAGE_RENDER_TARGET,
         )?;
         let multisample_color = if self.sample_count == 4 {
             match create_target_texture(
@@ -320,6 +363,7 @@ impl<'window> TexturedSession<'window> {
                 width,
                 height,
                 4,
+                TEXTURE_USAGE_RENDER_TARGET,
             ) {
                 Ok(color) => color,
                 Err(failure) => {
@@ -336,6 +380,67 @@ impl<'window> TexturedSession<'window> {
             depth,
         });
         resource_id(self.targets.len(), "render target")
+    }
+
+    pub(crate) fn create_postprocess_targets(
+        &mut self,
+        info: SurfaceInfo,
+    ) -> Result<u32, GraphicsError> {
+        self.reclaim_stale_targets();
+        let width = usize::try_from(info.extent().width())
+            .map_err(|_| GraphicsError::new("target width exceeds usize"))?;
+        let height = usize::try_from(info.extent().height())
+            .map_err(|_| GraphicsError::new("target height exceeds usize"))?;
+        let scene_color = create_target_texture(
+            self.surface.device,
+            PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+            width,
+            height,
+            1,
+            TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
+        )?;
+        let depth = match create_target_texture(
+            self.surface.device,
+            PIXEL_FORMAT_DEPTH32_FLOAT,
+            width,
+            height,
+            self.sample_count,
+            TEXTURE_USAGE_RENDER_TARGET,
+        ) {
+            Ok(depth) => depth,
+            Err(failure) => {
+                unsafe { objc::void(scene_color, c"release") };
+                return Err(failure);
+            }
+        };
+        let multisample_color = if self.sample_count == 4 {
+            match create_target_texture(
+                self.surface.device,
+                PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+                width,
+                height,
+                4,
+                TEXTURE_USAGE_RENDER_TARGET,
+            ) {
+                Ok(color) => color,
+                Err(failure) => {
+                    unsafe {
+                        objc::void(depth, c"release");
+                        objc::void(scene_color, c"release");
+                    }
+                    return Err(failure);
+                }
+            }
+        } else {
+            ptr::null_mut()
+        };
+        self.postprocess_targets.push(PostprocessTargetResource {
+            info,
+            scene_color,
+            multisample_color,
+            depth,
+        });
+        resource_id(self.postprocess_targets.len(), "postprocess target")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -377,6 +482,65 @@ impl<'window> TexturedSession<'window> {
             );
         }
         self.encode_present(token, mesh, texture, pipeline, target, clear)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_postprocessed_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        mesh: u32,
+        texture: u32,
+        scene_pipeline: u32,
+        postprocess_pipeline: u32,
+        targets: u32,
+        transform: [[f32; 4]; 4],
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let mesh = resource_index(mesh, self.meshes.len(), "mesh")?;
+        let texture = resource_index(texture, self.textures.len(), "texture")?;
+        let scene_pipeline = resource_index(scene_pipeline, self.pipelines.len(), "pipeline")?;
+        let postprocess_pipeline = resource_index(
+            postprocess_pipeline,
+            self.postprocess_pipelines.len(),
+            "postprocess pipeline",
+        )?;
+        let target = resource_index(
+            targets,
+            self.postprocess_targets.len(),
+            "postprocess target",
+        )?;
+        if self.postprocess_targets[target].info != token.info() {
+            return Err(GraphicsError::new(
+                "postprocess targets do not match acquired Metal generation",
+            ));
+        }
+        if self.postprocess_targets[target].scene_color.is_null() {
+            return Err(GraphicsError::new(
+                "postprocess targets were reclaimed by a newer surface generation",
+            ));
+        }
+        unsafe {
+            let contents = objc::pointer_value(self.uniform, c"contents");
+            if contents.is_null() {
+                return Err(GraphicsError::new(
+                    "Metal uniform buffer has no CPU address",
+                ));
+            }
+            ptr::copy_nonoverlapping(
+                ptr::from_ref(&transform).cast::<u8>(),
+                contents.cast::<u8>(),
+                64,
+            );
+        }
+        self.encode_postprocessed_present(
+            token,
+            mesh,
+            texture,
+            scene_pipeline,
+            postprocess_pipeline,
+            target,
+            clear,
+        )
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
@@ -514,8 +678,201 @@ impl<'window> TexturedSession<'window> {
         Ok(FrameDisposition::Presented(token.info().generation()))
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn encode_postprocessed_present(
+        &mut self,
+        mut token: TexturedFrameToken,
+        mesh: usize,
+        texture: usize,
+        scene_pipeline: usize,
+        postprocess_pipeline: usize,
+        target: usize,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        unsafe {
+            let drawable = token.0.drawable;
+            let drawable_texture = required(
+                objc::object(drawable, c"texture"),
+                "Metal postprocess drawable texture",
+            )?;
+            let targets = &self.postprocess_targets[target];
+            let scene_pass = required(
+                objc::object(
+                    objc::class(c"MTLRenderPassDescriptor"),
+                    c"renderPassDescriptor",
+                ),
+                "Metal scene render-pass descriptor",
+            )?;
+            let scene_attachments = required(
+                objc::object(scene_pass, c"colorAttachments"),
+                "scene color attachments",
+            )?;
+            let scene_color = required(
+                objc::object_usize(scene_attachments, c"objectAtIndexedSubscript:", 0),
+                "scene color attachment zero",
+            )?;
+            if self.sample_count == 4 {
+                objc::void_object(scene_color, c"setTexture:", targets.multisample_color);
+                objc::void_object(scene_color, c"setResolveTexture:", targets.scene_color);
+                objc::void_usize(
+                    scene_color,
+                    c"setStoreAction:",
+                    STORE_ACTION_MULTISAMPLE_RESOLVE,
+                );
+            } else {
+                objc::void_object(scene_color, c"setTexture:", targets.scene_color);
+                objc::void_usize(scene_color, c"setStoreAction:", STORE_ACTION_STORE);
+            }
+            objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_CLEAR);
+            let [red, green, blue, alpha] = clear.components();
+            objc::void_clear_color(
+                scene_color,
+                c"setClearColor:",
+                objc::ClearColor {
+                    red: f64::from(red),
+                    green: f64::from(green),
+                    blue: f64::from(blue),
+                    alpha: f64::from(alpha),
+                },
+            );
+            let scene_depth = required(
+                objc::object(scene_pass, c"depthAttachment"),
+                "scene depth attachment",
+            )?;
+            objc::void_object(scene_depth, c"setTexture:", targets.depth);
+            objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
+            objc::void_usize(scene_depth, c"setStoreAction:", STORE_ACTION_DONT_CARE);
+            objc::void_f64(scene_depth, c"setClearDepth:", 1.0);
+
+            let post_pass = required(
+                objc::object(
+                    objc::class(c"MTLRenderPassDescriptor"),
+                    c"renderPassDescriptor",
+                ),
+                "Metal postprocess render-pass descriptor",
+            )?;
+            let post_attachments = required(
+                objc::object(post_pass, c"colorAttachments"),
+                "postprocess color attachments",
+            )?;
+            let post_color = required(
+                objc::object_usize(post_attachments, c"objectAtIndexedSubscript:", 0),
+                "postprocess color attachment zero",
+            )?;
+            objc::void_object(post_color, c"setTexture:", drawable_texture);
+            objc::void_usize(post_color, c"setLoadAction:", LOAD_ACTION_CLEAR);
+            objc::void_usize(post_color, c"setStoreAction:", STORE_ACTION_STORE);
+            objc::void_clear_color(
+                post_color,
+                c"setClearColor:",
+                objc::ClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    alpha: 1.0,
+                },
+            );
+
+            let command = required(
+                objc::object(self.surface.queue, c"commandBuffer"),
+                "Metal postprocess command buffer",
+            )?;
+            let scene_encoder = required(
+                objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
+                "Metal scene render encoder",
+            )?;
+            let pipeline = &self.pipelines[scene_pipeline];
+            let mesh = &self.meshes[mesh];
+            let texture = &self.textures[texture];
+            objc::void_object(scene_encoder, c"setRenderPipelineState:", pipeline.pipeline);
+            objc::void_object(
+                scene_encoder,
+                c"setDepthStencilState:",
+                pipeline.depth_state,
+            );
+            objc::void_object_two_usizes(
+                scene_encoder,
+                c"setVertexBuffer:offset:atIndex:",
+                self.uniform,
+                0,
+                0,
+            );
+            objc::void_object_two_usizes(
+                scene_encoder,
+                c"setVertexBuffer:offset:atIndex:",
+                mesh.vertices,
+                0,
+                1,
+            );
+            objc::void_object_usize(
+                scene_encoder,
+                c"setFragmentTexture:atIndex:",
+                texture.texture,
+                1,
+            );
+            objc::void_object_usize(
+                scene_encoder,
+                c"setFragmentSamplerState:atIndex:",
+                texture.sampler,
+                2,
+            );
+            objc::void_two_usizes_object_usize_object_usize(
+                scene_encoder,
+                c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                PRIMITIVE_TYPE_TRIANGLE,
+                INDEX_TYPE_UINT16,
+                mesh.indices,
+                0,
+                mesh.indirect,
+                0,
+            );
+            objc::void(scene_encoder, c"endEncoding");
+
+            let post_encoder = required(
+                objc::object_object(command, c"renderCommandEncoderWithDescriptor:", post_pass),
+                "Metal postprocess render encoder",
+            )?;
+            let postprocess = &self.postprocess_pipelines[postprocess_pipeline];
+            objc::void_object(
+                post_encoder,
+                c"setRenderPipelineState:",
+                postprocess.pipeline,
+            );
+            objc::void_object_usize(
+                post_encoder,
+                c"setFragmentTexture:atIndex:",
+                targets.scene_color,
+                1,
+            );
+            objc::void_object_usize(
+                post_encoder,
+                c"setFragmentSamplerState:atIndex:",
+                postprocess.sampler,
+                2,
+            );
+            objc::void_three_usizes(
+                post_encoder,
+                c"drawPrimitives:vertexStart:vertexCount:",
+                PRIMITIVE_TYPE_TRIANGLE,
+                0,
+                3,
+            );
+            objc::void(post_encoder, c"endEncoding");
+            objc::void_object(command, c"presentDrawable:", drawable);
+            objc::void(command, c"retain");
+            objc::void(command, c"commit");
+            self.surface.last_command_buffer = command;
+            token.0.drawable = ptr::null_mut();
+        }
+        Ok(FrameDisposition::Presented(token.info().generation()))
+    }
+
     fn destroy_resources(&mut self) {
         unsafe {
+            for pipeline in self.postprocess_pipelines.drain(..) {
+                objc::void(pipeline.sampler, c"release");
+                objc::void(pipeline.pipeline, c"release");
+            }
             for pipeline in self.pipelines.drain(..) {
                 objc::void(pipeline.depth_state, c"release");
                 objc::void(pipeline.pipeline, c"release");
@@ -527,6 +884,17 @@ impl<'window> TexturedSession<'window> {
             for target in self.targets.drain(..) {
                 if !target.multisample_color.is_null() {
                     objc::void(target.multisample_color, c"release");
+                }
+                if !target.depth.is_null() {
+                    objc::void(target.depth, c"release");
+                }
+            }
+            for target in self.postprocess_targets.drain(..) {
+                if !target.multisample_color.is_null() {
+                    objc::void(target.multisample_color, c"release");
+                }
+                if !target.scene_color.is_null() {
+                    objc::void(target.scene_color, c"release");
                 }
                 if !target.depth.is_null() {
                     objc::void(target.depth, c"release");
@@ -547,8 +915,10 @@ impl<'window> TexturedSession<'window> {
         // session's destructor. Release the now-empty arenas' allocations here
         // so that path does not retain their backing storage.
         self.pipelines = Vec::new();
+        self.postprocess_pipelines = Vec::new();
         self.textures = Vec::new();
         self.targets = Vec::new();
+        self.postprocess_targets = Vec::new();
         self.meshes = Vec::new();
     }
 }
@@ -676,6 +1046,99 @@ fn create_pipeline(
     }
 }
 
+fn create_postprocess_pipeline(
+    device: Object,
+    bytes: &[u8],
+) -> Result<PostprocessPipelineResource, GraphicsError> {
+    unsafe {
+        let data = required(
+            dispatch_data_create(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ),
+            "Metal postprocess library data",
+        )?;
+        let mut library_error = ptr::null_mut();
+        let library = objc::object_object_out(
+            device,
+            c"newLibraryWithData:error:",
+            data,
+            &raw mut library_error,
+        );
+        if library.is_null() {
+            return Err(GraphicsError::new(format!(
+                "loading postprocess metallib failed: {}",
+                objc::description(library_error)
+            )));
+        }
+        let vertex = required(
+            objc::object_object(
+                library,
+                c"newFunctionWithName:",
+                objc::ns_string(c"post_vertex"),
+            ),
+            "Metal postprocess vertex function",
+        )?;
+        let fragment = required(
+            objc::object_object(
+                library,
+                c"newFunctionWithName:",
+                objc::ns_string(c"post_fragment"),
+            ),
+            "Metal postprocess fragment function",
+        )?;
+        let descriptor = required(
+            objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
+            "Metal postprocess pipeline descriptor",
+        )?;
+        objc::void_object(descriptor, c"setVertexFunction:", vertex);
+        objc::void_object(descriptor, c"setFragmentFunction:", fragment);
+        objc::void_usize(descriptor, c"setSampleCount:", 1);
+        let colors = required(
+            objc::object(descriptor, c"colorAttachments"),
+            "postprocess pipeline colors",
+        )?;
+        let color = required(
+            objc::object_usize(colors, c"objectAtIndexedSubscript:", 0),
+            "postprocess pipeline color zero",
+        )?;
+        objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
+        let mut pipeline_error = ptr::null_mut();
+        let pipeline = objc::object_object_out(
+            device,
+            c"newRenderPipelineStateWithDescriptor:error:",
+            descriptor,
+            &raw mut pipeline_error,
+        );
+        if pipeline.is_null() {
+            return Err(GraphicsError::new(format!(
+                "creating Metal postprocess pipeline failed: {}",
+                objc::description(pipeline_error)
+            )));
+        }
+        let sampler_descriptor = required(
+            objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
+            "Metal postprocess sampler descriptor",
+        )?;
+        objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
+        objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
+        let sampler = required(
+            objc::object_object(
+                device,
+                c"newSamplerStateWithDescriptor:",
+                sampler_descriptor,
+            ),
+            "Metal postprocess sampler",
+        )?;
+        for object in [sampler_descriptor, descriptor, fragment, vertex, library] {
+            objc::void(object, c"release");
+        }
+        Ok(PostprocessPipelineResource { pipeline, sampler })
+    }
+}
+
 unsafe fn configure_vertex_descriptor(descriptor: Object) -> Result<(), GraphicsError> {
     unsafe {
         let vertex = required(
@@ -713,6 +1176,7 @@ fn create_target_texture(
     width: usize,
     height: usize,
     sample_count: usize,
+    usage: usize,
 ) -> Result<Object, GraphicsError> {
     unsafe {
         let descriptor = required(
@@ -733,7 +1197,7 @@ fn create_target_texture(
         } else {
             objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
         }
-        objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_RENDER_TARGET);
+        objc::void_usize(descriptor, c"setUsage:", usage);
         required(
             objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
             "Metal render target texture",

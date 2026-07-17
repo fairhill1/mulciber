@@ -55,11 +55,17 @@ replacement). Recorded in the
 
 ## Resource use and synchronization
 
-Decided for the slice, deliberately narrow. The queue exposes one resource-backed operation — draw
-one indexed textured mesh with depth into generation-matched targets and present — with all hazard
-translation backend-owned. No general render-pass or command-encoder vocabulary exists yet; it will
-be extracted only when a second materially different operation provides evidence for its
-boundaries. Recorded in the [textured-cube contract](api-cube-contract.md).
+Decided for the slice, deliberately narrow. The queue first exposed one resource-backed operation —
+draw one indexed textured mesh with depth into generation-matched targets and present — with all
+hazard translation backend-owned. A later two-pass checkpoint adds generation-bound resolved scene
+color and a fixed fullscreen sampled pass. Metal uses ordered encoders; Vulkan derives the explicit
+color-attachment-write to fragment-sampled-read transition behind the same safe operation.
+
+No general render-pass or command-encoder vocabulary exists yet. The second operation establishes a
+real intermediate-resource dependency but still does not constrain arbitrary pass ordering,
+load/store policy, multiple draws, transient allocation, or copy/compute integration enough to
+justify a broad API. Recorded in the [textured-cube contract](api-cube-contract.md) and
+[two-pass postprocess contract](postprocess-contract.md).
 
 ## Capabilities and fallbacks
 

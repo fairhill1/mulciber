@@ -2156,6 +2156,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "wgpu-postprocess-cube"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "wgpu-showcase-cube"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "wgpu-types"
 version = "30.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

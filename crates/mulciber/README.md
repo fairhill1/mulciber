@@ -10,5 +10,10 @@ contract and adding a const `ClearColor` constructor for literals. Both probes c
 contract and have passed their platform validation matrices after integration. The API remains
 research-stage and may change without compatibility guarantees.
 
+The current repository also contains an unreleased two-pass experiment with generation-bound
+offscreen scene color, a fullscreen postprocess pipeline, and one narrow postprocessed draw/present
+operation. It is pressure evidence for a future command vocabulary, not a stable render-pass or
+frame-graph API.
+
 Development and runnable probes live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).

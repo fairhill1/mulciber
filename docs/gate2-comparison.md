@@ -78,8 +78,42 @@ These are source-size facts, not an input-ergonomics verdict. The wgpu input app
 graphics comparison's finite/fallback validation switches so both input examples are ordinary
 interactive programs; results must discuss total behavior and plumbing rather than subtracting the
 differently scoped historical cube figures. The Mulciber input cube passed an iterative physical
-AppKit review recorded in the macOS runbook. The wgpu peer compiled and linted on that machine but has
-not yet been physically exercised, so no behavioral comparison is recorded here.
+AppKit review recorded in the macOS runbook. Later the same day, the operator reported that the wgpu
+peer worked correctly in an interactive smoke run. That closes the missing basic physical smoke but
+does not establish the full focus, capture, repeat, scroll-unit, or minimize/restore checklist for
+either side.
+
+### Post-record two-pass extension
+
+On 2026-07-17, a third separate pair added a fixed offscreen scene pass followed by a fullscreen
+sampled grade/vignette pass. The original cube and input pairs remain unchanged. This extension tests
+intermediate attachment ownership and one real producer-to-consumer dependency; it does not change
+the pre-registered baseline results or claim a general command encoder.
+
+Both `mulciber-postprocess-cube` and `wgpu-postprocess-cube` use the same 62-line four-entry WGSL
+module, scene data, transform, preferred four-sample scene path, resolved single-sample color, and
+fullscreen effect. Raw `wc -l` application-source counts are:
+
+| Source | Lines |
+| --- | --- |
+| `mulciber-postprocess-cube` (`main.rs` + `scene.rs`) | 94 + 74 |
+| `wgpu-postprocess-cube` (`main.rs` + `scene.rs`) | 562 + 81 |
+
+These are application-plumbing facts, not total implementation-cost figures. Mulciber's private
+Metal/Vulkan implementation is library code whose correctness and maintenance cost remain part of
+the Gate 2/6 decision. On the Apple M2 tier both applications physically ran under
+`MTL_DEBUG_LAYER=1`, selected four samples, showed equivalent graded/vignetted output, closed
+normally, and emitted no Metal diagnostics beyond the enabled banner. Vulkan compiles and lints for
+the Windows target but has not been physically run for this extension. See the
+[two-pass postprocess contract](postprocess-contract.md).
+
+For presentation and composition review, `mulciber-showcase-cube` and `wgpu-showcase-cube` combine
+that two-pass workload with the exact input controls from the input pair. They remain a fourth pair
+instead of modifying any focused baseline. Raw Rust source counts are 206 + 80 lines for Mulciber
+and 220 + 530 + 82 lines for wgpu; the wgpu `gpu.rs` split is included in full. Unlike the fixed
+postprocess peer, the showcase wgpu path also performs a four-sample capability check and equivalent
+one-sample fallback. The Mulciber side required no new public or backend API to compose input with
+postprocessing.
 
 ## Fixed measurement configuration
 

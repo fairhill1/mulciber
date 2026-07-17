@@ -1,5 +1,37 @@
 # macOS AppKit/Metal validation runbook
 
+## Two-pass postprocess checkpoint
+
+The separate `mulciber-postprocess-cube` renders the existing textured/depth-tested scene into
+resolved offscreen color, samples that image in a fullscreen grade/vignette pass, and presents. Run
+it with:
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-postprocess-cube
+```
+
+On 2026-07-17, an uncommitted tree based on `ce3cd3c` ran this example on the Apple M2 / macOS
+15.7.7 machine. It selected Metal and four samples. An unobstructed screenshot showed the spinning
+checkerboard cube with the expected desaturation/color grade and darker window corners, establishing
+that the resolved scene texture reached the fullscreen pass with the intended orientation. The
+window closed through its titlebar, the process exited zero, and Metal emitted only its
+validation-enabled banner.
+
+The equivalent `wgpu-postprocess-cube` then ran on the same machine with `MTL_DEBUG_LAYER=1`, selected
+wgpu's Metal backend and four samples, and showed the same shader effect and upright sampling. It
+also closed normally with exit code zero and no Metal validation diagnostics beyond the banner. The
+screenshots were visually inspected rather than compared through deterministic readback. This run
+did not record resize, minimize/restore, abandonment, forced one-sample behavior, other hardware, or
+Vulkan execution.
+
+The combined `mulciber-showcase-cube` and `wgpu-showcase-cube` were then launched separately under
+the same validation layer. Both selected four samples, rendered the postprocessed interactive scene,
+accepted their equivalent keyboard, drag, scroll, spin-toggle, and reset controls to the operator's
+satisfaction, closed through the titlebar, and exited zero with no diagnostics beyond the enabled
+banner. This establishes the ordinary showcase controls, composition, rendering, and shutdown; it
+does not independently establish outside-window release, focus invalidation, key repeat, every
+scroll unit, minimize/restore, or resize behavior.
+
 ## Input-transition checkpoint
 
 The AppKit-first input experiment delivers physical keys, aggregate modifiers, logical-coordinate
@@ -43,8 +75,9 @@ top-left Y sign, and the operator confirmed vertical drag felt correct. This ite
 the final key-responder and vertical-drag paths plus validation-clean rendering and shutdown. It does
 not by itself claim that every checklist action above—especially outside-window button release,
 focus invalidation, key repeat, minimize/restore, or every scroll unit—was independently observed.
-The `wgpu-input-cube` peer compiled and linted on the same Mac but was not physically run in this
-record.
+The `wgpu-input-cube` peer compiled and linted on the same Mac. Later the same day the operator ran it
+and reported that it worked correctly, establishing a basic interactive smoke but not the complete
+input checklist above.
 
 ## Render-target reclamation evidence
 

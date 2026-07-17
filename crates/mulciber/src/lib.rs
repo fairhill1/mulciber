@@ -36,8 +36,9 @@ pub use presentation::{
 pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
-    Device, DeviceRequest, DeviceSelection, Frame, Mesh, OpenedGraphics, Queue, RenderTargets,
-    SampleCount, Surface, Texture, TexturedDraw, TexturedPipeline, Vertex,
+    Device, DeviceRequest, DeviceSelection, Frame, Mesh, OpenedGraphics, PostprocessPipeline,
+    PostprocessTargets, PostprocessedDraw, Queue, RenderTargets, SampleCount, Surface, Texture,
+    TexturedDraw, TexturedPipeline, Vertex,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

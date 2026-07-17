@@ -198,10 +198,28 @@ name = "mulciber-platform"
 version = "0.2.0"
 
 [[package]]
+name = "mulciber-postprocess-cube"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-shader"
 version = "0.1.1"
 dependencies = [
  "naga",
+]
+
+[[package]]
+name = "mulciber-showcase-cube"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "mulciber",
+ "mulciber-platform",
 ]
 
 [[package]]

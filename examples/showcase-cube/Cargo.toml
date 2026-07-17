@@ -1,0 +1,16 @@
+[package]
+name = "mulciber-showcase-cube"
+description = "Interactive two-pass showcase through Mulciber's native Metal and Vulkan backends"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+glam = { version = "0.33.2", default-features = false, features = ["std"] }
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

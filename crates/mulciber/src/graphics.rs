@@ -232,6 +232,25 @@ impl Device<'_> {
         })
     }
 
+    /// Creates the single-sample fullscreen pipeline for the post-processing checkpoint.
+    ///
+    /// The shader module must contain `post_vertex` and `post_fragment` entry points. The
+    /// fragment stage samples the resolved scene color through bindings 1 and 2.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when native shader loading, sampler creation, or pipeline creation fails.
+    pub fn create_postprocess_pipeline(
+        &self,
+        shader: ShaderArtifact<'_>,
+    ) -> Result<PostprocessPipeline, GraphicsError> {
+        let id = session_mut(&self.shared)?.create_postprocess_pipeline(shader)?;
+        Ok(PostprocessPipeline {
+            session: self.shared.id,
+            id,
+        })
+    }
+
     /// Creates depth and optional multisample color storage for one surface generation.
     ///
     /// # Errors
@@ -240,6 +259,27 @@ impl Device<'_> {
     pub fn create_render_targets(&self, info: SurfaceInfo) -> Result<RenderTargets, GraphicsError> {
         let id = session_mut(&self.shared)?.create_render_targets(info)?;
         Ok(RenderTargets {
+            session: self.shared.id,
+            id,
+            info,
+        })
+    }
+
+    /// Creates depth, resolved scene color, and optional multisample color storage for one surface
+    /// generation.
+    ///
+    /// The resolved scene color is both a render target and the sampled input to the fullscreen
+    /// post-processing pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty extent or native image allocation failure.
+    pub fn create_postprocess_targets(
+        &self,
+        info: SurfaceInfo,
+    ) -> Result<PostprocessTargets, GraphicsError> {
+        let id = session_mut(&self.shared)?.create_postprocess_targets(info)?;
+        Ok(PostprocessTargets {
             session: self.shared.id,
             id,
             info,
@@ -300,6 +340,62 @@ impl Queue<'_> {
             draw.mesh.id,
             draw.texture.id,
             draw.pipeline.id,
+            draw.targets.id,
+            draw.model_view_projection,
+            draw.clear,
+        )
+    }
+
+    /// Draws one indexed textured mesh into sampled offscreen color, runs one fullscreen
+    /// post-processing pass, presents the frame, and consumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mixed-session or stale handles, a non-finite transform, or native
+    /// encoding, synchronization, submission, validation, or presentation failure.
+    pub fn draw_textured_postprocessed_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        draw: PostprocessedDraw<'_>,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        for session in [
+            draw.mesh.session,
+            draw.texture.session,
+            draw.scene_pipeline.session,
+            draw.postprocess_pipeline.session,
+            draw.targets.session,
+        ] {
+            if session != self.shared.id || session != frame.shared.id {
+                return Err(GraphicsError::new(
+                    "graphics handles belong to different sessions",
+                ));
+            }
+        }
+        if draw.targets.info != frame.info {
+            return Err(GraphicsError::new(
+                "postprocess targets are stale for the acquired frame",
+            ));
+        }
+        if !draw
+            .model_view_projection
+            .iter()
+            .flatten()
+            .all(|component| component.is_finite())
+        {
+            return Err(GraphicsError::new(
+                "draw transform must contain only finite values",
+            ));
+        }
+        let token = frame
+            .token
+            .take()
+            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+        session_mut(&self.shared)?.draw_postprocessed_and_present(
+            token,
+            draw.mesh.id,
+            draw.texture.id,
+            draw.scene_pipeline.id,
+            draw.postprocess_pipeline.id,
             draw.targets.id,
             draw.model_view_projection,
             draw.clear,
@@ -377,12 +473,37 @@ pub struct TexturedPipeline {
     id: u32,
 }
 
+/// Single-sample fullscreen pipeline that samples resolved scene color.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostprocessPipeline {
+    session: u64,
+    id: u32,
+}
+
 /// Extent- and generation-dependent color/depth targets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderTargets {
     session: u64,
     id: u32,
     info: SurfaceInfo,
+}
+
+/// Extent- and generation-dependent two-pass color/depth targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostprocessTargets {
+    session: u64,
+    id: u32,
+    info: SurfaceInfo,
+}
+
+impl PostprocessTargets {
+    /// Surface information these targets were created for.
+    ///
+    /// Recreate the targets when an acquired frame reports different surface information.
+    #[must_use]
+    pub const fn info(&self) -> SurfaceInfo {
+        self.info
+    }
 }
 
 impl RenderTargets {
@@ -410,6 +531,25 @@ pub struct TexturedDraw<'resources> {
     /// Column-major model-view-projection matrix.
     pub model_view_projection: [[f32; 4]; 4],
     /// Linear clear color.
+    pub clear: ClearColor,
+}
+
+/// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
+#[derive(Clone, Copy)]
+pub struct PostprocessedDraw<'resources> {
+    /// Geometry to draw into the offscreen scene color.
+    pub mesh: &'resources Mesh,
+    /// Texture sampled by the scene pass.
+    pub texture: &'resources Texture,
+    /// Depth-tested scene pipeline compatible with the selected sample count.
+    pub scene_pipeline: &'resources TexturedPipeline,
+    /// Single-sample fullscreen pipeline that samples the resolved scene color.
+    pub postprocess_pipeline: &'resources PostprocessPipeline,
+    /// Offscreen, depth, and optional multisample targets matching the acquired frame.
+    pub targets: &'resources PostprocessTargets,
+    /// Column-major model-view-projection matrix for the scene draw.
+    pub model_view_projection: [[f32; 4]; 4],
+    /// Linear scene-pass clear color.
     pub clear: ClearColor,
 }
 

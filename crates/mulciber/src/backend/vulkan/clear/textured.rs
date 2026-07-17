@@ -42,11 +42,19 @@ struct PipelineResource {
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
     descriptor_pool: vk::VkDescriptorPool,
+    sampler: vk::VkSampler,
     bindings: Vec<(u32, vk::VkDescriptorSet)>,
 }
 
 struct TargetResource {
     info: SurfaceInfo,
+    multisample_color: Option<Image>,
+    depth: Option<Image>,
+}
+
+struct PostprocessTargetResource {
+    info: SurfaceInfo,
+    scene_color: Option<Image>,
     multisample_color: Option<Image>,
     depth: Option<Image>,
 }
@@ -59,6 +67,8 @@ pub(crate) struct TexturedSession<'window> {
     textures: Vec<TextureResource>,
     pipelines: Vec<PipelineResource>,
     targets: Vec<TargetResource>,
+    postprocess_pipelines: Vec<PipelineResource>,
+    postprocess_targets: Vec<PostprocessTargetResource>,
     deferred_token: Option<TexturedFrameToken>,
 }
 
@@ -103,6 +113,8 @@ impl<'window> TexturedSession<'window> {
                 textures: Vec::new(),
                 pipelines: Vec::new(),
                 targets: Vec::new(),
+                postprocess_pipelines: Vec::new(),
+                postprocess_targets: Vec::new(),
                 deferred_token: None,
             },
             if sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
@@ -259,6 +271,15 @@ impl<'window> TexturedSession<'window> {
         resource_id(self.pipelines.len(), "pipeline")
     }
 
+    pub(crate) fn create_postprocess_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+    ) -> Result<u32, GraphicsError> {
+        let resource = create_postprocess_pipeline(&self.surface, shader.payload())?;
+        self.postprocess_pipelines.push(resource);
+        resource_id(self.postprocess_pipelines.len(), "postprocess pipeline")
+    }
+
     /// Destroys image storage for render targets from superseded surface generations.
     ///
     /// The surface generation advances only inside swapchain recreation, which first waits on the
@@ -273,6 +294,20 @@ impl<'window> TexturedSession<'window> {
                 continue;
             }
             if let Some(color) = target.multisample_color.take() {
+                destroy_image(surface, color);
+            }
+            if let Some(depth) = target.depth.take() {
+                destroy_image(surface, depth);
+            }
+        }
+        for target in &mut self.postprocess_targets {
+            if target.info.generation().get() >= current.get() {
+                continue;
+            }
+            if let Some(color) = target.multisample_color.take() {
+                destroy_image(surface, color);
+            }
+            if let Some(color) = target.scene_color.take() {
                 destroy_image(surface, color);
             }
             if let Some(depth) = target.depth.take() {
@@ -344,6 +379,65 @@ impl<'window> TexturedSession<'window> {
         resource_id(self.targets.len(), "render target")
     }
 
+    pub(crate) fn create_postprocess_targets(
+        &mut self,
+        info: SurfaceInfo,
+    ) -> Result<u32, GraphicsError> {
+        self.reclaim_stale_targets();
+        let extent = info.extent();
+        let scene_color = create_image(
+            &self.surface,
+            extent.width(),
+            extent.height(),
+            self.surface.swapchain.format,
+            (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+            vk::VK_SAMPLE_COUNT_1_BIT,
+        )?;
+        let depth = match create_image(
+            &self.surface,
+            extent.width(),
+            extent.height(),
+            DEPTH_FORMAT,
+            vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
+            vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
+            self.sample_count,
+        ) {
+            Ok(depth) => depth,
+            Err(failure) => {
+                destroy_image(&self.surface, scene_color);
+                return Err(failure);
+            }
+        };
+        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+            match create_image(
+                &self.surface,
+                extent.width(),
+                extent.height(),
+                self.surface.swapchain.format,
+                vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
+                vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                self.sample_count,
+            ) {
+                Ok(image) => Some(image),
+                Err(failure) => {
+                    destroy_image(&self.surface, depth);
+                    destroy_image(&self.surface, scene_color);
+                    return Err(failure);
+                }
+            }
+        } else {
+            None
+        };
+        self.postprocess_targets.push(PostprocessTargetResource {
+            info,
+            scene_color: Some(scene_color),
+            multisample_color,
+            depth: Some(depth),
+        });
+        resource_id(self.postprocess_targets.len(), "postprocess target")
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_and_present(
         &mut self,
@@ -372,6 +466,54 @@ impl<'window> TexturedSession<'window> {
             pipeline_index,
             target_index,
             descriptor,
+            clear,
+        )?;
+        self.surface.submit_recorded(token.image_index)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_postprocessed_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        mesh: u32,
+        texture: u32,
+        scene_pipeline: u32,
+        postprocess_pipeline: u32,
+        targets: u32,
+        transform: [[f32; 4]; 4],
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let mesh_index = resource_index(mesh, self.meshes.len(), "mesh")?;
+        let texture_index = resource_index(texture, self.textures.len(), "texture")?;
+        let scene_pipeline_index =
+            resource_index(scene_pipeline, self.pipelines.len(), "pipeline")?;
+        let postprocess_pipeline_index = resource_index(
+            postprocess_pipeline,
+            self.postprocess_pipelines.len(),
+            "postprocess pipeline",
+        )?;
+        let target_index = resource_index(
+            targets,
+            self.postprocess_targets.len(),
+            "postprocess target",
+        )?;
+        if self.postprocess_targets[target_index].info != token.info {
+            return Err(error(
+                "postprocess targets do not match acquired Vulkan generation",
+            ));
+        }
+        write_buffer(&self.surface, &self.uniform, bytes_of(&transform))?;
+        let scene_descriptor = self.descriptor_set(scene_pipeline_index, texture_index, texture)?;
+        let postprocess_descriptor =
+            self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
+        self.record_postprocessed_draw(
+            token.image_index,
+            mesh_index,
+            scene_pipeline_index,
+            postprocess_pipeline_index,
+            target_index,
+            scene_descriptor,
+            postprocess_descriptor,
             clear,
         )?;
         self.surface.submit_recorded(token.image_index)
@@ -631,6 +773,96 @@ impl<'window> TexturedSession<'window> {
         Ok(set)
     }
 
+    fn postprocess_descriptor_set(
+        &mut self,
+        pipeline_index: usize,
+        target_index: usize,
+        target_id: u32,
+    ) -> Result<vk::VkDescriptorSet, GraphicsError> {
+        if let Some((_, set)) = self.postprocess_pipelines[pipeline_index]
+            .bindings
+            .iter()
+            .find(|(id, _)| *id == target_id)
+        {
+            return Ok(*set);
+        }
+        let scene_color = self.postprocess_targets[target_index]
+            .scene_color
+            .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
+        let pipeline = &mut self.postprocess_pipelines[pipeline_index];
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: pipeline.descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const pipeline.set_layout,
+            ..Default::default()
+        };
+        let mut set = ptr::null_mut();
+        check(
+            unsafe {
+                self.surface
+                    .device()
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.surface.device().handle,
+                    &raw const allocate,
+                    &raw mut set,
+                )
+            },
+            "vkAllocateDescriptorSets for postprocess target",
+        )?;
+        let buffer = vk::VkDescriptorBufferInfo {
+            buffer: self.uniform.handle,
+            offset: 0,
+            range: 64,
+        };
+        let image = vk::VkDescriptorImageInfo {
+            sampler: ptr::null_mut(),
+            imageView: scene_color.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        let sampler = vk::VkDescriptorImageInfo {
+            sampler: pipeline.sampler,
+            ..Default::default()
+        };
+        let writes = [
+            descriptor_write(
+                set,
+                0,
+                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                (&raw const buffer).cast(),
+            ),
+            descriptor_write(
+                set,
+                1,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                (&raw const image).cast(),
+            ),
+            descriptor_write(
+                set,
+                2,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+                (&raw const sampler).cast(),
+            ),
+        ];
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.surface.device().handle,
+                3,
+                writes.as_ptr(),
+                0,
+                ptr::null(),
+            );
+        }
+        pipeline.bindings.push((target_id, set));
+        Ok(set)
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
@@ -881,10 +1113,359 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )]
+    fn record_postprocessed_draw(
+        &mut self,
+        image_index: u32,
+        mesh_index: usize,
+        scene_pipeline_index: usize,
+        postprocess_pipeline_index: usize,
+        target_index: usize,
+        scene_descriptor: vk::VkDescriptorSet,
+        postprocess_descriptor: vk::VkDescriptorSet,
+        clear: ClearColor,
+    ) -> Result<(), GraphicsError> {
+        let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+        let target = &self.postprocess_targets[target_index];
+        let scene_color = target
+            .scene_color
+            .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
+        let target_depth = target
+            .depth
+            .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
+        let multisample_color = target.multisample_color;
+        let image = self.surface.swapchain.images[slot];
+        let view = self.surface.swapchain.views[slot];
+        let old_layout = if self.surface.swapchain.initialized[slot] {
+            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        } else {
+            vk::VK_IMAGE_LAYOUT_UNDEFINED
+        };
+        self.surface.wait_for_frame()?;
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device.functions.reset_fences.expect("loaded function")(
+                    device.handle,
+                    1,
+                    &raw const self.surface.frame_fence,
+                )
+            },
+            "vkResetFences for postprocessed frame",
+        )?;
+        check(
+            unsafe {
+                device
+                    .functions
+                    .reset_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer, 0)
+            },
+            "vkResetCommandBuffer for postprocessed frame",
+        )?;
+        let begin = vk::VkCommandBufferBeginInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT as u32,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                device
+                    .functions
+                    .begin_command_buffer
+                    .expect("loaded function")(
+                    self.surface.command_buffer, &raw const begin
+                )
+            },
+            "vkBeginCommandBuffer for postprocessed frame",
+        )?;
+        let swapchain_barrier = image_barrier(
+            image,
+            old_layout,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            if old_layout == vk::VK_IMAGE_LAYOUT_UNDEFINED {
+                vk::VK_PIPELINE_STAGE_2_NONE
+            } else {
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+            },
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            color_subresource_range(),
+        );
+        let scene_barrier = image_barrier(
+            scene_color.handle,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            color_subresource_range(),
+        );
+        let depth_barrier = image_barrier(
+            target_depth.handle,
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_ACCESS_2_NONE,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            depth_subresource_range(),
+        );
+        let multisample_barrier = multisample_color.map(|color| {
+            image_barrier(
+                color.handle,
+                vk::VK_IMAGE_LAYOUT_UNDEFINED,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_NONE,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_NONE,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                color_subresource_range(),
+            )
+        });
+        if let Some(multisample_barrier) = multisample_barrier {
+            pipeline_barriers(
+                &self.surface,
+                &[
+                    swapchain_barrier,
+                    scene_barrier,
+                    depth_barrier,
+                    multisample_barrier,
+                ],
+            );
+        } else {
+            pipeline_barriers(
+                &self.surface,
+                &[swapchain_barrier, scene_barrier, depth_barrier],
+            );
+        }
+
+        let scene_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: multisample_color.map_or(scene_color.view, |color| color.view),
+            imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            resolveMode: if multisample_color.is_some() {
+                vk::VK_RESOLVE_MODE_AVERAGE_BIT
+            } else {
+                vk::VK_RESOLVE_MODE_NONE
+            },
+            resolveImageView: multisample_color.map_or(ptr::null_mut(), |_| scene_color.view),
+            resolveImageLayout: if multisample_color.is_some() {
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            } else {
+                vk::VK_IMAGE_LAYOUT_UNDEFINED
+            },
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                color: vk::VkClearColorValue {
+                    float32: clear.components(),
+                },
+            },
+            ..Default::default()
+        };
+        let depth_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: target_depth.view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            clearValue: vk::VkClearValue {
+                depthStencil: vk::VkClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
+        let area = vk::VkRect2D {
+            offset: vk::VkOffset2D { x: 0, y: 0 },
+            extent: self.surface.swapchain.extent,
+        };
+        let scene_rendering = vk::VkRenderingInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
+            renderArea: area,
+            layerCount: 1,
+            colorAttachmentCount: 1,
+            pColorAttachments: &raw const scene_attachment,
+            pDepthAttachment: &raw const depth_attachment,
+            ..Default::default()
+        };
+        let viewport = vk::VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: area.extent.width as f32,
+            height: area.extent.height as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
+        };
+        let mesh = &self.meshes[mesh_index];
+        let scene_pipeline = &self.pipelines[scene_pipeline_index];
+        let offset = 0;
+        unsafe {
+            let functions = &device.functions;
+            functions.cmd_begin_rendering.expect("loaded function")(
+                self.surface.command_buffer,
+                &raw const scene_rendering,
+            );
+            functions.cmd_bind_pipeline.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                scene_pipeline.pipeline,
+            );
+            functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                scene_pipeline.layout,
+                0,
+                1,
+                &raw const scene_descriptor,
+                0,
+                ptr::null(),
+            );
+            functions.cmd_set_viewport.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const viewport,
+            );
+            functions.cmd_set_scissor.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const area,
+            );
+            functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const mesh.vertices.handle,
+                &raw const offset,
+            );
+            functions.cmd_bind_index_buffer.expect("loaded function")(
+                self.surface.command_buffer,
+                mesh.indices.handle,
+                0,
+                vk::VK_INDEX_TYPE_UINT16,
+            );
+            functions
+                .cmd_draw_indexed_indirect
+                .expect("loaded function")(
+                self.surface.command_buffer,
+                mesh.indirect.handle,
+                0,
+                1,
+                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                    .expect("indirect command size fits u32"),
+            );
+            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+        }
+
+        let sample_scene = image_barrier(
+            scene_color.handle,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            color_subresource_range(),
+        );
+        pipeline_barrier(&self.surface, &sample_scene);
+        let post_attachment = vk::VkRenderingAttachmentInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            imageView: view,
+            imageLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
+            clearValue: vk::VkClearValue {
+                color: vk::VkClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
+            },
+            ..Default::default()
+        };
+        let post_rendering = vk::VkRenderingInfo {
+            sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
+            renderArea: area,
+            layerCount: 1,
+            colorAttachmentCount: 1,
+            pColorAttachments: &raw const post_attachment,
+            ..Default::default()
+        };
+        let post_pipeline = &self.postprocess_pipelines[postprocess_pipeline_index];
+        unsafe {
+            let functions = &device.functions;
+            functions.cmd_begin_rendering.expect("loaded function")(
+                self.surface.command_buffer,
+                &raw const post_rendering,
+            );
+            functions.cmd_bind_pipeline.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                post_pipeline.pipeline,
+            );
+            functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                post_pipeline.layout,
+                0,
+                1,
+                &raw const postprocess_descriptor,
+                0,
+                ptr::null(),
+            );
+            functions.cmd_set_viewport.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const viewport,
+            );
+            functions.cmd_set_scissor.expect("loaded function")(
+                self.surface.command_buffer,
+                0,
+                1,
+                &raw const area,
+            );
+            functions.cmd_draw.expect("loaded function")(self.surface.command_buffer, 3, 1, 0, 0);
+            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+        }
+        let present = image_barrier(
+            image,
+            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            vk::VK_PIPELINE_STAGE_2_NONE,
+            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            vk::VK_ACCESS_2_NONE,
+            color_subresource_range(),
+        );
+        pipeline_barrier(&self.surface, &present);
+        check(
+            unsafe {
+                device
+                    .functions
+                    .end_command_buffer
+                    .expect("loaded function")(self.surface.command_buffer)
+            },
+            "vkEndCommandBuffer for postprocessed frame",
+        )
+    }
+
     fn destroy_resources(&mut self) {
         let device = self.surface.device();
         unsafe {
-            for pipeline in self.pipelines.drain(..) {
+            for pipeline in self
+                .pipelines
+                .drain(..)
+                .chain(self.postprocess_pipelines.drain(..))
+            {
                 device.functions.destroy_pipeline.expect("loaded function")(
                     device.handle,
                     pipeline.pipeline,
@@ -910,6 +1491,13 @@ impl<'window> TexturedSession<'window> {
                     .expect("loaded function")(
                     device.handle, pipeline.set_layout, ptr::null()
                 );
+                if !pipeline.sampler.is_null() {
+                    device.functions.destroy_sampler.expect("loaded function")(
+                        device.handle,
+                        pipeline.sampler,
+                        ptr::null(),
+                    );
+                }
             }
             for texture in self.textures.drain(..) {
                 device.functions.destroy_sampler.expect("loaded function")(
@@ -921,6 +1509,17 @@ impl<'window> TexturedSession<'window> {
             }
             for target in self.targets.drain(..) {
                 if let Some(color) = target.multisample_color {
+                    destroy_image_device(device, color);
+                }
+                if let Some(depth) = target.depth {
+                    destroy_image_device(device, depth);
+                }
+            }
+            for target in self.postprocess_targets.drain(..) {
+                if let Some(color) = target.multisample_color {
+                    destroy_image_device(device, color);
+                }
+                if let Some(color) = target.scene_color {
                     destroy_image_device(device, color);
                 }
                 if let Some(depth) = target.depth {
@@ -1308,6 +1907,7 @@ fn create_pipeline(
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
         descriptor_pool: ptr::null_mut(),
+        sampler: ptr::null_mut(),
         bindings: Vec::new(),
     };
     check(
@@ -1517,6 +2117,252 @@ fn create_pipeline(
             )
         },
         "vkCreateDescriptorPool for textured pipeline",
+    )?;
+    Ok(resource)
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_postprocess_pipeline(
+    surface: &ClearSurface<'_>,
+    bytes: &[u8],
+) -> Result<PipelineResource, GraphicsError> {
+    let device = surface.device();
+    let bindings = [
+        layout_binding(
+            0,
+            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
+        ),
+        layout_binding(
+            1,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+        ),
+        layout_binding(
+            2,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+        ),
+    ];
+    let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        bindingCount: 3,
+        pBindings: bindings.as_ptr(),
+        ..Default::default()
+    };
+    let mut resource = PipelineResource {
+        set_layout: ptr::null_mut(),
+        layout: ptr::null_mut(),
+        pipeline: ptr::null_mut(),
+        descriptor_pool: ptr::null_mut(),
+        sampler: ptr::null_mut(),
+        bindings: Vec::new(),
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_descriptor_set_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const layout_info,
+                ptr::null(),
+                &raw mut resource.set_layout,
+            )
+        },
+        "vkCreateDescriptorSetLayout for postprocess pipeline",
+    )?;
+    let pipeline_layout = vk::VkPipelineLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        setLayoutCount: 1,
+        pSetLayouts: &raw const resource.set_layout,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_pipeline_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const pipeline_layout,
+                ptr::null(),
+                &raw mut resource.layout,
+            )
+        },
+        "vkCreatePipelineLayout for postprocess pipeline",
+    )?;
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let module_info = vk::VkShaderModuleCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        codeSize: bytes.len(),
+        pCode: words.as_ptr(),
+        ..Default::default()
+    };
+    let mut module = ptr::null_mut();
+    check(
+        unsafe {
+            device
+                .functions
+                .create_shader_module
+                .expect("loaded function")(
+                device.handle,
+                &raw const module_info,
+                ptr::null(),
+                &raw mut module,
+            )
+        },
+        "vkCreateShaderModule for postprocess pipeline",
+    )?;
+    let stages = [
+        shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, module, c"post_vertex"),
+        shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, module, c"post_fragment"),
+    ];
+    let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        ..Default::default()
+    };
+    let assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        ..Default::default()
+    };
+    let viewport = vk::VkPipelineViewportStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount: 1,
+        scissorCount: 1,
+        ..Default::default()
+    };
+    let raster = vk::VkPipelineRasterizationStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode: vk::VK_POLYGON_MODE_FILL,
+        cullMode: vk::VK_CULL_MODE_NONE as u32,
+        frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        lineWidth: 1.0,
+        ..Default::default()
+    };
+    let multisample = vk::VkPipelineMultisampleStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
+        ..Default::default()
+    };
+    let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
+        colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
+            | vk::VK_COLOR_COMPONENT_G_BIT
+            | vk::VK_COLOR_COMPONENT_B_BIT
+            | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
+        ..Default::default()
+    };
+    let blend = vk::VkPipelineColorBlendStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount: 1,
+        pAttachments: &raw const blend_attachment,
+        ..Default::default()
+    };
+    let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
+    let dynamic = vk::VkPipelineDynamicStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: 2,
+        pDynamicStates: dynamic_states.as_ptr(),
+        ..Default::default()
+    };
+    let color_format = surface.swapchain.format;
+    let rendering = vk::VkPipelineRenderingCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: &raw const color_format,
+        ..Default::default()
+    };
+    let pipeline_info = vk::VkGraphicsPipelineCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        pNext: (&raw const rendering).cast(),
+        stageCount: 2,
+        pStages: stages.as_ptr(),
+        pVertexInputState: &raw const vertex_input,
+        pInputAssemblyState: &raw const assembly,
+        pViewportState: &raw const viewport,
+        pRasterizationState: &raw const raster,
+        pMultisampleState: &raw const multisample,
+        pColorBlendState: &raw const blend,
+        pDynamicState: &raw const dynamic,
+        layout: resource.layout,
+        basePipelineIndex: -1,
+        ..Default::default()
+    };
+    let result = check(
+        unsafe {
+            device
+                .functions
+                .create_graphics_pipelines
+                .expect("loaded function")(
+                device.handle,
+                ptr::null_mut(),
+                1,
+                &raw const pipeline_info,
+                ptr::null(),
+                &raw mut resource.pipeline,
+            )
+        },
+        "vkCreateGraphicsPipelines for postprocess pipeline",
+    );
+    unsafe {
+        device
+            .functions
+            .destroy_shader_module
+            .expect("loaded function")(device.handle, module, ptr::null());
+    }
+    result?;
+    let sampler_info = vk::VkSamplerCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        magFilter: vk::VK_FILTER_LINEAR,
+        minFilter: vk::VK_FILTER_LINEAR,
+        mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        maxAnisotropy: 1.0,
+        maxLod: 0.0,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.create_sampler.expect("loaded function")(
+                device.handle,
+                &raw const sampler_info,
+                ptr::null(),
+                &raw mut resource.sampler,
+            )
+        },
+        "vkCreateSampler for postprocess pipeline",
+    )?;
+    let pool_sizes = [
+        pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
+        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
+        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLER),
+    ];
+    let pool_info = vk::VkDescriptorPoolCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        maxSets: 64,
+        poolSizeCount: 3,
+        pPoolSizes: pool_sizes.as_ptr(),
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_descriptor_pool
+                .expect("loaded function")(
+                device.handle,
+                &raw const pool_info,
+                ptr::null(),
+                &raw mut resource.descriptor_pool,
+            )
+        },
+        "vkCreateDescriptorPool for postprocess pipeline",
     )?;
     Ok(resource)
 }

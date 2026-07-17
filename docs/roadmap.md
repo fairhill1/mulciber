@@ -46,10 +46,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   shutdown; display-change, explicit zero-sized suspension, input, and broader compositor/hardware
   evidence remain outstanding).
 - [ ] X11 window with a Vulkan 1.4 swapchain and triangle (implemented as a runtime-selected peer
-  of the Wayland module with `WM_DELETE_WINDOW` and structure-notification handling; exercised on
-  KDE Plasma through XWayland in automated validation-clean finite runs while the session was
-  locked, so frame pacing was compositor-throttled; physical resize/minimize/close interaction,
-  unlocked-session pacing, display changes, input, and native Xorg coverage remain outstanding).
+  of the Wayland module with `WM_DELETE_WINDOW`, structure-notification, and
+  `_NET_WM_SYNC_REQUEST` interactive-resize handling; physically exercised on KDE Plasma through
+  XWayland with validation-clean unlocked 75 Hz pacing, live drag resize, minimize/restore,
+  maximize/restore, window-manager close, and clean shutdown; display changes, input,
+  multi-display, and native Xorg coverage remain outstanding).
 - [x] Replace conventional device-idle swapchain retirement with tracked presentation completion
   using presentation fences when available and a deferred-retirement fallback.
 

@@ -134,11 +134,11 @@ and creates an unconfigured `wl_surface`, which is sufficient for Vulkan surface
 Both report paths are implemented and physically exercised on a Vulkan 1.4 Nvidia system: Wayland
 ran natively under KDE Plasma and X11 ran through XWayland. The separate triangle probe has peer
 Wayland and X11 platform modules selected at runtime: an XDG-shell Wayland window with server-side
-decorations and paced resize commits, and an Xlib window with `WM_DELETE_WINDOW` handling and
-structure-notification resize tracking. Initial physical Wayland lifecycle evidence and initial
-automated XWayland X11 presentation evidence are recorded in the
-[Linux validation runbook](docs/linux-validation.md). Physical X11 lifecycle interaction, native
-Xorg coverage, display changes, input, and broader Linux hardware/driver evidence remain pending.
+decorations and paced resize commits, and an Xlib window with `WM_DELETE_WINDOW` handling,
+structure-notification resize tracking, and `_NET_WM_SYNC_REQUEST` sync-gated interactive resize.
+Physical presentation, pacing, and lifecycle evidence for both paths is recorded in the
+[Linux validation runbook](docs/linux-validation.md). Native Xorg coverage, display changes,
+input, and broader Linux hardware/driver evidence remain pending.
 
 ```sh
 cargo run -p mulciber-vulkan-triangle -- --frames 600

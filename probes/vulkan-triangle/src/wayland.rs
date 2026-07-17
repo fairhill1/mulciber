@@ -282,8 +282,10 @@ unsafe extern "C" {
     fn wl_display_disconnect(display: *mut vk::wl_display);
     fn wl_display_roundtrip(display: *mut vk::wl_display) -> c_int;
     fn wl_display_dispatch_pending(display: *mut vk::wl_display) -> c_int;
-    fn wl_display_dispatch(display: *mut vk::wl_display) -> c_int;
     fn wl_display_flush(display: *mut vk::wl_display) -> c_int;
+    fn wl_display_prepare_read(display: *mut vk::wl_display) -> c_int;
+    fn wl_display_read_events(display: *mut vk::wl_display) -> c_int;
+    fn wl_display_cancel_read(display: *mut vk::wl_display);
     fn wl_display_get_fd(display: *mut vk::wl_display) -> c_int;
     fn wl_display_get_error(display: *mut vk::wl_display) -> c_int;
     fn wl_proxy_get_version(proxy: *mut c_void) -> u32;
@@ -692,28 +694,46 @@ impl Window {
         if unsafe { wl_display_flush(self.display) } < 0 {
             return Err(self.display_error("wl_display_flush"));
         }
-        let mut descriptor = PollFd {
-            // SAFETY: The display is connected and owns its event socket.
-            fd: unsafe { wl_display_get_fd(self.display) },
-            events: POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `descriptor` is writable and describes one valid poll entry.
-        let ready = unsafe { poll(&raw mut descriptor, 1, 0) };
-        if ready < 0 {
-            return Err(WindowError("polling the Wayland display failed".into()));
-        }
-        if descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
-            return Err(WindowError(format!(
-                "Wayland display poll failed with revents {:#06x}",
-                descriptor.revents
-            )));
-        }
-        if descriptor.revents & POLLIN != 0
-            // SAFETY: Poll reported readable display events and callback state remains live.
-            && unsafe { wl_display_dispatch(self.display) } < 0
-        {
-            return Err(self.display_error("wl_display_dispatch"));
+        // Socket intake must use the multithread read protocol: the Vulkan driver runs its own
+        // reader thread on this display, so a blocking `wl_display_dispatch` can sleep forever on
+        // socket data that thread already consumed, freezing presentation on a static window.
+        // `wl_display_prepare_read` declines when this queue already holds events; they were
+        // dispatched above and the next pump collects the remainder.
+        // SAFETY: The display remains connected for the whole read-protocol sequence.
+        if unsafe { wl_display_prepare_read(self.display) } == 0 {
+            let mut descriptor = PollFd {
+                // SAFETY: The display is connected and owns its event socket.
+                fd: unsafe { wl_display_get_fd(self.display) },
+                events: POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `descriptor` is writable and describes one valid poll entry.
+            let ready = unsafe { poll(&raw mut descriptor, 1, 0) };
+            if ready < 0 || descriptor.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
+                // SAFETY: Every successful prepare_read requires one read_events or cancel_read.
+                unsafe { wl_display_cancel_read(self.display) };
+                return Err(if ready < 0 {
+                    WindowError("polling the Wayland display failed".into())
+                } else {
+                    WindowError(format!(
+                        "Wayland display poll failed with revents {:#06x}",
+                        descriptor.revents
+                    ))
+                });
+            }
+            if descriptor.revents & POLLIN != 0 {
+                // SAFETY: prepare_read succeeded on this thread and the display socket is readable.
+                if unsafe { wl_display_read_events(self.display) } < 0 {
+                    return Err(self.display_error("wl_display_read_events"));
+                }
+                // SAFETY: The display and callback state remain live throughout event dispatch.
+                if unsafe { wl_display_dispatch_pending(self.display) } < 0 {
+                    return Err(self.display_error("wl_display_dispatch_pending"));
+                }
+            } else {
+                // SAFETY: Every successful prepare_read requires one read_events or cancel_read.
+                unsafe { wl_display_cancel_read(self.display) };
+            }
         }
         // A drag can queue many configure events. Only the newest serial and extent matter; drawing
         // every obsolete intermediate size makes the whole compositor-managed window trail input.

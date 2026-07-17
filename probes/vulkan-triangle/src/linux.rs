@@ -125,10 +125,13 @@ pub(crate) const fn acquire_timeout(window: &Window) -> u64 {
 
 pub(crate) const fn resize_commit_interval(window: &Window) -> Duration {
     // Swapchain recreation supplies fresh images that bypass FIFO acquisition backpressure, so
-    // resize commits are paced on both Linux paths; see the Wayland resize investigation in
-    // docs/linux-validation.md. Native Xorg pacing behavior has not been separately measured.
+    // Wayland resize commits are paced; see the resize investigation in docs/linux-validation.md.
+    // X11 needs no client-side pacing: the `_NET_WM_SYNC_REQUEST` counter already gates each
+    // interactive resize step on the frame that answered it, and the added delay only widens the
+    // stale-content window the server shows between resize step and next presented frame.
     match window {
-        Window::Wayland(_) | Window::X11(_) => Duration::from_millis(16),
+        Window::Wayland(_) => Duration::from_millis(16),
+        Window::X11(_) => Duration::ZERO,
     }
 }
 

@@ -14,24 +14,20 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 - The peer Vulkan triangle probe has runtime-selected Wayland and X11 platform modules behind a
   `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection. The Wayland module creates a
   real XDG-shell toplevel, requests server-side decorations, presents through
-  `VK_KHR_wayland_surface`, coalesces configure events, and paces resize swapchain commits.
-  Initial physical presentation and lifecycle evidence was recorded on the same KDE Plasma system
-  before the runtime-dispatch refactor that added the X11 peer; a Wayland re-run through the
-  refactored dispatch path is pending because KDE suspends FIFO presentation entirely on an
-  idle or locked session, which repeatedly prevented remote completion. The physically validated
-  pre-refactor revision stalls identically under the same idle conditions (including against a
-  nested `kwin_wayland --virtual` instance), so the stall is compositor frame starvation rather
-  than a dispatch-refactor regression.
-- The X11 triangle module creates a real Xlib toplevel with `WM_DELETE_WINDOW` registration and
-  structure-notification tracking, waits for the initial `MapNotify`, and presents through
-  `VK_KHR_xlib_surface`. Initial automated presentation evidence was recorded through XWayland on
-  the same system; physical lifecycle interaction and native Xorg coverage remain pending.
+  `VK_KHR_wayland_surface`, coalesces configure events, and paces resize swapchain commits. Its
+  event pump takes socket input through the libwayland `wl_display_prepare_read` /
+  `wl_display_read_events` protocol; see the presentation-stall correction below for why a
+  blocking `wl_display_dispatch` is incorrect on this connection.
+- The X11 triangle module creates a real Xlib toplevel with `WM_DELETE_WINDOW` registration,
+  structure-notification tracking, and a `None` background pixmap (so interactive resize does not
+  flash the server's solid background), waits for the initial `MapNotify`, and presents through
+  `VK_KHR_xlib_surface`. Presentation, unlocked pacing, and physical lifecycle evidence through
+  XWayland is recorded below; native Xorg coverage remains pending.
 
 The capability results complete the two capability-inventory ports. The Wayland presentation item
 remains incomplete pending display-change, explicit zero-sized suspension, input, and broader
-compositor/hardware evidence. The X11 presentation item remains incomplete pending physical
-resize/minimize/close interaction, unlocked-session frame pacing, display changes, input, native
-Xorg, and broader hardware evidence.
+compositor/hardware evidence. The X11 presentation item remains incomplete pending native Xorg,
+display-change, input, multi-display, and broader hardware evidence.
 
 ## Recorded evidence
 
@@ -73,6 +69,40 @@ resize commits to one frame start per 16 ms. Its physically accepted trace rende
 resize frame (12.536 ms maximum), including 9.121 ms average swapchain recreation. This trace does
 not establish other compositor, refresh-rate, display, GPU, or driver behavior.
 
+### Wayland presentation-stall correction
+
+Automated finite-frame Wayland runs of the triangle probe reproducibly froze after roughly five
+presented frames on the KDE Plasma system above, while interactive input (resize, activation)
+released a handful of frames at a time. This was previously attributed to KDE suspending FIFO
+presentation for idle or locked sessions; that conclusion was wrong and is retracted. A
+`WAYLAND_DEBUG` protocol capture showed the first five commits leaving at vblank pacing and all
+client-side protocol activity stopping afterwards, `vkcube --wsi wayland --present_mode 2`
+sustained 75 Hz on the same unlocked desktop under identical protocol machinery
+(`wp_fifo_v1` barriers plus `wp_linux_drm_syncobj_v1` explicit sync), and disabling the
+validation layer, the debug messenger, surface/swapchain maintenance1, server-side decorations,
+and FIFO (via mailbox) individually did not affect the freeze.
+
+The actual defect was in the probe's event pump: it polled the display descriptor and then called
+the blocking `wl_display_dispatch` whenever the socket was readable. The NVIDIA driver runs its
+own Wayland reader thread on the same connection, so the driver thread could consume the readable
+data between the probe's `poll` and its dispatch, leaving `wl_display_dispatch` asleep until the
+compositor happened to send another event — which input events did, explaining the
+interaction-released frames. The pre-refactor revision stalled identically because it contained
+the same pump. The pump now takes socket input through the libwayland thread-safe
+`wl_display_prepare_read`/`wl_display_read_events`/`wl_display_cancel_read` protocol and only
+ever dispatches already-queued events.
+
+With the corrected pump and the validation layer enabled, on the same system (KWin 6.7.3,
+XWayland 24.1.13, Nvidia driver 610.43.03, Rust 1.97.0, working tree based on
+`8e62d02b537593eafd365c0d598780542f7538cf`): a 600-frame Wayland run completed in 8.3 s at the
+74.971 Hz display rate with exit code zero, a 60-frame `--require-pipeline-cache-hits` run
+completed with all four pipelines reporting application-cache hits, and a physically exercised
+session rendered 1975 frames through drag resize, minimize/restore, maximize/restore, and
+titlebar close, capturing 158 resize-trace samples (record + submit average 0.179 ms, image
+acquisition average 0.005 ms) with no validation messages and a drained shutdown. This re-run
+retires the pending Wayland dispatch-path regression check from the earlier revision of this
+runbook.
+
 ### Initial X11 presentation evidence
 
 The X11 presentation implementation was exercised from an uncommitted working tree based on
@@ -94,9 +124,30 @@ Both runs executed while the desktop session was locked (`loginctl` reported `Lo
 the compositor consumed frames at a heavily throttled pace and the non-blocking acquire path
 returned `VK_NOT_READY` for most iterations. This establishes that compositor-suspended
 presentation retries without deadlock or validation noise, but it establishes nothing about
-interactive frame pacing. No window was physically resized, minimized, or closed; shutdown came
-from the `--frames` limit. Physical lifecycle interaction, unlocked pacing, display changes,
-input, multi-display, native Xorg, and broader hardware/driver coverage all remain outstanding.
+interactive frame pacing.
+
+### X11 unlocked pacing and physical lifecycle evidence
+
+On the same system with the session unlocked (KWin 6.7.3, XWayland 24.1.13, Nvidia driver
+610.43.03, working tree based on `8e62d02b537593eafd365c0d598780542f7538cf`), a 600-frame
+`--platform x11` run completed in 8.1 s at the 74.971 Hz display rate with exit code zero and no
+validation messages. Physically exercised sessions confirmed drag resize, minimize/restore,
+maximize/restore, and window-manager close through `WM_DELETE_WINDOW`, with resize traces
+recording 187 swapchain generations (recreation average 7.7 ms) and drained shutdowns.
+
+Physical interaction exposed two X11 window-system defects that automated runs cannot see. First,
+the `XCreateSimpleWindow` solid background made the server clear the window to black on every
+interactive resize step before the next frame arrived; the window now uses a `None` background
+pixmap. Second, the window content froze at its old size for the whole drag and snapped on
+release, because KWin only live-updates X11 windows during interactive resize for clients that
+implement the `_NET_WM_SYNC_REQUEST` protocol; the module now creates an XSync counter, registers
+the protocol, and reports each sync value on the pump following the frame that answered it. With
+the counter gating each resize step, the Wayland-motivated 16 ms resize-commit pacing only
+widened the stale-content window and is disabled on X11. The physically accepted final trace
+rendered all 725 attempted resize frames across 716 swapchain generations, averaging 5.4 ms per
+resize frame including 5.2 ms of swapchain recreation, and the user compared drag-resize behavior
+favorably against `vkcube --wsi xlib` on the same desktop. Native Xorg, display changes, input,
+multi-display, and broader hardware/driver coverage remain outstanding.
 
 ## Machine requirements
 
@@ -236,7 +287,7 @@ Wayland path explicitly rather than inferring it from the desktop session.
 - Any native display or Vulkan error verbatim.
 
 Capability-report evidence alone does not establish swapchain rendering or lifecycle behavior. The
-initial Wayland presentation evidence above establishes only the explicitly listed KDE Plasma run,
-and the initial X11 presentation evidence establishes only automated locked-session XWayland runs;
-physical X11 lifecycle interaction, native Xorg, and the remaining Wayland cases are still
-required.
+presentation evidence above establishes only the explicitly listed KDE Plasma runs: physical
+Wayland and XWayland lifecycle interaction, unlocked pacing on both paths, and locked-session
+retry behavior on X11. Native Xorg, display changes, input, multi-display, and other
+compositor/driver/hardware combinations are still required.

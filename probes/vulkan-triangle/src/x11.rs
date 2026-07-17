@@ -15,6 +15,8 @@ const MAP_NOTIFY: c_int = 19;
 const CONFIGURE_NOTIFY: c_int = 22;
 const CLIENT_MESSAGE: c_int = 33;
 const XEVENT_PADDING_WORDS: usize = 24;
+const XA_CARDINAL: Atom = 6;
+const PROP_MODE_REPLACE: c_int = 0;
 
 #[link(name = "X11")]
 unsafe extern "C" {
@@ -32,6 +34,11 @@ unsafe extern "C" {
         border: c_ulong,
         background: c_ulong,
     ) -> vk::Window;
+    fn XSetWindowBackgroundPixmap(
+        display: *mut vk::Display,
+        window: vk::Window,
+        pixmap: c_ulong,
+    ) -> c_int;
     fn XStoreName(
         display: *mut vk::Display,
         window: vk::Window,
@@ -55,6 +62,40 @@ unsafe extern "C" {
     fn XNextEvent(display: *mut vk::Display, event: *mut XEvent) -> c_int;
     fn XDestroyWindow(display: *mut vk::Display, window: vk::Window) -> c_int;
     fn XCloseDisplay(display: *mut vk::Display) -> c_int;
+    fn XChangeProperty(
+        display: *mut vk::Display,
+        window: vk::Window,
+        property: Atom,
+        kind: Atom,
+        format: c_int,
+        mode: c_int,
+        data: *const u8,
+        count: c_int,
+    ) -> c_int;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XSyncValue {
+    hi: c_int,
+    lo: c_uint,
+}
+
+#[link(name = "Xext")]
+unsafe extern "C" {
+    fn XSyncQueryExtension(
+        display: *mut vk::Display,
+        event_base: *mut c_int,
+        error_base: *mut c_int,
+    ) -> c_int;
+    fn XSyncInitialize(
+        display: *mut vk::Display,
+        major_version: *mut c_int,
+        minor_version: *mut c_int,
+    ) -> Status;
+    fn XSyncCreateCounter(display: *mut vk::Display, initial: XSyncValue) -> c_ulong;
+    fn XSyncSetCounter(display: *mut vk::Display, counter: c_ulong, value: XSyncValue) -> Status;
+    fn XSyncDestroyCounter(display: *mut vk::Display, counter: c_ulong) -> Status;
 }
 
 #[repr(C)]
@@ -112,6 +153,7 @@ struct WindowState {
     width: Cell<u32>,
     height: Cell<u32>,
     closed: Cell<bool>,
+    pending_sync: Cell<Option<XSyncValue>>,
 }
 
 pub struct Window {
@@ -119,6 +161,8 @@ pub struct Window {
     handle: vk::Window,
     wm_protocols: Atom,
     wm_delete: Atom,
+    wm_sync_request: Atom,
+    sync_counter: c_ulong,
     state: WindowState,
 }
 
@@ -144,15 +188,23 @@ impl Window {
             unsafe { XCloseDisplay(display) };
             return Err(WindowError("XCreateSimpleWindow returned no window".into()));
         }
+        // A `None` background stops the server from clearing every resize step to the solid
+        // background color before the next presented frame arrives, which reads as whole-window
+        // black flashing during interactive resize.
+        // SAFETY: The display and freshly created window are live; `0` is Pixmap `None`.
+        unsafe { XSetWindowBackgroundPixmap(display, handle, 0) };
         let mut window = Self {
             display,
             handle,
             wm_protocols: 0,
             wm_delete: 0,
+            wm_sync_request: 0,
+            sync_counter: 0,
             state: WindowState {
                 width: Cell::new(width),
                 height: Cell::new(height),
                 closed: Cell::new(false),
+                pending_sync: Cell::new(None),
             },
         };
         // SAFETY: The display/window are live, the title is NUL-terminated, and the event mask
@@ -161,7 +213,7 @@ impl Window {
             XStoreName(window.display, window.handle, title.as_ptr());
             XSelectInput(window.display, window.handle, STRUCTURE_NOTIFY_MASK);
         }
-        window.register_delete_protocol()?;
+        window.register_wm_protocols()?;
         if visible {
             // SAFETY: The display/window are live; mapping requests WM management of the window.
             unsafe {
@@ -176,7 +228,7 @@ impl Window {
         Ok(window)
     }
 
-    fn register_delete_protocol(&mut self) -> Result<(), WindowError> {
+    fn register_wm_protocols(&mut self) -> Result<(), WindowError> {
         // SAFETY: The display is live and both atom names are NUL-terminated.
         unsafe {
             self.wm_protocols = XInternAtom(self.display, c"WM_PROTOCOLS".as_ptr(), FALSE);
@@ -187,14 +239,60 @@ impl Window {
                 "XInternAtom returned no WM_PROTOCOLS/WM_DELETE_WINDOW atom".into(),
             ));
         }
-        let mut protocols = [self.wm_delete];
+        self.create_sync_counter();
+        let mut protocols = [self.wm_delete, self.wm_sync_request];
+        let count = if self.sync_counter == 0 { 1 } else { 2 };
         // SAFETY: The display/window are live and the protocol array outlives the call.
-        if unsafe { XSetWMProtocols(self.display, self.handle, protocols.as_mut_ptr(), 1) } == 0 {
+        if unsafe { XSetWMProtocols(self.display, self.handle, protocols.as_mut_ptr(), count) } == 0
+        {
             return Err(WindowError(
                 "XSetWMProtocols failed to register WM_DELETE_WINDOW".into(),
             ));
         }
         Ok(())
+    }
+
+    /// Registers `_NET_WM_SYNC_REQUEST` so the window manager paces interactive resize against
+    /// presented frames; `KWin` freezes X11 window content for the whole drag without it. Absence
+    /// of the `XSync` extension leaves `sync_counter` at zero and skips the protocol.
+    fn create_sync_counter(&mut self) {
+        let mut event_base = 0;
+        let mut error_base = 0;
+        let mut major = 0;
+        let mut minor = 0;
+        // SAFETY: The display is live and every output pointer is writable.
+        unsafe {
+            if XSyncQueryExtension(self.display, &raw mut event_base, &raw mut error_base) == 0
+                || XSyncInitialize(self.display, &raw mut major, &raw mut minor) == 0
+            {
+                return;
+            }
+            self.wm_sync_request =
+                XInternAtom(self.display, c"_NET_WM_SYNC_REQUEST".as_ptr(), FALSE);
+            let counter_property = XInternAtom(
+                self.display,
+                c"_NET_WM_SYNC_REQUEST_COUNTER".as_ptr(),
+                FALSE,
+            );
+            if self.wm_sync_request == 0 || counter_property == 0 {
+                return;
+            }
+            self.sync_counter = XSyncCreateCounter(self.display, XSyncValue { hi: 0, lo: 0 });
+            if self.sync_counter == 0 {
+                return;
+            }
+            let counter: c_ulong = self.sync_counter;
+            XChangeProperty(
+                self.display,
+                self.handle,
+                counter_property,
+                XA_CARDINAL,
+                32,
+                PROP_MODE_REPLACE,
+                (&raw const counter).cast(),
+                1,
+            );
+        }
     }
 
     /// Blocks until the mapped window's first `MapNotify`, applying any configure sent before it,
@@ -239,9 +337,18 @@ impl Window {
                 if message.message_type == self.wm_protocols
                     && message.format == 32
                     && message.data[0] >= 0
-                    && message.data[0].unsigned_abs() == self.wm_delete
                 {
-                    self.state.closed.set(true);
+                    let protocol = message.data[0].unsigned_abs();
+                    if protocol == self.wm_delete {
+                        self.state.closed.set(true);
+                    } else if self.sync_counter != 0 && protocol == self.wm_sync_request {
+                        // data holds the 64-bit sync value the window manager waits for as
+                        // CARD32 low/high halves after the protocol atom and timestamp.
+                        self.state.pending_sync.set(Some(XSyncValue {
+                            hi: i32::try_from(message.data[3]).unwrap_or(0),
+                            lo: u32::try_from(message.data[2] & 0xffff_ffff).unwrap_or(0),
+                        }));
+                    }
                 }
                 false
             }
@@ -269,6 +376,16 @@ impl Window {
         // fatal connection errors through its process-exiting default I/O handler rather than a
         // recoverable return value, which this probe records as a known Xlib boundary.
         //
+        // A sync request stored by the previous pump was answered by the frame the render loop
+        // produced between pumps, so report that value before draining the next resize step. The
+        // rare unrendered iteration (zero extent or an unacquirable image) merely degrades one
+        // step to the unsynchronized behavior.
+        if let Some(value) = self.state.pending_sync.replace(None) {
+            // SAFETY: The display is live and the counter was created by this window.
+            unsafe {
+                XSyncSetCounter(self.display, self.sync_counter, value);
+            }
+        }
         // SAFETY: The display is live; XPending flushes and reports queued events, so each
         // XNextEvent call below consumes an already-delivered event without blocking.
         while unsafe { XPending(self.display) } > 0 {
@@ -297,6 +414,9 @@ impl Drop for Window {
     fn drop(&mut self) {
         // SAFETY: This value owns both handles and Vulkan destroys its surface before this drop.
         unsafe {
+            if self.sync_counter != 0 {
+                XSyncDestroyCounter(self.display, self.sync_counter);
+            }
             if self.handle != 0 {
                 XDestroyWindow(self.display, self.handle);
             }

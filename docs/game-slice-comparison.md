@@ -149,6 +149,11 @@ bookkeeping even when cross-platform source sharing receives zero credit. Its re
 slightly larger than the direct peer—a non-decisive difference here—and runtime-performance
 equivalence remains unmeasured.
 
+This checkpoint measures coordination value rather than native necessity. Nothing in this workload
+yet shows behavior that a practical coordination layer built above `wgpu`/`winit` could not have
+provided; that discrimination belongs to the hidden-control comparisons (live-resize presentation,
+pacing and timing feedback, acquired-frame release) and to Gate 4.
+
 This is strong evidence for the practical single-backend portion of Gate 2, but it is not a Gate 2
 pass by itself. The comparison plan still requires matched failure diagnosis, frame/cadence and
 resource-cost measurements, and the Gate 4 native-differentiation feature/fallback. Other declared

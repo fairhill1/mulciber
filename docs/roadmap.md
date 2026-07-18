@@ -316,6 +316,12 @@ and a successful Gate 2 decision.
 
 ## 4. Recent GPU capabilities
 
+The differentiation this milestone tests narrows over time as `wgpu` continues absorbing native-only
+features, and Gate 4 already treats "established libraries expose the needed path with comparable
+control" as a stop condition. The first Gate 4 candidate therefore takes schedule priority over
+completing the remaining Gate 2 comparison families, which re-measure coordination value that already
+has three data points.
+
 Add each as an independent backend feature with a tested fallback:
 
 - Bindless resource tables and descriptor indexing.

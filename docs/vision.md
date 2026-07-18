@@ -54,6 +54,17 @@ one runtime problem. Mulciber's platform and GPU layers are separate libraries w
 but their contracts are designed and tested together. The eventual runtime coordinates them without
 requiring a global framework or taking ownership of unrelated game architecture.
 
+Coordination alone does not justify owning native backends. Much of the glue that games write
+between a general windowing library and a general graphics library (surface loss and reconfiguration
+policy, zero-size suspension, input snapshots with focus-loss clearing, fixed-step timing) could also
+be owned by a layer built above `wgpu` and `winit`. Mulciber's native claim rests on the parts of the
+contract that cannot be provided from above, either because the portable abstraction hides the
+required control (live-resize presentation behavior, presentation pacing and timing feedback,
+releasing an acquired frame without presenting it) or because the upstream library owns the policy
+outright (event-loop shape and lifecycle model). Evaluations must say which kind of value they
+demonstrate: coordination value is real but supports a cheaper substrate, while native value requires
+the backends Mulciber maintains.
+
 ### Intrinsic single-backend value
 
 Mulciber must earn its place separately on Metal and Vulkan. Portability receives no credit in that
@@ -143,6 +154,14 @@ Mulciber earns its maintenance cost only if it eventually lets a serious Rust ga
    alternatives can outweigh Mulciber's technical advantages.
 7. Remain materially worthwhile for a Metal-only or Vulkan-only game when cross-backend source reuse
    is excluded from the evaluation.
+
+The operative near-term form of this test is personal. Mulciber is viable only if the real, recurring
+costs of the `wgpu`/`winit` seam make that combination the wrong default for the maintainer's own
+games, demonstrated through the dogfood game rather than asserted from matched comparisons alone.
+Because the maintainer built Mulciber, the pre-registered peer implementations are the control against
+motivated preference; the seam must lose on recorded evidence, not on familiarity with one's own API.
+Broader adoption is expected to follow a shipped proof artifact and the repository's teaching quality,
+not precede them.
 
 If Mulciber becomes merely a younger, less portable `wgpu`/`winit` combination, it has failed this test.
 Its reason to exist is the combination of native capability reach, game-specific lifecycle

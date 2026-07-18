@@ -71,6 +71,15 @@ Pass conditions:
   reference. Exact versions, sources, validation, measurements, and non-equivalent functionality are
   preserved.
 
+The recorded Gate 2 decision must classify each demonstrated advantage as coordination value or
+native value. Coordination value is behavior a practical layer built above `wgpu`/`winit` could
+plausibly match: acquisition/reconfiguration policy, suspension handling, input snapshots, timing.
+Native value requires owning the backend because the portable abstraction hides the control or owns
+the policy: live-resize presentation behavior, presentation pacing and timing feedback,
+acquired-frame release, event-loop shape. Coordination value alone argues for a coordination layer on
+an established substrate, not for Mulciber's backends; a pass that rests entirely on coordination value
+is a redesign signal, not a pass.
+
 Stop if the API becomes mostly a younger `wgpu` shape, requires routine unsafe application code, or
 cannot demonstrate a concrete lifecycle advantage. Redesign or stop if portability is the only reason
 to prefer Mulciber over a reasonable direct Metal or Vulkan stack for its claimed serious-game slice.

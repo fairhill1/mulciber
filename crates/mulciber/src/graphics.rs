@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use crate::backend;
+use crate::resource::{DestroyRequest, DropQueue, ResourceId, ResourceKind, ResourceLease};
 use crate::{
     ClearColor, FrameAcquire, FrameDisposition, GraphicsError, ShaderArtifact, SurfaceInfo,
 };
@@ -59,6 +60,7 @@ impl DeviceSelection {
 struct Shared<'window> {
     id: u64,
     inner: Rc<RefCell<Option<backend::TexturedSession<'window>>>>,
+    drops: Rc<DropQueue>,
 }
 
 impl Clone for Shared<'_> {
@@ -66,6 +68,7 @@ impl Clone for Shared<'_> {
         Self {
             id: self.id,
             inner: Rc::clone(&self.inner),
+            drops: Rc::clone(&self.drops),
         }
     }
 }
@@ -104,6 +107,7 @@ impl<'window> OpenedGraphics<'window> {
         let shared = Shared {
             id,
             inner: Rc::new(RefCell::new(Some(session))),
+            drops: Rc::new(DropQueue::default()),
         };
         Ok(Self {
             device: Device {
@@ -178,8 +182,7 @@ impl Device<'_> {
         }
         let id = session_mut(&self.shared)?.create_mesh(vertices, indices)?;
         Ok(Mesh {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::Mesh),
         })
     }
 
@@ -211,8 +214,7 @@ impl Device<'_> {
         }
         let id = session_mut(&self.shared)?.create_texture(width, height, texels)?;
         Ok(Texture {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::Texture),
         })
     }
 
@@ -227,8 +229,7 @@ impl Device<'_> {
     ) -> Result<TexturedPipeline, GraphicsError> {
         let id = session_mut(&self.shared)?.create_pipeline(shader)?;
         Ok(TexturedPipeline {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::TexturedPipeline),
         })
     }
 
@@ -246,8 +247,7 @@ impl Device<'_> {
     ) -> Result<PostprocessPipeline, GraphicsError> {
         let id = session_mut(&self.shared)?.create_postprocess_pipeline(shader)?;
         Ok(PostprocessPipeline {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::PostprocessPipeline),
         })
     }
 
@@ -259,8 +259,7 @@ impl Device<'_> {
     pub fn create_render_targets(&self, info: SurfaceInfo) -> Result<RenderTargets, GraphicsError> {
         let id = session_mut(&self.shared)?.create_render_targets(info)?;
         Ok(RenderTargets {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::RenderTargets),
             info,
         })
     }
@@ -280,10 +279,94 @@ impl Device<'_> {
     ) -> Result<PostprocessTargets, GraphicsError> {
         let id = session_mut(&self.shared)?.create_postprocess_targets(info)?;
         Ok(PostprocessTargets {
-            session: self.shared.id,
-            id,
+            lease: self.lease(id, ResourceKind::PostprocessTargets),
             info,
         })
+    }
+
+    /// Destroys an uploaded mesh after its last submitted GPU use completes.
+    ///
+    /// Dropping the handle performs the same reclamation lazily at the next mutable graphics
+    /// operation. This explicit form reports stale or mixed-session handles immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_mesh(&self, mut mesh: Mesh) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut mesh.lease, ResourceKind::Mesh)
+    }
+
+    /// Destroys an uploaded texture after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_texture(&self, mut texture: Texture) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut texture.lease, ResourceKind::Texture)
+    }
+
+    /// Destroys a textured pipeline after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_textured_pipeline(
+        &self,
+        mut pipeline: TexturedPipeline,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut pipeline.lease, ResourceKind::TexturedPipeline)
+    }
+
+    /// Destroys a postprocess pipeline after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_postprocess_pipeline(
+        &self,
+        mut pipeline: PostprocessPipeline,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut pipeline.lease, ResourceKind::PostprocessPipeline)
+    }
+
+    /// Destroys generation-dependent render targets after their last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_render_targets(&self, mut targets: RenderTargets) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut targets.lease, ResourceKind::RenderTargets)
+    }
+
+    /// Destroys generation-dependent postprocess targets after their last GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_postprocess_targets(
+        &self,
+        mut targets: PostprocessTargets,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut targets.lease, ResourceKind::PostprocessTargets)
+    }
+
+    fn lease(&self, id: ResourceId, kind: ResourceKind) -> ResourceLease {
+        ResourceLease::new(self.shared.id, id, kind, Rc::clone(&self.shared.drops))
+    }
+
+    fn destroy_lease(
+        &self,
+        lease: &mut ResourceLease,
+        kind: ResourceKind,
+    ) -> Result<(), GraphicsError> {
+        if lease.session != self.shared.id {
+            return Err(GraphicsError::new(
+                "graphics handles belong to different sessions",
+            ));
+        }
+        session_mut(&self.shared)?.destroy_resource(DestroyRequest { kind, id: lease.id })?;
+        lease.disarm();
+        Ok(())
     }
 }
 
@@ -305,10 +388,10 @@ impl Queue<'_> {
         draw: TexturedDraw<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
         for session in [
-            draw.mesh.session,
-            draw.texture.session,
-            draw.pipeline.session,
-            draw.targets.session,
+            draw.mesh.lease.session,
+            draw.texture.lease.session,
+            draw.pipeline.lease.session,
+            draw.targets.lease.session,
         ] {
             if session != self.shared.id || session != frame.shared.id {
                 return Err(GraphicsError::new(
@@ -337,10 +420,10 @@ impl Queue<'_> {
             .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_and_present(
             token,
-            draw.mesh.id,
-            draw.texture.id,
-            draw.pipeline.id,
-            draw.targets.id,
+            draw.mesh.lease.id,
+            draw.texture.lease.id,
+            draw.pipeline.lease.id,
+            draw.targets.lease.id,
             draw.model_view_projection,
             draw.clear,
         )
@@ -359,11 +442,11 @@ impl Queue<'_> {
         draw: PostprocessedDraw<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
         for session in [
-            draw.mesh.session,
-            draw.texture.session,
-            draw.scene_pipeline.session,
-            draw.postprocess_pipeline.session,
-            draw.targets.session,
+            draw.mesh.lease.session,
+            draw.texture.lease.session,
+            draw.scene_pipeline.lease.session,
+            draw.postprocess_pipeline.lease.session,
+            draw.targets.lease.session,
         ] {
             if session != self.shared.id || session != frame.shared.id {
                 return Err(GraphicsError::new(
@@ -392,11 +475,11 @@ impl Queue<'_> {
             .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_postprocessed_and_present(
             token,
-            draw.mesh.id,
-            draw.texture.id,
-            draw.scene_pipeline.id,
-            draw.postprocess_pipeline.id,
-            draw.targets.id,
+            draw.mesh.lease.id,
+            draw.texture.lease.id,
+            draw.scene_pipeline.lease.id,
+            draw.postprocess_pipeline.lease.id,
+            draw.targets.lease.id,
             draw.model_view_projection,
             draw.clear,
         )
@@ -453,46 +536,40 @@ pub struct Vertex {
 }
 
 /// Uploaded indexed geometry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Mesh {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
 }
 
 /// Uploaded RGBA8 sRGB texture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
 }
 
 /// Native textured depth-tested graphics pipeline.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct TexturedPipeline {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
 }
 
 /// Single-sample fullscreen pipeline that samples resolved scene color.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessPipeline {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
 }
 
 /// Extent- and generation-dependent color/depth targets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct RenderTargets {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
     info: SurfaceInfo,
 }
 
 /// Extent- and generation-dependent two-pass color/depth targets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessTargets {
-    session: u64,
-    id: u32,
+    lease: ResourceLease,
     info: SurfaceInfo,
 }
 
@@ -602,6 +679,12 @@ fn session_ref<'a, 'window>(
 fn session_mut<'a, 'window>(
     shared: &'a Shared<'window>,
 ) -> Result<core::cell::RefMut<'a, backend::TexturedSession<'window>>, GraphicsError> {
-    core::cell::RefMut::filter_map(shared.inner.borrow_mut(), Option::as_mut)
-        .map_err(|_| GraphicsError::new("graphics session is shut down"))
+    let pending = shared.drops.take();
+    let mut session = core::cell::RefMut::filter_map(shared.inner.borrow_mut(), Option::as_mut)
+        .map_err(|_| GraphicsError::new("graphics session is shut down"))?;
+    if let Err(error) = session.reclaim_resources(&pending) {
+        shared.drops.restore(pending);
+        return Err(error);
+    }
+    Ok(session)
 }

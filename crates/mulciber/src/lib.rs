@@ -14,6 +14,8 @@ mod clear;
 mod graphics;
 mod presentation;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod resource;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod shader;
 
 /// Hidden native ABI shared by Mulciber's backends and validation probes.

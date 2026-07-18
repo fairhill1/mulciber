@@ -122,6 +122,14 @@ cases under Metal API validation with exit zero. Metal runs the stable-generatio
 abandonment replaces it and asserts the superseded-target rejection as a thirteenth case — the
 same game-facing outcomes over different native machinery.
 
+On 2026-07-18, the resource-lifetime development tree ran `mulciber-api-conformance` on this Apple
+M2 / macOS 15.7.7 machine with `MTL_DEBUG_LAYER=1`. The probe explicitly destroyed mesh, texture,
+textured pipeline, postprocess pipeline, direct targets, and postprocess targets; then it reclaimed
+32 dropped meshes through reusable generational slots and presented successfully with replacement
+resources. All fifteen Metal cases passed, both fallible shutdowns succeeded, the process exited
+zero, and Metal emitted no diagnostic beyond its validation-enabled banner. This establishes the
+new lifetime behavior for the current Metal slice only; Vulkan physical validation is not inferred.
+
 Later on 2026-07-17, the platform pump-contract reshape (fallible event handler, platform-owned
 `wait_for_first_metrics`, const `ClearColor::opaque`) was validated on this machine over SSH as
 an applied patch of the uncommitted tree based on `ccfc4d7` (the checkout was then restored

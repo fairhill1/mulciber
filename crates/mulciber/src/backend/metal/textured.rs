@@ -1,10 +1,11 @@
 use core::ffi::c_void;
 use core::{mem, ptr};
-use std::{format, vec::Vec};
+use std::format;
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
+use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
     ShaderArtifact, SurfaceInfo, Vertex,
@@ -88,12 +89,12 @@ pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: usize,
     uniform: Object,
-    meshes: Vec<MeshResource>,
-    textures: Vec<TextureResource>,
-    pipelines: Vec<PipelineResource>,
-    postprocess_pipelines: Vec<PostprocessPipelineResource>,
-    targets: Vec<TargetResource>,
-    postprocess_targets: Vec<PostprocessTargetResource>,
+    meshes: Arena<MeshResource>,
+    textures: Arena<TextureResource>,
+    pipelines: Arena<PipelineResource>,
+    postprocess_pipelines: Arena<PostprocessPipelineResource>,
+    targets: Arena<TargetResource>,
+    postprocess_targets: Arena<PostprocessTargetResource>,
 }
 
 impl<'window> TexturedSession<'window> {
@@ -121,12 +122,12 @@ impl<'window> TexturedSession<'window> {
                 surface,
                 sample_count,
                 uniform,
-                meshes: Vec::new(),
-                textures: Vec::new(),
-                pipelines: Vec::new(),
-                postprocess_pipelines: Vec::new(),
-                targets: Vec::new(),
-                postprocess_targets: Vec::new(),
+                meshes: Arena::new("mesh"),
+                textures: Arena::new("texture"),
+                pipelines: Arena::new("textured pipeline"),
+                postprocess_pipelines: Arena::new("postprocess pipeline"),
+                targets: Arena::new("render targets"),
+                postprocess_targets: Arena::new("postprocess targets"),
             },
             if sample_count == 4 {
                 SampleCount::Four
@@ -153,7 +154,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         vertices: &[Vertex],
         indices: &[u16],
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let draw = IndexedIndirectArguments {
             index_count: u32::try_from(indices.len())
                 .map_err(|_| GraphicsError::new("mesh index count exceeds u32"))?,
@@ -193,13 +194,12 @@ impl<'window> TexturedSession<'window> {
                 ),
                 "Metal cube indirect buffer",
             )?;
-            self.meshes.push(MeshResource {
+            self.meshes.insert(MeshResource {
                 vertices,
                 indices,
                 indirect,
-            });
+            })
         }
-        resource_id(self.meshes.len(), "mesh")
     }
 
     pub(crate) fn create_texture(
@@ -207,7 +207,7 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         texels: &[u8],
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let width = usize::try_from(width)
             .map_err(|_| GraphicsError::new("texture width exceeds usize"))?;
         let height = usize::try_from(height)
@@ -273,32 +273,30 @@ impl<'window> TexturedSession<'window> {
                 "Metal cube sampler",
             )?;
             objc::void(sampler_descriptor, c"release");
-            self.textures.push(TextureResource { texture, sampler });
+            self.textures.insert(TextureResource { texture, sampler })
         }
-        resource_id(self.textures.len(), "texture")
     }
 
     pub(crate) fn create_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
-    ) -> Result<u32, GraphicsError> {
-        self.pipelines.push(create_pipeline(
+    ) -> Result<ResourceId, GraphicsError> {
+        self.pipelines.insert(create_pipeline(
             self.surface.device,
             shader.payload(),
             self.sample_count,
-        )?);
-        resource_id(self.pipelines.len(), "pipeline")
+        )?)
     }
 
     pub(crate) fn create_postprocess_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
-    ) -> Result<u32, GraphicsError> {
-        self.postprocess_pipelines.push(create_postprocess_pipeline(
-            self.surface.device,
-            shader.payload(),
-        )?);
-        resource_id(self.postprocess_pipelines.len(), "postprocess pipeline")
+    ) -> Result<ResourceId, GraphicsError> {
+        self.postprocess_pipelines
+            .insert(create_postprocess_pipeline(
+                self.surface.device,
+                shader.payload(),
+            )?)
     }
 
     /// Releases the session's references to render targets from superseded surface generations.
@@ -309,7 +307,7 @@ impl<'window> TexturedSession<'window> {
     /// with null textures and are rejected if drawn.
     fn reclaim_stale_targets(&mut self) {
         let current = self.surface.info().generation();
-        for target in &mut self.targets {
+        for target in self.targets.iter_mut() {
             if target.info.generation().get() >= current.get() || target.depth.is_null() {
                 continue;
             }
@@ -322,7 +320,7 @@ impl<'window> TexturedSession<'window> {
             target.multisample_color = ptr::null_mut();
             target.depth = ptr::null_mut();
         }
-        for target in &mut self.postprocess_targets {
+        for target in self.postprocess_targets.iter_mut() {
             if target.info.generation().get() >= current.get() || target.depth.is_null() {
                 continue;
             }
@@ -342,7 +340,7 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets();
         let width = usize::try_from(info.extent().width())
             .map_err(|_| GraphicsError::new("target width exceeds usize"))?;
@@ -374,18 +372,17 @@ impl<'window> TexturedSession<'window> {
         } else {
             ptr::null_mut()
         };
-        self.targets.push(TargetResource {
+        self.targets.insert(TargetResource {
             info,
             multisample_color,
             depth,
-        });
-        resource_id(self.targets.len(), "render target")
+        })
     }
 
     pub(crate) fn create_postprocess_targets(
         &mut self,
         info: SurfaceInfo,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets();
         let width = usize::try_from(info.extent().width())
             .map_err(|_| GraphicsError::new("target width exceeds usize"))?;
@@ -434,30 +431,29 @@ impl<'window> TexturedSession<'window> {
         } else {
             ptr::null_mut()
         };
-        self.postprocess_targets.push(PostprocessTargetResource {
+        self.postprocess_targets.insert(PostprocessTargetResource {
             info,
             scene_color,
             multisample_color,
             depth,
-        });
-        resource_id(self.postprocess_targets.len(), "postprocess target")
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: u32,
-        texture: u32,
-        pipeline: u32,
-        targets: u32,
+        mesh: ResourceId,
+        texture: ResourceId,
+        pipeline: ResourceId,
+        targets: ResourceId,
         transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh = resource_index(mesh, self.meshes.len(), "mesh")?;
-        let texture = resource_index(texture, self.textures.len(), "texture")?;
-        let pipeline = resource_index(pipeline, self.pipelines.len(), "pipeline")?;
-        let target = resource_index(targets, self.targets.len(), "render target")?;
+        let mesh = self.meshes.index_of(mesh)?;
+        let texture = self.textures.index_of(texture)?;
+        let pipeline = self.pipelines.index_of(pipeline)?;
+        let target = self.targets.index_of(targets)?;
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "render targets do not match acquired Metal generation",
@@ -488,27 +484,19 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn draw_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: u32,
-        texture: u32,
-        scene_pipeline: u32,
-        postprocess_pipeline: u32,
-        targets: u32,
+        mesh: ResourceId,
+        texture: ResourceId,
+        scene_pipeline: ResourceId,
+        postprocess_pipeline: ResourceId,
+        targets: ResourceId,
         transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh = resource_index(mesh, self.meshes.len(), "mesh")?;
-        let texture = resource_index(texture, self.textures.len(), "texture")?;
-        let scene_pipeline = resource_index(scene_pipeline, self.pipelines.len(), "pipeline")?;
-        let postprocess_pipeline = resource_index(
-            postprocess_pipeline,
-            self.postprocess_pipelines.len(),
-            "postprocess pipeline",
-        )?;
-        let target = resource_index(
-            targets,
-            self.postprocess_targets.len(),
-            "postprocess target",
-        )?;
+        let mesh = self.meshes.index_of(mesh)?;
+        let texture = self.textures.index_of(texture)?;
+        let scene_pipeline = self.pipelines.index_of(scene_pipeline)?;
+        let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
+        let target = self.postprocess_targets.index_of(targets)?;
         if self.postprocess_targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "postprocess targets do not match acquired Metal generation",
@@ -559,6 +547,61 @@ impl<'window> TexturedSession<'window> {
         // The token must NOT be stored for a later flush: its pool would then outlive the
         // enclosing AppKit autorelease scope, which is a fatal pool-nesting violation.
         drop(token);
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn reclaim_resources(
+        &mut self,
+        requests: &[DestroyRequest],
+    ) -> Result<(), GraphicsError> {
+        for &request in requests {
+            self.destroy_resource_if_live(request);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn destroy_resource(
+        &mut self,
+        request: DestroyRequest,
+    ) -> Result<(), GraphicsError> {
+        match request.kind {
+            ResourceKind::Mesh => release_mesh(self.meshes.remove(request.id)?),
+            ResourceKind::Texture => release_texture(self.textures.remove(request.id)?),
+            ResourceKind::TexturedPipeline => release_pipeline(self.pipelines.remove(request.id)?),
+            ResourceKind::PostprocessPipeline => {
+                release_postprocess_pipeline(self.postprocess_pipelines.remove(request.id)?);
+            }
+            ResourceKind::RenderTargets => release_target(self.targets.remove(request.id)?),
+            ResourceKind::PostprocessTargets => {
+                release_postprocess_target(self.postprocess_targets.remove(request.id)?);
+            }
+        }
+        Ok(())
+    }
+
+    fn destroy_resource_if_live(&mut self, request: DestroyRequest) {
+        match request.kind {
+            ResourceKind::Mesh => self.meshes.remove_if_live(request.id).map(release_mesh),
+            ResourceKind::Texture => self
+                .textures
+                .remove_if_live(request.id)
+                .map(release_texture),
+            ResourceKind::TexturedPipeline => self
+                .pipelines
+                .remove_if_live(request.id)
+                .map(release_pipeline),
+            ResourceKind::PostprocessPipeline => self
+                .postprocess_pipelines
+                .remove_if_live(request.id)
+                .map(release_postprocess_pipeline),
+            ResourceKind::RenderTargets => {
+                self.targets.remove_if_live(request.id).map(release_target)
+            }
+            ResourceKind::PostprocessTargets => self
+                .postprocess_targets
+                .remove_if_live(request.id)
+                .map(release_postprocess_target),
+        };
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
@@ -868,43 +911,25 @@ impl<'window> TexturedSession<'window> {
     }
 
     fn destroy_resources(&mut self) {
+        for pipeline in self.postprocess_pipelines.take_all() {
+            release_postprocess_pipeline(pipeline);
+        }
+        for pipeline in self.pipelines.take_all() {
+            release_pipeline(pipeline);
+        }
+        for texture in self.textures.take_all() {
+            release_texture(texture);
+        }
+        for target in self.targets.take_all() {
+            release_target(target);
+        }
+        for target in self.postprocess_targets.take_all() {
+            release_postprocess_target(target);
+        }
+        for mesh in self.meshes.take_all() {
+            release_mesh(mesh);
+        }
         unsafe {
-            for pipeline in self.postprocess_pipelines.drain(..) {
-                objc::void(pipeline.sampler, c"release");
-                objc::void(pipeline.pipeline, c"release");
-            }
-            for pipeline in self.pipelines.drain(..) {
-                objc::void(pipeline.depth_state, c"release");
-                objc::void(pipeline.pipeline, c"release");
-            }
-            for texture in self.textures.drain(..) {
-                objc::void(texture.sampler, c"release");
-                objc::void(texture.texture, c"release");
-            }
-            for target in self.targets.drain(..) {
-                if !target.multisample_color.is_null() {
-                    objc::void(target.multisample_color, c"release");
-                }
-                if !target.depth.is_null() {
-                    objc::void(target.depth, c"release");
-                }
-            }
-            for target in self.postprocess_targets.drain(..) {
-                if !target.multisample_color.is_null() {
-                    objc::void(target.multisample_color, c"release");
-                }
-                if !target.scene_color.is_null() {
-                    objc::void(target.scene_color, c"release");
-                }
-                if !target.depth.is_null() {
-                    objc::void(target.depth, c"release");
-                }
-            }
-            for mesh in self.meshes.drain(..) {
-                objc::void(mesh.indirect, c"release");
-                objc::void(mesh.indices, c"release");
-                objc::void(mesh.vertices, c"release");
-            }
             if !self.uniform.is_null() {
                 objc::void(self.uniform, c"release");
                 self.uniform = ptr::null_mut();
@@ -914,12 +939,96 @@ impl<'window> TexturedSession<'window> {
         // `shutdown` moves the surface out and deliberately suppresses this
         // session's destructor. Release the now-empty arenas' allocations here
         // so that path does not retain their backing storage.
-        self.pipelines = Vec::new();
-        self.postprocess_pipelines = Vec::new();
-        self.textures = Vec::new();
-        self.targets = Vec::new();
-        self.postprocess_targets = Vec::new();
-        self.meshes = Vec::new();
+        self.pipelines = Arena::new("textured pipeline");
+        self.postprocess_pipelines = Arena::new("postprocess pipeline");
+        self.textures = Arena::new("texture");
+        self.targets = Arena::new("render targets");
+        self.postprocess_targets = Arena::new("postprocess targets");
+        self.meshes = Arena::new("mesh");
+    }
+}
+
+// These helpers intentionally consume the wrapper so one call owns the native release authority.
+// Its fields are raw pointers, so Clippy cannot otherwise observe that ownership transfer.
+#[allow(clippy::needless_pass_by_value)]
+fn release_mesh(mesh: MeshResource) {
+    let MeshResource {
+        vertices,
+        indices,
+        indirect,
+    } = mesh;
+    unsafe {
+        objc::void(indirect, c"release");
+        objc::void(indices, c"release");
+        objc::void(vertices, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_texture(texture: TextureResource) {
+    let TextureResource { texture, sampler } = texture;
+    unsafe {
+        objc::void(sampler, c"release");
+        objc::void(texture, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_pipeline(pipeline: PipelineResource) {
+    let PipelineResource {
+        pipeline,
+        depth_state,
+    } = pipeline;
+    unsafe {
+        objc::void(depth_state, c"release");
+        objc::void(pipeline, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
+    let PostprocessPipelineResource { pipeline, sampler } = pipeline;
+    unsafe {
+        objc::void(sampler, c"release");
+        objc::void(pipeline, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_target(target: TargetResource) {
+    let TargetResource {
+        info: _,
+        multisample_color,
+        depth,
+    } = target;
+    unsafe {
+        if !multisample_color.is_null() {
+            objc::void(multisample_color, c"release");
+        }
+        if !depth.is_null() {
+            objc::void(depth, c"release");
+        }
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_postprocess_target(target: PostprocessTargetResource) {
+    let PostprocessTargetResource {
+        info: _,
+        scene_color,
+        multisample_color,
+        depth,
+    } = target;
+    unsafe {
+        if !multisample_color.is_null() {
+            objc::void(multisample_color, c"release");
+        }
+        if !scene_color.is_null() {
+            objc::void(scene_color, c"release");
+        }
+        if !depth.is_null() {
+            objc::void(depth, c"release");
+        }
     }
 }
 
@@ -1203,19 +1312,4 @@ fn create_target_texture(
             "Metal render target texture",
         )
     }
-}
-
-fn resource_id(length: usize, label: &str) -> Result<u32, GraphicsError> {
-    u32::try_from(length)
-        .map_err(|_| GraphicsError::new(format!("{label} identity space is exhausted")))
-}
-
-fn resource_index(id: u32, length: usize, label: &str) -> Result<usize, GraphicsError> {
-    let index = usize::try_from(id)
-        .ok()
-        .and_then(|id| id.checked_sub(1))
-        .ok_or_else(|| GraphicsError::new(format!("invalid {label} handle")))?;
-    (index < length)
-        .then_some(index)
-        .ok_or_else(|| GraphicsError::new(format!("invalid {label} handle")))
 }

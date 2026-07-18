@@ -3,7 +3,8 @@
 //! Unlike the interactive example and the finite validation probes, every case here asserts its
 //! observable outcome and the process exits nonzero on the first divergence. The cases cover
 //! invalid usage, deferred abandonment recovery, abandonment-driven surface generations, the
-//! observable one-sample fallback, mixed-session rejection, and fallible shutdown.
+//! observable one-sample fallback, explicit and drop-driven resource reclamation, mixed-session
+//! rejection, and fallible shutdown.
 
 use std::error::Error;
 use std::time::Instant;
@@ -225,8 +226,8 @@ impl<'window> Cases<'window> {
                     return Ok(false);
                 };
                 let info = frame.surface_info();
-                let stale = self.targets.expect("targets exist");
-                if info == stale.info() {
+                let stale_info = self.targets.as_ref().expect("targets exist").info();
+                if info == stale_info {
                     let disposition = self.draw(frame, IDENTITY)?;
                     assert_presented(disposition)?;
                     self.pass("presentation after abandonment (stable generation)");
@@ -237,7 +238,7 @@ impl<'window> Cases<'window> {
                         mesh: self.mesh.as_ref().expect("mesh exists"),
                         texture: self.texture.as_ref().expect("texture exists"),
                         pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                        targets: &stale,
+                        targets: self.targets.as_ref().expect("targets exist"),
                         model_view_projection: IDENTITY,
                         clear: ClearColor::BLACK,
                     };
@@ -266,10 +267,89 @@ impl<'window> Cases<'window> {
                 self.step = 5;
                 Ok(false)
             }
+            // Every resource kind can be destroyed explicitly after presentation. Repeatedly
+            // dropping meshes also drives generational slot reuse before replacement resources
+            // are created for another draw.
+            5 => {
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                let postprocess_pipeline = graphics
+                    .device
+                    .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
+                let postprocess_targets = graphics
+                    .device
+                    .create_postprocess_targets(graphics.surface.info()?)?;
+
+                graphics
+                    .device
+                    .destroy_postprocess_targets(postprocess_targets)?;
+                graphics
+                    .device
+                    .destroy_postprocess_pipeline(postprocess_pipeline)?;
+                graphics
+                    .device
+                    .destroy_render_targets(self.targets.take().expect("render targets exist"))?;
+                graphics.device.destroy_textured_pipeline(
+                    self.pipeline.take().expect("textured pipeline exists"),
+                )?;
+                graphics
+                    .device
+                    .destroy_texture(self.texture.take().expect("texture exists"))?;
+                graphics
+                    .device
+                    .destroy_mesh(self.mesh.take().expect("mesh exists"))?;
+
+                for _ in 0..32 {
+                    drop(
+                        graphics
+                            .device
+                            .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
+                    );
+                }
+
+                self.foreign_mesh = Some(
+                    graphics
+                        .device
+                        .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
+                );
+                self.mesh = Some(
+                    graphics
+                        .device
+                        .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
+                );
+                self.texture = Some(graphics.device.create_rgba8_srgb_texture(
+                    2,
+                    2,
+                    &[255_u8; 16],
+                )?);
+                self.pipeline = Some(
+                    graphics
+                        .device
+                        .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?,
+                );
+                self.targets = Some(
+                    graphics
+                        .device
+                        .create_render_targets(graphics.surface.info()?)?,
+                );
+                self.pass("explicit destruction for every resource kind");
+                self.pass("drop-driven resource churn");
+                self.step = 6;
+                Ok(false)
+            }
+            // Replacement resources remain usable after old arena slots were reclaimed.
+            6 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let disposition = self.draw(frame, IDENTITY)?;
+                assert_presented(disposition)?;
+                self.pass("presentation after resource replacement");
+                self.step = 7;
+                Ok(false)
+            }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            5 => {
-                self.foreign_mesh = self.mesh.take();
+            7 => {
                 let graphics = self.graphics.take().expect("session A is open");
                 graphics.shutdown()?;
                 self.pass("fallible shutdown succeeded");
@@ -307,11 +387,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 6;
+                self.step = 8;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            6 => {
+            8 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -333,7 +413,7 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 7;
+                self.step = 9;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -363,8 +443,8 @@ impl<'window> Cases<'window> {
                 // set, except while a case is deliberately holding stale targets (step 3 handles
                 // its own rebuild).
                 if self.step != 3 {
-                    let targets = self.targets.expect("targets exist");
-                    if frame.surface_info() != targets.info() {
+                    let targets_info = self.targets.as_ref().expect("targets exist").info();
+                    if frame.surface_info() != targets_info {
                         self.targets = Some(
                             graphics
                                 .device

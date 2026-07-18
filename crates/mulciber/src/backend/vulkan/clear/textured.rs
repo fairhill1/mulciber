@@ -5,6 +5,7 @@ use std::{format, vec::Vec};
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
+use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
     ShaderArtifact, SurfaceInfo, Vertex,
@@ -43,7 +44,7 @@ struct PipelineResource {
     pipeline: vk::VkPipeline,
     descriptor_pool: vk::VkDescriptorPool,
     sampler: vk::VkSampler,
-    bindings: Vec<(u32, vk::VkDescriptorSet)>,
+    bindings: Vec<(ResourceId, vk::VkDescriptorSet)>,
 }
 
 struct TargetResource {
@@ -63,12 +64,12 @@ pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: vk::VkSampleCountFlagBits,
     uniform: Buffer,
-    meshes: Vec<MeshResource>,
-    textures: Vec<TextureResource>,
-    pipelines: Vec<PipelineResource>,
-    targets: Vec<TargetResource>,
-    postprocess_pipelines: Vec<PipelineResource>,
-    postprocess_targets: Vec<PostprocessTargetResource>,
+    meshes: Arena<MeshResource>,
+    textures: Arena<TextureResource>,
+    pipelines: Arena<PipelineResource>,
+    targets: Arena<TargetResource>,
+    postprocess_pipelines: Arena<PipelineResource>,
+    postprocess_targets: Arena<PostprocessTargetResource>,
     deferred_token: Option<TexturedFrameToken>,
 }
 
@@ -109,12 +110,12 @@ impl<'window> TexturedSession<'window> {
                 surface,
                 sample_count,
                 uniform,
-                meshes: Vec::new(),
-                textures: Vec::new(),
-                pipelines: Vec::new(),
-                targets: Vec::new(),
-                postprocess_pipelines: Vec::new(),
-                postprocess_targets: Vec::new(),
+                meshes: Arena::new("mesh"),
+                textures: Arena::new("texture"),
+                pipelines: Arena::new("textured pipeline"),
+                targets: Arena::new("render targets"),
+                postprocess_pipelines: Arena::new("postprocess pipeline"),
+                postprocess_targets: Arena::new("postprocess targets"),
                 deferred_token: None,
             },
             if sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
@@ -144,7 +145,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         vertices: &[Vertex],
         indices: &[u16],
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let vertex_bytes = bytes_of_slice(vertices);
         let index_bytes = bytes_of_slice(indices);
         let draw = vk::VkDrawIndexedIndirectCommand {
@@ -186,12 +187,11 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        self.meshes.push(MeshResource {
+        self.meshes.insert(MeshResource {
             vertices,
             indices,
             indirect,
-        });
-        resource_id(self.meshes.len(), "mesh")
+        })
     }
 
     pub(crate) fn create_texture(
@@ -199,7 +199,7 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         texels: &[u8],
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let staging = create_buffer(
             &self.surface,
             texels.len(),
@@ -258,26 +258,23 @@ impl<'window> TexturedSession<'window> {
             destroy_image(&self.surface, image);
             return Err(failure);
         }
-        self.textures.push(TextureResource { image, sampler });
-        resource_id(self.textures.len(), "texture")
+        self.textures.insert(TextureResource { image, sampler })
     }
 
     pub(crate) fn create_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let resource = create_pipeline(&self.surface, shader.payload(), self.sample_count)?;
-        self.pipelines.push(resource);
-        resource_id(self.pipelines.len(), "pipeline")
+        self.pipelines.insert(resource)
     }
 
     pub(crate) fn create_postprocess_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         let resource = create_postprocess_pipeline(&self.surface, shader.payload())?;
-        self.postprocess_pipelines.push(resource);
-        resource_id(self.postprocess_pipelines.len(), "postprocess pipeline")
+        self.postprocess_pipelines.insert(resource)
     }
 
     /// Destroys image storage for render targets from superseded surface generations.
@@ -289,7 +286,7 @@ impl<'window> TexturedSession<'window> {
     fn reclaim_stale_targets(&mut self) -> Result<(), GraphicsError> {
         let current = self.surface.info().generation();
         let surface = &self.surface;
-        for target in &mut self.targets {
+        for target in self.targets.iter_mut() {
             if target.info.generation().get() >= current.get() {
                 continue;
             }
@@ -301,7 +298,7 @@ impl<'window> TexturedSession<'window> {
             }
         }
         let mut reclaimed_postprocess_target = false;
-        for target in &mut self.postprocess_targets {
+        for target in self.postprocess_targets.iter_mut() {
             if target.info.generation().get() >= current.get() {
                 continue;
             }
@@ -318,7 +315,7 @@ impl<'window> TexturedSession<'window> {
         }
         if reclaimed_postprocess_target {
             let device = self.surface.device();
-            for pipeline in &mut self.postprocess_pipelines {
+            for pipeline in self.postprocess_pipelines.iter_mut() {
                 let replacement = create_postprocess_descriptor_pool(device)?;
                 unsafe {
                     device
@@ -340,7 +337,7 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets()?;
         let mut properties = vk::VkFormatProperties::default();
         unsafe {
@@ -392,18 +389,17 @@ impl<'window> TexturedSession<'window> {
         } else {
             None
         };
-        self.targets.push(TargetResource {
+        self.targets.insert(TargetResource {
             info,
             multisample_color,
             depth: Some(depth),
-        });
-        resource_id(self.targets.len(), "render target")
+        })
     }
 
     pub(crate) fn create_postprocess_targets(
         &mut self,
         info: SurfaceInfo,
-    ) -> Result<u32, GraphicsError> {
+    ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets()?;
         let extent = info.extent();
         let scene_color = create_image(
@@ -450,30 +446,29 @@ impl<'window> TexturedSession<'window> {
         } else {
             None
         };
-        self.postprocess_targets.push(PostprocessTargetResource {
+        self.postprocess_targets.insert(PostprocessTargetResource {
             info,
             scene_color: Some(scene_color),
             multisample_color,
             depth: Some(depth),
-        });
-        resource_id(self.postprocess_targets.len(), "postprocess target")
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: u32,
-        texture: u32,
-        pipeline: u32,
-        targets: u32,
+        mesh: ResourceId,
+        texture: ResourceId,
+        pipeline: ResourceId,
+        targets: ResourceId,
         transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh_index = resource_index(mesh, self.meshes.len(), "mesh")?;
-        let texture_index = resource_index(texture, self.textures.len(), "texture")?;
-        let pipeline_index = resource_index(pipeline, self.pipelines.len(), "pipeline")?;
-        let target_index = resource_index(targets, self.targets.len(), "render target")?;
+        let mesh_index = self.meshes.index_of(mesh)?;
+        let texture_index = self.textures.index_of(texture)?;
+        let pipeline_index = self.pipelines.index_of(pipeline)?;
+        let target_index = self.targets.index_of(targets)?;
         if self.targets[target_index].info != token.info {
             return Err(error(
                 "render targets do not match acquired Vulkan generation",
@@ -496,28 +491,20 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn draw_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: u32,
-        texture: u32,
-        scene_pipeline: u32,
-        postprocess_pipeline: u32,
-        targets: u32,
+        mesh: ResourceId,
+        texture: ResourceId,
+        scene_pipeline: ResourceId,
+        postprocess_pipeline: ResourceId,
+        targets: ResourceId,
         transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh_index = resource_index(mesh, self.meshes.len(), "mesh")?;
-        let texture_index = resource_index(texture, self.textures.len(), "texture")?;
-        let scene_pipeline_index =
-            resource_index(scene_pipeline, self.pipelines.len(), "pipeline")?;
-        let postprocess_pipeline_index = resource_index(
-            postprocess_pipeline,
-            self.postprocess_pipelines.len(),
-            "postprocess pipeline",
-        )?;
-        let target_index = resource_index(
-            targets,
-            self.postprocess_targets.len(),
-            "postprocess target",
-        )?;
+        let mesh_index = self.meshes.index_of(mesh)?;
+        let texture_index = self.textures.index_of(texture)?;
+        let scene_pipeline_index = self.pipelines.index_of(scene_pipeline)?;
+        let postprocess_pipeline_index =
+            self.postprocess_pipelines.index_of(postprocess_pipeline)?;
+        let target_index = self.postprocess_targets.index_of(targets)?;
         if self.postprocess_targets[target_index].info != token.info {
             return Err(error(
                 "postprocess targets do not match acquired Vulkan generation",
@@ -554,6 +541,127 @@ impl<'window> TexturedSession<'window> {
     fn flush_deferred_abandon(&mut self) -> Result<(), GraphicsError> {
         if let Some(token) = self.deferred_token.take() {
             self.abandon(token)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reclaim_resources(
+        &mut self,
+        requests: &[DestroyRequest],
+    ) -> Result<(), GraphicsError> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        self.surface.wait_for_frame()?;
+        let reset_scene_descriptors = requests.iter().any(|request| {
+            request.kind == ResourceKind::Texture && self.textures.get(request.id).is_ok()
+        });
+        let reset_postprocess_descriptors = requests.iter().any(|request| {
+            request.kind == ResourceKind::PostprocessTargets
+                && self.postprocess_targets.get(request.id).is_ok()
+        });
+        if reset_scene_descriptors {
+            self.reset_descriptor_pools(false)?;
+        }
+        if reset_postprocess_descriptors {
+            self.reset_descriptor_pools(true)?;
+        }
+        for &request in requests {
+            self.destroy_resource_if_live(request);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn destroy_resource(
+        &mut self,
+        request: DestroyRequest,
+    ) -> Result<(), GraphicsError> {
+        self.surface.wait_for_frame()?;
+        if request.kind == ResourceKind::Texture {
+            self.textures.get(request.id)?;
+            self.reset_descriptor_pools(false)?;
+        } else if request.kind == ResourceKind::PostprocessTargets {
+            self.postprocess_targets.get(request.id)?;
+            self.reset_descriptor_pools(true)?;
+        }
+        let device = self.surface.device();
+        match request.kind {
+            ResourceKind::Mesh => destroy_mesh_device(device, self.meshes.remove(request.id)?),
+            ResourceKind::Texture => {
+                destroy_texture_device(device, self.textures.remove(request.id)?);
+            }
+            ResourceKind::TexturedPipeline => {
+                destroy_pipeline_device(device, self.pipelines.remove(request.id)?);
+            }
+            ResourceKind::PostprocessPipeline => {
+                destroy_pipeline_device(device, self.postprocess_pipelines.remove(request.id)?);
+            }
+            ResourceKind::RenderTargets => {
+                destroy_target_device(device, self.targets.remove(request.id)?);
+            }
+            ResourceKind::PostprocessTargets => destroy_postprocess_target_device(
+                device,
+                self.postprocess_targets.remove(request.id)?,
+            ),
+        }
+        Ok(())
+    }
+
+    fn destroy_resource_if_live(&mut self, request: DestroyRequest) {
+        let device = self.surface.device();
+        match request.kind {
+            ResourceKind::Mesh => self
+                .meshes
+                .remove_if_live(request.id)
+                .map(|resource| destroy_mesh_device(device, resource)),
+            ResourceKind::Texture => self
+                .textures
+                .remove_if_live(request.id)
+                .map(|resource| destroy_texture_device(device, resource)),
+            ResourceKind::TexturedPipeline => self
+                .pipelines
+                .remove_if_live(request.id)
+                .map(|resource| destroy_pipeline_device(device, resource)),
+            ResourceKind::PostprocessPipeline => self
+                .postprocess_pipelines
+                .remove_if_live(request.id)
+                .map(|resource| destroy_pipeline_device(device, resource)),
+            ResourceKind::RenderTargets => self
+                .targets
+                .remove_if_live(request.id)
+                .map(|resource| destroy_target_device(device, resource)),
+            ResourceKind::PostprocessTargets => self
+                .postprocess_targets
+                .remove_if_live(request.id)
+                .map(|resource| destroy_postprocess_target_device(device, resource)),
+        };
+    }
+
+    fn reset_descriptor_pools(&mut self, postprocess: bool) -> Result<(), GraphicsError> {
+        let device = self.surface.device();
+        let pipelines = if postprocess {
+            &mut self.postprocess_pipelines
+        } else {
+            &mut self.pipelines
+        };
+        for pipeline in pipelines.iter_mut() {
+            let replacement = if postprocess {
+                create_postprocess_descriptor_pool(device)?
+            } else {
+                create_descriptor_pool(device)?
+            };
+            unsafe {
+                device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    device.handle,
+                    pipeline.descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            pipeline.descriptor_pool = replacement;
+            pipeline.bindings.clear();
         }
         Ok(())
     }
@@ -711,7 +819,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         pipeline_index: usize,
         texture_index: usize,
-        texture_id: u32,
+        texture_id: ResourceId,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
         if let Some((_, set)) = self.pipelines[pipeline_index]
             .bindings
@@ -798,7 +906,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         pipeline_index: usize,
         target_index: usize,
-        target_id: u32,
+        target_id: ResourceId,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
         if let Some((_, set)) = self.postprocess_pipelines[pipeline_index]
             .bindings
@@ -1481,87 +1589,39 @@ impl<'window> TexturedSession<'window> {
 
     fn destroy_resources(&mut self) {
         let device = self.surface.device();
+        for pipeline in self
+            .pipelines
+            .take_all()
+            .into_iter()
+            .chain(self.postprocess_pipelines.take_all())
+        {
+            destroy_pipeline_device(device, pipeline);
+        }
+        for texture in self.textures.take_all() {
+            destroy_texture_device(device, texture);
+        }
+        for target in self.targets.take_all() {
+            destroy_target_device(device, target);
+        }
+        for target in self.postprocess_targets.take_all() {
+            destroy_postprocess_target_device(device, target);
+        }
+        for mesh in self.meshes.take_all() {
+            destroy_mesh_device(device, mesh);
+        }
         unsafe {
-            for pipeline in self
-                .pipelines
-                .drain(..)
-                .chain(self.postprocess_pipelines.drain(..))
-            {
-                device.functions.destroy_pipeline.expect("loaded function")(
-                    device.handle,
-                    pipeline.pipeline,
-                    ptr::null(),
-                );
-                device
-                    .functions
-                    .destroy_pipeline_layout
-                    .expect("loaded function")(
-                    device.handle, pipeline.layout, ptr::null()
-                );
-                device
-                    .functions
-                    .destroy_descriptor_pool
-                    .expect("loaded function")(
-                    device.handle,
-                    pipeline.descriptor_pool,
-                    ptr::null(),
-                );
-                device
-                    .functions
-                    .destroy_descriptor_set_layout
-                    .expect("loaded function")(
-                    device.handle, pipeline.set_layout, ptr::null()
-                );
-                if !pipeline.sampler.is_null() {
-                    device.functions.destroy_sampler.expect("loaded function")(
-                        device.handle,
-                        pipeline.sampler,
-                        ptr::null(),
-                    );
-                }
-            }
-            for texture in self.textures.drain(..) {
-                device.functions.destroy_sampler.expect("loaded function")(
-                    device.handle,
-                    texture.sampler,
-                    ptr::null(),
-                );
-                destroy_image_device(device, texture.image);
-            }
-            for target in self.targets.drain(..) {
-                if let Some(color) = target.multisample_color {
-                    destroy_image_device(device, color);
-                }
-                if let Some(depth) = target.depth {
-                    destroy_image_device(device, depth);
-                }
-            }
-            for target in self.postprocess_targets.drain(..) {
-                if let Some(color) = target.multisample_color {
-                    destroy_image_device(device, color);
-                }
-                if let Some(color) = target.scene_color {
-                    destroy_image_device(device, color);
-                }
-                if let Some(depth) = target.depth {
-                    destroy_image_device(device, depth);
-                }
-            }
-            for mesh in self.meshes.drain(..) {
-                destroy_buffer_device(device, mesh.vertices);
-                destroy_buffer_device(device, mesh.indices);
-                destroy_buffer_device(device, mesh.indirect);
-            }
             destroy_buffer_device(device, mem::take(&mut self.uniform));
         }
 
         // `shutdown` moves the surface out and deliberately suppresses this
         // session's destructor. Release the now-empty arenas' allocations here
         // so that path does not retain their backing storage.
-        self.pipelines = Vec::new();
-        self.textures = Vec::new();
-        self.targets = Vec::new();
-        self.meshes = Vec::new();
+        self.pipelines = Arena::new("textured pipeline");
+        self.postprocess_pipelines = Arena::new("postprocess pipeline");
+        self.textures = Arena::new("texture");
+        self.targets = Arena::new("render targets");
+        self.postprocess_targets = Arena::new("postprocess targets");
+        self.meshes = Arena::new("mesh");
     }
 }
 
@@ -1569,6 +1629,86 @@ impl Drop for TexturedSession<'_> {
     fn drop(&mut self) {
         let _ = self.surface.finish();
         self.destroy_resources();
+    }
+}
+
+// These helpers intentionally consume the wrapper so one call owns the native destruction
+// authority. Most fields are raw handles, so Clippy cannot otherwise observe that ownership.
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_mesh_device(device: &super::Device, mesh: MeshResource) {
+    unsafe {
+        destroy_buffer_device(device, mesh.vertices);
+        destroy_buffer_device(device, mesh.indices);
+        destroy_buffer_device(device, mesh.indirect);
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_texture_device(device: &super::Device, texture: TextureResource) {
+    unsafe {
+        device.functions.destroy_sampler.expect("loaded function")(
+            device.handle,
+            texture.sampler,
+            ptr::null(),
+        );
+        destroy_image_device(device, texture.image);
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
+    unsafe {
+        device.functions.destroy_pipeline.expect("loaded function")(
+            device.handle,
+            pipeline.pipeline,
+            ptr::null(),
+        );
+        device
+            .functions
+            .destroy_pipeline_layout
+            .expect("loaded function")(device.handle, pipeline.layout, ptr::null());
+        device
+            .functions
+            .destroy_descriptor_pool
+            .expect("loaded function")(device.handle, pipeline.descriptor_pool, ptr::null());
+        device
+            .functions
+            .destroy_descriptor_set_layout
+            .expect("loaded function")(device.handle, pipeline.set_layout, ptr::null());
+        if !pipeline.sampler.is_null() {
+            device.functions.destroy_sampler.expect("loaded function")(
+                device.handle,
+                pipeline.sampler,
+                ptr::null(),
+            );
+        }
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_target_device(device: &super::Device, target: TargetResource) {
+    unsafe {
+        if let Some(color) = target.multisample_color {
+            destroy_image_device(device, color);
+        }
+        if let Some(depth) = target.depth {
+            destroy_image_device(device, depth);
+        }
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_postprocess_target_device(device: &super::Device, target: PostprocessTargetResource) {
+    unsafe {
+        if let Some(color) = target.multisample_color {
+            destroy_image_device(device, color);
+        }
+        if let Some(color) = target.scene_color {
+            destroy_image_device(device, color);
+        }
+        if let Some(depth) = target.depth {
+            destroy_image_device(device, depth);
+        }
     }
 }
 
@@ -2107,33 +2247,12 @@ fn create_pipeline(
             .expect("loaded function")(device.handle, module, ptr::null());
     };
     result?;
-    let pool_sizes = [
-        pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
-        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
-        pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLER),
-    ];
-    let pool_info = vk::VkDescriptorPoolCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        maxSets: 64,
-        poolSizeCount: 3,
-        pPoolSizes: pool_sizes.as_ptr(),
-        ..Default::default()
-    };
-    check(
-        unsafe {
-            device
-                .functions
-                .create_descriptor_pool
-                .expect("loaded function")(
-                device.handle,
-                &raw const pool_info,
-                ptr::null(),
-                &raw mut resource.descriptor_pool,
-            )
-        },
-        "vkCreateDescriptorPool for textured pipeline",
-    )?;
+    resource.descriptor_pool = create_descriptor_pool(device)?;
     Ok(resource)
+}
+
+fn create_descriptor_pool(device: &super::Device) -> Result<vk::VkDescriptorPool, GraphicsError> {
+    create_pipeline_descriptor_pool(device, "textured")
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2360,6 +2479,13 @@ fn create_postprocess_pipeline(
 fn create_postprocess_descriptor_pool(
     device: &super::Device,
 ) -> Result<vk::VkDescriptorPool, GraphicsError> {
+    create_pipeline_descriptor_pool(device, "postprocess")
+}
+
+fn create_pipeline_descriptor_pool(
+    device: &super::Device,
+    label: &str,
+) -> Result<vk::VkDescriptorPool, GraphicsError> {
     let pool_sizes = [
         pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
@@ -2385,7 +2511,7 @@ fn create_postprocess_descriptor_pool(
                 &raw mut pool,
             )
         },
-        "vkCreateDescriptorPool for postprocess pipeline",
+        &format!("vkCreateDescriptorPool for {label} pipeline"),
     )?;
     Ok(pool)
 }
@@ -2457,18 +2583,6 @@ unsafe fn destroy_image_device(device: &super::Device, image: Image) {
     }
 }
 
-fn resource_id(length: usize, label: &str) -> Result<u32, GraphicsError> {
-    u32::try_from(length).map_err(|_| error(format!("{label} identity space is exhausted")))
-}
-fn resource_index(id: u32, length: usize, label: &str) -> Result<usize, GraphicsError> {
-    let index = usize::try_from(id)
-        .ok()
-        .and_then(|id| id.checked_sub(1))
-        .ok_or_else(|| error(format!("invalid {label} handle")))?;
-    (index < length)
-        .then_some(index)
-        .ok_or_else(|| error(format!("invalid {label} handle")))
-}
 fn bytes_of<T>(value: &T) -> &[u8] {
     unsafe { slice::from_raw_parts(ptr::from_ref(value).cast(), mem::size_of::<T>()) }
 }

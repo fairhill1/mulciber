@@ -163,8 +163,9 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [ ] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
-  and shutdown conformance tests: `probes/api-conformance` asserts thirteen cases across those
-  categories and exits nonzero on divergence; per-platform runs are recorded in the validation
+  resource-reclamation, and shutdown conformance tests: `probes/api-conformance` asserts fifteen
+  Metal cases across those categories (plus the Vulkan-only superseded-generation branch when
+  applicable) and exits nonzero on divergence; per-platform runs are recorded in the validation
   ledgers as they are exercised.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
@@ -246,9 +247,13 @@ fallible drained shutdown. Naga is confined to the separate offline `mulciber-sh
 KDE Wayland resize evidence forced two corrections: render targets from superseded surface
 generations are now reclaimed instead of retained until shutdown, and Wayland extent-driven
 reconfiguration is paced so continuous resize cannot outrun FIFO presentation (see the
-[Linux validation runbook](linux-validation.md)). Final checkboxes remain open until the updated
-Windows matrix reruns, the Metal-side reclamation passes macOS validation, and the provisional
-resource-retention/command vocabulary is reviewed.
+[Linux validation runbook](linux-validation.md)). Resource handles are now owning and non-`Copy`;
+explicit fallible destruction and drop-queued reclamation cover all direct and postprocess resource
+kinds through reusable generational arenas. The replacement-render conformance path passed Metal API
+Validation on Apple M2. Its Vulkan implementation cross-compiles for Win32, waits the current frame
+fence, and invalidates affected descriptor pools, but physical Vulkan execution of this lifetime
+change remains pending. Final checkboxes remain open until that run and the provisional command
+vocabulary are reviewed.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

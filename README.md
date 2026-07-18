@@ -44,9 +44,11 @@ physical surface extents, graphics-owned surface generations, nonfatal acquisiti
 presented/abandoned frame dispositions. Both native probes consume it and passed their Windows and
 macOS validation matrices after integration. A same-source clear-only example now exercises that
 contract through target-selected native Metal or Vulkan without application `unsafe`; its temporary
-`ClearSurface` owner deliberately keeps device, queue, command, and presentation machinery internal
-until the textured/depth slice supplies enough evidence to separate them well. General device,
-resource, command, and synchronization types remain unextracted.
+`ClearSurface` owner deliberately keeps device, queue, command, and presentation machinery internal.
+The later textured/depth slice now exposes experimental `Device`, `Queue`, and `Surface` owners plus
+owning mesh, texture, pipeline, and generation-dependent target handles. Its explicit destruction,
+drop-queued reclamation, and generational slot reuse are still narrow single-queue evidence, not a
+general resource/command/synchronization API.
 
 ## Direction
 
@@ -134,6 +136,9 @@ cargo run -p mulciber-api-clear -- --frames 120 --abandon-acquired-frame-once
 cargo run -p mulciber-api-cube -- --frames 120 --abandon-acquired-frame-once
 cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
 ```
+
+`mulciber-api-conformance` additionally asserts invalid use, resource destruction/drop churn,
+replacement rendering, mixed-session rejection, and fallible shutdown.
 
 ## Current probes
 

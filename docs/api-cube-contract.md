@@ -36,20 +36,23 @@ They share a private session so backend-required instance, adapter, queue, prese
 retirement lifetimes cannot be torn apart in an invalid order. This is a logical ownership split,
 not a claim that Vulkan and Metal have identical native object graphs.
 
-`Device` creates persistent `Mesh`, `Texture`, and `TexturedPipeline` handles. `Device` also creates
-`RenderTargets` for one `SurfaceInfo`; those targets contain depth storage and any backend-private
-multisample color storage. A target from an older surface generation is rejected instead of being
-silently stretched or rebound.
+`Device` creates owning, non-`Copy` `Mesh`, `Texture`, and `TexturedPipeline` handles. `Device` also
+creates owning `RenderTargets` for one `SurfaceInfo`; those targets contain depth storage and any
+backend-private multisample color storage. A target from an older surface generation is rejected
+instead of being silently stretched or rebound. The postprocess checkpoint follows the same model
+for its pipeline and targets.
 
-Native resource destruction is session-coordinated. Meshes, textures, and pipelines may retain
-dropped allocations until drained shutdown; immediate reclamation is not part of this checkpoint.
-Direct and postprocess render targets are the exception: a target from a superseded surface
-generation is reclaimed by the session because continuous live resize would otherwise grow device
-memory without bound. This is safe without new synchronization because draws reject targets that do
-not match the acquired generation, and each backend already guarantees stale targets are free of GPU
-ownership—Vulkan generation advances happen only after the in-flight frame fence is awaited, and
-Metal command buffers retain the textures they reference until completion. Reclaimed targets keep
-their identifiers and are rejected if drawn.
+Native resource destruction is session-coordinated. Consuming `Device::destroy_*` operations report
+completion or destruction failure immediately; dropping a handle queues the same reclamation for the
+next mutable graphics operation, while shutdown destroys anything still live. Generational arena
+identities permit bounded slot reuse without allowing an old identity to name its replacement.
+Metal releases the session's Objective-C retains immediately because retained command buffers keep
+their referenced resources alive through GPU completion. Vulkan first waits the slice's one
+in-flight frame fence, invalidates descriptor pools that reference a destroyed texture or
+postprocess target, and then destroys the native device children. Superseded render targets remain
+eligible for earlier backend reclamation so continuous resize cannot grow device memory without
+bound; their owning handles remain valid identities but drawing them reports that their native
+targets were reclaimed.
 
 An acquired `Frame` owns exactly one drawable or swapchain image. Acquisition reconfigures the
 surface internally for changed window metrics, so a ready frame always matches the requested
@@ -104,10 +107,10 @@ paths until a single-source compiler path has equivalent evidence.
 
 ## Errors and validation
 
-Creation, acquisition, upload, pipeline creation, drawing, presentation, and shutdown remain
-fallible. Invalid dimensions, byte counts, indices, non-finite transforms, mixed-session handles,
-and stale render targets are rejected before native calls where practical. Validation-layer or
-Metal debug-layer warnings and errors fail their validation runs.
+Creation, acquisition, upload, pipeline creation, explicit destruction, drawing, presentation, and
+shutdown remain fallible. Invalid dimensions, byte counts, indices, non-finite transforms,
+mixed-session handles, and stale render targets are rejected before native calls where practical.
+Validation-layer or Metal debug-layer warnings and errors fail their validation runs.
 
 Acceptance requires automated Windows preflight plus physical visual, resize, abandonment/recovery,
 and lifecycle evidence on each available target. Automated abandonment, fallback, and finite-run

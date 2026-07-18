@@ -67,6 +67,18 @@ load/store policy, multiple draws, transient allocation, or copy/compute integra
 justify a broad API. Recorded in the [textured-cube contract](api-cube-contract.md) and
 [two-pass postprocess contract](postprocess-contract.md).
 
+## Resource ownership and reclamation
+
+Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning
+and non-`Copy`. Consuming `Device::destroy_*` methods provide fallible immediate reclamation;
+ordinary `Drop` queues reclamation for the next mutable graphics operation, and fallible shutdown
+destroys all remaining native resources. Reusable generational arena slots prevent stale identities
+from aliasing replacements. Metal relies on retained command-buffer references after releasing the
+session's retain. Vulkan waits the one in-flight frame fence and invalidates affected descriptor
+pools before native destruction. This settles bounded lifetime for the current single-queue,
+single-in-flight slice, not general multi-queue dependency tracking, externally owned resources, or
+allocator policy. Recorded in the [textured-cube contract](api-cube-contract.md).
+
 ## Capabilities and fallbacks
 
 Decided for the slice. `DeviceRequest` carries the preferred sample count; unsupported four-sample

@@ -1,4 +1,4 @@
-//! Selects the cube example's cached native artifact for conformance validation.
+//! Selects the postprocess example's cached native artifact for conformance validation.
 
 fn main() {
     use std::ffi::OsStr;
@@ -11,12 +11,14 @@ fn main() {
             let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
             fs::write(Path::new(&output).join("cube.shaderbin"), [])
                 .expect("create cross-host shader placeholder");
-            println!("cargo::warning=Metal cube artifact skipped for cross-host type checking");
+            println!(
+                "cargo::warning=Metal conformance artifact skipped for cross-host type checking"
+            );
             return;
         }
-        "../../examples/cube/artifacts/cube.metal.shaderbin"
+        "../../examples/postprocess-cube/artifacts/postprocess.metal.shaderbin"
     } else if target_os == OsStr::new("windows") || target_os == OsStr::new("linux") {
-        "../../examples/cube/artifacts/cube.vulkan.shaderbin"
+        "../../examples/postprocess-cube/artifacts/postprocess.vulkan.shaderbin"
     } else {
         panic!("the conformance probe supports macOS, Windows, and Linux targets");
     };

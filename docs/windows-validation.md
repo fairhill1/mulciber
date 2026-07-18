@@ -5,6 +5,38 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+On 2026-07-18 the native GPU instancing scene slice (revision `7f812a4`, "Add native GPU instancing
+scene slice", clean tree) received its native Vulkan physical validation on the Windows 11 Home build
+22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,
+loader/validation 1.4.350. The structural preflight passed natively: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (46 tests). The
+`mulciber-api-conformance` probe — whose Vulkan backend always enables `VK_LAYER_KHRONOS_validation`
+and installs a debug messenger that fails shutdown on any recorded warning or error — then ran on the
+interactive desktop and asserted all nineteen cases with exit zero and empty standard error, meaning
+no Vulkan validation or loader message was emitted. A second identical run reproduced the same
+nineteen-case pass, exit zero, and empty standard error.
+
+This is the first physical Vulkan exercise of the native instance-rate path. Both runs presented a
+direct two-instance batch through `Queue::render_and_present` with `SceneContent::Instanced` and
+`SceneOutput::Direct` ("instanced presentation"), then the same instance batch through
+`SceneOutput::Postprocessed` with the fullscreen grade/vignette pass ("postprocessed instanced
+presentation"). This drives the `InstancedTexturedPipeline` vertex-input contract — geometry at
+locations 0 through 2 and the four instance-rate matrix columns at locations 3 through 6 through a
+second `VK_VERTEX_INPUT_RATE_INSTANCE` binding — and one `vkCmdDrawIndexed` per batch. Because this
+Intel tier lacks `VK_KHR_swapchain_maintenance1`, acquired-frame abandonment replaced the base
+swapchain generation, so the run also took the Vulkan-only generation-replacement branch (the
+nineteenth case): the superseded-generation targets were rejected before a rebuilt set presented.
+
+The operator then ran the `mulciber-instanced-scene` interactive example on this same Intel Vulkan
+tier. It selected the Vulkan backend and four samples and reported 100 scene objects across four
+instance batches; the operator visually confirmed the animated 100-object cube/pyramid field, with
+both meshes and both checkerboard textures, rendered correctly with the expected grade/vignette.
+Title-bar close left empty standard error. This establishes the GPU instancing scene slice on the
+Intel Vulkan tier; the conformance evidence is automated single-display validation and the example
+result is an operator visual report. Interactive lifecycle (resize, minimize/restore,
+maximize/restore, multi-display) was not separately exercised, and no other-driver-tier claim is
+added.
+
 On 2026-07-18 the multi-object scene slice (revision `33d779f`, "Add multi-object scene slice and
 wgpu comparison", clean tree) received its native Vulkan physical validation on the Windows 11 Home
 build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,

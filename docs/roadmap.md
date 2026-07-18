@@ -235,9 +235,10 @@ instance batches now drive four native indexed draws for the same 100-object fie
 postprocessed recipes selected through `Queue::render_and_present` and `SceneSubmission`. The
 `mulciber-instanced-scene` / `wgpu-instanced-scene` application totals are 233 versus 794 Rust lines
 with equivalent scene data included. Metal passed visual comparison and all eighteen conformance
-cases under API Validation on the Apple M2 tier. Vulkan compiles for Win32, but the new instance-rate
-path still requires physical Vulkan validation and visual evidence. See the
-[experimental GPU instancing contract](instancing-contract.md).
+cases under API Validation on the Apple M2 tier. On the Intel UHD 620 tier, Vulkan passed the
+nineteen-case conformance probe twice under the validation layer (including the direct and
+postprocessed instanced presentations), and the operator visually confirmed the animated 100-object
+instanced field. See the [experimental GPU instancing contract](instancing-contract.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame

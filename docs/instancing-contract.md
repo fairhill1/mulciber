@@ -75,6 +75,15 @@ The comparison measures application ergonomics, not total implementation or main
 Mulciber's native Metal and Vulkan implementation remains library code and part of the wider
 viability judgment.
 
-The Vulkan backend and example cross-compile for Win32, but the new instance-rate path has not yet
-been physically executed under Vulkan validation or visually inspected. Existing Windows evidence
-for the heterogeneous multi-draw path does not establish instancing correctness.
+## Windows comparison checkpoint
+
+On 2026-07-18, a clean tree at revision `7f812a4` physically validated the native instance-rate path
+under Vulkan on the Windows 11 Home build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115,
+Vulkan device API 1.3.215, loader/validation 1.4.350. The `mulciber-api-conformance` probe, whose
+Vulkan backend force-enables `VK_LAYER_KHRONOS_validation` and fails shutdown on any recorded
+message, asserted all nineteen cases with exit zero and empty standard error across two identical
+runs, including the direct and postprocessed instanced presentations. The `mulciber-instanced-scene`
+example then selected Vulkan with four samples and the operator visually confirmed the correct
+animated 100-object field. This is automated single-display conformance evidence plus an operator
+visual report; interactive lifecycle and other driver tiers remain outstanding. See the
+[Win32/Vulkan validation runbook](windows-validation.md).

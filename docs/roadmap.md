@@ -261,6 +261,19 @@ timing/input/rendering/suspension code at 1,340 versus 631 raw Rust application 
 substitute for the broader missing lifecycle work. See the [runtime contract](runtime-contract.md),
 [game dogfood contract](game-slice.md), and [game-slice comparison](game-slice-comparison.md).
 
+The same Forge Run workload now has a practical macOS-only peer using pinned maintained AppKit and
+Metal Rust bindings without Mulciber, winit, or wgpu. It physically passed input, diagonal facing,
+continuous resize, minimize/restore, visual matching, titlebar close, explicit command drain, and
+Metal API Validation on the Apple M2. Application totals are 631 Mulciber versus 1,156 direct
+AppKit/Metal versus 1,340 wgpu/winit; sequential one-shot clean release builds were 3.44 s, 5.56 s,
+and 22.71 s respectively. The direct peer also exposes five application unsafe sites and the
+selected stack's `metal-rs`/`objc2` binding-generation interop seam. This is a favorable **continue**
+checkpoint for Gate 2's single-backend score, not a pass. Cargo 1.97 additionally flags metal-rs's
+transitive `block` 0.1.6 as future-incompatible; that is an upstream binding-maintenance risk, not a
+Metal limitation. Matched cadence/performance/resource-cost, failure-diagnosis, forced-fallback, and
+Gate 4 differentiation work remain open. See the
+[game-slice comparison](game-slice-comparison.md).
+
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
 dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix

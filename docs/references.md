@@ -45,11 +45,14 @@ are collected.
 - `ash`: <https://github.com/ash-rs/ash>
 - `wgpu`: <https://github.com/gfx-rs/wgpu>
 - `winit`: <https://github.com/rust-windowing/winit>
+- `metal-rs`: <https://github.com/gfx-rs/metal-rs>
+- `objc2`: <https://github.com/madsmtm/objc2>
 - SDL3 GPU: <https://wiki.libsdl.org/SDL3/CategoryGPU>
 - SDL3 source: <https://github.com/libsdl-org/SDL>
 - Vulkano: <https://github.com/vulkano-rs/vulkano>
 - raylib: <https://github.com/raysan5/raylib>
 
-The practical Metal/AppKit Rust stack and the maintained Rust bindings used for SDL3 or raylib are
-selected and pinned at benchmark time. Binding maturity is recorded separately so it does not become
-an unexplained score for or against the underlying API.
+The first practical Metal/AppKit Rust checkpoint pins `metal` 0.33.0, `objc2` 0.6.4, and the
+`objc2-app-kit`, `objc2-foundation`, and `objc2-quartz-core` framework crates at 0.3.2. Maintained Rust
+bindings for SDL3 or raylib are selected and pinned at benchmark time. Binding maturity is recorded
+separately so it does not become an unexplained score for or against the underlying API.

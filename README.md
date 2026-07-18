@@ -174,11 +174,13 @@ Gate 5: native frame pacing, suspension, fullscreen/display transitions, device 
 input, broader suspension evidence, and the full lifecycle comparison remain pending. See the
 [runtime contract](docs/runtime-contract.md) and [game dogfood contract](docs/game-slice.md).
 
-Its `wgpu`/`winit` peer is `comparisons/wgpu-game-slice`. Both render the same playable state through
-five instance batches, depth, capability-selected MSAA, postprocessing, a 60 Hz fixed simulation,
-variable cosmetic animation, previous/current interpolation, and rendering suspension. Raw Rust
-application-source counts are 631 Mulciber versus 1,340 wgpu lines; the scope, breakdown, physical
-Metal comparison, and limits
+Its peers are `comparisons/metal-game-slice`, using a pinned maintained AppKit/Metal Rust stack, and
+`comparisons/wgpu-game-slice`. All three render the same playable state through five instance
+batches, depth, capability-selected MSAA, postprocessing, a 60 Hz fixed simulation, variable
+cosmetic animation, previous/current interpolation, and rendering suspension. Raw Rust
+application-source counts are 631 Mulciber versus 1,156 direct Metal and 1,340 wgpu lines. The direct
+peer passed the macOS input, resize, minimize/restore, visual, validation, and shutdown checkpoint;
+the scope, cost measurements, physical evidence, single-backend decision, and limits
 of that metric are recorded in the [game-slice comparison](docs/game-slice-comparison.md).
 
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API

@@ -1,6 +1,8 @@
 use core::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+use std::vec::Vec;
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
@@ -779,6 +781,62 @@ impl<'window> Surface<'window> {
             shared: self.shared.clone(),
         }))
     }
+
+    /// Drains presentation feedback reported by the native backend since the previous drain.
+    ///
+    /// Feedback is diagnostic and never blocks. Undrained samples are kept in a bounded queue, so
+    /// skipping this call costs a fixed amount of memory and no correctness. A backend without
+    /// native presentation feedback reports [`PresentFeedback::Unsupported`] on every drain so
+    /// estimation fallbacks remain observable rather than silent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after session shutdown.
+    pub fn take_present_feedback(&mut self) -> Result<PresentFeedback, GraphicsError> {
+        Ok(session_mut(&self.shared)?.take_present_feedback())
+    }
+}
+
+/// One frame whose presentation the native system reported complete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PresentedFrame {
+    index: u64,
+    presented_at: Option<Instant>,
+}
+
+impl PresentedFrame {
+    pub(crate) const fn new(index: u64, presented_at: Option<Instant>) -> Self {
+        Self {
+            index,
+            presented_at,
+        }
+    }
+
+    /// Zero-based position of this frame among the session's presented frames.
+    #[must_use]
+    pub const fn index(&self) -> u64 {
+        self.index
+    }
+
+    /// The moment the frame reached the display.
+    ///
+    /// `None` means the native system reported presentation handling without a display time, such
+    /// as while the window is off screen.
+    #[must_use]
+    pub const fn presented_at(&self) -> Option<Instant> {
+        self.presented_at
+    }
+}
+
+/// Native presentation feedback drained from a [`Surface`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PresentFeedback {
+    /// Frames whose native presentation completed since the previous drain, in presentation
+    /// order. The list is empty when no new completions have been reported yet.
+    Reported(Vec<PresentedFrame>),
+    /// This session's backend exposes no native presentation feedback; cadence must be estimated.
+    Unsupported,
 }
 
 /// Fixed vertex layout for the first textured slice.

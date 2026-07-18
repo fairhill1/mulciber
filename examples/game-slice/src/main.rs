@@ -9,11 +9,11 @@ use std::time::Instant;
 use game::Game;
 use mulciber::{
     ClearColor, Device, DeviceRequest, Frame, FrameAcquire, InstancedTexturedPipeline, Mesh,
-    OpenedGraphics, PostprocessPipeline, PostprocessTargets, Queue, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact, Texture, TexturedInstanceBatch,
+    OpenedGraphics, PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue, SceneContent,
+    SceneOutput, SceneSubmission, ShaderArtifact, Texture, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
-use mulciber_runtime::{Runtime, RuntimeConfig};
+use mulciber_runtime::{PacingDiagnostics, Runtime, RuntimeConfig};
 use scene::{
     CUBE_INDICES, CUBE_VERTICES, PYRAMID_INDICES, PYRAMID_VERTICES, checkerboard, transforms,
 };
@@ -144,6 +144,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut resources = Resources::new(&graphics)?;
     let mut game = Game::default();
     let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
+    let mut pacing = PacingDiagnostics::new();
+    let mut feedback_unsupported = false;
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
@@ -169,6 +171,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &game,
                 plan.interpolation(),
             )?;
+            match graphics.surface.take_present_feedback()? {
+                PresentFeedback::Reported(frames) => {
+                    for presented in frames {
+                        match presented.presented_at() {
+                            Some(presented_at) => pacing.record_presented(presented_at),
+                            None => pacing.record_untimed_presented(),
+                        }
+                    }
+                }
+                PresentFeedback::Unsupported => feedback_unsupported = true,
+                _ => {}
+            }
             Ok(())
         })?;
         if status == PumpStatus::Exit {
@@ -177,6 +191,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     graphics.shutdown()?;
+    if feedback_unsupported {
+        println!("presentation feedback: unsupported on this backend");
+    } else {
+        println!("presentation pacing: {}", pacing.report());
+    }
     Ok(())
 }
 

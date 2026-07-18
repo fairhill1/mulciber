@@ -33,6 +33,17 @@ step. It is single-display, fixed-60 Hz evidence only: ProMotion or external dis
 changes mid-run, occlusion and resume, and the latency behavior of a paced (rather than
 free-running) loop remain unmeasured, and the Vulkan availability survey is untouched.
 
+Later the same day, the tree extracted the diagnostics slice into the public API
+(`Surface::take_present_feedback` plus `mulciber-runtime::PacingDiagnostics`) and exercised it
+through `mulciber-api-cube` under `MTL_DEBUG_LAYER=1` on the same machine. A 300-frame run drained
+297 identified presented frames (3 still in flight at shutdown), 5 of them without a display time
+during window startup, and reported an estimated cadence of 16.667 ms with min through p95
+intervals on the vsync grid and 0 missed intervals. A 120-frame `--abandon-acquired-frame-once`
+run composed correctly with feedback (117 drained, 0 missed). All 18 `mulciber-api-conformance`
+cases passed unchanged. Forge Run consumes the same drain and prints the report at exit, but no
+interactive Forge Run session is claimed from these finite runs, and the Vulkan `Unsupported`
+answer has no physical run on this machine.
+
 ## Recovery-oriented error checkpoint
 
 On 2026-07-18, an uncommitted tree based on `01a0770` ran `mulciber-api-conformance` with

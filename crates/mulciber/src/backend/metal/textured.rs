@@ -8,8 +8,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
-    ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, PresentFeedback,
+    SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
 };
 
 use objc::{Object, Origin3, Region3, Size3};
@@ -202,6 +202,10 @@ impl<'window> TexturedSession<'window> {
         let acquisition = self.surface.acquire_drawable(metrics)?;
         self.reclaim_stale_targets();
         Ok(acquisition.map_ready(TexturedFrameToken))
+    }
+
+    pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
+        self.surface.take_present_feedback()
     }
 
     pub(crate) fn create_mesh(
@@ -879,10 +883,7 @@ impl<'window> TexturedSession<'window> {
             )?;
             self.encode_prepared_scene(encoder, scene)?;
             objc::void(encoder, c"endEncoding");
-            objc::void_object(command, c"presentDrawable:", drawable);
-            objc::void(command, c"retain");
-            objc::void(command, c"commit");
-            self.surface.last_command_buffer = command;
+            self.surface.present_commit(command, drawable);
             token.0.drawable = ptr::null_mut();
         }
         Ok(FrameDisposition::Presented(token.info().generation()))
@@ -1022,10 +1023,7 @@ impl<'window> TexturedSession<'window> {
                 3,
             );
             objc::void(post_encoder, c"endEncoding");
-            objc::void_object(command, c"presentDrawable:", drawable);
-            objc::void(command, c"retain");
-            objc::void(command, c"commit");
-            self.surface.last_command_buffer = command;
+            self.surface.present_commit(command, drawable);
             token.0.drawable = ptr::null_mut();
         }
         Ok(FrameDisposition::Presented(token.info().generation()))

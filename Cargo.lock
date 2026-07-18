@@ -153,6 +153,7 @@ dependencies = [
  "glam",
  "mulciber",
  "mulciber-platform",
+ "mulciber-runtime",
 ]
 
 [[package]]

@@ -44,12 +44,14 @@ evaluated against the pre-registered comparisons in the
 - `mulciber-platform` owns peer AppKit, Win32, Wayland, and X11 application/window, event, and
   lifecycle modules ([platform contract](docs/api-platform-contract.md)).
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
-  generations, nonfatal acquisition outcomes, frame dispositions, and recovery-oriented errors
+  generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
+  feedback with explicit unsupported-backend reporting, and recovery-oriented errors
   ([graphics contract](docs/api-graphics-contract.md),
   [decision ledger](docs/api-slice-decisions.md)).
 - `mulciber-runtime` provides input snapshots with focus-loss clearing, a configurable fixed-step
-  accumulator with bounded catch-up, clamped variable updates, render interpolation, and rendering
-  suspension coordination ([runtime contract](docs/runtime-contract.md)).
+  accumulator with bounded catch-up, clamped variable updates, render interpolation, rendering
+  suspension coordination, and presented-cadence pacing diagnostics
+  ([runtime contract](docs/runtime-contract.md)).
 - `mulciber-shader` is a separate offline tool that turns WGSL into validated, cached native
   artifacts; no shader compiler ships in the game process.
 

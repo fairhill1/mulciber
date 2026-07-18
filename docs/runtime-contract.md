@@ -71,6 +71,18 @@ methods remain available for a different application coordination shape.
 This is rendering lifecycle only. It does not yet establish process suspension, system sleep, or
 background execution policy where the platform may not emit the same drawable-state transitions.
 
+## Pacing diagnostics
+
+`PacingDiagnostics` is the diagnostics-first half of the pacing vocabulary from the
+[Gate 4 pacing plan](gate4-pacing-plan.md): it consumes presented-frame timestamps as plain
+`Instant`s, so it works with native presentation feedback, estimated timestamps, or any other
+source, and stays independent of the graphics crate. It maintains a bounded window of presented
+intervals and reports frame counts, untimed presentations, a median-of-window cadence estimate
+(withheld until enough intervals exist), a min/median/p95/max interval summary, and a count of
+intervals exceeding 1.5 times the running estimate. It owns no scheduling policy: nothing sleeps,
+throttles, or reorders work. Scheduling hooks are deliberately deferred until the probe-first
+evidence and the Vulkan availability survey say what policy inputs are real.
+
 ## Ownership boundary
 
 The first runtime slice owns:
@@ -78,13 +90,14 @@ The first runtime slice owns:
 - input snapshot accumulation and focus-loss clearing;
 - fixed-step accumulation and render interpolation;
 - variable-delta clamping, catch-up limits, and dropped-time reporting;
-- input/rendering-lifecycle event mapping and rendering suspend/resume timing; and
+- input/rendering-lifecycle event mapping and rendering suspend/resume timing;
+- presented-cadence diagnostics over application-supplied timestamps; and
 - scoped frame cleanup on normal completion or early return.
 
 It does not yet own:
 
 - the AppKit, Win32, Wayland, or X11 event pump;
-- native display synchronization or presentation pacing;
+- native display synchronization or presentation pacing policy;
 - game state, collision, transforms, camera, scene, or renderer architecture;
 - process/OS suspension, fullscreen/display transitions, jobs, or device recovery.
 

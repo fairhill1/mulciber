@@ -1,14 +1,19 @@
 #[allow(missing_docs)]
 pub mod objc;
 
+use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::ptr;
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+use std::vec::Vec;
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics, integration};
 
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, SurfaceExtent,
-    SurfaceInfo, SurfaceUnavailable,
+    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, PresentFeedback,
+    PresentedFrame, SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
 };
 
 pub(crate) const BACKEND_NAME: &str = "Metal";
@@ -25,7 +30,95 @@ unsafe extern "C" {
 }
 
 #[link(name = "QuartzCore", kind = "framework")]
-unsafe extern "C" {}
+unsafe extern "C" {
+    fn CACurrentMediaTime() -> f64;
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
+    #[allow(non_upper_case_globals)]
+    static _NSConcreteGlobalBlock: c_void;
+}
+
+// `Block_literal_1` and `Block_descriptor_1` from the Clang Blocks ABI specification. The
+// presented handler captures nothing, so one global block with no copy/dispose helpers serves
+// every drawable registration and `Block_copy` returns it unchanged.
+#[repr(C)]
+struct BlockDescriptor {
+    reserved: usize,
+    size: usize,
+}
+
+#[repr(C)]
+struct BlockLiteral {
+    isa: *const c_void,
+    flags: i32,
+    reserved: i32,
+    invoke: unsafe extern "C" fn(*mut BlockLiteral, Object),
+    descriptor: *const BlockDescriptor,
+}
+
+const BLOCK_IS_GLOBAL: i32 = 1 << 28;
+
+static PRESENTED_HANDLER_DESCRIPTOR: BlockDescriptor = BlockDescriptor {
+    reserved: 0,
+    size: size_of::<BlockLiteral>(),
+};
+
+fn presented_handler_block() -> Object {
+    static BLOCK_ADDRESS: OnceLock<usize> = OnceLock::new();
+    let address = *BLOCK_ADDRESS.get_or_init(|| {
+        // The captureless literal is intentionally leaked once for process lifetime.
+        let block: *mut BlockLiteral = std::boxed::Box::leak(std::boxed::Box::new(BlockLiteral {
+            isa: &raw const _NSConcreteGlobalBlock,
+            flags: BLOCK_IS_GLOBAL,
+            reserved: 0,
+            invoke: presented_handler,
+            descriptor: &raw const PRESENTED_HANDLER_DESCRIPTOR,
+        }));
+        block as usize
+    });
+    address as Object
+}
+
+/// Bounds the undrained event and pending-submission queues so a consumer that never drains
+/// feedback pays a fixed cost.
+const PRESENT_FEEDBACK_CAP: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct PresentedEvent {
+    layer: usize,
+    drawable_id: usize,
+    presented_time: f64,
+}
+
+/// Presented handlers run on a Core Animation thread; surfaces drain their own layer's events on
+/// the main thread and correlate them to submissions by drawable ID.
+static PRESENTED_EVENTS: Mutex<Vec<PresentedEvent>> = Mutex::new(Vec::new());
+
+unsafe extern "C" fn presented_handler(_block: *mut BlockLiteral, drawable: Object) {
+    // SAFETY: Core Animation invokes the handler with a live drawable; `layer`, `drawableID`, and
+    // `presentedTime` are read-only queries valid inside a presented handler on the macOS 13
+    // baseline.
+    let layer = unsafe { objc::object(drawable, c"layer") } as usize;
+    let drawable_id = unsafe { objc::usize_value(drawable, c"drawableID") };
+    let presented_time = unsafe { objc::f64_value(drawable, c"presentedTime") };
+    if let Ok(mut events) = PRESENTED_EVENTS.lock() {
+        if events.len() >= PRESENT_FEEDBACK_CAP {
+            events.remove(0);
+        }
+        events.push(PresentedEvent {
+            layer,
+            drawable_id,
+            presented_time,
+        });
+    }
+}
+
+struct PendingPresent {
+    index: u64,
+    drawable_id: usize,
+}
 
 pub(crate) struct ClearSurface<'window> {
     view: Object,
@@ -34,6 +127,8 @@ pub(crate) struct ClearSurface<'window> {
     queue: Object,
     info: SurfaceInfo,
     last_command_buffer: Object,
+    pending_presents: VecDeque<PendingPresent>,
+    presented_count: u64,
     _window: PhantomData<SurfaceTarget<'window>>,
 }
 
@@ -94,6 +189,8 @@ impl<'window> ClearSurface<'window> {
                 queue,
                 info,
                 last_command_buffer: ptr::null_mut(),
+                pending_presents: VecDeque::new(),
+                presented_count: 0,
                 _window: PhantomData,
             })
         }
@@ -237,12 +334,76 @@ impl<'window> ClearSurface<'window> {
             )?;
             set_label(encoder, c"Mulciber clear pass");
             objc::void(encoder, c"endEncoding");
+            self.present_commit(command_buffer, drawable);
+        }
+        Ok(FrameDisposition::Presented(self.info.generation()))
+    }
+
+    /// Presents and commits one frame while registering native presentation feedback.
+    ///
+    /// # Safety
+    ///
+    /// `command_buffer` must be an uncommitted Metal command buffer with all encoding ended, and
+    /// `drawable` must be the live acquired drawable this frame renders into.
+    pub(crate) unsafe fn present_commit(&mut self, command_buffer: Object, drawable: Object) {
+        // SAFETY: The caller guarantees live objects; `addPresentedHandler:` precedes
+        // presentation as Metal requires, and the retain is balanced by
+        // `finish_last_submission`.
+        unsafe {
+            let drawable_id = objc::usize_value(drawable, c"drawableID");
+            objc::void_object(drawable, c"addPresentedHandler:", presented_handler_block());
             objc::void_object(command_buffer, c"presentDrawable:", drawable);
             objc::void(command_buffer, c"retain");
             objc::void(command_buffer, c"commit");
             self.last_command_buffer = command_buffer;
+            if self.pending_presents.len() >= PRESENT_FEEDBACK_CAP {
+                self.pending_presents.pop_front();
+            }
+            self.pending_presents.push_back(PendingPresent {
+                index: self.presented_count,
+                drawable_id,
+            });
+            self.presented_count += 1;
         }
-        Ok(FrameDisposition::Presented(self.info.generation()))
+    }
+
+    pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
+        let mut taken = Vec::new();
+        if let Ok(mut events) = PRESENTED_EVENTS.lock() {
+            let layer = self.layer as usize;
+            events.retain(|event| {
+                if event.layer == layer {
+                    taken.push(*event);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        // SAFETY: `CACurrentMediaTime` has no preconditions and shares the presented-time
+        // timebase, which `Instant` also uses on macOS.
+        let now_media_time = unsafe { CACurrentMediaTime() };
+        let now = Instant::now();
+        let mut frames = Vec::new();
+        for event in taken {
+            let Some(position) = self
+                .pending_presents
+                .iter()
+                .position(|pending| pending.drawable_id == event.drawable_id)
+            else {
+                continue;
+            };
+            let Some(pending) = self.pending_presents.remove(position) else {
+                continue;
+            };
+            let presented_at = (event.presented_time > 0.0)
+                .then_some(now_media_time - event.presented_time)
+                .filter(|age| *age >= 0.0)
+                .and_then(|age| now.checked_sub(Duration::from_secs_f64(age)));
+            frames.push(PresentedFrame::new(pending.index, presented_at));
+        }
+        frames.sort_by_key(PresentedFrame::index);
+        PresentFeedback::Reported(frames)
     }
 
     fn finish_last_submission(&mut self) -> Result<(), GraphicsError> {
@@ -270,6 +431,14 @@ impl<'window> ClearSurface<'window> {
     }
 
     fn destroy_native_objects(&mut self) {
+        // Purge this layer's undrained feedback. A handler still in flight can land after the
+        // purge; the bounded queue and per-drawable-ID matching keep that stale remainder inert.
+        if !self.layer.is_null()
+            && let Ok(mut events) = PRESENTED_EVENTS.lock()
+        {
+            let layer = self.layer as usize;
+            events.retain(|event| event.layer != layer);
+        }
         // SAFETY: The view and owned graphics objects remain on their creating main thread.
         unsafe {
             if !self.view.is_null() && !self.layer.is_null() {

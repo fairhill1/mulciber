@@ -7,8 +7,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
-    ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, PresentFeedback,
+    SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
@@ -190,6 +190,13 @@ impl<'window> TexturedSession<'window> {
         self.reclaim_stale_targets()?;
         let info = self.surface.info();
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
+    }
+
+    /// Native Vulkan presentation feedback is not implemented yet: the
+    /// `VK_KHR_present_id`/`VK_KHR_present_wait`, display-timing, and platform feedback survey is
+    /// an outstanding Gate 4 pacing-plan step, so absence is reported rather than estimated here.
+    pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
+        PresentFeedback::Unsupported
     }
 
     pub(crate) fn create_mesh(

@@ -53,6 +53,21 @@ autorelease-scoped drawables; Vulkan acquisition fences, swapchain maintenance, 
 replacement). Recorded in the
 [experimental graphics lifecycle contract](api-graphics-contract.md).
 
+## Presentation feedback
+
+Decided for the diagnostics slice. The surface owner drains native presentation completions
+non-blockingly; samples identify frames by per-session presented index and carry an optional
+display time, with `None` preserving the physically observed presented-without-a-time startup and
+occlusion cases. Absence is explicit: a backend without native feedback answers `Unsupported` on
+every drain instead of silently estimating. Collection is always on and bounded (registration
+costs one native call per present; undrained queues are capped), while consumption is opt-in.
+Cadence estimation lives in `mulciber-runtime::PacingDiagnostics` over plain `Instant`s, keeping
+the runtime graphics-agnostic. Pacing policy and scheduling hooks are deliberately not part of
+this decision; they wait on the [Gate 4 pacing plan](gate4-pacing-plan.md) probe evidence and the
+Vulkan availability survey. Recorded in the
+[experimental graphics lifecycle contract](api-graphics-contract.md) and the
+[runtime contract](runtime-contract.md).
+
 ## Resource use and synchronization
 
 Decided for the slice, deliberately narrow. The queue first exposed one resource-backed operation —

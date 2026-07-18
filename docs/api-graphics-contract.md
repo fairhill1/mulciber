@@ -69,6 +69,20 @@ Dropping a frame without consuming it is not undefined behavior and must not str
 next fallible operation reports that deferred failure. Explicit abandonment is the ordinary path
 because it can report failure immediately.
 
+### Presentation feedback is drained, identified, and honest about absence
+
+The surface owner exposes `take_present_feedback`, a non-blocking drain of native presentation
+completions observed since the previous drain. Each sample identifies its frame by a zero-based
+per-session presented index and carries the display time when the native system reported one;
+`None` records presentation handling without a display time, which physically occurs while a window
+is coming on screen or occluded. Undrained samples are kept in a bounded queue so ignoring feedback
+costs fixed memory and no per-frame work. A backend without native feedback answers `Unsupported`
+on every drain, so estimation fallbacks are an observable application decision rather than a silent
+library substitution. Metal implements feedback through drawable presented handlers registered
+before presentation; the Vulkan implementation is deliberately absent until the
+`VK_KHR_present_id`/`VK_KHR_present_wait`, display-timing, and platform-feedback availability
+survey from the [Gate 4 pacing plan](gate4-pacing-plan.md) runs on physical tiers.
+
 ### The clear checkpoint keeps topology private
 
 The first compiling graphics application uses `ClearSurface`, a scoped `ClearFrame`, and a normalized

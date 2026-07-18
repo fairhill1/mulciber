@@ -8,9 +8,11 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, ShaderArtifact, TexturedDraw,
+    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PresentFeedback, ShaderArtifact,
+    TexturedDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
+use mulciber_runtime::PacingDiagnostics;
 
 use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, transform};
 
@@ -59,6 +61,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let mut presented = 0_u64;
     let mut abandon_pending = options.abandon_once;
+    let mut pacing = PacingDiagnostics::new();
+    let mut feedback_unsupported = false;
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
@@ -100,6 +104,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 FrameAcquire::Unavailable(_) => {}
             }
+            match graphics.surface.take_present_feedback()? {
+                PresentFeedback::Reported(frames) => {
+                    for frame in frames {
+                        match frame.presented_at() {
+                            Some(presented_at) => pacing.record_presented(presented_at),
+                            None => pacing.record_untimed_presented(),
+                        }
+                    }
+                }
+                PresentFeedback::Unsupported => feedback_unsupported = true,
+                _ => {}
+            }
             Ok(())
         })?;
         if status == PumpStatus::Exit
@@ -116,6 +132,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     graphics.shutdown()?;
     println!("presented {presented} textured cube frame(s)");
+    if feedback_unsupported {
+        println!("presentation feedback: unsupported on this backend");
+    } else {
+        println!("presentation pacing: {}", pacing.report());
+    }
     Ok(())
 }
 

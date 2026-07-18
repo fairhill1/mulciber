@@ -240,6 +240,17 @@ nineteen-case conformance probe twice under the validation layer (including the 
 postprocessed instanced presentations), and the operator visually confirmed the animated 100-object
 instanced field. See the [experimental GPU instancing contract](instancing-contract.md).
 
+Pre-runtime dogfood progress: `mulciber-game-slice` now builds a playable top-down collect-and-avoid
+loop from the existing AppKit/Win32 input transitions and instanced postprocessed scene path without
+adding graphics API. The application locally owns held-key state, focus invalidation, clamped
+variable timing, update/render ordering, collision, camera, and reset/win policy. A Metal
+validation-layer visual run on the Apple M2 exercised collection, sentry collision, disappearance of
+the final pickup batch, and completion; an initially mirrored diagonal-facing calculation was fixed
+and physically confirmed. This is pressure evidence for `mulciber-runtime`, not Gate 5 completion:
+fixed updates, frame-pacing policy, suspension, fullscreen/display transitions, device recovery,
+Linux input, and the integrated comparison remain pending. See the
+[pre-runtime game dogfood contract](game-slice.md).
+
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
 dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix

@@ -6,6 +6,7 @@ members = [
     "crates/mulciber-shader",
     "examples/clear",
     "examples/cube",
+    "examples/game-slice",
     "examples/input-cube",
     "examples/instanced-scene",
     "examples/postprocess-cube",

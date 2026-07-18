@@ -156,6 +156,18 @@ Metal/Vulkan behavior, source counts (233 Mulciber versus 794 wgpu lines), macOS
 remaining physical Vulkan gap are recorded in the
 [experimental GPU instancing contract](docs/instancing-contract.md).
 
+The first playable dogfood application builds a small top-down collect-and-avoid loop from the
+existing input, instancing, depth, camera, and postprocess slices without adding graphics API:
+
+```sh
+cargo run -p mulciber-game-slice
+```
+
+This is deliberately pre-runtime evidence. Its application-owned held input, timing, update, and
+frame coordination identify concrete pressure for the future `mulciber-runtime`; it does not yet
+claim the fixed updates, suspension, display transitions, recovery, or platform coverage required
+by Gate 5. See the [pre-runtime game dogfood contract](docs/game-slice.md).
+
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:
 

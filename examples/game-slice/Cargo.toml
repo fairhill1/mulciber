@@ -1,0 +1,16 @@
+[package]
+name = "mulciber-game-slice"
+description = "A small playable top-down game slice through Mulciber"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+glam = "=0.33.2"
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

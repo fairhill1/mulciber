@@ -96,6 +96,18 @@ ceiling; their demands are reliability and pacing, not feature reach. The except
   texture atlas instead of texture arrays, and `base_vertex` baked into indices to dodge a
   wgpu-on-Metal limitation (`gpu_driven.rs:1022,1861`).
 
+This finding is censored evidence, not negative evidence. All five games were built on `wgpu`, so
+their feature usage was shaped by what that stack makes easy, and not using a capability whose path
+is unpaved is weak evidence that the capability is unwanted. Suppressed demand is observable only as
+workarounds, and the atlas, `base_vertex`, and MetalFX items above are exactly that form. Two
+qualifications keep the ranking honest in both directions: several of these capabilities are
+reachable through wgpu's native-only features (push constants, `binding_array`, ray tracing) and no
+game opted in even where available, and a Gate 4 pass requires a difference that matters to a real
+existing game rather than a projected future one. This section therefore ranks candidates by
+observable present-tense evidence. It does not claim native GPU features are irrelevant to future
+games, and a stack that paves the GPU-driven road may itself change which games get built; that
+argument belongs to the vision as a bet, not to this document as a finding.
+
 ## Beyond graphics
 
 - Audio is hand-rolled in every game: `kira` twice, and the same custom

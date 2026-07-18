@@ -13,7 +13,7 @@ categories = ["game-development"]
 publish = ["crates-io"]
 
 [dependencies]
-mulciber-platform = { path = "../mulciber-platform", version = "0.2.0" }
+mulciber-platform = { path = "../mulciber-platform", version = "0.3.0" }
 
 [lints]
 workspace = true

@@ -6,3 +6,6 @@ The first slice provides a fixed-rate simulation accumulator, render interpolati
 scoped input transitions, and rendering suspend/resume coordination over `mulciber-platform`. It does
 not yet own the native event pump, presentation pacing, process/OS suspension, display transitions,
 jobs, or device recovery.
+
+Development, design contracts, and recorded validation evidence live in the
+[Mulciber repository](https://github.com/fairhill1/mulciber).

@@ -248,12 +248,13 @@ clamped variable frame deltas, dropped-time diagnostics, and render interpolatio
 runs gameplay at 60 Hz, keeps previous/current simulation state in the game, interpolates player,
 camera, facing, and sentries at presentation rate, and advances cosmetic animation variably. The
 runtime still does not own collision, camera, scene, or the platform/GPU event loop. Native pacing,
-suspension, fullscreen/display transitions, device recovery, Linux input, and the full lifecycle
-comparison remain pending, so Gate 5 is not complete. A focused same-game `wgpu`/`winit` peer now
-matches the current timing/input/rendering slice at 1,298 versus 635 raw Rust application lines and
-passed an interactive Metal comparison; this does not substitute for the broader missing lifecycle
-work. See the [runtime contract](runtime-contract.md), [game dogfood contract](game-slice.md), and
-[game-slice comparison](game-slice-comparison.md).
+process/OS suspension, fullscreen/display transitions, device recovery, Linux input, and the full
+lifecycle comparison remain pending, so Gate 5 is not complete. Rendering suspension now freezes
+runtime time, preserves interpolation, releases held input, and physically passed minimize/restore
+on macOS. A focused same-game `wgpu`/`winit` peer matches the current
+timing/input/rendering/suspension code at 1,340 versus 631 raw Rust application lines; this does not
+substitute for the broader missing lifecycle work. See the [runtime contract](runtime-contract.md),
+[game dogfood contract](game-slice.md), and [game-slice comparison](game-slice-comparison.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
@@ -317,8 +318,13 @@ device recovery.
   interpolation; migrate Forge Run as the first consumer without moving game policy into the crate.
 - [x] Build and physically compare the same Forge Run workload through `wgpu`/`winit`, including
   equivalent local fixed-step, input, and interpolation glue.
+- [x] Coordinate platform rendering suspend/resume with frozen timing, preserved interpolation, and
+  held-input clearing; physically exercise minimize/restore on macOS.
 - [ ] Establish native presentation pacing and cadence diagnostics independently from simulation
   rate.
-- [ ] Coordinate suspension/resume, fullscreen/display transitions, and device recovery.
+- [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
+  transitions, and device recovery.
+- [ ] Evaluate timestamped or per-tick input staging against a deterministic replay/rollback
+  workload; current catch-up steps intentionally consume the latest frame snapshot.
 - [ ] Add supported Linux input and runtime evidence, then perform the full Gate 5 lifecycle
   comparison.

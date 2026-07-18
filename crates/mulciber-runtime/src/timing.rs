@@ -166,6 +166,7 @@ pub(crate) struct FrameClock {
     config: RuntimeConfig,
     previous: Instant,
     accumulator: Duration,
+    suspended: bool,
 }
 
 impl FrameClock {
@@ -174,13 +175,40 @@ impl FrameClock {
             config,
             previous: started_at,
             accumulator: Duration::ZERO,
+            suspended: false,
         }
     }
 
     pub(crate) fn advance(&mut self, now: Instant) -> FramePlan {
+        if self.suspended {
+            return self.idle_plan();
+        }
         let elapsed = now.saturating_duration_since(self.previous);
         self.previous = now;
         self.advance_by(elapsed)
+    }
+
+    pub(crate) const fn suspend(&mut self) {
+        self.suspended = true;
+    }
+
+    pub(crate) const fn resume(&mut self, now: Instant) {
+        self.previous = now;
+        self.suspended = false;
+    }
+
+    pub(crate) const fn suspended(&self) -> bool {
+        self.suspended
+    }
+
+    fn idle_plan(&self) -> FramePlan {
+        FramePlan {
+            frame_delta: Duration::ZERO,
+            fixed_step: self.config.fixed_step,
+            fixed_steps: 0,
+            interpolation: duration_ratio(self.accumulator, self.config.fixed_step),
+            dropped_time: Duration::ZERO,
+        }
     }
 
     fn advance_by(&mut self, elapsed: Duration) -> FramePlan {
@@ -287,5 +315,27 @@ mod tests {
         assert_eq!(plan.fixed_steps(), 3);
         assert_eq!(plan.dropped_time(), Duration::from_millis(220));
         assert!(plan.interpolation().abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn suspension_freezes_time_and_preserves_interpolation() {
+        let start = Instant::now();
+        let config = RuntimeConfig::fixed_hz(10).unwrap();
+        let mut clock = FrameClock::new(config, start);
+        let before = clock.advance(start + Duration::from_millis(40));
+        assert!((before.interpolation() - 0.4).abs() < f64::EPSILON);
+
+        clock.suspend();
+        let suspended = clock.advance(start + Duration::from_mins(1));
+        assert_eq!(suspended.frame_delta(), Duration::ZERO);
+        assert_eq!(suspended.fixed_steps(), 0);
+        assert!((suspended.interpolation() - 0.4).abs() < f64::EPSILON);
+
+        let resumed_at = start + Duration::from_mins(2);
+        clock.resume(resumed_at);
+        let resumed = clock.advance(resumed_at + Duration::from_millis(60));
+        assert_eq!(resumed.fixed_steps(), 1);
+        assert!(resumed.interpolation().abs() < f64::EPSILON);
+        assert_eq!(resumed.dropped_time(), Duration::ZERO);
     }
 }

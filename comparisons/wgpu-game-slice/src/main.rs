@@ -39,6 +39,8 @@ struct App {
     clock: Option<FrameClock>,
     input: InputState,
     game: Game,
+    occluded: bool,
+    zero_sized: bool,
     failure: Option<Box<dyn Error>>,
 }
 
@@ -83,6 +85,7 @@ impl InputState {
 struct FrameClock {
     previous: Instant,
     accumulator: Duration,
+    suspended: bool,
 }
 
 struct FramePlan {
@@ -96,10 +99,18 @@ impl FrameClock {
         Self {
             previous: now,
             accumulator: Duration::ZERO,
+            suspended: false,
         }
     }
 
     fn advance(&mut self, now: Instant) -> FramePlan {
+        if self.suspended {
+            return FramePlan {
+                frame_delta: Duration::ZERO,
+                fixed_steps: 0,
+                interpolation: self.accumulator.as_secs_f64() / FIXED_STEP.as_secs_f64(),
+            };
+        }
         let elapsed = now.saturating_duration_since(self.previous);
         self.previous = now;
         let frame_delta = elapsed.min(MAX_FRAME_DELTA);
@@ -121,6 +132,15 @@ impl FrameClock {
             fixed_steps,
             interpolation: self.accumulator.as_secs_f64() / FIXED_STEP.as_secs_f64(),
         }
+    }
+
+    fn suspend(&mut self) {
+        self.suspended = true;
+    }
+
+    fn resume(&mut self, now: Instant) {
+        self.previous = now;
+        self.suspended = false;
     }
 }
 
@@ -175,12 +195,34 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Focused(focused) => self.input.focus(focused),
+            WindowEvent::Occluded(occluded) => {
+                let was_suspended = self.occluded || self.zero_sized;
+                self.occluded = occluded;
+                let suspended = self.occluded || self.zero_sized;
+                if suspended && !was_suspended {
+                    clock.suspend();
+                    self.input.focus(false);
+                } else if !suspended && was_suspended {
+                    clock.resume(Instant::now());
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     self.input.key_event(key, event.state);
                 }
             }
-            WindowEvent::Resized(size) => gpu.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                let was_suspended = self.occluded || self.zero_sized;
+                self.zero_sized = size.width == 0 || size.height == 0;
+                let suspended = self.occluded || self.zero_sized;
+                if suspended && !was_suspended {
+                    clock.suspend();
+                    self.input.focus(false);
+                } else if !suspended && was_suspended {
+                    clock.resume(Instant::now());
+                }
+                gpu.resize(size.width, size.height);
+            }
             WindowEvent::RedrawRequested => {
                 let plan = clock.advance(Instant::now());
                 self.game.handle_frame_input(&self.input);

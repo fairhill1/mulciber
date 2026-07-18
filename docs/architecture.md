@@ -21,9 +21,10 @@ parallel and is not implied by the existence of public Rust items.
 
 The first `mulciber-runtime` extraction is intentionally narrower than that eventual boundary. It
 owns input snapshots plus fixed/variable timing, bounded catch-up, and render interpolation. The
-application still owns the native event pump, previous/current game state, interpolation of that
-state, presentation, suspension, jobs, and recovery. Forge Run is the evidence consumer that earned
-this boundary; see the [experimental runtime contract](runtime-contract.md).
+runtime also maps platform input and rendering suspend/resume events without owning the event pump.
+The application still owns previous/current game state, interpolation of that state, presentation,
+process/OS suspension, jobs, and recovery. Forge Run is the evidence consumer that earned this
+boundary; see the [experimental runtime contract](runtime-contract.md).
 
 The first extraction now gives `mulciber-platform` experimental peer AppKit, Win32, Wayland, and X11
 application, window, event, drawable-metrics, and borrowed-target implementations consumed by the

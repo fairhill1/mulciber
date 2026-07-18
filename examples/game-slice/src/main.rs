@@ -147,21 +147,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
-            let metrics = match event {
-                WindowEvent::Input(input) => {
-                    runtime.handle_input(input);
-                    return Ok(());
-                }
-                WindowEvent::RedrawRequested(metrics) => metrics,
-                _ => return Ok(()),
+            runtime.handle_window_event(event);
+            let WindowEvent::RedrawRequested(metrics) = event else {
+                return Ok(());
             };
-            let plan = runtime.begin_frame(Instant::now());
-            game.handle_frame_input(runtime.input());
+            let runtime_frame = runtime.begin_frame(Instant::now());
+            let plan = runtime_frame.plan();
+            game.handle_frame_input(runtime_frame.input());
             for _ in 0..plan.fixed_steps() {
-                game.fixed_update(runtime.input(), plan.fixed_step().as_secs_f32());
+                game.fixed_update(runtime_frame.input(), plan.fixed_step().as_secs_f32());
             }
             game.variable_update(plan.frame_delta().as_secs_f32());
-            runtime.end_frame();
 
             let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else {
                 return Ok(());

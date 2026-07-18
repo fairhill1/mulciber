@@ -174,11 +174,15 @@ impl InputSnapshot {
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
         if !focused {
-            self.released_keys.append(&mut self.held_keys);
-            self.released_pointer_buttons
-                .append(&mut self.held_pointer_buttons);
-            self.modifiers = Modifiers::default();
+            self.release_all();
         }
+    }
+
+    pub(crate) fn release_all(&mut self) {
+        self.released_keys.append(&mut self.held_keys);
+        self.released_pointer_buttons
+            .append(&mut self.held_pointer_buttons);
+        self.modifiers = Modifiers::default();
     }
 
     pub(crate) fn end_frame(&mut self) {

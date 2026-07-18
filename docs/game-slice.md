@@ -45,7 +45,8 @@ focus loss releases every held key or pointer button. A 60 Hz accumulator produc
 fixed gameplay updates per displayed frame, caps hitch recovery at eight steps, reports discarded
 time, and supplies an interpolation fraction. Forge Run retains previous/current simulation states
 and interpolates player motion, facing, camera, and sentries for the renderer. Cosmetic pickup
-animation consumes the clamped variable frame delta.
+animation consumes the clamped variable frame delta. A scoped runtime frame clears transient input
+automatically on normal completion or early return.
 
 Simulation advances before graphics acquisition, so a temporarily unavailable surface does not
 make game time conditional on acquiring a drawable. Collision, camera, game state, reset/win policy,
@@ -53,7 +54,9 @@ the native event pump, and rendering remain application-owned. See the
 [experimental runtime contract](runtime-contract.md).
 
 This is not Gate 5 completion. Native frame-pacing policy, suspension, fullscreen/display changes,
-device recovery, supported Linux input, and the full lifecycle comparison remain pending.
+device recovery, supported Linux input, process/OS suspension, and the full lifecycle comparison
+remain pending. Rendering suspension from zero-sized, minimized, or occluded windows is now
+coordinated, with focused physical evidence on macOS only.
 
 The focused timing/input/rendering comparison is now implemented as
 `comparisons/wgpu-game-slice`. It locally composes equivalent held/pressed input and fixed-step
@@ -81,3 +84,9 @@ After migration to `mulciber-runtime`, the operator replayed Forge Run on the sa
 15.7.7 machine and reported that the game and interpolated movement felt correct. This is a visual
 and interaction confirmation of the fixed-step consumer path, not measured cadence evidence or a
 repeat of the broader lifecycle matrix.
+
+The follow-up rendering-suspension slice then ran under Metal API Validation on the same machine.
+The operator held movement, minimized the window, released the key while minimized, waited, and
+restored it. They confirmed no catch-up jump and no stuck movement. The run also exercised
+collection, sentry collision, and normal close without Metal diagnostics beyond the enabled banner.
+This does not establish process/OS sleep behavior or Windows/Linux runtime-backed suspension.

@@ -11,7 +11,8 @@ experience of Mulciber versus pinned wgpu 30.0.0 and winit 0.30.13.
   camera, reset/win loop, movement speed, and diagonal facing;
 - W/A/S/D and arrow-key held movement, R edge-triggered reset, and focus-loss clearing;
 - a 60 Hz fixed simulation, 250 ms hitch clamp, at most eight catch-up updates, clamped variable
-  cosmetic animation, and previous/current render interpolation;
+  cosmetic animation, previous/current render interpolation, and rendering suspension without
+  catch-up time;
 - the same cube and pyramid geometry, five textures and instance batches, depth, preferred 4x MSAA
   with 1x fallback, shader, clear color, and fullscreen postprocess; and
 - simulation updates before surface acquisition, so a temporarily unavailable drawable does not
@@ -31,14 +32,14 @@ and the shared 67-line WGSL shader.
 | Source responsibility | Mulciber | wgpu/winit |
 | --- | ---: | ---: |
 | Game rules and simulation state | 266 | 268 |
-| Window loop, input/timing coordination, and top-level resources | 194 | 210 |
+| Window loop, input/timing/lifecycle coordination, and top-level resources | 190 | 252 |
 | Geometry, game data, camera, and transforms | 175 | 194 |
-| Explicit GPU setup, resources, resize, passes, and submission | included in the 194-line top level | 626 |
-| **Total** | **635** | **1,298** |
+| Explicit GPU setup, resources, resize, passes, and submission | included in the 190-line top level | 626 |
+| **Total** | **631** | **1,340** |
 
-The near-identical game-rule counts are useful: most of the 663-line difference is integration and
+The near-identical game-rule counts are useful: most of the 709-line difference is integration and
 graphics plumbing rather than different gameplay scope. Excluding those equivalent game-rule files,
-the outside-in platform/runtime/render portions are 369 Mulciber lines versus 1,030 wgpu/winit lines.
+the outside-in platform/runtime/render portions are 365 Mulciber lines versus 1,072 wgpu/winit lines.
 
 This metric does not compare total implementation size or maturity. It excludes Mulciber's native
 backends and runtime implementation just as it excludes wgpu and winit internals. It also does not
@@ -54,3 +55,9 @@ interactively confirmed that the scene and game behavior matched the runtime-bac
 the console recorded three crystal collections before normal close. No resize, minimize/restore,
 display transition, measured cadence, deterministic readback, Windows, or Linux claim is made from
 this focused comparison.
+
+The suspension-matched revision was then relaunched under Metal API Validation. It again selected
+Metal and four samples, collected two crystals, and closed without validation diagnostics. The
+operator did not explicitly report the hold/minimize/restore result for that second wgpu run, so this
+document claims compile-time equivalence and a clean interactive launch/close—not physical wgpu
+suspension correctness.

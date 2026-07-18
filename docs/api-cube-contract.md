@@ -110,7 +110,13 @@ paths until a single-source compiler path has equivalent evidence.
 Creation, acquisition, upload, pipeline creation, explicit destruction, drawing, presentation, and
 shutdown remain fallible. Invalid dimensions, byte counts, indices, non-finite transforms,
 mixed-session handles, and stale render targets are rejected before native calls where practical.
-Validation-layer or Metal debug-layer warnings and errors fail their validation runs.
+`GraphicsError::kind` exposes the provisional recovery category independently from its contextual
+message: invalid request, unsupported capability, lifecycle misuse, stale resource, surface failure,
+device failure, out of memory, validation, otherwise-unclassified native failure, or internal
+failure. Vulkan result codes map directly where they establish one of those categories. Temporary
+surface unavailability remains `FrameAcquire::Unavailable`, not an error. Native diagnostic payloads
+beyond the retained contextual message remain future work. Validation-layer or Metal debug-layer
+warnings and errors fail their validation runs.
 
 Acceptance requires automated Windows preflight plus physical visual, resize, abandonment/recovery,
 and lifecycle evidence on each available target. Automated abandonment, fallback, and finite-run

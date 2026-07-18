@@ -157,8 +157,9 @@ impl Window {
         height: u32,
         visible: bool,
     ) -> Result<Self, PlatformError> {
-        let title = CString::new(title)
-            .map_err(|_| PlatformError::new("X11 window title contains an interior NUL"))?;
+        let title = CString::new(title).map_err(|_| {
+            PlatformError::invalid_request("X11 window title contains an interior NUL")
+        })?;
         // SAFETY: A null display name asks Xlib to use the DISPLAY environment variable.
         let display = unsafe { XOpenDisplay(ptr::null()) };
         if display.is_null() {

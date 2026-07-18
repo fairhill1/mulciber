@@ -1,5 +1,15 @@
 # macOS AppKit/Metal validation runbook
 
+## Recovery-oriented error checkpoint
+
+On 2026-07-18, an uncommitted tree based on `01a0770` ran `mulciber-api-conformance` with
+`MTL_DEBUG_LAYER=1` on the Apple M2 / macOS 15.7.7 machine. All eighteen conformance cases passed.
+Every deliberately invalid operation exercised on this backend produced its asserted
+`GraphicsErrorKind` as well as the expected contextual diagnostic; the render, abandonment,
+resource-reclamation, instancing, fallback, mixed-session, and shutdown cases also completed. Metal
+printed no diagnostic beyond its validation-enabled banner. This finite run is error-contract and
+presentation evidence, not a new visual, resize, display-change, or interactive lifecycle claim.
+
 ## GPU instancing checkpoint
 
 On 2026-07-18, an uncommitted tree based on `15e6aa2` ran `mulciber-instanced-scene` with

@@ -360,8 +360,9 @@ impl Window {
         height: u32,
         _visible: bool,
     ) -> Result<Self, PlatformError> {
-        let title = CString::new(title)
-            .map_err(|_| PlatformError::new("Wayland window title contains an interior NUL"))?;
+        let title = CString::new(title).map_err(|_| {
+            PlatformError::invalid_request("Wayland window title contains an interior NUL")
+        })?;
         // SAFETY: A null name asks libwayland-client to use WAYLAND_DISPLAY.
         let display = unsafe { wl_display_connect(ptr::null()) };
         if display.is_null() {
@@ -434,14 +435,18 @@ impl Window {
     }
 
     fn bind_globals(&mut self) -> Result<(), PlatformError> {
-        let compositor_name = self
-            .registry_state
-            .compositor_name
-            .ok_or_else(|| PlatformError::new("Wayland registry exposes no wl_compositor"))?;
-        let wm_base_name = self
-            .registry_state
-            .wm_base_name
-            .ok_or_else(|| PlatformError::new("Wayland compositor exposes no xdg_wm_base"))?;
+        let compositor_name = self.registry_state.compositor_name.ok_or_else(|| {
+            PlatformError::with_kind(
+                crate::PlatformErrorKind::Unsupported,
+                "Wayland registry exposes no wl_compositor",
+            )
+        })?;
+        let wm_base_name = self.registry_state.wm_base_name.ok_or_else(|| {
+            PlatformError::with_kind(
+                crate::PlatformErrorKind::Unsupported,
+                "Wayland compositor exposes no xdg_wm_base",
+            )
+        })?;
         // SAFETY: The registry announced both globals with at least protocol version one.
         unsafe {
             self.compositor = bind_global(

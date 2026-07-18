@@ -56,19 +56,89 @@ impl ClearColor {
     }
 }
 
+/// The recovery-relevant category of a [`GraphicsError`].
+///
+/// Temporary surface unavailability is intentionally represented by [`crate::FrameAcquire`], not
+/// by this enum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GraphicsErrorKind {
+    /// Application-provided values are invalid and must be corrected before retrying.
+    InvalidRequest,
+    /// The requested capability is unavailable; choose a fallback or another device.
+    Unsupported,
+    /// The operation is invalid in the owner's current lifecycle state.
+    Lifecycle,
+    /// A resource or surface-generation handle is no longer valid and must be recreated.
+    StaleResource,
+    /// Native presentation failed and the surface may need to be recreated.
+    SurfaceFailure,
+    /// The native device can no longer execute work and the graphics session must be recreated.
+    DeviceFailure,
+    /// Host or device memory allocation failed; release resources, reduce demand, or terminate.
+    OutOfMemory,
+    /// Native validation reported an application or Mulciber contract violation.
+    Validation,
+    /// A native operation failed without stronger recovery evidence.
+    NativeFailure,
+    /// A Mulciber invariant or identity space failed internally.
+    Internal,
+}
+
 /// A graphics creation, frame, presentation, validation, or shutdown failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GraphicsError(pub(crate) std::string::String);
+pub struct GraphicsError {
+    kind: GraphicsErrorKind,
+    message: std::string::String,
+}
 
 impl GraphicsError {
     pub(crate) fn new(message: impl Into<std::string::String>) -> Self {
-        Self(message.into())
+        Self::with_kind(GraphicsErrorKind::NativeFailure, message)
+    }
+
+    pub(crate) fn with_kind(
+        kind: GraphicsErrorKind,
+        message: impl Into<std::string::String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_request(message: impl Into<std::string::String>) -> Self {
+        Self::with_kind(GraphicsErrorKind::InvalidRequest, message)
+    }
+
+    pub(crate) fn lifecycle(message: impl Into<std::string::String>) -> Self {
+        Self::with_kind(GraphicsErrorKind::Lifecycle, message)
+    }
+
+    pub(crate) fn stale_resource(message: impl Into<std::string::String>) -> Self {
+        Self::with_kind(GraphicsErrorKind::StaleResource, message)
+    }
+
+    pub(crate) fn internal(message: impl Into<std::string::String>) -> Self {
+        Self::with_kind(GraphicsErrorKind::Internal, message)
+    }
+
+    /// Returns the recovery-relevant category while preserving native detail in [`Self::message`].
+    #[must_use]
+    pub const fn kind(&self) -> GraphicsErrorKind {
+        self.kind
+    }
+
+    /// Returns the contextual diagnostic message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
 impl fmt::Display for GraphicsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -166,7 +236,17 @@ impl ClearFrame<'_, '_> {
 
 #[cfg(test)]
 mod tests {
-    use super::ClearColor;
+    use std::string::ToString;
+
+    use super::{ClearColor, GraphicsError, GraphicsErrorKind};
+
+    #[test]
+    fn graphics_errors_preserve_kind_and_message() {
+        let error = GraphicsError::invalid_request("bad graphics request");
+        assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+        assert_eq!(error.message(), "bad graphics request");
+        assert_eq!(error.to_string(), "bad graphics request");
+    }
 
     #[test]
     fn clear_color_requires_finite_normalized_components() {

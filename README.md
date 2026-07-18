@@ -48,7 +48,9 @@ contract through target-selected native Metal or Vulkan without application `uns
 The later textured/depth slice now exposes experimental `Device`, `Queue`, and `Surface` owners plus
 owning mesh, texture, pipeline, and generation-dependent target handles. Its explicit destruction,
 drop-queued reclamation, and generational slot reuse are still narrow single-queue evidence, not a
-general resource/command/synchronization API.
+general resource/command/synchronization API. Graphics and platform failures retain contextual
+messages while exposing small recovery-oriented kinds; temporary surface unavailability remains a
+typed acquisition outcome rather than an error.
 
 ## Direction
 

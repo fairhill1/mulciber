@@ -134,7 +134,7 @@ impl<T> Arena<T> {
             });
         }
         let slot = u32::try_from(self.slots.len()).map_err(|_| {
-            GraphicsError::new(format!("{} identity space is exhausted", self.label))
+            GraphicsError::internal(format!("{} identity space is exhausted", self.label))
         })?;
         self.slots.push(Slot {
             generation: 1,
@@ -151,7 +151,9 @@ impl<T> Arena<T> {
             .get(usize::try_from(id.slot).expect("u32 slot fits usize"))
             .filter(|slot| slot.generation == id.generation)
             .and_then(|slot| slot.value.as_ref())
-            .ok_or_else(|| GraphicsError::new(format!("stale or invalid {} handle", self.label)))
+            .ok_or_else(|| {
+                GraphicsError::stale_resource(format!("stale or invalid {} handle", self.label))
+            })
     }
 
     pub(crate) fn index_of(&self, id: ResourceId) -> Result<usize, GraphicsError> {
@@ -165,11 +167,12 @@ impl<T> Arena<T> {
             .slots
             .get_mut(index)
             .filter(|slot| slot.generation == id.generation)
-            .ok_or_else(|| GraphicsError::new(format!("stale or invalid {} handle", self.label)))?;
-        let value = slot
-            .value
-            .take()
-            .ok_or_else(|| GraphicsError::new(format!("stale or invalid {} handle", self.label)))?;
+            .ok_or_else(|| {
+                GraphicsError::stale_resource(format!("stale or invalid {} handle", self.label))
+            })?;
+        let value = slot.value.take().ok_or_else(|| {
+            GraphicsError::stale_resource(format!("stale or invalid {} handle", self.label))
+        })?;
         if let Some(generation) = slot.generation.checked_add(1) {
             slot.generation = generation;
             self.free.push(id.slot);
@@ -215,6 +218,8 @@ impl<T> IndexMut<usize> for Arena<T> {
 mod tests {
     use std::rc::Rc;
 
+    use crate::GraphicsErrorKind;
+
     use super::{Arena, DropQueue, ResourceKind, ResourceLease};
 
     #[test]
@@ -222,11 +227,23 @@ mod tests {
         let mut arena = Arena::new("test resource");
         let first = arena.insert(11).expect("first insertion");
         assert_eq!(arena.remove(first), Ok(11));
-        assert!(arena.get(first).is_err());
+        assert_eq!(
+            arena
+                .get(first)
+                .expect_err("removed ID must be stale")
+                .kind(),
+            GraphicsErrorKind::StaleResource
+        );
         let replacement = arena.insert(22).expect("replacement insertion");
         assert_ne!(first, replacement);
         assert_eq!(arena.get(replacement), Ok(&22));
-        assert!(arena.get(first).is_err());
+        assert_eq!(
+            arena
+                .get(first)
+                .expect_err("reused slot must not revive stale ID")
+                .kind(),
+            GraphicsErrorKind::StaleResource
+        );
     }
 
     #[test]

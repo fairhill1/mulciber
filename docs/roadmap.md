@@ -152,15 +152,20 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [x] Decide and record main-thread/event-loop ownership, object topology, surface generations, frame
   presentation/non-presentation, resource-use vocabulary, error recovery, and safe native reach in
   the [API slice decision ledger](api-slice-decisions.md); native reach is recorded as a deliberate
-  non-exposure with a binding constraint, and final error categories remain explicitly open.
+  non-exposure with a binding constraint. A provisional recovery-oriented error taxonomy now
+  distinguishes caller, lifecycle, resource, capability, surface, device, memory, validation,
+  native, and internal failures while retaining contextual messages.
 - [x] Extract the minimal event, window, display, and lifecycle spine into `mulciber-platform`, backed
   by peer AppKit, Win32, Wayland, and X11 modules.
-- [ ] Extract owned device, queue, buffer, texture, pipeline, command, synchronization, and
+- [x] Extract owned device, queue, mesh, texture, pipeline, surface-generation, frame, and
   presentation types into `mulciber` with Metal and Vulkan implementations.
+- [ ] Generalize the deliberately narrow scene-submission vocabulary into owned buffer, binding,
+  command/pass-composition, and synchronization facilities only as representative game slices force
+  those concepts.
 - [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
   Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;
   keep device/queue/command topology private until the representative slice forces it.
-- [ ] Build the same textured depth-tested resize-aware example through both backends without
+- [x] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   resource-reclamation, multi-draw, instancing, and shutdown conformance tests:
@@ -287,10 +292,11 @@ reconfiguration is paced so continuous resize cannot outrun FIFO presentation (s
 [Linux validation runbook](linux-validation.md)). Resource handles are now owning and non-`Copy`;
 explicit fallible destruction and drop-queued reclamation cover all direct and postprocess resource
 kinds through reusable generational arenas. The replacement-render conformance path passed Metal API
-Validation on Apple M2. Its Vulkan implementation cross-compiles for Win32, waits the current frame
-fence, and invalidates affected descriptor pools, but physical Vulkan execution of this lifetime
-change remains pending. Final checkboxes remain open until that run and the provisional command
-vocabulary are reviewed.
+Validation on Apple M2. The same lifetime paths were then physically exercised on Intel UHD 620 /
+Vulkan 1.3: all six resource kinds passed explicit destruction, drop-driven mesh reclamation passed
+32 replacements, the replacement-render path completed, and the Vulkan-only superseded-generation
+branch passed without validation diagnostics. The provisional command vocabulary remains open for
+review and expansion through representative game slices.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

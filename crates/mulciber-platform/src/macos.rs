@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 
 use crate::{
     ButtonState, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PlatformError,
-    PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent, WindowMetrics,
-    WindowRevision,
+    PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
+    WindowMetrics, WindowRevision,
 };
 
 type Object = *mut c_void;
@@ -115,7 +115,7 @@ impl Application {
     pub fn new() -> Result<Self, PlatformError> {
         // SAFETY: `pthread_main_np` has no preconditions and reports the current thread.
         if unsafe { pthread_main_np() } == 0 {
-            return Err(PlatformError::new(
+            return Err(PlatformError::lifecycle(
                 "AppKit application creation must run on the process main thread",
             ));
         }
@@ -149,7 +149,7 @@ impl Application {
     /// `AppKit` cannot create the window, title, or content view.
     pub fn create_window(&self, descriptor: &WindowDescriptor) -> Result<Window, PlatformError> {
         if descriptor.logical_size().is_empty() {
-            return Err(PlatformError::new(
+            return Err(PlatformError::invalid_request(
                 "window creation requires a non-empty logical extent",
             ));
         }
@@ -855,9 +855,10 @@ fn class(name: &CStr) -> Result<Object, PlatformError> {
     // SAFETY: The name is NUL-terminated and Objective-C class objects have process lifetime.
     let value = unsafe { objc_getClass(name.as_ptr()) };
     if value.is_null() {
-        Err(PlatformError::new(format!(
-            "missing Objective-C class {name:?}"
-        )))
+        Err(PlatformError::with_kind(
+            PlatformErrorKind::Unsupported,
+            format!("missing Objective-C class {name:?}"),
+        ))
     } else {
         Ok(value)
     }

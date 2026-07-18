@@ -35,7 +35,7 @@ pub use presentation::{
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError};
+pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErrorKind};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
     Device, DeviceRequest, DeviceSelection, Frame, InstancedTexturedPipeline, Mesh, OpenedGraphics,

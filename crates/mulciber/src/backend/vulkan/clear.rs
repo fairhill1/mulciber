@@ -11,8 +11,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{platform, vk};
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, SurfaceExtent, SurfaceInfo,
-    SurfaceUnavailable,
+    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, SurfaceExtent,
+    SurfaceInfo, SurfaceUnavailable,
 };
 
 pub(crate) const BACKEND_NAME: &str = "Vulkan";
@@ -53,7 +53,7 @@ impl<'window> ClearSurface<'window> {
     ) -> Result<Self, GraphicsError> {
         let extent = surface_extent(initial_metrics);
         if extent.is_empty() {
-            return Err(error(
+            return Err(GraphicsError::invalid_request(
                 "cannot create a Vulkan surface for an empty drawable extent",
             ));
         }
@@ -171,9 +171,12 @@ impl<'window> ClearSurface<'window> {
                 check(result, "vkAcquireNextImageKHR")?;
             }
             self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
-            let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+            let slot = usize::try_from(image_index)
+                .map_err(|_| GraphicsError::internal("invalid image index"))?;
             if slot >= self.swapchain.images.len() {
-                return Err(error("driver returned an invalid swapchain image index"));
+                return Err(GraphicsError::internal(
+                    "driver returned an invalid swapchain image index",
+                ));
             }
             return Ok(FrameAcquire::Ready(image_index));
         }
@@ -294,7 +297,7 @@ impl<'window> ClearSurface<'window> {
         )?;
         let formats = surface_formats(device)?;
         let format = choose_surface_format(&formats)
-            .ok_or_else(|| error("surface exposes no supported sRGB format"))?;
+            .ok_or_else(|| unsupported("surface exposes no supported sRGB format"))?;
         require_fifo_present_mode(device)?;
         let extent = choose_extent(capabilities, requested);
         let extent_info = SurfaceExtent::new(extent.width, extent.height);
@@ -303,7 +306,7 @@ impl<'window> ClearSurface<'window> {
             image_count = image_count.min(capabilities.maxImageCount);
         }
         let composite_alpha = choose_composite_alpha(capabilities.supportedCompositeAlpha)
-            .ok_or_else(|| error("surface exposes no supported composite-alpha mode"))?;
+            .ok_or_else(|| unsupported("surface exposes no supported composite-alpha mode"))?;
         let create_info = vk::VkSwapchainCreateInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             surface: device.instance.surface,
@@ -351,7 +354,7 @@ impl<'window> ClearSurface<'window> {
         self.info = if advance_generation {
             self.info
                 .reconfigured(extent_info)
-                .ok_or_else(|| error("surface generation counter exhausted"))?
+                .ok_or_else(|| GraphicsError::internal("surface generation counter exhausted"))?
         } else {
             SurfaceInfo::initial(extent_info).expect("Vulkan returned a non-empty extent")
         };
@@ -365,7 +368,8 @@ impl<'window> ClearSurface<'window> {
         image_index: u32,
         color: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
+        let slot = usize::try_from(image_index)
+            .map_err(|_| GraphicsError::internal("invalid image index"))?;
         let image = self.swapchain.images[slot];
         let view = self.swapchain.views[slot];
         let render_finished = self.swapchain.render_finished[slot];
@@ -854,11 +858,14 @@ impl Entry {
             "vkEnumerateInstanceVersion",
         )?;
         if version < API_VERSION_1_3 {
-            return Err(error(format!(
-                "Vulkan loader exposes {}.{}, but Mulciber requires 1.3",
-                version >> 22,
-                (version >> 12) & 0x3ff
-            )));
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                format!(
+                    "Vulkan loader exposes {}.{}, but Mulciber requires 1.3",
+                    version >> 22,
+                    (version >> 12) & 0x3ff
+                ),
+            ));
         }
         entry.api_version = version.min(API_VERSION_1_4);
         Ok(entry)
@@ -1432,10 +1439,13 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
     }
     candidates.sort_by_key(|candidate| candidate.0);
     candidates.pop().map(|(_, adapter)| adapter).ok_or_else(|| {
-        error(format!(
-            "no Vulkan 1.3 adapter satisfies the presentation baseline: {}",
-            rejections.join("; ")
-        ))
+        GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            format!(
+                "no Vulkan 1.3 adapter satisfies the presentation baseline: {}",
+                rejections.join("; ")
+            ),
+        )
     })
 }
 
@@ -1619,7 +1629,10 @@ fn require_fifo_present_mode(device: &Device) -> Result<(), GraphicsError> {
     if values[..count as usize].contains(&vk::VK_PRESENT_MODE_FIFO_KHR) {
         Ok(())
     } else {
-        Err(error("surface does not expose required FIFO presentation"))
+        Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "surface does not expose required FIFO presentation",
+        ))
     }
 }
 
@@ -1778,10 +1791,13 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
     if names.iter().any(|candidate| candidate == name.to_bytes()) {
         Ok(())
     } else {
-        Err(error(format!(
-            "required {description} {} is unavailable",
-            name.to_string_lossy()
-        )))
+        Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            format!(
+                "required {description} {} is unavailable",
+                name.to_string_lossy()
+            ),
+        ))
     }
 }
 fn fixed_c_string(value: &[c_char]) -> Vec<u8> {
@@ -1795,9 +1811,19 @@ fn check(result: vk::VkResult, operation: &str) -> Result<(), GraphicsError> {
     if result == vk::VK_SUCCESS {
         Ok(())
     } else {
-        Err(error(format!(
-            "{operation} failed with Vulkan result {result}"
-        )))
+        let kind = match result {
+            vk::VK_ERROR_OUT_OF_HOST_MEMORY | vk::VK_ERROR_OUT_OF_DEVICE_MEMORY => {
+                GraphicsErrorKind::OutOfMemory
+            }
+            vk::VK_ERROR_DEVICE_LOST => GraphicsErrorKind::DeviceFailure,
+            vk::VK_ERROR_SURFACE_LOST_KHR => GraphicsErrorKind::SurfaceFailure,
+            vk::VK_ERROR_VALIDATION_FAILED_EXT => GraphicsErrorKind::Validation,
+            _ => GraphicsErrorKind::NativeFailure,
+        };
+        Err(GraphicsError::with_kind(
+            kind,
+            format!("{operation} failed with Vulkan result {result}"),
+        ))
     }
 }
 fn check_enumeration(result: vk::VkResult, operation: &str) -> Result<(), GraphicsError> {
@@ -1809,6 +1835,10 @@ fn check_enumeration(result: vk::VkResult, operation: &str) -> Result<(), Graphi
 }
 fn error(message: impl Into<std::string::String>) -> GraphicsError {
     GraphicsError::new(message)
+}
+
+fn unsupported(message: impl Into<std::string::String>) -> GraphicsError {
+    GraphicsError::with_kind(GraphicsErrorKind::Unsupported, message)
 }
 
 const fn make_api_version(variant: u32, major: u32, minor: u32, patch: u32) -> u32 {
@@ -1825,6 +1855,51 @@ fn debug_messenger_info() -> vk::VkDebugUtilsMessengerCreateInfoEXT {
             | vk::VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) as u32,
         pfnUserCallback: Some(debug_callback),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check, vk};
+    use crate::GraphicsErrorKind;
+
+    #[test]
+    fn vulkan_results_map_to_recovery_categories() {
+        for result in [
+            vk::VK_ERROR_OUT_OF_HOST_MEMORY,
+            vk::VK_ERROR_OUT_OF_DEVICE_MEMORY,
+        ] {
+            assert_eq!(
+                check(result, "test")
+                    .expect_err("memory error must fail")
+                    .kind(),
+                GraphicsErrorKind::OutOfMemory
+            );
+        }
+        assert_eq!(
+            check(vk::VK_ERROR_DEVICE_LOST, "test")
+                .expect_err("device loss must fail")
+                .kind(),
+            GraphicsErrorKind::DeviceFailure
+        );
+        assert_eq!(
+            check(vk::VK_ERROR_SURFACE_LOST_KHR, "test")
+                .expect_err("surface loss must fail")
+                .kind(),
+            GraphicsErrorKind::SurfaceFailure
+        );
+        assert_eq!(
+            check(vk::VK_ERROR_VALIDATION_FAILED_EXT, "test")
+                .expect_err("validation failure must fail")
+                .kind(),
+            GraphicsErrorKind::Validation
+        );
+        assert_eq!(
+            check(vk::VK_ERROR_INITIALIZATION_FAILED, "test")
+                .expect_err("unclassified native error must fail")
+                .kind(),
+            GraphicsErrorKind::NativeFailure
+        );
     }
 }
 

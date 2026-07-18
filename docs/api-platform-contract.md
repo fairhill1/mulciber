@@ -126,10 +126,12 @@ Creation and event pumping return contextual `PlatformError` values. The AppKit 
 retain returned by `NSWindow` initialization and an owned delegate whose non-owning close-state
 association remains bounded by the window. Destruction detaches and releases the delegate, closes the
 window, and releases the window retain on its creating thread. Graphics shutdown still occurs
-explicitly before the probe and window are dropped. Stable recovery categories remain open until the
-error model is extracted across both graphics backends. The Wayland implementation destroys protocol
-roles child-first before disconnecting its display. The X11 implementation destroys its sync counter
-and window before closing the display. Win32 destroys its window before unregistering its unique
+explicitly before the probe and window are dropped. `PlatformErrorKind` now distinguishes invalid
+requests, unsupported native environments, lifecycle misuse, otherwise-unclassified native
+failures, and internal failures while preserving the contextual message. The Wayland implementation
+destroys protocol roles child-first before disconnecting its display. The X11 implementation destroys
+its sync counter and window before closing the display. Win32 destroys its window before
+unregistering its unique
 class. Existing GPU/presentation shutdown still occurs before each platform window drops.
 
 ## Initial validation
@@ -184,14 +186,17 @@ behavior was not recorded. Evidence: `validation-artifacts/windows-vulkan-202607
 
 ## Required next evidence
 
-1. Resolve whether full occlusion is a rendering-suspension state or a separate render-policy event
-   once the runtime contract is tested.
+1. Repeat the runtime rendering-suspension policy on Windows and Linux; the AppKit path now treats
+   full occlusion as suspension and has physically passed hold/minimize/release/wait/restore without
+   a catch-up jump or stuck input.
 2. Prove scale/display changes advance window revisions correctly on hardware with the necessary
    displays.
-3. Physically repeat hide/restore and titlebar close after the delegate-backed close-tracking change.
-4. Define the graphics-owned presentation generation and replace the hidden AppKit bridge's probe use
-   with safe `mulciber` surface creation when the graphics extraction begins.
+3. Physically repeat explicit application hide/show after the delegate-backed close-tracking change;
+   minimize/restore and titlebar-close shutdown are established on the current AppKit tier.
+4. Extend evidence for the graphics-owned presentation generation and safe `mulciber` surface
+   creation beyond the current AppKit, Win32, Wayland, and X11 extraction checkpoints.
 5. Compare the resulting event and lifecycle flow with direct native stacks, `winit`, SDL3, and the
    other Gate 2 targets in the extraction plan.
-6. Implement and physically exercise the input-transition contract on Win32, Wayland, and X11 before
-   treating the AppKit-first event names as a shared platform claim.
+6. Implement and physically exercise the input-transition contract on Wayland and X11. Win32 input
+   is implemented and physically exercised; broader keyboard-layout and pointer-device coverage is
+   still pending on both implemented input backends.

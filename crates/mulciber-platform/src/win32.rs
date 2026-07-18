@@ -231,7 +231,7 @@ impl Application {
         visible: bool,
     ) -> Result<Window, PlatformError> {
         if descriptor.logical_size().is_empty() {
-            return Err(PlatformError::new(
+            return Err(PlatformError::invalid_request(
                 "window creation requires a non-empty logical extent",
             ));
         }
@@ -411,15 +411,15 @@ impl Window {
         window_lease: WindowLease,
     ) -> Result<Self, PlatformError> {
         if descriptor.title().contains('\0') {
-            return Err(PlatformError::new(
+            return Err(PlatformError::invalid_request(
                 "Win32 window title contains an interior NUL",
             ));
         }
         let size = descriptor.logical_size();
         let width = i32::try_from(size.width())
-            .map_err(|_| PlatformError::new("window width is too large for Win32"))?;
+            .map_err(|_| PlatformError::invalid_request("window width is too large for Win32"))?;
         let height = i32::try_from(size.height())
-            .map_err(|_| PlatformError::new("window height is too large for Win32"))?;
+            .map_err(|_| PlatformError::invalid_request("window height is too large for Win32"))?;
         let title = wide(descriptor.title());
         let state = Box::new(WindowState::new());
         let class_name = wide(&format!("MulciberPlatformWindow-{:p}", state.as_ref()));
@@ -482,7 +482,8 @@ impl Window {
             if GetWindowLongPtrW(handle.as_ptr(), GWLP_USERDATA) != state_pointer as isize {
                 DestroyWindow(handle.as_ptr());
                 UnregisterClassW(class_name.as_ptr(), instance.as_ptr());
-                return Err(PlatformError::new(
+                return Err(PlatformError::with_kind(
+                    crate::PlatformErrorKind::Internal,
                     "Win32 did not retain Mulciber's window state",
                 ));
             }
@@ -551,7 +552,7 @@ impl WindowSlot {
 
     fn claim(&self) -> Result<WindowLease, PlatformError> {
         if self.live.get() {
-            return Err(PlatformError::new(
+            return Err(PlatformError::lifecycle(
                 "the initial Win32 extraction supports one live window per application",
             ));
         }

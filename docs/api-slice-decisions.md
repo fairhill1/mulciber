@@ -104,11 +104,16 @@ one-sample path.
 
 ## Errors and recovery
 
-Partially decided. Nonfatal states are typed outcomes, not errors: retry-later is
+Provisionally decided. Nonfatal states are typed outcomes, not errors: retry-later is
 `SurfaceUnavailable`, rebuild is the frame/target generation mismatch, and `Result::Err` carries a
-structured `GraphicsError` for genuine failures including deferred abandonment failures surfaced by
-the next fallible surface operation. Validation warnings and errors fail validation runs. Final
-error categories and native diagnostic payloads remain open in the
+`GraphicsError` for genuine failures including deferred abandonment failures surfaced by the next
+fallible surface operation. `GraphicsErrorKind` distinguishes invalid request, unsupported,
+lifecycle, stale resource, surface failure, device failure, out of memory, validation, native
+failure, and internal failure according to the recovery action current evidence supports. The
+contextual message remains available separately. Vulkan result codes map directly where possible;
+uncategorized backend failures deliberately remain `NativeFailure` instead of being guessed from
+message text. Validation warnings and errors fail validation runs. Rich native diagnostic payloads
+and physically exercised device-loss/out-of-memory recovery remain open in the
 [graphics contract](api-graphics-contract.md).
 
 ## Native reach

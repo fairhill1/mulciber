@@ -99,7 +99,7 @@ impl<'window> OpenedGraphics<'window> {
     ) -> Result<Self, GraphicsError> {
         let id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         if id == 0 {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::internal(
                 "graphics session identity space is exhausted",
             ));
         }
@@ -140,7 +140,7 @@ impl<'window> OpenedGraphics<'window> {
             selection: _,
         } = self;
         if Rc::strong_count(&surface.shared.inner) != 3 {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::lifecycle(
                 "cannot shut graphics down while an acquired frame is live",
             ));
         }
@@ -151,7 +151,7 @@ impl<'window> OpenedGraphics<'window> {
             .inner
             .borrow_mut()
             .take()
-            .ok_or_else(|| GraphicsError::new("graphics session is already shut down"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("graphics session is already shut down"))?;
         session.shutdown()
     }
 }
@@ -170,7 +170,7 @@ impl Device<'_> {
     /// failure.
     pub fn create_mesh(&self, vertices: &[Vertex], indices: &[u16]) -> Result<Mesh, GraphicsError> {
         if vertices.is_empty() || indices.is_empty() {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "mesh vertices and indices must be non-empty",
             ));
         }
@@ -178,7 +178,9 @@ impl Device<'_> {
             .iter()
             .any(|&index| usize::from(index) >= vertices.len())
         {
-            return Err(GraphicsError::new("mesh contains an out-of-range index"));
+            return Err(GraphicsError::invalid_request(
+                "mesh contains an out-of-range index",
+            ));
         }
         let id = session_mut(&self.shared)?.create_mesh(vertices, indices)?;
         Ok(Mesh {
@@ -206,9 +208,11 @@ impl Device<'_> {
                     .and_then(|height| width.checked_mul(height))
             })
             .and_then(|texels| texels.checked_mul(4))
-            .ok_or_else(|| GraphicsError::new("texture dimensions overflow address space"))?;
+            .ok_or_else(|| {
+                GraphicsError::invalid_request("texture dimensions overflow address space")
+            })?;
         if expected == 0 || texels.len() != expected {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "texture byte count does not match its dimensions",
             ));
         }
@@ -391,7 +395,7 @@ impl Device<'_> {
         kind: ResourceKind,
     ) -> Result<(), GraphicsError> {
         if lease.session != self.shared.id {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "graphics handles belong to different sessions",
             ));
         }
@@ -509,7 +513,7 @@ impl Queue<'_> {
         let token = frame
             .token
             .take()
-            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_scene_and_present(
             token,
             scene.draws,
@@ -561,14 +565,14 @@ impl Queue<'_> {
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
         if scene.postprocess_pipeline.lease.session != self.shared.id {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "graphics handles belong to different sessions",
             ));
         }
         let token = frame
             .token
             .take()
-            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_scene_postprocessed_and_present(
             token,
             scene.draws,
@@ -597,7 +601,7 @@ impl Queue<'_> {
         let token = frame
             .token
             .take()
-            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_instanced_scene_and_present(
             token,
             batches,
@@ -624,14 +628,14 @@ impl Queue<'_> {
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
         if postprocess_pipeline.lease.session != self.shared.id {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "graphics handles belong to different sessions",
             ));
         }
         let token = frame
             .token
             .take()
-            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_instanced_scene_postprocessed_and_present(
             token,
             batches,
@@ -649,7 +653,7 @@ impl Queue<'_> {
         targets: &impl SceneTargets,
     ) -> Result<(), GraphicsError> {
         if draws.is_empty() {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "textured scene must contain at least one draw",
             ));
         }
@@ -657,7 +661,7 @@ impl Queue<'_> {
             || targets.session() != frame_session
             || targets.info() != frame_info
         {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::stale_resource(
                 "graphics handles belong to different sessions or stale surface targets",
             ));
         }
@@ -668,7 +672,7 @@ impl Queue<'_> {
                 draw.pipeline.lease.session,
             ] {
                 if session != self.shared.id || session != frame_session {
-                    return Err(GraphicsError::new(
+                    return Err(GraphicsError::invalid_request(
                         "graphics handles belong to different sessions",
                     ));
                 }
@@ -679,7 +683,7 @@ impl Queue<'_> {
                 .flatten()
                 .all(|component| component.is_finite())
             {
-                return Err(GraphicsError::new(
+                return Err(GraphicsError::invalid_request(
                     "draw transform must contain only finite values",
                 ));
             }
@@ -695,7 +699,7 @@ impl Queue<'_> {
         targets: &impl SceneTargets,
     ) -> Result<(), GraphicsError> {
         if batches.is_empty() {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "instanced textured scene must contain at least one batch",
             ));
         }
@@ -703,13 +707,13 @@ impl Queue<'_> {
             || targets.session() != frame_session
             || targets.info() != frame_info
         {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::stale_resource(
                 "graphics handles belong to different sessions or stale surface targets",
             ));
         }
         for batch in batches {
             if batch.model_view_projections.is_empty() {
-                return Err(GraphicsError::new(
+                return Err(GraphicsError::invalid_request(
                     "instanced textured scene batches must contain at least one transform",
                 ));
             }
@@ -719,7 +723,7 @@ impl Queue<'_> {
                 batch.pipeline.lease.session,
             ] {
                 if session != self.shared.id || session != frame_session {
-                    return Err(GraphicsError::new(
+                    return Err(GraphicsError::invalid_request(
                         "graphics handles belong to different sessions",
                     ));
                 }
@@ -731,7 +735,7 @@ impl Queue<'_> {
                 .flatten()
                 .all(|component| component.is_finite())
             {
-                return Err(GraphicsError::new(
+                return Err(GraphicsError::invalid_request(
                     "instance transforms must contain only finite values",
                 ));
             }
@@ -1049,7 +1053,7 @@ impl Frame<'_> {
         let token = self
             .token
             .take()
-            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.abandon(token)
     }
 }
@@ -1068,7 +1072,7 @@ fn session_ref<'a, 'window>(
     shared: &'a Shared<'window>,
 ) -> Result<core::cell::Ref<'a, backend::TexturedSession<'window>>, GraphicsError> {
     core::cell::Ref::filter_map(shared.inner.borrow(), Option::as_ref)
-        .map_err(|_| GraphicsError::new("graphics session is shut down"))
+        .map_err(|_| GraphicsError::lifecycle("graphics session is shut down"))
 }
 
 fn session_mut<'a, 'window>(
@@ -1076,7 +1080,7 @@ fn session_mut<'a, 'window>(
 ) -> Result<core::cell::RefMut<'a, backend::TexturedSession<'window>>, GraphicsError> {
     let pending = shared.drops.take();
     let mut session = core::cell::RefMut::filter_map(shared.inner.borrow_mut(), Option::as_mut)
-        .map_err(|_| GraphicsError::new("graphics session is shut down"))?;
+        .map_err(|_| GraphicsError::lifecycle("graphics session is shut down"))?;
     if let Err(error) = session.reclaim_resources(&pending) {
         shared.drops.restore(pending);
         return Err(error);

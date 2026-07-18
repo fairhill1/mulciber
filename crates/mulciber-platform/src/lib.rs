@@ -514,7 +514,7 @@ impl Application {
                 return Ok(metrics);
             }
             if status == PumpStatus::Exit {
-                return Err(PlatformError::new(
+                return Err(PlatformError::lifecycle(
                     "window closed before drawable metrics became available",
                 ));
             }
@@ -522,9 +522,28 @@ impl Application {
     }
 }
 
+/// The recovery-relevant category of a [`PlatformError`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PlatformErrorKind {
+    /// Application-provided window or event-loop values are invalid.
+    InvalidRequest,
+    /// The required native window system or capability is unavailable.
+    Unsupported,
+    /// The operation is invalid for the current application or window lifecycle state.
+    Lifecycle,
+    /// A native platform operation failed without stronger recovery evidence.
+    NativeFailure,
+    /// A Mulciber platform invariant failed internally.
+    Internal,
+}
+
 /// A platform creation or lifecycle error.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PlatformError(String);
+pub struct PlatformError {
+    kind: PlatformErrorKind,
+    message: String,
+}
 
 impl PlatformError {
     #[cfg_attr(
@@ -532,13 +551,40 @@ impl PlatformError {
         allow(dead_code)
     )]
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self::with_kind(PlatformErrorKind::NativeFailure, message)
+    }
+
+    pub(crate) fn with_kind(kind: PlatformErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_request(message: impl Into<String>) -> Self {
+        Self::with_kind(PlatformErrorKind::InvalidRequest, message)
+    }
+
+    pub(crate) fn lifecycle(message: impl Into<String>) -> Self {
+        Self::with_kind(PlatformErrorKind::Lifecycle, message)
+    }
+
+    /// Returns the recovery-relevant category while preserving native detail in [`Self::message`].
+    #[must_use]
+    pub const fn kind(&self) -> PlatformErrorKind {
+        self.kind
+    }
+
+    /// Returns the contextual diagnostic message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
 impl fmt::Display for PlatformError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -546,7 +592,18 @@ impl std::error::Error for PlatformError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{LogicalSize, PhysicalExtent, WindowDescriptor, WindowRevision};
+    use super::{
+        LogicalSize, PhysicalExtent, PlatformError, PlatformErrorKind, WindowDescriptor,
+        WindowRevision,
+    };
+
+    #[test]
+    fn platform_errors_preserve_kind_and_message() {
+        let error = PlatformError::invalid_request("bad window request");
+        assert_eq!(error.kind(), PlatformErrorKind::InvalidRequest);
+        assert_eq!(error.message(), "bad window request");
+        assert_eq!(error.to_string(), "bad window request");
+    }
 
     #[test]
     fn empty_extent_requires_a_zero_dimension() {

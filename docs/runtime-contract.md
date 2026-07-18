@@ -112,12 +112,13 @@ pointer buttons, precise scroll preservation, suspended time freezing, interpola
 and held-input release. Forge Run is the first integrated consumer and keeps simulation updates ahead
 of graphics acquisition so drawable unavailability does not directly gate game time.
 
-The earlier application-owned Forge Run checkpoint was physically exercised on Apple M2 / macOS
-15.7.7 and Intel Vulkan 1.3 / Windows 11. After migration, the operator replayed the runtime-backed
-path on the same Apple M2 machine and reported that the game and interpolated movement felt correct.
-A later Metal-validation run physically confirmed that hold/minimize/release/wait/restore caused no
-catch-up jump or stuck movement. No measured frame-cadence, runtime-backed Windows/Linux, process/OS
-suspension, display-transition, or recovery claim is inferred from that focused check. The wgpu/winit
-peer passed the general visual and interaction review through Metal with API Validation enabled; its
-updated local suspension path launched and closed cleanly, but no explicit physical
-hold/minimize/restore observation was recorded.
+The application-owned and runtime-backed Forge Run checkpoints were physically exercised on an Apple
+M2 running macOS 15.7.7, where the operator reported that the game and interpolated movement felt
+correct. A later Metal-validation run physically confirmed that hold/minimize/release/wait/restore
+caused no catch-up jump or stuck movement. The Windows validation ledger separately establishes
+Vulkan graphics and Win32 input slices, while the runtime-backed game currently has only Windows
+cross-build evidence; it does not record a physical Windows Forge Run. No measured frame-cadence,
+runtime-backed Windows/Linux, process/OS suspension, display-transition, or recovery claim is inferred
+from the focused macOS check. The wgpu/winit peer passed the general visual and interaction review through
+Metal with API Validation enabled; its updated local suspension path launched and closed cleanly, but
+no explicit physical hold/minimize/restore observation was recorded.

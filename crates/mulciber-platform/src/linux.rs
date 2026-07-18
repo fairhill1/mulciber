@@ -11,8 +11,8 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use crate::{
-    PhysicalExtent, PlatformError, PumpStatus, WindowDescriptor, WindowEvent, WindowMetrics,
-    WindowRevision,
+    PhysicalExtent, PlatformError, PlatformErrorKind, PumpStatus, WindowDescriptor, WindowEvent,
+    WindowMetrics, WindowRevision,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,7 +40,8 @@ impl Application {
         } else if environment_is_set("DISPLAY") {
             Platform::X11
         } else {
-            return Err(PlatformError::new(
+            return Err(PlatformError::with_kind(
+                PlatformErrorKind::Unsupported,
                 "no Wayland or X11 display is available; set WAYLAND_DISPLAY or DISPLAY",
             ));
         };
@@ -63,7 +64,7 @@ impl Application {
     /// display server cannot create its native window and shell resources.
     pub fn create_window(&self, descriptor: &WindowDescriptor) -> Result<Window, PlatformError> {
         if descriptor.logical_size().is_empty() {
-            return Err(PlatformError::new(
+            return Err(PlatformError::invalid_request(
                 "window creation requires a non-empty logical extent",
             ));
         }
@@ -255,7 +256,7 @@ impl WindowSlot {
 
     fn claim(&self) -> Result<WindowLease, PlatformError> {
         if self.live.get() {
-            return Err(PlatformError::new(
+            return Err(PlatformError::lifecycle(
                 "the initial Linux extraction supports one live window per application",
             ));
         }

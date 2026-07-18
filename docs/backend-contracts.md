@@ -100,7 +100,7 @@ hardware breadth remain governed by the viability gates.
 
 | Game-facing need | Metal evidence | Vulkan evidence | Candidate shared invariant | Native boundary or missing evidence |
 | --- | --- | --- | --- | --- |
-| Receive actionable creation and capability failures | Missing selectors, objects, required formats/features, pipeline creation, archive operations, and command-buffer failures become contextual probe errors. | Missing layers/extensions/features, unsupported formats/memory/sample paths, Vulkan result failures, and validation messages become contextual probe errors. | Errors identify the failed operation, relevant resource or capability, and whether the game can choose a fallback. Native codes remain available as structured diagnostics. | Stable error categories must be derived from more failure-path evidence; avoid one undifferentiated string error in the public API. |
+| Receive actionable creation and capability failures | Missing selectors, objects, required formats/features, pipeline creation, archive operations, and command-buffer failures become contextual probe errors. | Missing layers/extensions/features, unsupported formats/memory/sample paths, Vulkan result failures, and validation messages become contextual probe errors. | `GraphicsErrorKind` separates caller, capability, lifecycle, stale-resource, surface, device, memory, validation, native, and internal failures; `PlatformErrorKind` provides the corresponding smaller platform set. Contextual messages remain available, while temporary surface unavailability remains a typed non-error outcome. | The taxonomy is provisional pending physically exercised device-loss/out-of-memory paths and richer native diagnostic payloads; unclassified native failures must not be guessed from message text. |
 | Drain asynchronous work on ordinary shutdown | Every retained in-flight Metal command buffer is waited, checked, timed when possible, and released even after an earlier completion failure. | Frame work and tracked presentation operations are waited before owned resources are destroyed; the base swapchain path retains an orderly-idle fallback at final shutdown. | Shutdown is an explicit fallible lifecycle operation that attempts to drain all owned work and reports the first or aggregated failure without abandoning remaining cleanup. Drop remains best-effort. | Device loss, out-of-memory, process teardown, and partial-construction cleanup need dedicated evidence. |
 | Keep validation part of the support claim | Metal supports native validation-layer runs and attaches labels to major objects. The current M2 tier passed finite archive, acquired-frame abandonment, and physical lifecycle runs after integration with the shared graphics vocabulary. | The probe requires Khronos validation, counts warning/error callbacks, and records reproducible Windows evidence plus initial native Wayland presentation evidence with zero warning/error callbacks. | Debug configurations enable the strongest native validation and route messages through Mulciber diagnostics. A backend is not first-class solely because it renders. | Broader Metal and Vulkan hardware/driver coverage and release-build structural checks remain pending. |
 
@@ -143,8 +143,11 @@ is not a resolution by itself.
    delivered without coupling the GPU crate to native window messages?
 7. What safe escape hatch can expose native capability without allowing application code to violate
    Mulciber's ownership and presentation-retirement tracking?
-8. Which error categories have genuinely distinct recovery actions: retry later, rebuild the surface,
-   choose a fallback, recreate the device, or terminate?
+8. Resolved provisionally: retry-later remains `FrameAcquire::Unavailable`; stale resources and
+   surface failures identify rebuild paths; unsupported requests identify fallback selection; device
+   failures identify session recreation; and memory, validation, native, or internal failures remain
+   explicit terminal/escalation decisions for the application. Physical failure-path evidence may
+   refine these categories without parsing diagnostic strings.
 9. Can Metal command-buffer timing and Vulkan named-region timing share a small diagnostic-scope
    vocabulary without implying identical boundaries, resolution, or cross-backend comparability?
 

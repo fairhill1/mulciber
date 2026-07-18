@@ -26,45 +26,57 @@ impl<'bytes> ShaderArtifact<'bytes> {
     /// an empty payload, or malformed SPIR-V byte alignment and magic.
     pub fn new(bytes: &'bytes [u8]) -> Result<Self, GraphicsError> {
         if bytes.len() < HEADER_LENGTH || &bytes[..8] != MAGIC {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "invalid Mulciber shader artifact header",
             ));
         }
         let kind = u32::from_le_bytes(
             bytes
                 .get(8..12)
-                .ok_or_else(|| GraphicsError::new("invalid Mulciber shader artifact header"))?
+                .ok_or_else(|| {
+                    GraphicsError::invalid_request("invalid Mulciber shader artifact header")
+                })?
                 .try_into()
-                .map_err(|_| GraphicsError::new("invalid Mulciber shader artifact header"))?,
+                .map_err(|_| {
+                    GraphicsError::invalid_request("invalid Mulciber shader artifact header")
+                })?,
         );
         let payload_length = usize::try_from(u32::from_le_bytes(
             bytes
                 .get(12..16)
-                .ok_or_else(|| GraphicsError::new("invalid Mulciber shader artifact header"))?
+                .ok_or_else(|| {
+                    GraphicsError::invalid_request("invalid Mulciber shader artifact header")
+                })?
                 .try_into()
-                .map_err(|_| GraphicsError::new("invalid Mulciber shader artifact header"))?,
+                .map_err(|_| {
+                    GraphicsError::invalid_request("invalid Mulciber shader artifact header")
+                })?,
         ))
-        .map_err(|_| GraphicsError::new("shader artifact length exceeds this target"))?;
+        .map_err(|_| {
+            GraphicsError::invalid_request("shader artifact length exceeds this target")
+        })?;
         let payload = bytes
             .get(HEADER_LENGTH..)
             .filter(|payload| payload.len() == payload_length && !payload.is_empty())
-            .ok_or_else(|| GraphicsError::new("invalid Mulciber shader artifact length"))?;
+            .ok_or_else(|| {
+                GraphicsError::invalid_request("invalid Mulciber shader artifact length")
+            })?;
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if kind != VULKAN_KIND {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "shader artifact does not contain Vulkan code",
             ));
         }
         #[cfg(target_os = "macos")]
         if kind != METAL_KIND {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "shader artifact does not contain Metal code",
             ));
         }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if payload.len() % 4 != 0 || payload.get(..4) != Some(&0x0723_0203_u32.to_le_bytes()) {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::invalid_request(
                 "shader artifact contains malformed SPIR-V",
             ));
         }
@@ -87,6 +99,8 @@ impl<'bytes> ShaderArtifact<'bytes> {
 mod tests {
     use std::vec::Vec;
 
+    use crate::GraphicsErrorKind;
+
     #[allow(unused_imports)]
     use super::{HEADER_LENGTH, MAGIC, METAL_KIND, ShaderArtifact, VULKAN_KIND};
 
@@ -105,11 +119,29 @@ mod tests {
 
     #[test]
     fn rejects_truncated_and_wrong_target_artifacts() {
-        assert!(ShaderArtifact::new(b"MULSHDR1").is_err());
+        assert_eq!(
+            ShaderArtifact::new(b"MULSHDR1")
+                .err()
+                .expect("truncated artifact must fail")
+                .kind(),
+            GraphicsErrorKind::InvalidRequest
+        );
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        assert!(ShaderArtifact::new(&artifact(METAL_KIND, b"metallib")).is_err());
+        assert_eq!(
+            ShaderArtifact::new(&artifact(METAL_KIND, b"metallib"))
+                .err()
+                .expect("wrong-target artifact must fail")
+                .kind(),
+            GraphicsErrorKind::InvalidRequest
+        );
         #[cfg(target_os = "macos")]
-        assert!(ShaderArtifact::new(&artifact(VULKAN_KIND, &[3, 2, 35, 7])).is_err());
+        assert_eq!(
+            ShaderArtifact::new(&artifact(VULKAN_KIND, &[3, 2, 35, 7]))
+                .err()
+                .expect("wrong-target artifact must fail")
+                .kind(),
+            GraphicsErrorKind::InvalidRequest
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]

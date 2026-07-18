@@ -109,7 +109,8 @@ device, resource, encoder, or pipeline types have been added.
 ## Still deliberately open
 
 - Whether context, selection, and device opening are separate public values or one constructor flow.
-- Final error categories and native diagnostic payloads.
+- Rich native diagnostic payloads and physical device-loss/out-of-memory recovery evidence; the
+  provisional recovery-oriented error categories are now extracted.
 - Upload, resource-use, command-encoding, binding, and shader-artifact vocabulary.
 - Safe native capability reach and interoperation.
 

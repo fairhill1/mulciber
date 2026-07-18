@@ -10,9 +10,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, Mesh, OpenedGraphics, PostprocessedScene, SampleCount,
-    SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, TexturedDraw,
-    TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, GraphicsErrorKind, Mesh, OpenedGraphics,
+    PostprocessedScene, SampleCount, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact,
+    TexturedDraw, TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -141,6 +141,7 @@ impl<'window> Cases<'window> {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     expect_error(
                         graphics.device.create_mesh(&[], &[]).map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
                         "non-empty",
                         "empty mesh rejected",
                     )?;
@@ -149,6 +150,7 @@ impl<'window> Cases<'window> {
                             .device
                             .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 3])
                             .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
                         "out-of-range",
                         "out-of-range index rejected",
                     )?;
@@ -157,6 +159,7 @@ impl<'window> Cases<'window> {
                             .device
                             .create_rgba8_srgb_texture(4, 4, &[0_u8; 4])
                             .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
                         "does not match",
                         "texture byte mismatch rejected",
                     )?;
@@ -165,6 +168,7 @@ impl<'window> Cases<'window> {
                             .device
                             .create_rgba8_srgb_texture(0, 4, &[])
                             .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
                         "does not match",
                         "zero-dimension texture rejected",
                     )?;
@@ -220,6 +224,7 @@ impl<'window> Cases<'window> {
                         .queue
                         .draw_textured_and_present(frame, draw)
                         .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
                     "finite",
                     "non-finite transform rejected",
                 )?;
@@ -266,6 +271,7 @@ impl<'window> Cases<'window> {
                             .queue
                             .draw_textured_and_present(frame, draw)
                             .map(|_| ()),
+                        GraphicsErrorKind::StaleResource,
                         "stale",
                         "superseded-generation targets rejected",
                     )?;
@@ -565,6 +571,7 @@ impl<'window> Cases<'window> {
                         .queue
                         .draw_textured_and_present(frame, draw)
                         .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
                     "different sessions",
                     "mixed-session handles rejected",
                 )?;
@@ -671,12 +678,20 @@ fn assert_presented(disposition: mulciber::FrameDisposition) -> Result<(), Box<d
 
 fn expect_error(
     result: Result<(), mulciber::GraphicsError>,
+    expected_kind: GraphicsErrorKind,
     needle: &str,
     case: &str,
 ) -> Result<(), Box<dyn Error>> {
     match result {
         Ok(()) => Err(format!("{case}: expected an error, the operation succeeded").into()),
         Err(error) => {
+            if error.kind() != expected_kind {
+                return Err(format!(
+                    "{case}: expected {expected_kind:?}, got {:?}: {error}",
+                    error.kind()
+                )
+                .into());
+            }
             let message = error.to_string();
             if message.contains(needle) {
                 Ok(())

@@ -7,8 +7,8 @@ use core::ptr;
 use mulciber_platform::{SurfaceTarget, WindowMetrics, integration};
 
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, SurfaceExtent, SurfaceInfo,
-    SurfaceUnavailable,
+    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, SurfaceExtent,
+    SurfaceInfo, SurfaceUnavailable,
 };
 
 pub(crate) const BACKEND_NAME: &str = "Metal";
@@ -45,7 +45,7 @@ impl<'window> ClearSurface<'window> {
     ) -> Result<Self, GraphicsError> {
         let extent = surface_extent(metrics)?;
         let info = SurfaceInfo::initial(extent).ok_or_else(|| {
-            GraphicsError::new("Metal surface requires non-empty initial metrics")
+            GraphicsError::invalid_request("Metal surface requires non-empty initial metrics")
         })?;
         let _pool = AutoreleasePool::new();
         // SAFETY: The target remains borrowed for this surface's lifetime and all selectors match
@@ -54,7 +54,10 @@ impl<'window> ClearSurface<'window> {
             let view = integration::appkit_view(&target).as_ptr();
             let device = MTLCreateSystemDefaultDevice();
             if device.is_null() {
-                return Err(GraphicsError::new("no default Metal device is available"));
+                return Err(GraphicsError::with_kind(
+                    GraphicsErrorKind::Unsupported,
+                    "no default Metal device is available",
+                ));
             }
             objc::void(device, c"retain");
 
@@ -126,10 +129,9 @@ impl<'window> ClearSurface<'window> {
             // acquired below already belongs to the advanced generation.
             // SAFETY: The layer is live on AppKit's main thread and the aggregate ABI matches.
             unsafe { configure_layer(self.layer, metrics) };
-            self.info = self
-                .info
-                .reconfigured(extent)
-                .ok_or_else(|| GraphicsError::new("Metal surface generation space is exhausted"))?;
+            self.info = self.info.reconfigured(extent).ok_or_else(|| {
+                GraphicsError::internal("Metal surface generation space is exhausted")
+            })?;
         }
 
         let pool = AutoreleasePool::new();
@@ -143,7 +145,8 @@ impl<'window> ClearSurface<'window> {
         // SAFETY: The drawable texture is live until this frame's autorelease pool drains.
         let texture = unsafe { objc::object(drawable, c"texture") };
         if texture.is_null() {
-            return Err(GraphicsError::new(
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::SurfaceFailure,
                 "Metal drawable returned no presentable texture",
             ));
         }
@@ -157,11 +160,14 @@ impl<'window> ClearSurface<'window> {
             // The drawable is authoritative: adopt its extent as a new generation and hand the
             // drawable out as a ready frame of that generation.
             self.info = self.info.reconfigured(drawable_extent).ok_or_else(|| {
-                GraphicsError::new(if drawable_extent.is_empty() {
-                    "Metal produced an empty drawable extent"
-                } else {
-                    "Metal surface generation space is exhausted"
-                })
+                GraphicsError::with_kind(
+                    GraphicsErrorKind::SurfaceFailure,
+                    if drawable_extent.is_empty() {
+                        "Metal produced an empty drawable extent"
+                    } else {
+                        "Metal surface generation space is exhausted"
+                    },
+                )
             })?;
         }
 
@@ -341,7 +347,7 @@ fn surface_extent(metrics: WindowMetrics) -> Result<SurfaceExtent, GraphicsError
     let extent = metrics.extent();
     let extent = SurfaceExtent::new(extent.width(), extent.height());
     if extent.is_empty() {
-        Err(GraphicsError::new("window surface is suspended"))
+        Err(GraphicsError::lifecycle("window surface is suspended"))
     } else {
         Ok(extent)
     }

@@ -236,7 +236,8 @@ observe and leaves native mechanisms inside their backends.
   surface generation, and reports a failure if native recovery cannot complete.
 - Whether full occlusion is a surface-unavailable fact, a pacing hint, or only platform visibility
   state. It must not silently stop unrelated game simulation.
-- Stable error categories, device-loss recovery, multi-window routing, and an owning runtime loop.
+- Stabilizing the provisional error categories, device-loss recovery, multi-window routing, and a
+  broader owning runtime loop.
 - Shader authoring, reflection, binding generation, transient allocation, aliasing, and a full frame
   graph. None is required to validate this first slice.
 

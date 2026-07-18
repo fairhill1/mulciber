@@ -182,6 +182,9 @@ fallback, and acquired-frame abandonment/recovery controls.
   learnability, control, cost, performance, and single-backend results.
 - [ ] Keep backend-specific capabilities reachable without leaking native object ownership or
   bypassing presentation-retirement tracking.
+- [ ] Add a pointer-capture/cursor-mode API to `mulciber-platform` that owns the native
+  locked-versus-confined policy and cursor visibility; all five surveyed games hand-roll the same
+  fallback (see the [consumer evidence](consumer-evidence.md)).
 
 Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
 `mulciber-platform` and drive both full native probes. The extracted path passed the automated
@@ -270,9 +273,11 @@ The differentiation this milestone tests narrows over time as `wgpu` continues a
 features, and Gate 4 already treats "established libraries expose the needed path with comparable
 control" as a stop condition. The first Gate 4 candidate therefore takes schedule priority over
 completing the remaining Gate 2 comparison families, which re-measure coordination value that already
-has three data points. Candidate selection should weigh the
-[consumer evidence from five real wgpu/winit games](consumer-evidence.md), which shows five-for-five
-presentation-pacing pain and exactly one GPU-driven/bindless consumer.
+has three data points. The recorded candidate decision, based on the
+[consumer evidence](consumer-evidence.md), selects native presentation pacing/timing (with SDK-gated
+MetalFX-class upscaling on Metal) as primary and defers the bindless/GPU-driven path as secondary;
+the [Gate 4 pacing plan](gate4-pacing-plan.md) pre-registers the scope, measurements, and
+pass/redesign/stop conditions.
 
 Add each as an independent backend feature with a tested fallback:
 
@@ -302,6 +307,8 @@ device recovery.
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.
 - [ ] Evaluate timestamped or per-tick input staging against a deterministic replay/rollback
-  workload; current catch-up steps intentionally consume the latest frame snapshot.
+  workload; current catch-up steps intentionally consume the latest frame snapshot. The
+  [consumer evidence](consumer-evidence.md) records a high-refresh one-shot-input workaround and
+  render-rate-decoupled pointer look as concrete inputs to this evaluation.
 - [ ] Add supported Linux input and runtime evidence, then perform the full Gate 5 lifecycle
   comparison.

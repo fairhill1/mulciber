@@ -113,9 +113,12 @@ a real product advantage, and technical elegance does not cancel it.
 
 ## Gate 4: native-feature differentiation
 
-Implement one feature that materially motivates native backends—initially a bindless, GPU-driven
-rendering path is the leading candidate—with capability negotiation and a tested fallback on both
-Vulkan and Metal.
+Implement one feature that materially motivates native backends, with capability negotiation and a
+tested fallback on both Vulkan and Metal. The recorded candidate decision (2026-07-18, based on the
+[consumer evidence](consumer-evidence.md)) selects native presentation pacing and timing feedback,
+with SDK-gated MetalFX-class upscaling as its Metal companion, as the primary candidate; a bindless,
+GPU-driven rendering path remains the secondary candidate with a voxel-style streaming workload as
+its reference. The [Gate 4 pacing plan](gate4-pacing-plan.md) pre-registers the comparison.
 
 Compare the Mulciber implementation with direct native implementations and the best practical `wgpu`
 implementation for feature reach, ergonomics, CPU overhead, frame behavior, and backend-specific

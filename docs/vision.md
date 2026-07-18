@@ -47,6 +47,14 @@ can run the game; optional capabilities select better paths with explicit fallba
 functionality may be exposed behind a clear boundary instead of being permanently excluded from the
 API.
 
+The presentation boundary is itself native capability reach. Consumer evidence from five real
+`wgpu`/`winit` games ([consumer evidence](consumer-evidence.md)) shows presentation timing and
+pacing as the portfolio's universal unreachable control, while advanced GPU features appear once
+directly and otherwise as workarounds. Mulciber therefore treats present-time feedback, pacing
+policy, and integrated native upscaling as first-class native capabilities alongside the feature
+list above. The advanced-feature list also carries an explicit bet: paving the GPU-driven road may
+change which games get built. That bet is tested through Gate 4 workloads rather than assumed.
+
 ### One game-facing lifecycle
 
 Windows, input, displays, presentation, frame pacing, suspension, and device recovery are parts of

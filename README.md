@@ -29,6 +29,8 @@ whether the project continues, narrows, or stops.
 - Metal 4 as an SDK- and capability-gated path.
 - Native Win32, AppKit, Wayland, and X11 platform implementations.
 - No `wgpu`, `winit`, or Direct3D dependency.
+- Native presentation timing, pacing feedback, and platform-native upscaling as first-class
+  capabilities.
 - Modern features such as mesh shading, bindless resources, ray tracing, and sparse resources are
   independent capabilities rather than a single linear hardware tier.
 

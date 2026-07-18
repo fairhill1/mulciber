@@ -69,6 +69,18 @@ It does not yet own:
 Those missing capabilities remain Gate 5 work. They should be extracted from physical workloads and
 native lifecycle evidence rather than inferred from this clock utility.
 
+## Focused wgpu/winit comparison
+
+`comparisons/wgpu-game-slice` recreates Forge Run through pinned wgpu 30.0.0 and winit 0.30.13. It
+locally implements only the held/pressed keyboard state, focus clearing, fixed accumulator, hitch
+clamp, eight-step catch-up limit, variable delta, and interpolation required for equivalent game
+behavior. It does not inflate its count by recreating unused `mulciber-runtime` pointer, scroll,
+release-membership, configuration-validation, or dropped-time diagnostics.
+
+The comparison therefore measures the current application integration experience, not total library
+implementation size. Mulciber backend/runtime internals and wgpu/winit internals are excluded equally.
+See the [game-slice comparison](game-slice-comparison.md) for source-count methodology and evidence.
+
 ## Current evidence
 
 Unit tests cover invalid timing limits, partial-step accumulation, interpolation, frame clamping,
@@ -81,4 +93,5 @@ The earlier application-owned Forge Run checkpoint was physically exercised on A
 15.7.7 and Intel Vulkan 1.3 / Windows 11. After migration, the operator replayed the runtime-backed
 path on the same Apple M2 machine and reported that the game and interpolated movement felt correct.
 No measured frame-cadence, runtime-backed Windows, suspension, display-transition, or recovery claim
-is inferred from that focused check.
+is inferred from that focused check. The wgpu/winit peer subsequently passed the same focused visual
+and interaction review through Metal with API Validation enabled.

@@ -169,8 +169,14 @@ bounded catch-up, a clamped variable update, and interpolation for arbitrary pre
 Forge Run retains previous/current game states and interpolation policy; the runtime does not absorb
 collision, camera, scene, or engine architecture. This establishes only the timing/input portion of
 Gate 5: native frame pacing, suspension, fullscreen/display transitions, device recovery, Linux
-input, and the integrated comparison remain pending. See the [runtime contract](docs/runtime-contract.md)
-and [game dogfood contract](docs/game-slice.md).
+input, and the full lifecycle comparison remain pending. See the
+[runtime contract](docs/runtime-contract.md) and [game dogfood contract](docs/game-slice.md).
+
+Its `wgpu`/`winit` peer is `comparisons/wgpu-game-slice`. Both render the same playable state through
+five instance batches, depth, capability-selected MSAA, postprocessing, a 60 Hz fixed simulation,
+variable cosmetic animation, and previous/current interpolation. Raw Rust application-source counts
+are 635 Mulciber versus 1,298 wgpu lines; the scope, breakdown, physical Metal comparison, and limits
+of that metric are recorded in the [game-slice comparison](docs/game-slice-comparison.md).
 
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:

@@ -53,7 +53,14 @@ the native event pump, and rendering remain application-owned. See the
 [experimental runtime contract](runtime-contract.md).
 
 This is not Gate 5 completion. Native frame-pacing policy, suspension, fullscreen/display changes,
-device recovery, supported Linux input, and the integrated comparison remain pending.
+device recovery, supported Linux input, and the full lifecycle comparison remain pending.
+
+The focused timing/input/rendering comparison is now implemented as
+`comparisons/wgpu-game-slice`. It locally composes equivalent held/pressed input and fixed-step
+accumulator policy around `winit` and uses `wgpu` for the same five instance batches, depth, MSAA,
+and postprocess result. See the [game-slice comparison](game-slice-comparison.md). The broader Gate 5
+comparison remains open because neither side of this checkpoint exercises the missing suspension,
+display-transition, pacing-diagnostic, or recovery work.
 
 ## macOS checkpoint
 

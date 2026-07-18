@@ -248,9 +248,12 @@ clamped variable frame deltas, dropped-time diagnostics, and render interpolatio
 runs gameplay at 60 Hz, keeps previous/current simulation state in the game, interpolates player,
 camera, facing, and sentries at presentation rate, and advances cosmetic animation variably. The
 runtime still does not own collision, camera, scene, or the platform/GPU event loop. Native pacing,
-suspension, fullscreen/display transitions, device recovery, Linux input, and the integrated
-comparison remain pending, so Gate 5 is not complete. See the [runtime contract](runtime-contract.md)
-and [game dogfood contract](game-slice.md).
+suspension, fullscreen/display transitions, device recovery, Linux input, and the full lifecycle
+comparison remain pending, so Gate 5 is not complete. A focused same-game `wgpu`/`winit` peer now
+matches the current timing/input/rendering slice at 1,298 versus 635 raw Rust application lines and
+passed an interactive Metal comparison; this does not substitute for the broader missing lifecycle
+work. See the [runtime contract](runtime-contract.md), [game dogfood contract](game-slice.md), and
+[game-slice comparison](game-slice-comparison.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
@@ -312,7 +315,10 @@ device recovery.
 - [x] Extract frame-scoped input snapshots from physically exercised AppKit and Win32 transitions.
 - [x] Extract fixed/variable timing with bounded catch-up, dropped-time reporting, and render
   interpolation; migrate Forge Run as the first consumer without moving game policy into the crate.
+- [x] Build and physically compare the same Forge Run workload through `wgpu`/`winit`, including
+  equivalent local fixed-step, input, and interpolation glue.
 - [ ] Establish native presentation pacing and cadence diagnostics independently from simulation
   rate.
 - [ ] Coordinate suspension/resume, fullscreen/display transitions, and device recovery.
-- [ ] Add supported Linux input and runtime evidence, then perform the Gate 5 integrated comparison.
+- [ ] Add supported Linux input and runtime evidence, then perform the full Gate 5 lifecycle
+  comparison.

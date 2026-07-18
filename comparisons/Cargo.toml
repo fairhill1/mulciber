@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "wgpu-cube",
+    "wgpu-game-slice",
     "wgpu-input-cube",
     "wgpu-instanced-scene",
     "wgpu-postprocess-cube",

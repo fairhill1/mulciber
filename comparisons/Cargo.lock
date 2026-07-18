@@ -2079,6 +2079,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wgpu-game-slice"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "wgpu-hal"
 version = "30.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

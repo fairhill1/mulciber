@@ -1,0 +1,6 @@
+# Keep source and documentation identical across Windows, Linux, and macOS checkouts.
+* text=auto eol=lf
+
+# Checked-in shader artifacts are opaque binary data.
+*.shaderbin binary
+*.spv binary

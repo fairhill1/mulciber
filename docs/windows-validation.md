@@ -5,6 +5,27 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+On 2026-07-18 the bounded resource-lifetime change (revision `1858541`, clean tree) received its
+native Vulkan physical validation on the Windows 11 Home build 22000 / Intel UHD Graphics 620 tier,
+driver 31.0.101.2115, Vulkan device API 1.3.215, loader/validation 1.4.350. The structural preflight
+passed natively: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo test --workspace`. The `mulciber-api-conformance` probe — whose Vulkan backend always
+enables `VK_LAYER_KHRONOS_validation` and installs a debug messenger that fails shutdown on any
+recorded warning or error — then ran on the interactive desktop and asserted all sixteen cases with
+exit zero and empty standard error, meaning no Vulkan validation or loader message was emitted. A
+second identical run reproduced the same sixteen-case pass, exit zero, and empty standard error.
+
+This exercised the new lifetime behavior directly: explicit fallible `destroy_*` of all six resource
+kinds (mesh, texture, textured pipeline, postprocess pipeline, direct render targets, postprocess
+targets), thirty-two drop-driven mesh reclamations through reusable generational arena slots, and a
+successful presentation with the replacement resources created after those slots were reclaimed.
+Because this Intel tier lacks `VK_KHR_swapchain_maintenance1`, acquired-frame abandonment replaced
+the base swapchain generation, so the run also took the Vulkan-only generation-replacement branch:
+the superseded-generation targets were rejected before a rebuilt set presented. This establishes the
+resource-lifetime slice on the Intel Vulkan tier and flips its backend-contracts row from partial to
+established; it is automated single-display evidence and does not add manual visual, interactive
+lifecycle, multi-display, or other-driver-tier claims.
+
 A development tree based on revision `4c12c55` lowered the Vulkan compatibility baseline to 1.3
 while continuing to request 1.4 from capable loaders. Its complete automated matrix passed on
 2026-07-18 on Windows 11 Home build 22000 with an Intel UHD Graphics 620, driver 31.0.101.2115,

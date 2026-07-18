@@ -183,133 +183,83 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [ ] Keep backend-specific capabilities reachable without leaking native object ownership or
   bypassing presentation-retirement tracking.
 
-Initial extraction progress: AppKit, Win32, Wayland, and X11 application/window/event paths, logical
-and physical sizing, window metric revisions, lifecycle/redraw events, and borrowed opaque graphics
-targets now live in `mulciber-platform` and drive the full Metal and Vulkan probes. AppKit supplies
-backing scale; Linux and the initial Win32 extraction intentionally report `1.0` pending
-scale/display-change evidence. Win32 cross-compiles and lints from Linux, including synchronous
-redraw delivery inside its nested sizing loop. The extracted path passed the automated Windows matrix
-and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at revision `044ae86`,
-completing the initial peer platform-spine evidence without broadening the support claim. See the
+Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
+`mulciber-platform` and drive both full native probes. The extracted path passed the automated
+Windows matrix and physical live-resize/lifecycle validation on Windows 11 / RTX 3060 Ti at
+`044ae86`. Decisions, backing-scale policy, and remaining scale/display gaps:
 [experimental platform contract](api-platform-contract.md).
 
-Input extraction progress: AppKit and Win32 now translate ordered physical-key, modifier, logical
-pointer, button, precise/coarse scroll, and focus transitions through the existing fallible platform
-pump. Win32 derives physical identity from scan codes, retains pointer capture through button
-release, converts wheel screen coordinates to top-left client coordinates, and consumes translated
-character messages because text/IME is outside this gameplay slice. The separate
-`mulciber-input-cube` visibly consumes those transitions without introducing snapshot or runtime
-policy, with an equivalent `wgpu-input-cube` preserved beside the unchanged minimal graphics
-comparison pair. The combined showcase passed focused physical keyboard, primary-drag, wheel,
-reset, resize, close, and no-default-beep checks on Windows 11 / Intel UHD 620. Modifier/repeat,
-focus-loss, outside-window release, minimize/restore, and multi-display evidence remains pending on
-that tier, as do Wayland and X11 implementations, so no stable cross-platform input support is
-claimed. See the [experimental input contract](input-contract.md).
+Input: AppKit and Win32 translate ordered physical-key, modifier, pointer, button, scroll, and focus
+transitions through the fallible platform pump; `mulciber-input-cube` consumes them beside a
+preserved `wgpu-input-cube` peer. The showcase passed focused physical checks on Windows 11 / Intel
+UHD 620; Wayland/X11 implementations and the remaining transition evidence are pending, so no stable
+cross-platform input support is claimed. See the [experimental input contract](input-contract.md).
 
-Two-pass extraction progress: a separate postprocess comparison now renders the textured scene into
-generation-bound resolved color and samples it in a fullscreen grade/vignette pass. The public
-checkpoint adds dedicated postprocess target/pipeline handles and one fixed two-pass queue operation;
-it deliberately does not generalize into a command encoder from one sequence. Metal and the wgpu
-peer passed physical validation-layer visual smokes on the Apple M2 tier. The Vulkan implementation
-compiles and lints for Win32, including its explicit color-write-to-fragment-sample transition, and
-passed 100 rapid automated resize transitions plus close without validation messages on an Intel UHD
-620 exposing Vulkan 1.3.215. The extensionless API path retained live redraw while bounding resize
-retirement to one old generation at a time. A focused manual follow-up also kept the auto-spinning
-postprocess result live through drag resize and closed cleanly through the title bar. Broader Vulkan
-lifecycle, input, multi-display, and driver-tier observations remain pending. The minimal cube and
-input pairs stay unchanged. See the [experimental postprocess contract](postprocess-contract.md).
+Two-pass postprocess: dedicated target/pipeline handles and one fixed two-pass queue operation
+render the scene into generation-bound resolved color and sample it in a fullscreen grade/vignette
+pass, deliberately not generalized into a command encoder. Passed validation-layer visual smokes on
+the Apple M2 tier, plus 100 automated rapid resizes and a manual drag-resize/close pass on Intel UHD
+620 / Vulkan 1.3.215. See the [experimental postprocess contract](postprocess-contract.md).
 
-A fourth presentation-oriented showcase pair composes the existing input controller with the
-two-pass operation without adding public or backend API. It preserves the three focused baselines
-while making interactive side-by-side Mulciber/wgpu review practical; its application line counts
-remain separate from the pre-registered Gate 2 figures.
+A fourth showcase pair composes the input controller with the two-pass operation for side-by-side
+Mulciber/wgpu review without adding API; its line counts stay separate from the pre-registered Gate 2
+figures.
 
-Multi-object extraction progress: `TexturedSceneDraw` plus direct and postprocessed scene operations
-now submit an ordered non-empty slice with independently selected mesh, texture, pipeline, and
-transform. Metal and Vulkan keep one scene pass open and issue one indexed draw per record. The
-100-object `mulciber-scene` / `wgpu-scene` pair establishes a heterogeneous baseline before GPU
-instancing; its application totals are 214 versus 809 Rust lines when equivalent scene data remains
-included. Metal passed visual and sixteen-case conformance checks under API Validation on the Apple
-M2 tier. On the Intel UHD 620 tier, Vulkan passed the seventeen-case conformance probe twice, the
-interactive field was reported visually correct, and a later interactive validation-layer run
-covered resize, minimize/restore, occlusion/reveal, and close. See the
+Multi-object scene: `TexturedSceneDraw` plus direct and postprocessed scene operations submit an
+ordered non-empty slice with per-record mesh, texture, pipeline, and transform; both backends keep
+one scene pass open and issue one indexed draw per record. Passed Metal visual and conformance
+checks on the Apple M2 tier and Vulkan conformance plus interactive lifecycle checks on Intel UHD
+620. Line counts and the API boundary:
 [experimental multi-object scene contract](scene-contract.md).
 
-GPU-instancing extraction progress: a distinct instance-rate pipeline plus non-empty homogeneous
-instance batches now drive four native indexed draws for the same 100-object field, with direct and
-postprocessed recipes selected through `Queue::render_and_present` and `SceneSubmission`. The
-`mulciber-instanced-scene` / `wgpu-instanced-scene` application totals are 233 versus 794 Rust lines
-with equivalent scene data included. Metal passed visual comparison and all eighteen conformance
-cases under API Validation on the Apple M2 tier. On the Intel UHD 620 tier, Vulkan passed the
-nineteen-case conformance probe twice under the validation layer (including the direct and
-postprocessed instanced presentations), and the operator visually confirmed the animated 100-object
-instanced field. See the [experimental GPU instancing contract](instancing-contract.md).
+GPU instancing: an instance-rate pipeline and non-empty homogeneous batches drive four native
+indexed draws for the same 100-object field through `Queue::render_and_present` and
+`SceneSubmission`. Passed Metal visual and conformance checks on Apple M2 and nineteen-case Vulkan
+conformance plus visual confirmation on Intel UHD 620. Line counts and native behavior:
+[experimental GPU instancing contract](instancing-contract.md).
 
-Runtime dogfood progress: `mulciber-game-slice` first established a playable top-down
-collect-and-avoid loop from the AppKit/Win32 input and instanced postprocessed scene paths. That
-evidence then earned a narrow `mulciber-runtime` extraction: generic held/pressed/released input
-snapshots with focus-loss clearing, a configurable fixed-step accumulator, bounded hitch catch-up,
-clamped variable frame deltas, dropped-time diagnostics, and render interpolation. Forge Run now
-runs gameplay at 60 Hz, keeps previous/current simulation state in the game, interpolates player,
-camera, facing, and sentries at presentation rate, and advances cosmetic animation variably. The
-runtime still does not own collision, camera, scene, or the platform/GPU event loop. Native pacing,
-process/OS suspension, fullscreen/display transitions, device recovery, Linux input, and the full
-lifecycle comparison remain pending, so Gate 5 is not complete. Rendering suspension now freezes
-runtime time, preserves interpolation, releases held input, and physically passed minimize/restore
-on macOS. A focused same-game `wgpu`/`winit` peer matches the current
-timing/input/rendering/suspension code at 1,340 versus 631 raw Rust application lines; this does not
-substitute for the broader missing lifecycle work. See the [runtime contract](runtime-contract.md),
-[game dogfood contract](game-slice.md), and [game-slice comparison](game-slice-comparison.md).
+Runtime dogfood: Forge Run's playable loop earned a narrow `mulciber-runtime` extraction covering
+held/pressed/released input snapshots with focus-loss clearing, a configurable fixed-step
+accumulator with bounded hitch catch-up, clamped variable deltas, dropped-time diagnostics, and
+render interpolation; the runtime does not own collision, camera, scene, or the platform/GPU event
+loop. Rendering suspension freezes runtime time, preserves interpolation, releases held input, and
+physically passed minimize/restore on macOS. Native pacing, process/OS suspension,
+fullscreen/display transitions, device recovery, Linux input, and the full lifecycle comparison
+remain pending, so Gate 5 is not complete. See the [runtime contract](runtime-contract.md) and
+[game dogfood contract](game-slice.md).
 
-The same Forge Run workload now has a practical macOS-only peer using pinned maintained AppKit and
-Metal Rust bindings without Mulciber, winit, or wgpu. It physically passed input, diagonal facing,
-continuous resize, minimize/restore, visual matching, titlebar close, explicit command drain, and
-Metal API Validation on the Apple M2. Application totals are 631 Mulciber versus 1,156 direct
-AppKit/Metal versus 1,340 wgpu/winit; sequential one-shot clean release builds were 3.44 s, 5.56 s,
-and 22.71 s respectively. The direct peer also exposes five application unsafe sites and the
-selected stack's `metal-rs`/`objc2` binding-generation interop seam. This is a favorable **continue**
-checkpoint for Gate 2's single-backend score, not a pass. Cargo 1.97 additionally flags metal-rs's
-transitive `block` 0.1.6 as future-incompatible; that is an upstream binding-maintenance risk, not a
-Metal limitation. Matched cadence/performance/resource-cost, failure-diagnosis, forced-fallback, and
-Gate 4 differentiation work remain open. See the
-[game-slice comparison](game-slice-comparison.md).
+The same Forge Run workload has pinned `wgpu`/`winit` and direct AppKit/Metal peers. The direct peer
+passed its physical macOS checkpoint on the Apple M2, and the measured application-size, dependency,
+build-time, and unsafe-site comparison (including the selected stack's `metal-rs`/`objc2`
+binding-generation seam and future-incompatible `block` 0.1.6 dependency) is a favorable **continue**
+checkpoint for Gate 2's single-backend score, not a pass. Matched cadence/performance/resource-cost,
+failure-diagnosis, forced-fallback, and Gate 4 differentiation work remain open. Measurements are
+single-sourced in the [game-slice comparison](game-slice-comparison.md).
 
-Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
-graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
-dispositions. Both native presentation probes consume that vocabulary. The Windows Vulkan matrix
-passed after integration, followed by native Metal archive rebuild/reuse, acquired-frame abandonment,
-and physical resize/lifecycle validation on an Apple M2 at revision `931b0dc`. Device/resource/command
-ownership stays open. The slice's decision rows are now recorded in the
-[API slice decision ledger](api-slice-decisions.md); acquisition was reshaped so reconfiguration
-happens inside it after the separate reconfigured outcome measurably made trailing live resize the
-default application shape. See the [experimental graphics contract](api-graphics-contract.md).
+Graphics lifecycle: `mulciber` exposes experimental physical surface extents, graphics-owned surface
+generations, nonfatal acquisition outcomes, and presented/abandoned frame dispositions, consumed by
+both native probes. The Windows Vulkan matrix passed after integration, followed by native Metal
+archive, abandonment, and physical resize/lifecycle validation on an Apple M2 at `931b0dc`.
+Acquisition was reshaped so reconfiguration happens inside it after the separate reconfigured
+outcome measurably made trailing live resize the default application shape. Decision rows:
+[API slice decision ledger](api-slice-decisions.md); see the
+[experimental graphics contract](api-graphics-contract.md).
 
-Clear checkpoint progress: `examples/clear` now drives target-selected native Metal/AppKit or Vulkan
-from one safe application source. The Vulkan path passed the Windows automated matrix on 2026-07-17,
-including acquired-frame abandonment followed by recovery, four resize reconfigurations, 145 clear
-presentations, validation-clean output, and orderly shutdown on the RTX 3060 Ti tier. On the Apple M2
-tier, the same source passed native compilation and strict lints, abandoned one acquired drawable,
-recovered for 120 presented frames, and shut down under Metal API Validation without diagnostics. A
-separate user-run interactive smoke with `MTL_DEBUG_LAYER=1` also worked as expected and displayed the
-intended solid clear. This checkpoint does not settle general device, queue, resource, or command
-ownership and does not complete the textured depth-tested item.
+Clear checkpoint: `examples/clear` drives target-selected native Metal/AppKit or Vulkan from one
+safe application source. The Vulkan path passed the Windows automated matrix on the RTX 3060 Ti tier
+on 2026-07-17, including abandonment/recovery and resize reconfigurations; the Apple M2 tier passed
+the same finite abandonment/recovery run under Metal API Validation plus an interactive smoke. This
+checkpoint did not settle device, queue, resource, or command ownership.
 
-Textured checkpoint progress: `examples/cube` now uses one safe Rust source and one WGSL module
-through distinct public `Device`, `Queue`, and `Surface` owners plus mesh, texture, pipeline,
-generation-bound render-target, and owned-frame handles. Native Vulkan and Metal runs have exercised
-indexed texture sampling, depth, preferred 4x MSAA, forced 1x, explicit abandonment/recovery, and
-fallible drained shutdown. Naga is confined to the separate offline `mulciber-shader` tool. Native
-KDE Wayland resize evidence forced two corrections: render targets from superseded surface
-generations are now reclaimed instead of retained until shutdown, and Wayland extent-driven
-reconfiguration is paced so continuous resize cannot outrun FIFO presentation (see the
-[Linux validation runbook](linux-validation.md)). Resource handles are now owning and non-`Copy`;
-explicit fallible destruction and drop-queued reclamation cover all direct and postprocess resource
-kinds through reusable generational arenas. The replacement-render conformance path passed Metal API
-Validation on Apple M2. The same lifetime paths were then physically exercised on Intel UHD 620 /
-Vulkan 1.3: all six resource kinds passed explicit destruction, drop-driven mesh reclamation passed
-32 replacements, the replacement-render path completed, and the Vulkan-only superseded-generation
-branch passed without validation diagnostics. The provisional command vocabulary remains open for
-review and expansion through representative game slices.
+Textured checkpoint: `examples/cube` uses one safe Rust source and one WGSL module through public
+`Device`, `Queue`, and `Surface` owners plus owning, non-`Copy` mesh, texture, pipeline,
+generation-bound target, and frame handles, with explicit fallible destruction and drop-queued
+reclamation over reusable generational arenas. Naga is confined to the offline `mulciber-shader`
+tool. Native KDE Wayland resize evidence forced two corrections, superseded-generation reclamation
+and paced extent-driven reconfiguration (see the [Linux validation runbook](linux-validation.md)).
+Destruction, drop churn, replacement rendering, and the Vulkan-only superseded-generation branch
+passed on Apple M2 and Intel UHD 620 / Vulkan 1.3. The provisional command vocabulary remains open
+for review and expansion through representative game slices.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

@@ -113,19 +113,19 @@ through command-buffer drain and shutdown.
 On the same date, `wgpu-game-slice` ran on the Apple M2 / macOS 15.7.7 machine with Metal API
 Validation enabled. It selected the Metal backend and four samples. The operator visually and
 interactively confirmed that the scene and game behavior matched the runtime-backed Mulciber peer;
-the console recorded three crystal collections before normal close. No resize, minimize/restore,
-display transition, measured cadence, deterministic readback, Windows, or Linux claim is made from
-this focused wgpu run.
+the console recorded three crystal collections before normal close.
 
 The suspension-matched wgpu revision was then relaunched under Metal API Validation. It again
 selected Metal and four samples, collected two crystals, and closed without validation diagnostics.
 The operator did not explicitly report the hold/minimize/restore result for that second wgpu run, so
-this document claims compile-time equivalence and a clean interactive launch/close—not physical wgpu
-suspension correctness.
+this document claims compile-time equivalence and a clean interactive launch/close, not physical
+wgpu suspension correctness.
 
-No display transition, external-display, forced-1x, deterministic readback, cadence distribution,
-CPU/GPU frame timing, memory, clean pipeline timing, device-loss, or multi-machine claim is made for
-the direct peer. The developer-cost measurements above do not establish runtime performance.
+Claims not made from these runs, for any of the three implementations: display transitions, external
+displays, forced 1x, deterministic readback, cadence distribution, CPU/GPU frame timing, memory,
+clean pipeline timing, device loss, multi-machine coverage, and Windows or Linux behavior. The wgpu
+runs additionally establish no resize or minimize/restore evidence, and the developer-cost
+measurements above do not establish runtime performance.
 
 The checkpoint used rustc 1.97.0 and Cargo 1.97.0. The interactive run and sequential clean release
 build measurements used these commands, with a distinct previously nonexistent target directory for
@@ -146,7 +146,7 @@ CARGO_TARGET_DIR=/tmp/mulciber-clean-wgpu-game-sequential-20260718 \
 The direct-Metal serious-game checkpoint says **continue**. For this workload, Mulciber materially
 reduces application code, unsafe integration, dependency/build cost, and native lifecycle/rendering
 bookkeeping even when cross-platform source sharing receives zero credit. Its release binary is
-slightly larger than the direct peer—a non-decisive difference here—and runtime-performance
+slightly larger than the direct peer (a non-decisive difference here), and runtime-performance
 equivalence remains unmeasured.
 
 This checkpoint measures coordination value rather than native necessity. Nothing in this workload

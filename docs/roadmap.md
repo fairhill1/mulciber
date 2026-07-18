@@ -270,7 +270,9 @@ The differentiation this milestone tests narrows over time as `wgpu` continues a
 features, and Gate 4 already treats "established libraries expose the needed path with comparable
 control" as a stop condition. The first Gate 4 candidate therefore takes schedule priority over
 completing the remaining Gate 2 comparison families, which re-measure coordination value that already
-has three data points.
+has three data points. Candidate selection should weigh the
+[consumer evidence from five real wgpu/winit games](consumer-evidence.md), which shows five-for-five
+presentation-pacing pain and exactly one GPU-driven/bindless consumer.
 
 Add each as an independent backend feature with a tested fallback:
 

@@ -384,48 +384,50 @@ impl Queue<'_> {
     /// encoding, submission, validation, or presentation failure.
     pub fn draw_textured_and_present(
         &mut self,
-        mut frame: Frame<'_>,
+        frame: Frame<'_>,
         draw: TexturedDraw<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
-        for session in [
-            draw.mesh.lease.session,
-            draw.texture.lease.session,
-            draw.pipeline.lease.session,
-            draw.targets.lease.session,
-        ] {
-            if session != self.shared.id || session != frame.shared.id {
-                return Err(GraphicsError::new(
-                    "graphics handles belong to different sessions",
-                ));
-            }
-        }
-        if draw.targets.info != frame.info {
-            return Err(GraphicsError::new(
-                "render targets are stale for the acquired frame",
-            ));
-        }
-        if !draw
-            .model_view_projection
-            .iter()
-            .flatten()
-            .all(|component| component.is_finite())
-        {
-            return Err(GraphicsError::new(
-                "draw transform must contain only finite values",
-            ));
-        }
+        let scene_draw = TexturedSceneDraw {
+            mesh: draw.mesh,
+            texture: draw.texture,
+            pipeline: draw.pipeline,
+            model_view_projection: draw.model_view_projection,
+        };
+        self.draw_textured_scene_and_present(
+            frame,
+            TexturedScene {
+                draws: core::slice::from_ref(&scene_draw),
+                targets: draw.targets,
+                clear: draw.clear,
+            },
+        )
+    }
+
+    /// Draws a non-empty sequence of textured objects in one depth-tested render pass, presents
+    /// the frame, and consumes it.
+    ///
+    /// Each object independently selects its mesh, texture, pipeline, and transform. The targets
+    /// and clear operation belong to the scene pass rather than being repeated per object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty scene, mixed-session or stale handles, a non-finite transform,
+    /// or native encoding, submission, validation, or presentation failure.
+    pub fn draw_textured_scene_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        scene: TexturedScene<'_>,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
         let token = frame
             .token
             .take()
             .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_and_present(
+        session_mut(&self.shared)?.draw_scene_and_present(
             token,
-            draw.mesh.lease.id,
-            draw.texture.lease.id,
-            draw.pipeline.lease.id,
-            draw.targets.lease.id,
-            draw.model_view_projection,
-            draw.clear,
+            scene.draws,
+            scene.targets.lease.id,
+            scene.clear,
         )
     }
 
@@ -438,51 +440,101 @@ impl Queue<'_> {
     /// encoding, synchronization, submission, validation, or presentation failure.
     pub fn draw_textured_postprocessed_and_present(
         &mut self,
-        mut frame: Frame<'_>,
+        frame: Frame<'_>,
         draw: PostprocessedDraw<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
-        for session in [
-            draw.mesh.lease.session,
-            draw.texture.lease.session,
-            draw.scene_pipeline.lease.session,
-            draw.postprocess_pipeline.lease.session,
-            draw.targets.lease.session,
-        ] {
-            if session != self.shared.id || session != frame.shared.id {
-                return Err(GraphicsError::new(
-                    "graphics handles belong to different sessions",
-                ));
-            }
-        }
-        if draw.targets.info != frame.info {
+        let scene_draw = TexturedSceneDraw {
+            mesh: draw.mesh,
+            texture: draw.texture,
+            pipeline: draw.scene_pipeline,
+            model_view_projection: draw.model_view_projection,
+        };
+        self.draw_textured_scene_postprocessed_and_present(
+            frame,
+            PostprocessedScene {
+                draws: core::slice::from_ref(&scene_draw),
+                postprocess_pipeline: draw.postprocess_pipeline,
+                targets: draw.targets,
+                clear: draw.clear,
+            },
+        )
+    }
+
+    /// Draws a non-empty sequence of textured objects into resolved scene color, runs one
+    /// fullscreen post-processing pass, presents the frame, and consumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty scene, mixed-session or stale handles, a non-finite transform,
+    /// or native encoding, synchronization, submission, validation, or presentation failure.
+    pub fn draw_textured_scene_postprocessed_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        scene: PostprocessedScene<'_>,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
+        if scene.postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::new(
-                "postprocess targets are stale for the acquired frame",
-            ));
-        }
-        if !draw
-            .model_view_projection
-            .iter()
-            .flatten()
-            .all(|component| component.is_finite())
-        {
-            return Err(GraphicsError::new(
-                "draw transform must contain only finite values",
+                "graphics handles belong to different sessions",
             ));
         }
         let token = frame
             .token
             .take()
             .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_postprocessed_and_present(
+        session_mut(&self.shared)?.draw_scene_postprocessed_and_present(
             token,
-            draw.mesh.lease.id,
-            draw.texture.lease.id,
-            draw.scene_pipeline.lease.id,
-            draw.postprocess_pipeline.lease.id,
-            draw.targets.lease.id,
-            draw.model_view_projection,
-            draw.clear,
+            scene.draws,
+            scene.postprocess_pipeline.lease.id,
+            scene.targets.lease.id,
+            scene.clear,
         )
+    }
+
+    fn validate_scene(
+        &self,
+        frame_session: u64,
+        frame_info: SurfaceInfo,
+        draws: &[TexturedSceneDraw<'_>],
+        targets: &impl SceneTargets,
+    ) -> Result<(), GraphicsError> {
+        if draws.is_empty() {
+            return Err(GraphicsError::new(
+                "textured scene must contain at least one draw",
+            ));
+        }
+        if targets.session() != self.shared.id
+            || targets.session() != frame_session
+            || targets.info() != frame_info
+        {
+            return Err(GraphicsError::new(
+                "graphics handles belong to different sessions or stale surface targets",
+            ));
+        }
+        for draw in draws {
+            for session in [
+                draw.mesh.lease.session,
+                draw.texture.lease.session,
+                draw.pipeline.lease.session,
+            ] {
+                if session != self.shared.id || session != frame_session {
+                    return Err(GraphicsError::new(
+                        "graphics handles belong to different sessions",
+                    ));
+                }
+            }
+            if !draw
+                .model_view_projection
+                .iter()
+                .flatten()
+                .all(|component| component.is_finite())
+            {
+                return Err(GraphicsError::new(
+                    "draw transform must contain only finite values",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -541,16 +593,34 @@ pub struct Mesh {
     lease: ResourceLease,
 }
 
+impl Mesh {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
 /// Uploaded RGBA8 sRGB texture.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
     lease: ResourceLease,
 }
 
+impl Texture {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
 /// Native textured depth-tested graphics pipeline.
 #[derive(Debug, Eq, PartialEq)]
 pub struct TexturedPipeline {
     lease: ResourceLease,
+}
+
+impl TexturedPipeline {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
 }
 
 /// Single-sample fullscreen pipeline that samples resolved scene color.
@@ -583,6 +653,31 @@ impl PostprocessTargets {
     }
 }
 
+trait SceneTargets {
+    fn session(&self) -> u64;
+    fn info(&self) -> SurfaceInfo;
+}
+
+impl SceneTargets for RenderTargets {
+    fn session(&self) -> u64 {
+        self.lease.session
+    }
+
+    fn info(&self) -> SurfaceInfo {
+        self.info
+    }
+}
+
+impl SceneTargets for PostprocessTargets {
+    fn session(&self) -> u64 {
+        self.lease.session
+    }
+
+    fn info(&self) -> SurfaceInfo {
+        self.info
+    }
+}
+
 impl RenderTargets {
     /// Surface information these targets were created for.
     ///
@@ -611,6 +706,30 @@ pub struct TexturedDraw<'resources> {
     pub clear: ClearColor,
 }
 
+/// Resources and dynamic data for one object in a textured scene pass.
+#[derive(Clone, Copy)]
+pub struct TexturedSceneDraw<'resources> {
+    /// Geometry to draw.
+    pub mesh: &'resources Mesh,
+    /// Sampled color texture.
+    pub texture: &'resources Texture,
+    /// Depth-tested pipeline compatible with the scene targets.
+    pub pipeline: &'resources TexturedPipeline,
+    /// Column-major model-view-projection matrix for this object.
+    pub model_view_projection: [[f32; 4]; 4],
+}
+
+/// A sequence of textured objects rendered directly into one presentable frame.
+#[derive(Clone, Copy)]
+pub struct TexturedScene<'resources> {
+    /// Non-empty object sequence, encoded in slice order.
+    pub draws: &'resources [TexturedSceneDraw<'resources>],
+    /// Targets matching the acquired surface generation.
+    pub targets: &'resources RenderTargets,
+    /// Linear color used to clear the scene before its first object.
+    pub clear: ClearColor,
+}
+
 /// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
 #[derive(Clone, Copy)]
 pub struct PostprocessedDraw<'resources> {
@@ -627,6 +746,19 @@ pub struct PostprocessedDraw<'resources> {
     /// Column-major model-view-projection matrix for the scene draw.
     pub model_view_projection: [[f32; 4]; 4],
     /// Linear scene-pass clear color.
+    pub clear: ClearColor,
+}
+
+/// A sequence of textured objects followed by one fullscreen post-processing pass.
+#[derive(Clone, Copy)]
+pub struct PostprocessedScene<'resources> {
+    /// Non-empty object sequence, encoded in slice order into offscreen scene color.
+    pub draws: &'resources [TexturedSceneDraw<'resources>],
+    /// Single-sample fullscreen pipeline that samples the resolved scene color.
+    pub postprocess_pipeline: &'resources PostprocessPipeline,
+    /// Offscreen, depth, and optional multisample targets matching the acquired frame.
+    pub targets: &'resources PostprocessTargets,
+    /// Linear color used to clear the scene before its first object.
     pub clear: ClearColor,
 }
 

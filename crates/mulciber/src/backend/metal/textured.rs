@@ -8,7 +8,7 @@ use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
-    ShaderArtifact, SurfaceInfo, Vertex,
+    ShaderArtifact, SurfaceInfo, TexturedSceneDraw, Vertex,
 };
 
 use objc::{Object, Origin3, Region3, Size3};
@@ -32,6 +32,8 @@ const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
 const SAMPLER_FILTER_LINEAR: usize = 1;
 const SAMPLER_ADDRESS_REPEAT: usize = 2;
+const DRAW_UNIFORM_SIZE: usize = 64;
+const DRAW_UNIFORM_STRIDE: usize = 256;
 
 #[link(name = "System")]
 unsafe extern "C" {
@@ -89,6 +91,7 @@ pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: usize,
     uniform: Object,
+    uniform_capacity: usize,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
@@ -113,7 +116,12 @@ impl<'window> TexturedSession<'window> {
         };
         let uniform = unsafe {
             required(
-                objc::object_two_usizes(surface.device, c"newBufferWithLength:options:", 64, 0),
+                objc::object_two_usizes(
+                    surface.device,
+                    c"newBufferWithLength:options:",
+                    DRAW_UNIFORM_STRIDE,
+                    0,
+                ),
                 "Metal cube uniform buffer",
             )?
         };
@@ -122,6 +130,7 @@ impl<'window> TexturedSession<'window> {
                 surface,
                 sample_count,
                 uniform,
+                uniform_capacity: 1,
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
@@ -439,20 +448,13 @@ impl<'window> TexturedSession<'window> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_and_present(
+    pub(crate) fn draw_scene_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: ResourceId,
-        texture: ResourceId,
-        pipeline: ResourceId,
+        draws: &[TexturedSceneDraw<'_>],
         targets: ResourceId,
-        transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh = self.meshes.index_of(mesh)?;
-        let texture = self.textures.index_of(texture)?;
-        let pipeline = self.pipelines.index_of(pipeline)?;
         let target = self.targets.index_of(targets)?;
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
@@ -464,37 +466,18 @@ impl<'window> TexturedSession<'window> {
                 "render targets were reclaimed by a newer surface generation",
             ));
         }
-        unsafe {
-            let contents = objc::pointer_value(self.uniform, c"contents");
-            if contents.is_null() {
-                return Err(GraphicsError::new(
-                    "Metal uniform buffer has no CPU address",
-                ));
-            }
-            ptr::copy_nonoverlapping(
-                ptr::from_ref(&transform).cast::<u8>(),
-                contents.cast::<u8>(),
-                64,
-            );
-        }
-        self.encode_present(token, mesh, texture, pipeline, target, clear)
+        self.prepare_scene(draws)?;
+        self.encode_present(token, draws, target, clear)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_postprocessed_and_present(
+    pub(crate) fn draw_scene_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: ResourceId,
-        texture: ResourceId,
-        scene_pipeline: ResourceId,
+        draws: &[TexturedSceneDraw<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
-        transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh = self.meshes.index_of(mesh)?;
-        let texture = self.textures.index_of(texture)?;
-        let scene_pipeline = self.pipelines.index_of(scene_pipeline)?;
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target = self.postprocess_targets.index_of(targets)?;
         if self.postprocess_targets[target].info != token.info() {
@@ -507,6 +490,39 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets were reclaimed by a newer surface generation",
             ));
         }
+        self.prepare_scene(draws)?;
+        self.encode_postprocessed_present(token, draws, postprocess_pipeline, target, clear)
+    }
+
+    fn prepare_scene(&mut self, draws: &[TexturedSceneDraw<'_>]) -> Result<(), GraphicsError> {
+        for draw in draws {
+            self.meshes.get(draw.mesh.id())?;
+            self.textures.get(draw.texture.id())?;
+            self.pipelines.get(draw.pipeline.id())?;
+        }
+        if draws.len() > self.uniform_capacity {
+            let capacity = draws
+                .len()
+                .checked_next_power_of_two()
+                .ok_or_else(|| GraphicsError::new("Metal scene transform capacity overflow"))?;
+            let bytes = capacity
+                .checked_mul(DRAW_UNIFORM_STRIDE)
+                .ok_or_else(|| GraphicsError::new("Metal scene transform storage is too large"))?;
+            let replacement = unsafe {
+                required(
+                    objc::object_two_usizes(
+                        self.surface.device,
+                        c"newBufferWithLength:options:",
+                        bytes,
+                        0,
+                    ),
+                    "Metal scene transform buffer",
+                )?
+            };
+            unsafe { objc::void(self.uniform, c"release") };
+            self.uniform = replacement;
+            self.uniform_capacity = capacity;
+        }
         unsafe {
             let contents = objc::pointer_value(self.uniform, c"contents");
             if contents.is_null() {
@@ -514,21 +530,15 @@ impl<'window> TexturedSession<'window> {
                     "Metal uniform buffer has no CPU address",
                 ));
             }
-            ptr::copy_nonoverlapping(
-                ptr::from_ref(&transform).cast::<u8>(),
-                contents.cast::<u8>(),
-                64,
-            );
+            for (index, draw) in draws.iter().enumerate() {
+                ptr::copy_nonoverlapping(
+                    ptr::from_ref(&draw.model_view_projection).cast::<u8>(),
+                    contents.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                    DRAW_UNIFORM_SIZE,
+                );
+            }
         }
-        self.encode_postprocessed_present(
-            token,
-            mesh,
-            texture,
-            scene_pipeline,
-            postprocess_pipeline,
-            target,
-            clear,
-        )
+        Ok(())
     }
 
     #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
@@ -612,13 +622,11 @@ impl<'window> TexturedSession<'window> {
         result.and(surface.shutdown())
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn encode_present(
         &mut self,
         mut token: TexturedFrameToken,
-        mesh: usize,
-        texture: usize,
-        pipeline: usize,
+        draws: &[TexturedSceneDraw<'_>],
         target: usize,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -675,42 +683,49 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal cube render encoder",
             )?;
-            let pipeline = &self.pipelines[pipeline];
-            let mesh = &self.meshes[mesh];
-            let texture = &self.textures[texture];
-            objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
-            objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
-            objc::void_object_two_usizes(
-                encoder,
-                c"setVertexBuffer:offset:atIndex:",
-                self.uniform,
-                0,
-                0,
-            );
-            objc::void_object_two_usizes(
-                encoder,
-                c"setVertexBuffer:offset:atIndex:",
-                mesh.vertices,
-                0,
-                1,
-            );
-            objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", texture.texture, 1);
-            objc::void_object_usize(
-                encoder,
-                c"setFragmentSamplerState:atIndex:",
-                texture.sampler,
-                2,
-            );
-            objc::void_two_usizes_object_usize_object_usize(
-                encoder,
-                c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                PRIMITIVE_TYPE_TRIANGLE,
-                INDEX_TYPE_UINT16,
-                mesh.indices,
-                0,
-                mesh.indirect,
-                0,
-            );
+            for (index, draw) in draws.iter().enumerate() {
+                let pipeline = &self.pipelines[self.pipelines.index_of(draw.pipeline.id())?];
+                let mesh = &self.meshes[self.meshes.index_of(draw.mesh.id())?];
+                let texture = &self.textures[self.textures.index_of(draw.texture.id())?];
+                objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
+                objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    self.uniform,
+                    index * DRAW_UNIFORM_STRIDE,
+                    0,
+                );
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    mesh.vertices,
+                    0,
+                    1,
+                );
+                objc::void_object_usize(
+                    encoder,
+                    c"setFragmentTexture:atIndex:",
+                    texture.texture,
+                    1,
+                );
+                objc::void_object_usize(
+                    encoder,
+                    c"setFragmentSamplerState:atIndex:",
+                    texture.sampler,
+                    2,
+                );
+                objc::void_two_usizes_object_usize_object_usize(
+                    encoder,
+                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                    PRIMITIVE_TYPE_TRIANGLE,
+                    INDEX_TYPE_UINT16,
+                    mesh.indices,
+                    0,
+                    mesh.indirect,
+                    0,
+                );
+            }
             objc::void(encoder, c"endEncoding");
             objc::void_object(command, c"presentDrawable:", drawable);
             objc::void(command, c"retain");
@@ -721,13 +736,11 @@ impl<'window> TexturedSession<'window> {
         Ok(FrameDisposition::Presented(token.info().generation()))
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     fn encode_postprocessed_present(
         &mut self,
         mut token: TexturedFrameToken,
-        mesh: usize,
-        texture: usize,
-        scene_pipeline: usize,
+        draws: &[TexturedSceneDraw<'_>],
         postprocess_pipeline: usize,
         target: usize,
         clear: ClearColor,
@@ -824,51 +837,53 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
                 "Metal scene render encoder",
             )?;
-            let pipeline = &self.pipelines[scene_pipeline];
-            let mesh = &self.meshes[mesh];
-            let texture = &self.textures[texture];
-            objc::void_object(scene_encoder, c"setRenderPipelineState:", pipeline.pipeline);
-            objc::void_object(
-                scene_encoder,
-                c"setDepthStencilState:",
-                pipeline.depth_state,
-            );
-            objc::void_object_two_usizes(
-                scene_encoder,
-                c"setVertexBuffer:offset:atIndex:",
-                self.uniform,
-                0,
-                0,
-            );
-            objc::void_object_two_usizes(
-                scene_encoder,
-                c"setVertexBuffer:offset:atIndex:",
-                mesh.vertices,
-                0,
-                1,
-            );
-            objc::void_object_usize(
-                scene_encoder,
-                c"setFragmentTexture:atIndex:",
-                texture.texture,
-                1,
-            );
-            objc::void_object_usize(
-                scene_encoder,
-                c"setFragmentSamplerState:atIndex:",
-                texture.sampler,
-                2,
-            );
-            objc::void_two_usizes_object_usize_object_usize(
-                scene_encoder,
-                c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                PRIMITIVE_TYPE_TRIANGLE,
-                INDEX_TYPE_UINT16,
-                mesh.indices,
-                0,
-                mesh.indirect,
-                0,
-            );
+            for (index, draw) in draws.iter().enumerate() {
+                let pipeline = &self.pipelines[self.pipelines.index_of(draw.pipeline.id())?];
+                let mesh = &self.meshes[self.meshes.index_of(draw.mesh.id())?];
+                let texture = &self.textures[self.textures.index_of(draw.texture.id())?];
+                objc::void_object(scene_encoder, c"setRenderPipelineState:", pipeline.pipeline);
+                objc::void_object(
+                    scene_encoder,
+                    c"setDepthStencilState:",
+                    pipeline.depth_state,
+                );
+                objc::void_object_two_usizes(
+                    scene_encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    self.uniform,
+                    index * DRAW_UNIFORM_STRIDE,
+                    0,
+                );
+                objc::void_object_two_usizes(
+                    scene_encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    mesh.vertices,
+                    0,
+                    1,
+                );
+                objc::void_object_usize(
+                    scene_encoder,
+                    c"setFragmentTexture:atIndex:",
+                    texture.texture,
+                    1,
+                );
+                objc::void_object_usize(
+                    scene_encoder,
+                    c"setFragmentSamplerState:atIndex:",
+                    texture.sampler,
+                    2,
+                );
+                objc::void_two_usizes_object_usize_object_usize(
+                    scene_encoder,
+                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                    PRIMITIVE_TYPE_TRIANGLE,
+                    INDEX_TYPE_UINT16,
+                    mesh.indices,
+                    0,
+                    mesh.indirect,
+                    0,
+                );
+            }
             objc::void(scene_encoder, c"endEncoding");
 
             let post_encoder = required(

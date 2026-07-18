@@ -2167,6 +2167,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wgpu-scene"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "wgpu-showcase-cube"
 version = "0.0.0"
 dependencies = [

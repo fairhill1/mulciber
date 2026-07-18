@@ -8,6 +8,7 @@ members = [
     "examples/cube",
     "examples/input-cube",
     "examples/postprocess-cube",
+    "examples/scene",
     "examples/showcase-cube",
     "probes/metal-info",
     "probes/metal-triangle",

@@ -8,10 +8,12 @@ use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, SampleCount,
-    ShaderArtifact, SurfaceInfo, Vertex,
+    ShaderArtifact, SurfaceInfo, TexturedSceneDraw, Vertex,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
+const DRAW_UNIFORM_SIZE: usize = 64;
+const DRAW_UNIFORM_STRIDE: usize = 256;
 
 #[derive(Clone, Copy, Default)]
 struct Buffer {
@@ -60,10 +62,20 @@ struct PostprocessTargetResource {
     depth: Option<Image>,
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedDraw {
+    mesh: usize,
+    pipeline: usize,
+    descriptor: vk::VkDescriptorSet,
+    dynamic_offset: u32,
+}
+
 pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: vk::VkSampleCountFlagBits,
     uniform: Buffer,
+    uniform_capacity: usize,
+    resolved_draws: Vec<ResolvedDraw>,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
@@ -101,7 +113,7 @@ impl<'window> TexturedSession<'window> {
         };
         let uniform = create_buffer(
             &surface,
-            64,
+            DRAW_UNIFORM_STRIDE,
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
@@ -110,6 +122,8 @@ impl<'window> TexturedSession<'window> {
                 surface,
                 sample_count,
                 uniform,
+                uniform_capacity: 1,
+                resolved_draws: Vec::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
@@ -454,54 +468,32 @@ impl<'window> TexturedSession<'window> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_and_present(
+    pub(crate) fn draw_scene_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: ResourceId,
-        texture: ResourceId,
-        pipeline: ResourceId,
+        draws: &[TexturedSceneDraw<'_>],
         targets: ResourceId,
-        transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh_index = self.meshes.index_of(mesh)?;
-        let texture_index = self.textures.index_of(texture)?;
-        let pipeline_index = self.pipelines.index_of(pipeline)?;
         let target_index = self.targets.index_of(targets)?;
         if self.targets[target_index].info != token.info {
             return Err(error(
                 "render targets do not match acquired Vulkan generation",
             ));
         }
-        write_buffer(&self.surface, &self.uniform, bytes_of(&transform))?;
-        let descriptor = self.descriptor_set(pipeline_index, texture_index, texture)?;
-        self.record_draw(
-            token.image_index,
-            mesh_index,
-            pipeline_index,
-            target_index,
-            descriptor,
-            clear,
-        )?;
+        self.prepare_scene(draws)?;
+        self.record_draw(token.image_index, target_index, clear)?;
         self.surface.submit_recorded(token.image_index)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_postprocessed_and_present(
+    pub(crate) fn draw_scene_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
-        mesh: ResourceId,
-        texture: ResourceId,
-        scene_pipeline: ResourceId,
+        draws: &[TexturedSceneDraw<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
-        transform: [[f32; 4]; 4],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let mesh_index = self.meshes.index_of(mesh)?;
-        let texture_index = self.textures.index_of(texture)?;
-        let scene_pipeline_index = self.pipelines.index_of(scene_pipeline)?;
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target_index = self.postprocess_targets.index_of(targets)?;
@@ -510,21 +502,74 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets do not match acquired Vulkan generation",
             ));
         }
-        write_buffer(&self.surface, &self.uniform, bytes_of(&transform))?;
-        let scene_descriptor = self.descriptor_set(scene_pipeline_index, texture_index, texture)?;
+        self.prepare_scene(draws)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
         self.record_postprocessed_draw(
             token.image_index,
-            mesh_index,
-            scene_pipeline_index,
             postprocess_pipeline_index,
             target_index,
-            scene_descriptor,
             postprocess_descriptor,
             clear,
         )?;
         self.surface.submit_recorded(token.image_index)
+    }
+
+    fn prepare_scene(&mut self, draws: &[TexturedSceneDraw<'_>]) -> Result<(), GraphicsError> {
+        let last_offset = draws
+            .len()
+            .saturating_sub(1)
+            .checked_mul(DRAW_UNIFORM_STRIDE)
+            .ok_or_else(|| error("Vulkan scene transform offsets overflow"))?;
+        u32::try_from(last_offset)
+            .map_err(|_| error("Vulkan scene transform offsets exceed u32"))?;
+        self.ensure_uniform_capacity(draws.len())?;
+        write_scene_transforms(&self.surface, &self.uniform, draws)?;
+        self.resolved_draws.clear();
+        for (index, draw) in draws.iter().enumerate() {
+            let mesh = self.meshes.index_of(draw.mesh.id())?;
+            let texture = self.textures.index_of(draw.texture.id())?;
+            let pipeline = self.pipelines.index_of(draw.pipeline.id())?;
+            let descriptor = self.descriptor_set(pipeline, texture, draw.texture.id())?;
+            self.resolved_draws.push(ResolvedDraw {
+                mesh,
+                pipeline,
+                descriptor,
+                dynamic_offset: u32::try_from(index * DRAW_UNIFORM_STRIDE)
+                    .expect("scene offset was validated"),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_uniform_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
+        if required <= self.uniform_capacity {
+            return Ok(());
+        }
+        let capacity = required
+            .checked_next_power_of_two()
+            .ok_or_else(|| error("Vulkan scene transform capacity overflow"))?;
+        let bytes = capacity
+            .checked_mul(DRAW_UNIFORM_STRIDE)
+            .ok_or_else(|| error("Vulkan scene transform storage is too large"))?;
+        self.surface.wait_for_frame()?;
+        let replacement = create_buffer(
+            &self.surface,
+            bytes,
+            vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
+            &[],
+        )?;
+        if let Err(failure) = self
+            .reset_descriptor_pools(false)
+            .and_then(|()| self.reset_descriptor_pools(true))
+        {
+            destroy_buffer(&self.surface, replacement);
+            return Err(failure);
+        }
+        let previous = mem::replace(&mut self.uniform, replacement);
+        destroy_buffer(&self.surface, previous);
+        self.uniform_capacity = capacity;
+        Ok(())
     }
 
     pub(crate) fn abandon(
@@ -854,7 +899,7 @@ impl<'window> TexturedSession<'window> {
         let buffer = vk::VkDescriptorBufferInfo {
             buffer: self.uniform.handle,
             offset: 0,
-            range: 64,
+            range: DRAW_UNIFORM_SIZE as u64,
         };
         let image = vk::VkDescriptorImageInfo {
             sampler: ptr::null_mut(),
@@ -869,7 +914,7 @@ impl<'window> TexturedSession<'window> {
             descriptor_write(
                 set,
                 0,
-                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                 (&raw const buffer).cast(),
             ),
             descriptor_write(
@@ -992,18 +1037,11 @@ impl<'window> TexturedSession<'window> {
         Ok(set)
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::too_many_arguments,
-        clippy::too_many_lines
-    )]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn record_draw(
         &mut self,
         image_index: u32,
-        mesh_index: usize,
-        pipeline_index: usize,
         target_index: usize,
-        descriptor: vk::VkDescriptorSet,
         clear: ClearColor,
     ) -> Result<(), GraphicsError> {
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
@@ -1159,29 +1197,12 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
-        let mesh = &self.meshes[mesh_index];
-        let pipeline = &self.pipelines[pipeline_index];
         let offset = 0;
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
                 self.surface.command_buffer,
                 &raw const rendering,
-            );
-            functions.cmd_bind_pipeline.expect("loaded function")(
-                self.surface.command_buffer,
-                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipeline.pipeline,
-            );
-            functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                self.surface.command_buffer,
-                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                pipeline.layout,
-                0,
-                1,
-                &raw const descriptor,
-                0,
-                ptr::null(),
             );
             functions.cmd_set_viewport.expect("loaded function")(
                 self.surface.command_buffer,
@@ -1195,29 +1216,48 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const area,
             );
-            functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                self.surface.command_buffer,
-                0,
-                1,
-                &raw const mesh.vertices.handle,
-                &raw const offset,
-            );
-            functions.cmd_bind_index_buffer.expect("loaded function")(
-                self.surface.command_buffer,
-                mesh.indices.handle,
-                0,
-                vk::VK_INDEX_TYPE_UINT16,
-            );
-            functions
-                .cmd_draw_indexed_indirect
-                .expect("loaded function")(
-                self.surface.command_buffer,
-                mesh.indirect.handle,
-                0,
-                1,
-                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                    .expect("indirect command size fits u32"),
-            );
+            for draw in &self.resolved_draws {
+                let mesh = &self.meshes[draw.mesh];
+                let pipeline = &self.pipelines[draw.pipeline];
+                functions.cmd_bind_pipeline.expect("loaded function")(
+                    self.surface.command_buffer,
+                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipeline.pipeline,
+                );
+                functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                    self.surface.command_buffer,
+                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipeline.layout,
+                    0,
+                    1,
+                    &raw const draw.descriptor,
+                    1,
+                    &raw const draw.dynamic_offset,
+                );
+                functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                    self.surface.command_buffer,
+                    0,
+                    1,
+                    &raw const mesh.vertices.handle,
+                    &raw const offset,
+                );
+                functions.cmd_bind_index_buffer.expect("loaded function")(
+                    self.surface.command_buffer,
+                    mesh.indices.handle,
+                    0,
+                    vk::VK_INDEX_TYPE_UINT16,
+                );
+                functions
+                    .cmd_draw_indexed_indirect
+                    .expect("loaded function")(
+                    self.surface.command_buffer,
+                    mesh.indirect.handle,
+                    0,
+                    1,
+                    u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                        .expect("indirect command size fits u32"),
+                );
+            }
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
         let present = image_barrier(
@@ -1242,19 +1282,12 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::too_many_arguments,
-        clippy::too_many_lines
-    )]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn record_postprocessed_draw(
         &mut self,
         image_index: u32,
-        mesh_index: usize,
-        scene_pipeline_index: usize,
         postprocess_pipeline_index: usize,
         target_index: usize,
-        scene_descriptor: vk::VkDescriptorSet,
         postprocess_descriptor: vk::VkDescriptorSet,
         clear: ClearColor,
     ) -> Result<(), GraphicsError> {
@@ -1434,29 +1467,12 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
-        let mesh = &self.meshes[mesh_index];
-        let scene_pipeline = &self.pipelines[scene_pipeline_index];
         let offset = 0;
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
                 self.surface.command_buffer,
                 &raw const scene_rendering,
-            );
-            functions.cmd_bind_pipeline.expect("loaded function")(
-                self.surface.command_buffer,
-                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                scene_pipeline.pipeline,
-            );
-            functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                self.surface.command_buffer,
-                vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                scene_pipeline.layout,
-                0,
-                1,
-                &raw const scene_descriptor,
-                0,
-                ptr::null(),
             );
             functions.cmd_set_viewport.expect("loaded function")(
                 self.surface.command_buffer,
@@ -1470,29 +1486,48 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const area,
             );
-            functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                self.surface.command_buffer,
-                0,
-                1,
-                &raw const mesh.vertices.handle,
-                &raw const offset,
-            );
-            functions.cmd_bind_index_buffer.expect("loaded function")(
-                self.surface.command_buffer,
-                mesh.indices.handle,
-                0,
-                vk::VK_INDEX_TYPE_UINT16,
-            );
-            functions
-                .cmd_draw_indexed_indirect
-                .expect("loaded function")(
-                self.surface.command_buffer,
-                mesh.indirect.handle,
-                0,
-                1,
-                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                    .expect("indirect command size fits u32"),
-            );
+            for draw in &self.resolved_draws {
+                let mesh = &self.meshes[draw.mesh];
+                let scene_pipeline = &self.pipelines[draw.pipeline];
+                functions.cmd_bind_pipeline.expect("loaded function")(
+                    self.surface.command_buffer,
+                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    scene_pipeline.pipeline,
+                );
+                functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                    self.surface.command_buffer,
+                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    scene_pipeline.layout,
+                    0,
+                    1,
+                    &raw const draw.descriptor,
+                    1,
+                    &raw const draw.dynamic_offset,
+                );
+                functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                    self.surface.command_buffer,
+                    0,
+                    1,
+                    &raw const mesh.vertices.handle,
+                    &raw const offset,
+                );
+                functions.cmd_bind_index_buffer.expect("loaded function")(
+                    self.surface.command_buffer,
+                    mesh.indices.handle,
+                    0,
+                    vk::VK_INDEX_TYPE_UINT16,
+                );
+                functions
+                    .cmd_draw_indexed_indirect
+                    .expect("loaded function")(
+                    self.surface.command_buffer,
+                    mesh.indirect.handle,
+                    0,
+                    1,
+                    u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                        .expect("indirect command size fits u32"),
+                );
+            }
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
 
@@ -1904,6 +1939,50 @@ fn write_buffer(
     Ok(())
 }
 
+fn write_scene_transforms(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    draws: &[TexturedSceneDraw<'_>],
+) -> Result<(), GraphicsError> {
+    let required = draws
+        .len()
+        .saturating_sub(1)
+        .checked_mul(DRAW_UNIFORM_STRIDE)
+        .and_then(|offset| offset.checked_add(DRAW_UNIFORM_SIZE))
+        .ok_or_else(|| error("scene transform write exceeds address space"))?;
+    if u64::try_from(required).map_err(|_| error("scene transform write exceeds u64"))?
+        > buffer.size
+    {
+        return Err(error("scene transform write exceeds allocation"));
+    }
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for scene transforms",
+    )?;
+    unsafe {
+        for (index, draw) in draws.iter().enumerate() {
+            ptr::copy_nonoverlapping(
+                ptr::from_ref(&draw.model_view_projection).cast::<u8>(),
+                mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                DRAW_UNIFORM_SIZE,
+            );
+        }
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
 fn create_image(
     surface: &ClearSurface<'_>,
     width: u32,
@@ -2037,7 +2116,7 @@ fn create_pipeline(
     let bindings = [
         layout_binding(
             0,
-            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
             vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
         ),
         layout_binding(
@@ -2252,7 +2331,11 @@ fn create_pipeline(
 }
 
 fn create_descriptor_pool(device: &super::Device) -> Result<vk::VkDescriptorPool, GraphicsError> {
-    create_pipeline_descriptor_pool(device, "textured")
+    create_pipeline_descriptor_pool(
+        device,
+        "textured",
+        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2479,15 +2562,16 @@ fn create_postprocess_pipeline(
 fn create_postprocess_descriptor_pool(
     device: &super::Device,
 ) -> Result<vk::VkDescriptorPool, GraphicsError> {
-    create_pipeline_descriptor_pool(device, "postprocess")
+    create_pipeline_descriptor_pool(device, "postprocess", vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
 }
 
 fn create_pipeline_descriptor_pool(
     device: &super::Device,
     label: &str,
+    uniform_type: vk::VkDescriptorType,
 ) -> Result<vk::VkDescriptorPool, GraphicsError> {
     let pool_sizes = [
-        pool_size(vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER),
+        pool_size(uniform_type),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLER),
     ];
@@ -2656,7 +2740,10 @@ fn descriptor_write(
         descriptorType: descriptor_type,
         ..Default::default()
     };
-    if descriptor_type == vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER {
+    if matches!(
+        descriptor_type,
+        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER | vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+    ) {
         write.pBufferInfo = info.cast();
     } else {
         write.pImageInfo = info.cast();

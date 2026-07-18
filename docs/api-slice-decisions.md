@@ -61,11 +61,17 @@ hazard translation backend-owned. A later two-pass checkpoint adds generation-bo
 color and a fixed fullscreen sampled pass. Metal uses ordered encoders; Vulkan derives the explicit
 color-attachment-write to fragment-sampled-read transition behind the same safe operation.
 
+The multi-object checkpoint extends the scene pass to a non-empty ordered slice whose records may
+select different meshes, textures, pipelines, and transforms. Both backends keep one scene pass open
+and issue one indexed draw per record. This establishes heterogeneous multi-draw but deliberately
+does not call it instancing or batching.
+
 No general render-pass or command-encoder vocabulary exists yet. The second operation establishes a
-real intermediate-resource dependency but still does not constrain arbitrary pass ordering,
-load/store policy, multiple draws, transient allocation, or copy/compute integration enough to
-justify a broad API. Recorded in the [textured-cube contract](api-cube-contract.md) and
-[two-pass postprocess contract](postprocess-contract.md).
+real intermediate-resource dependency, and the scene operation establishes multiple ordered draws,
+but neither constrains arbitrary pass ordering, load/store policy, transient allocation,
+copy/compute integration, sorting, nor instancing enough to justify a broad API. Recorded in the
+[textured-cube contract](api-cube-contract.md), [two-pass postprocess contract](postprocess-contract.md),
+and [multi-object scene contract](scene-contract.md).
 
 ## Resource ownership and reclamation
 

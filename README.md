@@ -128,6 +128,20 @@ cargo run -p mulciber-showcase-cube
 Compare it with `comparisons/wgpu-showcase-cube`. Both start paused and use the same keyboard, drag,
 scroll, transform, shader, MSAA resolve, and fullscreen effect.
 
+A fifth focused pair expands the render workload to 100 independently transformed objects in one
+ordered scene submission: two meshes, two textures, depth, capability-selected MSAA, and the same
+postprocess pass:
+
+```sh
+cargo run -p mulciber-scene
+```
+
+Compare it with `comparisons/wgpu-scene`. This is a heterogeneous multi-draw baseline, not GPU
+instancing: each backend emits one indexed draw per object in a single scene pass. The public
+contract, fair source-count split (214 Mulciber versus 809 wgpu lines), native behavior, and exact
+remaining Vulkan evidence gap are recorded in the
+[experimental multi-object scene contract](docs/scene-contract.md).
+
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:
 
@@ -138,7 +152,8 @@ cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
 ```
 
 `mulciber-api-conformance` additionally asserts invalid use, resource destruction/drop churn,
-replacement rendering, mixed-session rejection, and fallible shutdown.
+replacement rendering, direct and postprocessed multi-draw, mixed-session rejection, and fallible
+shutdown.
 
 ## Current probes
 

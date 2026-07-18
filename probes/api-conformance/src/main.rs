@@ -10,8 +10,8 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, Mesh, OpenedGraphics, SampleCount, ShaderArtifact,
-    TexturedDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, Mesh, OpenedGraphics, PostprocessedScene, SampleCount,
+    ShaderArtifact, TexturedDraw, TexturedScene, TexturedSceneDraw, Vertex,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -24,6 +24,13 @@ const IDENTITY: [[f32; 4]; 4] = [
     [0.0, 1.0, 0.0, 0.0],
     [0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 1.0],
+];
+
+const SHIFTED: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.35, 0.0, 0.0, 1.0],
 ];
 
 const TRIANGLE_VERTICES: [Vertex; 3] = [
@@ -92,6 +99,8 @@ struct Cases<'window> {
     texture: Option<mulciber::Texture>,
     pipeline: Option<mulciber::TexturedPipeline>,
     targets: Option<mulciber::RenderTargets>,
+    postprocess_pipeline: Option<mulciber::PostprocessPipeline>,
+    postprocess_targets: Option<mulciber::PostprocessTargets>,
 }
 
 impl<'window> Cases<'window> {
@@ -108,6 +117,8 @@ impl<'window> Cases<'window> {
             texture: None,
             pipeline: None,
             targets: None,
+            postprocess_pipeline: None,
+            postprocess_targets: None,
         })
     }
 
@@ -331,25 +342,85 @@ impl<'window> Cases<'window> {
                         .device
                         .create_render_targets(graphics.surface.info()?)?,
                 );
+                self.postprocess_pipeline = Some(
+                    graphics
+                        .device
+                        .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?,
+                );
+                self.postprocess_targets = Some(
+                    graphics
+                        .device
+                        .create_postprocess_targets(graphics.surface.info()?)?,
+                );
                 self.pass("explicit destruction for every resource kind");
                 self.pass("drop-driven resource churn");
                 self.step = 6;
                 Ok(false)
             }
-            // Replacement resources remain usable after old arena slots were reclaimed.
+            // Replacement resources remain usable across multiple direct draws after old arena
+            // slots were reclaimed.
             6 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
-                let disposition = self.draw(frame, IDENTITY)?;
+                let draws = scene_draws(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                );
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.draw_textured_scene_and_present(
+                    frame,
+                    TexturedScene {
+                        draws: &draws,
+                        targets: self.targets.as_ref().expect("targets exist"),
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
                 assert_presented(disposition)?;
-                self.pass("presentation after resource replacement");
+                self.pass("multi-draw presentation after resource replacement");
                 self.step = 7;
+                Ok(false)
+            }
+            // The same object sequence remains valid through resolved scene color and the
+            // fullscreen postprocess pass.
+            7 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let draws = scene_draws(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                );
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics
+                    .queue
+                    .draw_textured_scene_postprocessed_and_present(
+                        frame,
+                        PostprocessedScene {
+                            draws: &draws,
+                            postprocess_pipeline: self
+                                .postprocess_pipeline
+                                .as_ref()
+                                .expect("postprocess pipeline exists"),
+                            targets: self
+                                .postprocess_targets
+                                .as_ref()
+                                .expect("postprocess targets exist"),
+                            clear: ClearColor::BLACK,
+                        },
+                    )?;
+                assert_presented(disposition)?;
+                self.pass("postprocessed multi-draw presentation");
+                self.step = 8;
                 Ok(false)
             }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            7 => {
+            8 => {
+                self.postprocess_pipeline = None;
+                self.postprocess_targets = None;
                 let graphics = self.graphics.take().expect("session A is open");
                 graphics.shutdown()?;
                 self.pass("fallible shutdown succeeded");
@@ -387,11 +458,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 8;
+                self.step = 9;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            8 => {
+            9 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -413,7 +484,7 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 9;
+                self.step = 10;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -451,6 +522,15 @@ impl<'window> Cases<'window> {
                                 .create_render_targets(frame.surface_info())?,
                         );
                     }
+                    if let Some(postprocess_targets) = self.postprocess_targets.as_ref()
+                        && frame.surface_info() != postprocess_targets.info()
+                    {
+                        self.postprocess_targets = Some(
+                            graphics
+                                .device
+                                .create_postprocess_targets(frame.surface_info())?,
+                        );
+                    }
                 }
                 Ok(Some(frame))
             }
@@ -474,6 +554,27 @@ impl<'window> Cases<'window> {
         };
         Ok(graphics.queue.draw_textured_and_present(frame, draw)?)
     }
+}
+
+fn scene_draws<'resources>(
+    mesh: &'resources Mesh,
+    texture: &'resources mulciber::Texture,
+    pipeline: &'resources mulciber::TexturedPipeline,
+) -> [TexturedSceneDraw<'resources>; 2] {
+    [
+        TexturedSceneDraw {
+            mesh,
+            texture,
+            pipeline,
+            model_view_projection: IDENTITY,
+        },
+        TexturedSceneDraw {
+            mesh,
+            texture,
+            pipeline,
+            model_view_projection: SHIFTED,
+        },
+    ]
 }
 
 fn assert_presented(disposition: mulciber::FrameDisposition) -> Result<(), Box<dyn Error>> {

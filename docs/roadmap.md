@@ -163,7 +163,7 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [ ] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
-  resource-reclamation, and shutdown conformance tests: `probes/api-conformance` asserts fifteen
+  resource-reclamation, multi-draw, and shutdown conformance tests: `probes/api-conformance` asserts sixteen
   Metal cases across those categories (plus the Vulkan-only superseded-generation branch when
   applicable) and exits nonzero on divergence; per-platform runs are recorded in the validation
   ledgers as they are exercised.
@@ -218,6 +218,15 @@ A fourth presentation-oriented showcase pair composes the existing input control
 two-pass operation without adding public or backend API. It preserves the three focused baselines
 while making interactive side-by-side Mulciber/wgpu review practical; its application line counts
 remain separate from the pre-registered Gate 2 figures.
+
+Multi-object extraction progress: `TexturedSceneDraw` plus direct and postprocessed scene operations
+now submit an ordered non-empty slice with independently selected mesh, texture, pipeline, and
+transform. Metal and Vulkan keep one scene pass open and issue one indexed draw per record. The
+100-object `mulciber-scene` / `wgpu-scene` pair establishes a heterogeneous baseline before GPU
+instancing; its application totals are 214 versus 809 Rust lines when equivalent scene data remains
+included. Metal passed visual and sixteen-case conformance checks under API Validation on the Apple
+M2 tier. Vulkan compiles for Windows, but physical Vulkan scene execution remains pending. See the
+[experimental multi-object scene contract](scene-contract.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame

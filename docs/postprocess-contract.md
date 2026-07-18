@@ -37,10 +37,12 @@ sequence:
 5. draw a fullscreen triangle into the presentation image; and
 6. present the consumed frame.
 
-This is intentionally a narrow operation, not a general command encoder or frame graph. One fixed
-two-pass consumer establishes intermediate attachment ownership and a real producer-to-consumer
-dependency, but it does not yet settle arbitrary pass ordering, multiple draws, load/store
-vocabulary, transient allocation, copy/compute integration, or advanced explicit synchronization.
+This is intentionally a narrow operation, not a general command encoder or frame graph. The later
+multi-object checkpoint extends its first pass to ordered heterogeneous draws without changing the
+fixed two-pass shape. Together they establish intermediate attachment ownership, a real
+producer-to-consumer dependency, and multiple draws, but do not yet settle arbitrary pass ordering,
+load/store vocabulary, transient allocation, copy/compute integration, instancing, or advanced
+explicit synchronization. See the [multi-object scene contract](scene-contract.md).
 
 ## Native behavior
 

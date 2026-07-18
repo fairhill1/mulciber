@@ -1,5 +1,21 @@
 # macOS AppKit/Metal validation runbook
 
+## Multi-object scene checkpoint
+
+On 2026-07-18, an uncommitted tree based on `a00bb52` ran `mulciber-scene` with
+`MTL_DEBUG_LAYER=1` on the Apple M2 / macOS 15.7.7 machine. It selected Metal and four samples. A
+visually inspected screenshot showed the animated 100-object cube/pyramid field using both
+checkerboards with depth and the expected final grade/vignette. Metal emitted no diagnostic beyond
+the validation-enabled banner. The process was deliberately interrupted after the visual check, so
+this is not a close, resize, minimize, or broader lifecycle pass.
+
+The same tree then ran `mulciber-api-conformance` under Metal API Validation. Its new direct and
+postprocessed two-object cases presented successfully after explicit resource reclamation, and all
+sixteen asserted Metal cases passed with no diagnostic beyond the banner. The visually equivalent
+`wgpu-scene` peer later selected Metal and four samples on the same machine, but that run did not
+enable Metal API Validation. See the [multi-object scene contract](scene-contract.md) for the API,
+line counts, and remaining Vulkan gap.
+
 ## Two-pass postprocess checkpoint
 
 The separate `mulciber-postprocess-cube` renders the existing textured/depth-tested scene into

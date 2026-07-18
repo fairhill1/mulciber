@@ -805,6 +805,8 @@ pub struct PresentedFrame {
 }
 
 impl PresentedFrame {
+    /// Only the Metal backend constructs samples until the Vulkan feedback survey lands.
+    #[cfg(target_os = "macos")]
     pub(crate) const fn new(index: u64, presented_at: Option<Instant>) -> Self {
         Self {
             index,

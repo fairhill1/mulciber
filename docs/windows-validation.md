@@ -5,6 +5,33 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+On 2026-07-18 the multi-object scene slice (revision `33d779f`, "Add multi-object scene slice and
+wgpu comparison", clean tree) received its native Vulkan physical validation on the Windows 11 Home
+build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,
+loader/validation 1.4.350. The structural preflight passed natively: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (34 tests). The
+`mulciber-api-conformance` probe — whose Vulkan backend always enables `VK_LAYER_KHRONOS_validation`
+and installs a debug messenger that fails shutdown on any recorded warning or error — then ran on the
+interactive desktop and asserted all seventeen cases with exit zero and empty standard error, meaning
+no Vulkan validation or loader message was emitted. A second identical run reproduced the same
+seventeen-case pass, exit zero, and empty standard error.
+
+This is the first physical Vulkan exercise of the new ordered multi-draw paths. After explicit
+destruction of all six resource kinds and thirty-two drop-driven mesh reclamations through reusable
+generational arena slots, the probe presented a direct two-object `TexturedScene` through
+`draw_textured_scene_and_present` ("multi-draw presentation after resource replacement") and the same
+ordered two-object slice through `draw_textured_scene_postprocessed_and_present` with the fullscreen
+grade/vignette pass ("postprocessed multi-draw presentation"). Because this Intel tier lacks
+`VK_KHR_swapchain_maintenance1`, acquired-frame abandonment replaced the base swapchain generation, so
+the run also took the Vulkan-only generation-replacement branch: the superseded-generation targets
+were rejected before a rebuilt set presented. This establishes the multi-object scene slice on the
+Intel Vulkan tier; it is automated single-display evidence and does not add manual visual, interactive
+lifecycle, multi-display, or other-driver-tier claims. The operator then ran the `mulciber-scene`
+interactive example on this same Intel Vulkan tier and reported that the animated 100-object
+cube/pyramid field looked correct; the exact binary, validation-layer state, and output were not
+captured, so this is an operator visual report rather than a recorded validation run. Interactive
+lifecycle (resize, minimize/restore, maximize/restore, close) was not separately exercised.
+
 On 2026-07-18 the bounded resource-lifetime change (revision `1858541`, clean tree) received its
 native Vulkan physical validation on the Windows 11 Home build 22000 / Intel UHD Graphics 620 tier,
 driver 31.0.101.2115, Vulkan device API 1.3.215, loader/validation 1.4.350. The structural preflight

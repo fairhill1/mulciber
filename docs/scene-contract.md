@@ -74,6 +74,13 @@ that file for readability does not exclude it. These figures measure application
 total implementation or maintenance cost: Mulciber's Metal and Vulkan backend code belongs to the
 library and remains part of the viability judgment.
 
-Vulkan compiles for the Windows target, but the new multi-object paths have not yet been physically
-or visually exercised on Vulkan. The earlier Intel verification at `a00bb52` covers resource
-lifetime only and is not being reclassified as scene evidence.
+On 2026-07-18, the `mulciber-api-conformance` probe gave the new multi-object paths their first
+physical Vulkan exercise at revision `33d779f` on the Windows 11 Home / Intel UHD Graphics 620 tier
+(driver 31.0.101.2115, Vulkan device API 1.3.215, loader/validation 1.4.350). Both the direct
+`draw_textured_scene_and_present` and postprocessed `draw_textured_scene_postprocessed_and_present`
+two-object cases presented after explicit resource reclamation, and all seventeen asserted Vulkan
+cases passed twice with exit zero and no validation or loader message. See the
+[Win32/Vulkan validation runbook](windows-validation.md) for the recorded evidence. The operator
+then ran the interactive `mulciber-scene` example on the same Intel tier and reported the animated
+100-object field looked correct, an operator visual report rather than a captured validation run. The
+earlier Intel verification at `a00bb52` covers resource lifetime only.

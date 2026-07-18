@@ -34,8 +34,9 @@ pub struct SceneTransforms {
 }
 
 #[allow(clippy::cast_precision_loss)]
-pub fn transforms(game: &Game, aspect: f32) -> SceneTransforms {
-    let player = game.player();
+pub fn transforms(game: &Game, aspect: f32, interpolation: f64) -> SceneTransforms {
+    let state = game.render_state(interpolation);
+    let player = state.player;
     let eye = Vec3::new(player.x, 14.5, player.y + 9.5);
     let target = Vec3::new(player.x, 0.0, player.y);
     let view = view::look_at_mat4(eye, target, Vec3::Y);
@@ -59,7 +60,7 @@ pub fn transforms(game: &Game, aspect: f32) -> SceneTransforms {
             )
         })
         .collect();
-    let facing = game.facing();
+    let facing = state.facing;
     let player_yaw = -facing.x.atan2(-facing.y);
     let player = vec![matrix(
         view_projection,
@@ -76,16 +77,16 @@ pub fn transforms(game: &Game, aspect: f32) -> SceneTransforms {
                 view_projection,
                 Vec3::new(
                     position.x,
-                    0.72 + (game.world_seconds() * 2.2 + phase).sin() * 0.18,
+                    0.72 + (state.visual_seconds * 2.2 + phase).sin() * 0.18,
                     position.y,
                 ),
                 Vec3::splat(0.38),
-                Quat::from_rotation_y(game.world_seconds() * 1.4 + phase),
+                Quat::from_rotation_y(state.visual_seconds * 1.4 + phase),
             )
         })
         .collect();
-    let hazards = game
-        .hazards()
+    let hazard_positions = Game::hazards_at(state.world_seconds);
+    let hazards = hazard_positions
         .iter()
         .enumerate()
         .map(|(index, &position)| {
@@ -93,7 +94,7 @@ pub fn transforms(game: &Game, aspect: f32) -> SceneTransforms {
                 view_projection,
                 Vec3::new(position.x, 0.58, position.y),
                 Vec3::new(0.58, 0.58, 0.58),
-                Quat::from_rotation_y(-game.world_seconds() * 1.8 + index as f32),
+                Quat::from_rotation_y(-state.world_seconds * 1.8 + index as f32),
             )
         })
         .collect();

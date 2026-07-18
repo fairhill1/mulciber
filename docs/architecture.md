@@ -19,6 +19,12 @@ parallel and is not implied by the existence of public Rust items.
 - `mulciber-shader` will eventually own offline compilation, reflection, and binding validation.
 - `mulciber-runtime` will eventually own timing, the game loop, jobs, and platform/GPU coordination.
 
+The first `mulciber-runtime` extraction is intentionally narrower than that eventual boundary. It
+owns input snapshots plus fixed/variable timing, bounded catch-up, and render interpolation. The
+application still owns the native event pump, previous/current game state, interpolation of that
+state, presentation, suspension, jobs, and recovery. Forge Run is the evidence consumer that earned
+this boundary; see the [experimental runtime contract](runtime-contract.md).
+
 The first extraction now gives `mulciber-platform` experimental peer AppKit, Win32, Wayland, and X11
 application, window, event, drawable-metrics, and borrowed-target implementations consumed by the
 Metal and Vulkan probes; their concrete decisions are recorded in the

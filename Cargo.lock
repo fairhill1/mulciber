@@ -179,6 +179,7 @@ dependencies = [
  "glam",
  "mulciber",
  "mulciber-platform",
+ "mulciber-runtime",
 ]
 
 [[package]]
@@ -221,6 +222,13 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
+name = "mulciber-runtime"
+version = "0.1.0"
+dependencies = [
  "mulciber-platform",
 ]
 

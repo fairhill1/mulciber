@@ -157,16 +157,20 @@ remaining physical Vulkan gap are recorded in the
 [experimental GPU instancing contract](docs/instancing-contract.md).
 
 The first playable dogfood application builds a small top-down collect-and-avoid loop from the
-existing input, instancing, depth, camera, and postprocess slices without adding graphics API:
+existing input, instancing, depth, camera, and postprocess slices:
 
 ```sh
 cargo run -p mulciber-game-slice
 ```
 
-This is deliberately pre-runtime evidence. Its application-owned held input, timing, update, and
-frame coordination identify concrete pressure for the future `mulciber-runtime`; it does not yet
-claim the fixed updates, suspension, display transitions, recovery, or platform coverage required
-by Gate 5. See the [pre-runtime game dogfood contract](docs/game-slice.md).
+It is now the first consumer of the experimental `mulciber-runtime` slice. The runtime turns ordered
+platform events into held/pressed/released snapshots and schedules a 60 Hz fixed simulation with
+bounded catch-up, a clamped variable update, and interpolation for arbitrary presentation rates.
+Forge Run retains previous/current game states and interpolation policy; the runtime does not absorb
+collision, camera, scene, or engine architecture. This establishes only the timing/input portion of
+Gate 5: native frame pacing, suspension, fullscreen/display transitions, device recovery, Linux
+input, and the integrated comparison remain pending. See the [runtime contract](docs/runtime-contract.md)
+and [game dogfood contract](docs/game-slice.md).
 
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:

@@ -1,8 +1,9 @@
-# Pre-runtime game dogfood slice
+# Game and runtime dogfood slice
 
 `mulciber-game-slice` is the first playable application built from the extracted platform and
-graphics checkpoints. It is intentionally application-owned rather than a premature
-`mulciber-runtime` implementation.
+graphics checkpoints. Its original application-owned timing/input implementation provided the
+pressure evidence for the first narrow `mulciber-runtime` extraction; it is now that crate's first
+consumer.
 
 ## Playable loop
 
@@ -27,9 +28,9 @@ Input is currently implemented by `mulciber-platform` on AppKit and Win32. The e
 the existing Linux Vulkan path, but it is not a playable Linux claim until Wayland and X11 input
 peers exist.
 
-## Runtime pressure observed
+## Runtime extraction
 
-The application currently owns policy that the planned `mulciber-runtime` may absorb:
+The initial application locally owned:
 
 - a four-direction held-key snapshot assembled from ordered press/release transitions;
 - focus-loss invalidation of held input;
@@ -38,11 +39,21 @@ The application currently owns policy that the planned `mulciber-runtime` may ab
 - simulation state, collision, win/reset transitions, and diagnostic output; and
 - the platform pump, nonfatal frame acquisition, generation-bound target rebuild, and shutdown loop.
 
-This does not yet justify extracting the runtime crate. Gate 5 also requires fixed and variable
-updates, frame-pacing policy, suspension, fullscreen/display changes, device recovery, and supported
-platform coverage. The next runtime experiment should move only the generic timing/input/coordination
-policy above—not collision, camera, game state, or unrelated engine architecture—then compare the
-result with the same application composed from `winit` and the existing wgpu scene plumbing.
+The first extraction moves only the generic pieces into `mulciber-runtime`. Ordered
+`mulciber-platform` transitions accumulate into frame-scoped held/pressed/released snapshots, and
+focus loss releases every held key or pointer button. A 60 Hz accumulator produces zero or more
+fixed gameplay updates per displayed frame, caps hitch recovery at eight steps, reports discarded
+time, and supplies an interpolation fraction. Forge Run retains previous/current simulation states
+and interpolates player motion, facing, camera, and sentries for the renderer. Cosmetic pickup
+animation consumes the clamped variable frame delta.
+
+Simulation advances before graphics acquisition, so a temporarily unavailable surface does not
+make game time conditional on acquiring a drawable. Collision, camera, game state, reset/win policy,
+the native event pump, and rendering remain application-owned. See the
+[experimental runtime contract](runtime-contract.md).
+
+This is not Gate 5 completion. Native frame-pacing policy, suspension, fullscreen/display changes,
+device recovery, supported Linux input, and the integrated comparison remain pending.
 
 ## macOS checkpoint
 
@@ -58,3 +69,8 @@ and the operator confirmed the final angles. All eight crystals were collected, 
 dynamic removal of the final pickup batch, and the win transition. The validation-driven process was
 deliberately interrupted rather than closed through a lifecycle pass; no resize, minimize/restore,
 display change, or deterministic rendering readback is claimed here.
+
+After migration to `mulciber-runtime`, the operator replayed Forge Run on the same Apple M2 / macOS
+15.7.7 machine and reported that the game and interpolated movement felt correct. This is a visual
+and interaction confirmation of the fixed-step consumer path, not measured cadence evidence or a
+repeat of the broader lifecycle matrix.

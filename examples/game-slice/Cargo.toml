@@ -11,6 +11,7 @@ publish = false
 glam = "=0.33.2"
 mulciber = { path = "../../crates/mulciber" }
 mulciber-platform = { path = "../../crates/mulciber-platform" }
+mulciber-runtime = { path = "../../crates/mulciber-runtime" }
 
 [lints]
 workspace = true

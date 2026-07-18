@@ -13,6 +13,7 @@ use mulciber::{
     SceneSubmission, ShaderArtifact, Texture, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
+use mulciber_runtime::{Runtime, RuntimeConfig};
 use scene::{
     CUBE_INDICES, CUBE_VERTICES, PYRAMID_INDICES, PYRAMID_VERTICES, checkerboard, transforms,
 };
@@ -64,13 +65,14 @@ impl Resources {
         queue: &mut Queue<'_>,
         frame: Frame<'_>,
         game: &Game,
+        interpolation: f64,
     ) -> Result<(), Box<dyn Error>> {
         let info = frame.surface_info();
         if info != self.targets.info() {
             self.targets = device.create_postprocess_targets(info)?;
         }
         let aspect = info.extent().width() as f32 / info.extent().height() as f32;
-        let scene = transforms(game, aspect);
+        let scene = transforms(game, aspect, interpolation);
         let mut batches = vec![
             TexturedInstanceBatch {
                 mesh: &self.cube,
@@ -140,24 +142,37 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("forge run: W/A/S/D or arrows move; recover eight crystals, avoid sentries, R resets");
 
     let mut resources = Resources::new(&graphics)?;
-    let started = Instant::now();
     let mut game = Game::default();
+    let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
             let metrics = match event {
                 WindowEvent::Input(input) => {
-                    game.handle_input(input);
+                    runtime.handle_input(input);
                     return Ok(());
                 }
                 WindowEvent::RedrawRequested(metrics) => metrics,
                 _ => return Ok(()),
             };
+            let plan = runtime.begin_frame(Instant::now());
+            game.handle_frame_input(runtime.input());
+            for _ in 0..plan.fixed_steps() {
+                game.fixed_update(runtime.input(), plan.fixed_step().as_secs_f32());
+            }
+            game.variable_update(plan.frame_delta().as_secs_f32());
+            runtime.end_frame();
+
             let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else {
                 return Ok(());
             };
-            game.update(started.elapsed().as_secs_f32());
-            resources.render(&graphics.device, &mut graphics.queue, frame, &game)?;
+            resources.render(
+                &graphics.device,
+                &mut graphics.queue,
+                frame,
+                &game,
+                plan.interpolation(),
+            )?;
             Ok(())
         })?;
         if status == PumpStatus::Exit {

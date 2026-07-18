@@ -240,16 +240,17 @@ nineteen-case conformance probe twice under the validation layer (including the 
 postprocessed instanced presentations), and the operator visually confirmed the animated 100-object
 instanced field. See the [experimental GPU instancing contract](instancing-contract.md).
 
-Pre-runtime dogfood progress: `mulciber-game-slice` now builds a playable top-down collect-and-avoid
-loop from the existing AppKit/Win32 input transitions and instanced postprocessed scene path without
-adding graphics API. The application locally owns held-key state, focus invalidation, clamped
-variable timing, update/render ordering, collision, camera, and reset/win policy. A Metal
-validation-layer visual run on the Apple M2 exercised collection, sentry collision, disappearance of
-the final pickup batch, and completion; an initially mirrored diagonal-facing calculation was fixed
-and physically confirmed. This is pressure evidence for `mulciber-runtime`, not Gate 5 completion:
-fixed updates, frame-pacing policy, suspension, fullscreen/display transitions, device recovery,
-Linux input, and the integrated comparison remain pending. See the
-[pre-runtime game dogfood contract](game-slice.md).
+Runtime dogfood progress: `mulciber-game-slice` first established a playable top-down
+collect-and-avoid loop from the AppKit/Win32 input and instanced postprocessed scene paths. That
+evidence then earned a narrow `mulciber-runtime` extraction: generic held/pressed/released input
+snapshots with focus-loss clearing, a configurable fixed-step accumulator, bounded hitch catch-up,
+clamped variable frame deltas, dropped-time diagnostics, and render interpolation. Forge Run now
+runs gameplay at 60 Hz, keeps previous/current simulation state in the game, interpolates player,
+camera, facing, and sentries at presentation rate, and advances cosmetic animation variably. The
+runtime still does not own collision, camera, scene, or the platform/GPU event loop. Native pacing,
+suspension, fullscreen/display transitions, device recovery, Linux input, and the integrated
+comparison remain pending, so Gate 5 is not complete. See the [runtime contract](runtime-contract.md)
+and [game dogfood contract](game-slice.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame
@@ -307,3 +308,11 @@ Add each as an independent backend feature with a tested fallback:
 Create `mulciber-runtime` only after platform and GPU lifecycle contracts stabilize. It will coordinate
 the game loop, fixed and variable updates, input snapshots, frame pacing, jobs, suspension, and
 device recovery.
+
+- [x] Extract frame-scoped input snapshots from physically exercised AppKit and Win32 transitions.
+- [x] Extract fixed/variable timing with bounded catch-up, dropped-time reporting, and render
+  interpolation; migrate Forge Run as the first consumer without moving game policy into the crate.
+- [ ] Establish native presentation pacing and cadence diagnostics independently from simulation
+  rate.
+- [ ] Coordinate suspension/resume, fullscreen/display transitions, and device recovery.
+- [ ] Add supported Linux input and runtime evidence, then perform the Gate 5 integrated comparison.

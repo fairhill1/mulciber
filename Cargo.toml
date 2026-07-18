@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/mulciber",
     "crates/mulciber-platform",
+    "crates/mulciber-runtime",
     "crates/mulciber-shader",
     "examples/clear",
     "examples/cube",

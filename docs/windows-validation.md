@@ -51,8 +51,28 @@ probe resize smoke. Replacing that controller call with asynchronous `SetWindowP
 `SendMessageTimeout` responsiveness check let a focused four-size full-probe diagnostic close and
 exit zero. A clean matrix retry later stopped advancing during an ordinary 600-frame full-probe run,
 before the bounded resize controller was involved, and was terminated rather than left on the
-interactive desktop. The previously recorded complete Intel matrix remains the Vulkan checkpoint;
-this input change claims only the native tests and focused physical/resize evidence above.
+interactive desktop. At the time the previously recorded complete Intel matrix remained the Vulkan
+checkpoint and this input change claimed only the native tests and focused physical/resize evidence
+above; the harness dependency of those hangs was isolated in the direct rerun recorded next.
+
+A direct `-SkipInteractive` matrix rerun on 2026-07-18 then passed end to end on revision `af37a45`,
+driven from the logged-in interactive desktop rather than over the OpenSSH session used for the
+attempt above, on the same Windows 11 Home build 22000 / Intel UHD 620, driver 31.0.101.2115, Vulkan
+device API 1.3.215, loader/validation 1.4.350 tier. Both leading 600-frame full-probe finite runs
+completed their full frame counts, and every automated resize smoke — the clear, cube, and
+postprocess examples plus the strict cross-process `SetWindowPos`/`SendMessageTimeout` resize
+controller on the triangle — completed and exited zero, including the same first full-probe resize
+smoke that had blocked over SSH. The pipeline-cache learning, strict cross-process hit, abandonment,
+forced-fallback, truncated, incompatible, corrupt, and disabled cases all passed, the strict runs left
+the read-only artifact unchanged, the expected strict-missing-cache case failed before pipeline
+creation, and the run emitted no Vulkan validation or loader messages. Evidence:
+`validation-artifacts/windows-vulkan-20260718-115805.zip`. A separate direct loop that repeated the
+leading `--rebuild-pipeline-cache` 600-frame finite run twelve times in a row also completed every
+iteration in about 10.4 s with empty standard error. Because the identical binaries hung only when the
+matrix was driven over SSH and ran clean directly, the earlier resize-controller and 600-frame stalls
+are attributed to the non-interactive SSH window station and its absent compositor pacing of FIFO
+presentation rather than to a probe or render-loop defect. This is automated single-display evidence;
+it does not add manual visual correctness, interactive lifecycle, or multi-display claims.
 
 The in-progress resource-backed cube checkpoint ran natively on 2026-07-17 on the Windows 11 / RTX
 3060 Ti tier. The preferred Vulkan path selected 4x MSAA, uploaded indexed geometry and an RGBA8 sRGB

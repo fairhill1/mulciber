@@ -1,5 +1,38 @@
 # macOS AppKit/Metal validation runbook
 
+## Presentation feedback checkpoint
+
+On 2026-07-19, an uncommitted tree based on `edfb792` added presentation-feedback instrumentation
+to `mulciber-metal-triangle` and exercised it under `MTL_DEBUG_LAYER=1` on the Apple M2 /
+macOS 15.7.7 machine (single built-in 60 Hz display). The probe registers a presented handler on
+every presented drawable (a captureless Clang-ABI global block), reads `presentedTime` and
+`drawableID` inside the handler, correlates callbacks to submissions by drawable ID, and reports
+distributions; `--pacing-csv PATH` writes the per-frame samples and `--load-spike START:COUNT:MILLIS`
+injects a fixed CPU stall for the pre-registered load-spike scenario in the
+[Gate 4 pacing plan](gate4-pacing-plan.md).
+
+- A steady 300-frame run received a presented callback for all 300 presents (0 unmatched, 0
+  pending at exit). 290 callbacks carried a nonzero `presentedTime`; the missing 10 were the first
+  frames of the run, before the window was fully on screen. Presented intervals sat on the vsync
+  grid at 16.667 ms from min through p99 with 0 missed intervals, matching the queried
+  `maximumFramesPerSecond` of 60. Commit-to-present latency was 47.3 to 49.0 ms, about three
+  refresh intervals, reflecting this probe's acquire-then-render loop running as far ahead as the
+  three-drawable pool allows.
+- A 300-frame run with `--load-spike 120:30:40` (a 40 ms stall before each of 30 frames) kept
+  every non-spike interval at 16.667 ms while the 30 spike intervals quantized to exactly 2x and
+  3x refresh (p50 33.333 ms, max 50.000 ms), never landing between vsync edges. The latency
+  minimum dropped to 16.4 ms as the stall drained the drawable queue. One callback arrived out of
+  order and was correlated correctly by drawable ID.
+- A 120-frame `--abandon-acquired-frame-once` run recovered as before, and the instrumentation
+  attributed the abandonment to exactly one 50.000 ms missed interval.
+
+All three runs exited zero with no validation output beyond the enabled banner. This establishes
+that per-frame presented-time feedback, refresh cadence, and vsync-quantized degradation are
+observable through native Metal on this machine, the Metal half of the pacing plan's probe-first
+step. It is single-display, fixed-60 Hz evidence only: ProMotion or external displays, display
+changes mid-run, occlusion and resume, and the latency behavior of a paced (rather than
+free-running) loop remain unmeasured, and the Vulkan availability survey is untouched.
+
 ## Recovery-oriented error checkpoint
 
 On 2026-07-18, an uncommitted tree based on `01a0770` ran `mulciber-api-conformance` with
@@ -547,6 +580,22 @@ MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
 The run must report exactly one abandoned drawable, then report recovery after later rendering was
 submitted. The frame limit counts only submitted frames, so this proves acquisition recovered
 rather than allowing the abandoned iteration to satisfy the limit.
+
+Exercise the presentation-feedback scenarios from the [Gate 4 pacing plan](gate4-pacing-plan.md):
+
+```sh
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
+  --frames 300 --pacing-csv target/pacing-steady.csv
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- \
+  --frames 300 --load-spike 120:30:40 --pacing-csv target/pacing-spike.csv
+```
+
+Every run prints the presentation-feedback report. The steady run must show presented callbacks
+for every present with no unmatched callbacks or pending submissions at exit, presented intervals
+on the display's nominal vsync grid, and zero missed intervals; a small number of startup frames
+reporting no presented time is expected while the window comes on screen. The load-spike run must
+keep non-spike intervals nominal while spike intervals quantize to whole multiples of the refresh
+interval. Record the reports and CSVs with the run.
 
 ## Interactive lifecycle pass
 

@@ -5,12 +5,15 @@ use mulciber::integration::metal_objc as objc;
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::collections::VecDeque;
     use std::ffi::{CStr, CString, c_void};
-    use std::fmt;
+    use std::fmt::{self, Write as _};
     use std::fs;
+    use std::mem;
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
     use std::ptr;
+    use std::sync::Mutex;
     use std::thread;
     use std::time::{Duration, Instant};
     use std::{env, num::NonZeroU64};
@@ -73,7 +76,9 @@ mod macos {
     }
 
     #[link(name = "QuartzCore", kind = "framework")]
-    unsafe extern "C" {}
+    unsafe extern "C" {
+        fn CACurrentMediaTime() -> f64;
+    }
 
     #[link(name = "System")]
     unsafe extern "C" {
@@ -83,6 +88,8 @@ mod macos {
             queue: Object,
             destructor: Object,
         ) -> Object;
+        #[allow(non_upper_case_globals)]
+        static _NSConcreteGlobalBlock: c_void;
     }
 
     #[repr(C)]
@@ -240,6 +247,8 @@ mod macos {
         binary_archive_path: PathBuf,
         rebuild_binary_archive: bool,
         abandon_acquired_frame_once: bool,
+        pacing_csv: Option<PathBuf>,
+        load_spike: Option<LoadSpike>,
     }
 
     struct FrameAbandonment {
@@ -257,6 +266,192 @@ mod macos {
                 abandoned_drawables: 0,
                 submitted_after: false,
             }
+        }
+    }
+
+    /// A fixed CPU stall injected into a range of frames for the pre-registered load-spike
+    /// pacing scenario.
+    #[derive(Clone, Copy)]
+    struct LoadSpike {
+        start: u64,
+        count: u64,
+        millis: u64,
+    }
+
+    // `Block_literal_1` and `Block_descriptor_1` from the Clang Blocks ABI specification. The
+    // presented handler captures nothing, so a global block with no copy/dispose helpers is
+    // sufficient and `Block_copy` returns it unchanged.
+    #[repr(C)]
+    struct BlockDescriptor {
+        reserved: usize,
+        size: usize,
+    }
+
+    #[repr(C)]
+    struct BlockLiteral {
+        isa: *const c_void,
+        flags: i32,
+        reserved: i32,
+        invoke: unsafe extern "C" fn(*mut BlockLiteral, Object),
+        descriptor: *const BlockDescriptor,
+    }
+
+    const BLOCK_IS_GLOBAL: i32 = 1 << 28;
+
+    static PRESENTED_HANDLER_DESCRIPTOR: BlockDescriptor = BlockDescriptor {
+        reserved: 0,
+        size: size_of::<BlockLiteral>(),
+    };
+
+    struct PresentedEvent {
+        drawable_id: usize,
+        presented_time: f64,
+    }
+
+    /// Presented handlers run on a Core Animation thread; the main thread drains this queue
+    /// once per pumped frame and matches events to submissions by drawable ID.
+    static PRESENTED_EVENTS: Mutex<Vec<PresentedEvent>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn presented_handler(_block: *mut BlockLiteral, drawable: Object) {
+        // SAFETY: Core Animation invokes the handler with a live drawable, and both read-only
+        // properties are documented as valid inside a presented handler on the macOS 13 baseline.
+        let drawable_id = unsafe { objc::usize_value(drawable, c"drawableID") };
+        let presented_time = unsafe { objc::f64_value(drawable, c"presentedTime") };
+        if let Ok(mut events) = PRESENTED_EVENTS.lock() {
+            events.push(PresentedEvent {
+                drawable_id,
+                presented_time,
+            });
+        }
+    }
+
+    struct PacingSubmission {
+        frame: u64,
+        drawable_id: usize,
+        commit_time: f64,
+    }
+
+    #[derive(Clone, Copy)]
+    struct PacingSample {
+        frame: u64,
+        commit_time: f64,
+        presented_time: f64,
+    }
+
+    struct PacingRecorder {
+        block: *mut BlockLiteral,
+        pending: VecDeque<PacingSubmission>,
+        samples: Vec<PacingSample>,
+        unpresented_callbacks: u32,
+        unmatched_callbacks: u32,
+        reordered_callbacks: u32,
+        frames_submitted: u64,
+        load_spike: Option<LoadSpike>,
+    }
+
+    impl PacingRecorder {
+        fn new(load_spike: Option<LoadSpike>) -> Self {
+            let isa = &raw const _NSConcreteGlobalBlock;
+            // One captureless literal serves every registration, so the allocation is
+            // intentionally leaked for process lifetime.
+            let block: *mut BlockLiteral = Box::leak(Box::new(BlockLiteral {
+                isa,
+                flags: BLOCK_IS_GLOBAL,
+                reserved: 0,
+                invoke: presented_handler,
+                descriptor: &raw const PRESENTED_HANDLER_DESCRIPTOR,
+            }));
+            Self {
+                block,
+                pending: VecDeque::new(),
+                samples: Vec::new(),
+                unpresented_callbacks: 0,
+                unmatched_callbacks: 0,
+                reordered_callbacks: 0,
+                frames_submitted: 0,
+                load_spike,
+            }
+        }
+
+        fn spike_sleep(&self) -> Option<Duration> {
+            let spike = self.load_spike?;
+            let frame = self.frames_submitted;
+            (frame >= spike.start && frame < spike.start + spike.count)
+                .then(|| Duration::from_millis(spike.millis))
+        }
+
+        fn register(&self, drawable: Object) -> usize {
+            // SAFETY: Callers pass a live acquired drawable. `addPresentedHandler:` must precede
+            // presentation, copies the block (a no-op for a global block), and `drawableID`
+            // matches the NSUInteger ABI.
+            unsafe {
+                let drawable_id = objc::usize_value(drawable, c"drawableID");
+                objc::void_object(drawable, c"addPresentedHandler:", self.block.cast());
+                drawable_id
+            }
+        }
+
+        fn record_commit(&mut self, drawable_id: usize) {
+            // SAFETY: `CACurrentMediaTime` has no preconditions and shares the presented-time
+            // timebase.
+            let commit_time = unsafe { CACurrentMediaTime() };
+            self.pending.push_back(PacingSubmission {
+                frame: self.frames_submitted,
+                drawable_id,
+                commit_time,
+            });
+            self.frames_submitted += 1;
+        }
+
+        fn drain(&mut self) {
+            let events = match PRESENTED_EVENTS.lock() {
+                Ok(mut events) => mem::take(&mut *events),
+                Err(_) => return,
+            };
+            for event in events {
+                let Some(position) = self
+                    .pending
+                    .iter()
+                    .position(|submission| submission.drawable_id == event.drawable_id)
+                else {
+                    self.unmatched_callbacks += 1;
+                    continue;
+                };
+                if position != 0 {
+                    self.reordered_callbacks += 1;
+                }
+                let submission = self
+                    .pending
+                    .remove(position)
+                    .expect("the matched position is in bounds");
+                if event.presented_time > 0.0 {
+                    self.samples.push(PacingSample {
+                        frame: submission.frame,
+                        commit_time: submission.commit_time,
+                        presented_time: event.presented_time,
+                    });
+                } else {
+                    self.unpresented_callbacks += 1;
+                }
+            }
+        }
+
+        fn finish(&mut self) {
+            // Presented handlers can fire one or two refresh intervals after GPU completion.
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                self.drain();
+                if self.pending.is_empty() || Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn sorted_samples(&self) -> Vec<PacingSample> {
+            let mut samples = self.samples.clone();
+            samples.sort_by(|first, second| first.presented_time.total_cmp(&second.presented_time));
+            samples
         }
     }
 
@@ -315,6 +510,9 @@ mod macos {
         gpu_time_seconds: f64,
         gpu_timed_frames: u32,
         frame_abandonment: FrameAbandonment,
+        view: Object,
+        pacing: PacingRecorder,
+        pacing_csv: Option<PathBuf>,
     }
 
     impl Probe {
@@ -392,6 +590,9 @@ mod macos {
                     gpu_time_seconds: 0.0,
                     gpu_timed_frames: 0,
                     frame_abandonment: FrameAbandonment::new(options.abandon_acquired_frame_once),
+                    view,
+                    pacing: PacingRecorder::new(options.load_spike),
+                    pacing_csv: options.pacing_csv.clone(),
                 })
             }
         }
@@ -400,8 +601,11 @@ mod macos {
             let render_result = self.render_loop(frame_limit);
             let lifecycle_result = render_result.and_then(|()| self.validate_frame_abandonment());
             let cleanup_result = self.finish_gpu();
+            self.pacing.finish();
             self.print_gpu_timing();
-            lifecycle_result.and(cleanup_result)
+            self.print_pacing_report();
+            let pacing_result = self.write_pacing_csv();
+            lifecycle_result.and(cleanup_result).and(pacing_result)
         }
 
         fn render_loop(&mut self, frame_limit: Option<NonZeroU64>) -> Result<(), ProbeError> {
@@ -413,10 +617,14 @@ mod macos {
                 }
                 let _pool = AutoreleasePool::new();
                 let rendered = if let Some(metrics) = redraw_metrics {
+                    if let Some(stall) = self.pacing.spike_sleep() {
+                        thread::sleep(stall);
+                    }
                     self.render(metrics)?
                 } else {
                     false
                 };
+                self.pacing.drain();
                 if rendered {
                     rendered_frames += 1;
                     if frame_limit.is_some_and(|limit| rendered_frames >= limit.get()) {
@@ -519,8 +727,10 @@ mod macos {
                 self.encode_shadow_pass(command_buffer, uniforms)?;
                 self.encode_main_pass(command_buffer, uniforms)?;
                 self.encode_post_pass(command_buffer, drawable_texture)?;
+                let pacing_id = self.pacing.register(drawable);
                 objc::void_object(command_buffer, c"presentDrawable:", drawable);
                 objc::void(command_buffer, c"commit");
+                self.pacing.record_commit(pacing_id);
                 self.track_submission(command_buffer)?;
                 let _disposition = FrameDisposition::Presented(
                     self.surface_info
@@ -897,6 +1107,159 @@ mod macos {
             );
             Ok(())
         }
+
+        fn display_cadence(&self) -> Option<(u32, f64)> {
+            // SAFETY: The AppKit view outlives the probe; a nil window or screen is checked and
+            // `maximumFramesPerSecond` returns NSInteger on the macOS 13 baseline.
+            unsafe {
+                let window = objc::object(self.view, c"window");
+                if window.is_null() {
+                    return None;
+                }
+                let screen = objc::object(window, c"screen");
+                if screen.is_null() {
+                    return None;
+                }
+                let frames_per_second =
+                    u32::try_from(objc::usize_value(screen, c"maximumFramesPerSecond")).ok()?;
+                (frames_per_second > 0)
+                    .then(|| (frames_per_second, 1_000.0 / f64::from(frames_per_second)))
+            }
+        }
+
+        fn print_pacing_report(&self) {
+            let pacing = &self.pacing;
+            println!(
+                "presentation feedback: {} presents, {} presented-time samples, {} presented \
+                 without a time, {} unmatched callbacks, {} reordered callbacks, {} pending at exit",
+                pacing.frames_submitted,
+                pacing.samples.len(),
+                pacing.unpresented_callbacks,
+                pacing.unmatched_callbacks,
+                pacing.reordered_callbacks,
+                pacing.pending.len(),
+            );
+            if pacing.samples.is_empty() {
+                return;
+            }
+            let cadence = self.display_cadence();
+            match cadence {
+                Some((frames_per_second, nominal_ms)) => println!(
+                    "display cadence: maximumFramesPerSecond {frames_per_second}, nominal interval {nominal_ms:.3} ms"
+                ),
+                None => println!("display cadence: unavailable (the window has no screen)"),
+            }
+            let samples = pacing.sorted_samples();
+            let mut latencies: Vec<f64> = samples
+                .iter()
+                .map(|sample| (sample.presented_time - sample.commit_time) * 1_000.0)
+                .collect();
+            if let Some(summary) = distribution_summary(&mut latencies) {
+                println!(
+                    "commit-to-present latency: n={}, {summary}",
+                    latencies.len()
+                );
+            }
+            let intervals: Vec<(u64, f64)> = samples
+                .windows(2)
+                .map(|pair| {
+                    (
+                        pair[1].frame,
+                        (pair[1].presented_time - pair[0].presented_time) * 1_000.0,
+                    )
+                })
+                .collect();
+            let in_spike = |frame: u64| {
+                pacing
+                    .load_spike
+                    .is_some_and(|spike| frame >= spike.start && frame < spike.start + spike.count)
+            };
+            let mut steady: Vec<f64> = intervals
+                .iter()
+                .filter(|(frame, _)| !in_spike(*frame))
+                .map(|(_, interval)| *interval)
+                .collect();
+            if let Some(summary) = distribution_summary(&mut steady) {
+                let missed = cadence.map_or_else(String::new, |(_, nominal_ms)| {
+                    let count = steady
+                        .iter()
+                        .filter(|&&interval| interval > nominal_ms * 1.5)
+                        .count();
+                    format!(", {count} missed (>1.5x nominal)")
+                });
+                println!(
+                    "presented intervals (steady): n={}, {summary}{missed}",
+                    steady.len()
+                );
+            }
+            if let Some(spike) = pacing.load_spike {
+                let mut spiked: Vec<f64> = intervals
+                    .iter()
+                    .filter(|(frame, _)| in_spike(*frame))
+                    .map(|(_, interval)| *interval)
+                    .collect();
+                if let Some(summary) = distribution_summary(&mut spiked) {
+                    println!(
+                        "presented intervals (load spike frames {}..{}, {} ms stall): n={}, {summary}",
+                        spike.start,
+                        spike.start + spike.count,
+                        spike.millis,
+                        spiked.len()
+                    );
+                }
+            }
+        }
+
+        fn write_pacing_csv(&self) -> Result<(), ProbeError> {
+            let Some(path) = &self.pacing_csv else {
+                return Ok(());
+            };
+            let samples = self.pacing.sorted_samples();
+            let mut csv = String::from(
+                "frame,commit_media_time_s,presented_media_time_s,commit_to_present_ms,presented_interval_ms\n",
+            );
+            let mut previous_presented_time = None;
+            for sample in &samples {
+                let latency_ms = (sample.presented_time - sample.commit_time) * 1_000.0;
+                let interval = previous_presented_time.map_or_else(String::new, |previous: f64| {
+                    format!("{:.6}", (sample.presented_time - previous) * 1_000.0)
+                });
+                writeln!(
+                    csv,
+                    "{},{:.6},{:.6},{:.6},{}",
+                    sample.frame, sample.commit_time, sample.presented_time, latency_ms, interval
+                )
+                .expect("writing to a String cannot fail");
+                previous_presented_time = Some(sample.presented_time);
+            }
+            fs::write(path, csv).map_err(|error| {
+                ProbeError(format!(
+                    "could not write pacing CSV {}: {error}",
+                    path.display()
+                ))
+            })
+        }
+    }
+
+    /// Nearest-rank percentile over an ascending slice; callers guarantee non-emptiness.
+    fn percentile(sorted_values: &[f64], percent: usize) -> f64 {
+        let rank = (percent * sorted_values.len()).div_ceil(100).max(1);
+        sorted_values[rank - 1]
+    }
+
+    fn distribution_summary(values: &mut [f64]) -> Option<String> {
+        if values.is_empty() {
+            return None;
+        }
+        values.sort_by(f64::total_cmp);
+        Some(format!(
+            "min {:.3} ms, p50 {:.3} ms, p95 {:.3} ms, p99 {:.3} ms, max {:.3} ms",
+            values[0],
+            percentile(values, 50),
+            percentile(values, 95),
+            percentile(values, 99),
+            values[values.len() - 1]
+        ))
     }
 
     fn create_pipelines(
@@ -1874,6 +2237,8 @@ mod macos {
         let mut binary_archive_path = None;
         let mut rebuild_binary_archive = false;
         let mut abandon_acquired_frame_once = false;
+        let mut pacing_csv = None;
+        let mut load_spike = None;
         let mut arguments = env::args_os().skip(1);
         while let Some(argument) = arguments.next() {
             match argument.to_str() {
@@ -1901,6 +2266,28 @@ mod macos {
                             ProbeError("--binary-archive requires a file path".into())
                         })?));
                 }
+                Some("--pacing-csv") => {
+                    if pacing_csv.is_some() {
+                        return Err(ProbeError(
+                            "--pacing-csv was provided more than once".into(),
+                        ));
+                    }
+                    pacing_csv =
+                        Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                            ProbeError("--pacing-csv requires a file path".into())
+                        })?));
+                }
+                Some("--load-spike") => {
+                    if load_spike.is_some() {
+                        return Err(ProbeError(
+                            "--load-spike was provided more than once".into(),
+                        ));
+                    }
+                    let value = arguments.next().ok_or_else(|| {
+                        ProbeError("--load-spike requires START:COUNT:MILLIS".into())
+                    })?;
+                    load_spike = Some(parse_load_spike(&value.to_string_lossy())?);
+                }
                 Some("--rebuild-binary-archive") => rebuild_binary_archive = true,
                 Some("--abandon-acquired-frame-once") => {
                     if abandon_acquired_frame_once {
@@ -1924,7 +2311,34 @@ mod macos {
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_BINARY_ARCHIVE_PATH)),
             rebuild_binary_archive,
             abandon_acquired_frame_once,
+            pacing_csv,
+            load_spike,
         })
+    }
+
+    fn parse_load_spike(value: &str) -> Result<LoadSpike, ProbeError> {
+        let mut parts = value.splitn(3, ':');
+        let (Some(start), Some(count), Some(millis)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(ProbeError(
+                "--load-spike requires START:COUNT:MILLIS".into(),
+            ));
+        };
+        let parse = |part: &str, label: &str| {
+            part.parse::<u64>()
+                .map_err(|error| ProbeError(format!("invalid --load-spike {label}: {error}")))
+        };
+        let spike = LoadSpike {
+            start: parse(start, "start")?,
+            count: parse(count, "count")?,
+            millis: parse(millis, "millis")?,
+        };
+        if spike.count == 0 || spike.millis == 0 {
+            return Err(ProbeError(
+                "--load-spike count and millis must be positive".into(),
+            ));
+        }
+        Ok(spike)
     }
 }
 

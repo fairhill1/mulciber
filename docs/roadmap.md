@@ -60,6 +60,12 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   replacement on the base-swapchain fallback, followed by 120 presented recovery frames and clean
   shutdown (physically exercised on native Wayland on the current Nvidia tier, with the compatibility
   path forced).
+- [ ] Record per-platform presentation-feedback availability for the
+  [Gate 4 pacing plan](gate4-pacing-plan.md) (Metal presented handlers with `presentedTime` and
+  drawable-ID correlation are physically exercised on the Apple M2 60 Hz tier, including
+  vsync-quantized load-spike degradation and a per-frame CSV path; the Vulkan
+  `VK_KHR_present_id`/`present_wait`, display-timing, and Wayland presentation-time survey remains
+  outstanding).
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.

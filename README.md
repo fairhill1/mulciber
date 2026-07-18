@@ -112,7 +112,12 @@ MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle    # macOS
 cargo run -p mulciber-vulkan-triangle -- --frames 600     # Windows/Linux; validation required
 ```
 
-Both probes accept `--frames N` and `--abandon-acquired-frame-once`. The Metal probe generates and
+Both probes accept `--frames N` and `--abandon-acquired-frame-once`. The Metal probe additionally
+records native presentation feedback through drawable presented handlers and prints a pacing report
+(presented-interval and commit-to-present distributions against the queried display cadence);
+`--pacing-csv PATH` writes the per-frame samples and `--load-spike START:COUNT:MILLIS` injects a
+fixed CPU stall for the load-spike scenario in the
+[Gate 4 pacing plan](docs/gate4-pacing-plan.md). The Metal probe generates and
 strictly reloads a device-specific binary archive; pass `--binary-archive PATH` to select a
 different artifact or `--rebuild-binary-archive` after changing shaders, pipeline descriptors, the
 OS, or the GPU. The Vulkan probe requires the Khronos validation layer and loads the platform

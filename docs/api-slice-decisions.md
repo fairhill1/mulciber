@@ -66,12 +66,20 @@ select different meshes, textures, pipelines, and transforms. Both backends keep
 and issue one indexed draw per record. This establishes heterogeneous multi-draw but deliberately
 does not call it instancing or batching.
 
-No general render-pass or command-encoder vocabulary exists yet. The second operation establishes a
-real intermediate-resource dependency, and the scene operation establishes multiple ordered draws,
-but neither constrains arbitrary pass ordering, load/store policy, transient allocation,
-copy/compute integration, sorting, nor instancing enough to justify a broad API. Recorded in the
+The instancing checkpoint adds a distinct instance-rate pipeline and homogeneous batches containing
+one mesh, texture, pipeline, and a non-empty finite transform slice. Both backends pack transforms
+into one frame-local instance buffer and issue one native indexed draw per batch. Fixed recipes are
+composed through `Queue::render_and_present`, `SceneSubmission`, `SceneContent`, and `SceneOutput`;
+separating content from output prevents their cross-product from producing composition-sized method
+or variant names while leaving the earlier focused methods intact.
+
+No general render-pass or command-encoder vocabulary exists yet. These operations establish a real
+intermediate-resource dependency, heterogeneous ordered draws, and native instance-rate batches,
+but still do not constrain arbitrary pass ordering, load/store policy, transient allocation,
+copy/compute integration, automatic grouping, sorting, or GPU-written data enough to justify a broad
+API. Recorded in the
 [textured-cube contract](api-cube-contract.md), [two-pass postprocess contract](postprocess-contract.md),
-and [multi-object scene contract](scene-contract.md).
+[multi-object scene contract](scene-contract.md), and [GPU instancing contract](instancing-contract.md).
 
 ## Resource ownership and reclamation
 

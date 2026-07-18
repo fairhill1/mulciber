@@ -233,6 +233,25 @@ impl Device<'_> {
         })
     }
 
+    /// Creates a depth-tested textured pipeline whose vertex stage consumes one model-view-
+    /// projection matrix per instance.
+    ///
+    /// The shader module must contain `instanced_vertex` and `cube_fragment` entry points. Matrix
+    /// columns occupy vertex locations 3 through 6 with per-instance stepping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when native shader loading or pipeline creation fails.
+    pub fn create_instanced_textured_pipeline(
+        &self,
+        shader: ShaderArtifact<'_>,
+    ) -> Result<InstancedTexturedPipeline, GraphicsError> {
+        let id = session_mut(&self.shared)?.create_instanced_pipeline(shader)?;
+        Ok(InstancedTexturedPipeline {
+            lease: self.lease(id, ResourceKind::InstancedTexturedPipeline),
+        })
+    }
+
     /// Creates the single-sample fullscreen pipeline for the post-processing checkpoint.
     ///
     /// The shader module must contain `post_vertex` and `post_fragment` entry points. The
@@ -317,6 +336,18 @@ impl Device<'_> {
         self.destroy_lease(&mut pipeline.lease, ResourceKind::TexturedPipeline)
     }
 
+    /// Destroys an instanced textured pipeline after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_instanced_textured_pipeline(
+        &self,
+        mut pipeline: InstancedTexturedPipeline,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut pipeline.lease, ResourceKind::InstancedTexturedPipeline)
+    }
+
     /// Destroys a postprocess pipeline after its last submitted GPU use completes.
     ///
     /// # Errors
@@ -376,6 +407,62 @@ pub struct Queue<'window> {
 }
 
 impl Queue<'_> {
+    /// Renders one explicitly selected scene recipe, presents the frame, and consumes it.
+    ///
+    /// This stable verb prevents each experimentally extracted workload from growing another
+    /// queue-method name. `SceneContent` and `SceneOutput` compose the narrow axes supported by the
+    /// current slice; they are not a general command encoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation, native encoding, synchronization, submission, or presentation
+    /// error produced by the selected recipe.
+    pub fn render_and_present(
+        &mut self,
+        frame: Frame<'_>,
+        submission: SceneSubmission<'_>,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        match (submission.content, submission.output) {
+            (SceneContent::Textured(draws), SceneOutput::Direct(targets)) => self
+                .draw_textured_scene_and_present(
+                    frame,
+                    TexturedScene {
+                        draws,
+                        targets,
+                        clear: submission.clear,
+                    },
+                ),
+            (SceneContent::Textured(draws), SceneOutput::Postprocessed { pipeline, targets }) => {
+                self.draw_textured_scene_postprocessed_and_present(
+                    frame,
+                    PostprocessedScene {
+                        draws,
+                        postprocess_pipeline: pipeline,
+                        targets,
+                        clear: submission.clear,
+                    },
+                )
+            }
+            (SceneContent::Instanced(batches), SceneOutput::Direct(targets)) => self
+                .draw_instanced_textured_scene_and_present(
+                    frame,
+                    batches,
+                    targets,
+                    submission.clear,
+                ),
+            (
+                SceneContent::Instanced(batches),
+                SceneOutput::Postprocessed { pipeline, targets },
+            ) => self.draw_instanced_textured_scene_postprocessed_and_present(
+                frame,
+                batches,
+                pipeline,
+                targets,
+                submission.clear,
+            ),
+        }
+    }
+
     /// Draws one indexed textured mesh, presents the frame, and consumes it.
     ///
     /// # Errors
@@ -491,6 +578,69 @@ impl Queue<'_> {
         )
     }
 
+    /// Draws a non-empty sequence of non-empty textured instance batches in one depth-tested
+    /// render pass, presents the frame, and consumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty scene or batch, mixed-session or stale handles, a non-finite
+    /// transform, an unsupported native count, or native encoding, submission, validation, or
+    /// presentation failure.
+    fn draw_instanced_textured_scene_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        batches: &[TexturedInstanceBatch<'_>],
+        targets: &RenderTargets,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
+        let token = frame
+            .token
+            .take()
+            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+        session_mut(&self.shared)?.draw_instanced_scene_and_present(
+            token,
+            batches,
+            targets.lease.id,
+            clear,
+        )
+    }
+
+    /// Draws a non-empty sequence of non-empty textured instance batches into resolved scene
+    /// color, runs one fullscreen post-processing pass, presents the frame, and consumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty scene or batch, mixed-session or stale handles, a non-finite
+    /// transform, an unsupported native count, or native encoding, synchronization, submission,
+    /// validation, or presentation failure.
+    fn draw_instanced_textured_scene_postprocessed_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        batches: &[TexturedInstanceBatch<'_>],
+        postprocess_pipeline: &PostprocessPipeline,
+        targets: &PostprocessTargets,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
+        if postprocess_pipeline.lease.session != self.shared.id {
+            return Err(GraphicsError::new(
+                "graphics handles belong to different sessions",
+            ));
+        }
+        let token = frame
+            .token
+            .take()
+            .ok_or_else(|| GraphicsError::new("frame is already disposed"))?;
+        session_mut(&self.shared)?.draw_instanced_scene_postprocessed_and_present(
+            token,
+            batches,
+            postprocess_pipeline.lease.id,
+            targets.lease.id,
+            clear,
+        )
+    }
+
     fn validate_scene(
         &self,
         frame_session: u64,
@@ -531,6 +681,58 @@ impl Queue<'_> {
             {
                 return Err(GraphicsError::new(
                     "draw transform must contain only finite values",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_instanced_scene(
+        &self,
+        frame_session: u64,
+        frame_info: SurfaceInfo,
+        batches: &[TexturedInstanceBatch<'_>],
+        targets: &impl SceneTargets,
+    ) -> Result<(), GraphicsError> {
+        if batches.is_empty() {
+            return Err(GraphicsError::new(
+                "instanced textured scene must contain at least one batch",
+            ));
+        }
+        if targets.session() != self.shared.id
+            || targets.session() != frame_session
+            || targets.info() != frame_info
+        {
+            return Err(GraphicsError::new(
+                "graphics handles belong to different sessions or stale surface targets",
+            ));
+        }
+        for batch in batches {
+            if batch.model_view_projections.is_empty() {
+                return Err(GraphicsError::new(
+                    "instanced textured scene batches must contain at least one transform",
+                ));
+            }
+            for session in [
+                batch.mesh.lease.session,
+                batch.texture.lease.session,
+                batch.pipeline.lease.session,
+            ] {
+                if session != self.shared.id || session != frame_session {
+                    return Err(GraphicsError::new(
+                        "graphics handles belong to different sessions",
+                    ));
+                }
+            }
+            if !batch
+                .model_view_projections
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|component| component.is_finite())
+            {
+                return Err(GraphicsError::new(
+                    "instance transforms must contain only finite values",
                 ));
             }
         }
@@ -615,6 +817,18 @@ impl Texture {
 #[derive(Debug, Eq, PartialEq)]
 pub struct TexturedPipeline {
     lease: ResourceLease,
+}
+
+/// Native textured depth-tested graphics pipeline with per-instance matrix input.
+#[derive(Debug, Eq, PartialEq)]
+pub struct InstancedTexturedPipeline {
+    lease: ResourceLease,
+}
+
+impl InstancedTexturedPipeline {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
 }
 
 impl TexturedPipeline {
@@ -730,6 +944,19 @@ pub struct TexturedScene<'resources> {
     pub clear: ClearColor,
 }
 
+/// One homogeneous instance batch inside a textured scene pass.
+#[derive(Clone, Copy)]
+pub struct TexturedInstanceBatch<'resources> {
+    /// Geometry shared by every instance in this batch.
+    pub mesh: &'resources Mesh,
+    /// Sampled color texture shared by every instance in this batch.
+    pub texture: &'resources Texture,
+    /// Instanced depth-tested pipeline compatible with the scene targets.
+    pub pipeline: &'resources InstancedTexturedPipeline,
+    /// Non-empty column-major model-view-projection matrix sequence in instance order.
+    pub model_view_projections: &'resources [[[f32; 4]; 4]],
+}
+
 /// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
 #[derive(Clone, Copy)]
 pub struct PostprocessedDraw<'resources> {
@@ -760,6 +987,42 @@ pub struct PostprocessedScene<'resources> {
     pub targets: &'resources PostprocessTargets,
     /// Linear color used to clear the scene before its first object.
     pub clear: ClearColor,
+}
+
+/// One narrow scene recipe accepted by [`Queue::render_and_present`].
+#[derive(Clone, Copy)]
+pub struct SceneSubmission<'resources> {
+    /// Geometry records and their submission grouping.
+    pub content: SceneContent<'resources>,
+    /// Direct or postprocessed destination for the scene pass.
+    pub output: SceneOutput<'resources>,
+    /// Linear color used to clear the scene before its first draw or batch.
+    pub clear: ClearColor,
+}
+
+/// Geometry content for one [`SceneSubmission`].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum SceneContent<'resources> {
+    /// Non-empty heterogeneous textured records encoded in slice order.
+    Textured(&'resources [TexturedSceneDraw<'resources>]),
+    /// Non-empty homogeneous instance batches encoded in slice order.
+    Instanced(&'resources [TexturedInstanceBatch<'resources>]),
+}
+
+/// Output path for one [`SceneSubmission`].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum SceneOutput<'resources> {
+    /// Render directly into generation-matched presentable targets.
+    Direct(&'resources RenderTargets),
+    /// Resolve into sampled scene color, then run one fullscreen postprocess pass.
+    Postprocessed {
+        /// Fullscreen pipeline that samples the resolved scene color.
+        pipeline: &'resources PostprocessPipeline,
+        /// Generation-matched offscreen, depth, and optional multisample targets.
+        targets: &'resources PostprocessTargets,
+    },
 }
 
 /// One acquired native drawable or swapchain image.

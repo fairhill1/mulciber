@@ -18,6 +18,7 @@ pub(crate) enum ResourceKind {
     Mesh,
     Texture,
     TexturedPipeline,
+    InstancedTexturedPipeline,
     PostprocessPipeline,
     RenderTargets,
     PostprocessTargets,

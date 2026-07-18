@@ -15,6 +15,7 @@ PFN_vkCmdCopyImageToBuffer2
 PFN_vkCmdBindDescriptorSets
 PFN_vkCmdDispatch
 PFN_vkCmdDraw
+PFN_vkCmdDrawIndexed
 PFN_vkCmdDrawIndexedIndirect
 PFN_vkCmdEndRendering
 PFN_vkCmdEndDebugUtilsLabelEXT

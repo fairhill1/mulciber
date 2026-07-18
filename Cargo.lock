@@ -182,6 +182,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-instanced-scene"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-metal-info"
 version = "0.0.0"
 

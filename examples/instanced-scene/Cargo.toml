@@ -1,0 +1,13 @@
+[package]
+name = "mulciber-instanced-scene"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+glam = { version = "0.33.0", features = ["std"], default-features = false }
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

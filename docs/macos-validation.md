@@ -1,5 +1,25 @@
 # macOS AppKit/Metal validation runbook
 
+## GPU instancing checkpoint
+
+On 2026-07-18, an uncommitted tree based on `15e6aa2` ran `mulciber-instanced-scene` with
+`MTL_DEBUG_LAYER=1` on the Apple M2 / macOS 15.7.7 machine. It selected Metal and four samples. A
+visually inspected screenshot showed the animated 100-object cube/pyramid field grouped into four
+native instance batches, using both checkerboards with depth and the expected final
+grade/vignette. Metal emitted no diagnostic beyond the validation-enabled banner. The process was
+deliberately interrupted after the visual check, so this is not a close, resize, minimize, or
+broader lifecycle pass.
+
+The equivalent `wgpu-instanced-scene` selected wgpu's Metal backend and four samples and showed the
+same workload and effect. That peer run did not enable Metal API Validation, and the screenshots
+were visually inspected rather than compared through deterministic readback.
+
+The corrected `mulciber-api-conformance` then presented direct and postprocessed two-instance cases,
+explicitly reclaimed the new instanced pipeline resource kind, and passed all eighteen assertions
+under Metal API Validation with no diagnostic beyond the banner. See the
+[GPU instancing contract](instancing-contract.md) for the API boundary, native behavior, source
+counts, and remaining physical Vulkan gap.
+
 ## Multi-object scene checkpoint
 
 On 2026-07-18, an uncommitted tree based on `a00bb52` ran `mulciber-scene` with

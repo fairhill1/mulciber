@@ -11,13 +11,15 @@ use std::time::Instant;
 
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, Mesh, OpenedGraphics, PostprocessedScene, SampleCount,
-    ShaderArtifact, TexturedDraw, TexturedScene, TexturedSceneDraw, Vertex,
+    SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, TexturedDraw,
+    TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
 };
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cube.shaderbin"));
+const INSTANCED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/instanced.shaderbin"));
 
 const IDENTITY: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
@@ -98,6 +100,7 @@ struct Cases<'window> {
     foreign_mesh: Option<Mesh>,
     texture: Option<mulciber::Texture>,
     pipeline: Option<mulciber::TexturedPipeline>,
+    instanced_pipeline: Option<mulciber::InstancedTexturedPipeline>,
     targets: Option<mulciber::RenderTargets>,
     postprocess_pipeline: Option<mulciber::PostprocessPipeline>,
     postprocess_targets: Option<mulciber::PostprocessTargets>,
@@ -116,6 +119,7 @@ impl<'window> Cases<'window> {
             foreign_mesh: None,
             texture: None,
             pipeline: None,
+            instanced_pipeline: None,
             targets: None,
             postprocess_pipeline: None,
             postprocess_targets: None,
@@ -180,12 +184,16 @@ impl<'window> Cases<'window> {
                 let pipeline = graphics
                     .device
                     .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
+                let instanced_pipeline = graphics
+                    .device
+                    .create_instanced_textured_pipeline(ShaderArtifact::new(INSTANCED_SHADER)?)?;
                 let targets = graphics
                     .device
                     .create_render_targets(graphics.surface.info()?)?;
                 self.mesh = Some(mesh);
                 self.texture = Some(texture);
                 self.pipeline = Some(pipeline);
+                self.instanced_pipeline = Some(instanced_pipeline);
                 self.targets = Some(targets);
                 self.step = 1;
                 Ok(false)
@@ -302,6 +310,11 @@ impl<'window> Cases<'window> {
                 graphics.device.destroy_textured_pipeline(
                     self.pipeline.take().expect("textured pipeline exists"),
                 )?;
+                graphics.device.destroy_instanced_textured_pipeline(
+                    self.instanced_pipeline
+                        .take()
+                        .expect("instanced textured pipeline exists"),
+                )?;
                 graphics
                     .device
                     .destroy_texture(self.texture.take().expect("texture exists"))?;
@@ -337,6 +350,10 @@ impl<'window> Cases<'window> {
                         .device
                         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?,
                 );
+                self.instanced_pipeline =
+                    Some(graphics.device.create_instanced_textured_pipeline(
+                        ShaderArtifact::new(INSTANCED_SHADER)?,
+                    )?);
                 self.targets = Some(
                     graphics
                         .device
@@ -416,9 +433,77 @@ impl<'window> Cases<'window> {
                 self.step = 8;
                 Ok(false)
             }
+            // Native instance-rate transforms draw the same mesh twice in one batch.
+            8 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let transforms = [IDENTITY, SHIFTED];
+                let batches = [TexturedInstanceBatch {
+                    mesh: self.mesh.as_ref().expect("mesh exists"),
+                    texture: self.texture.as_ref().expect("texture exists"),
+                    pipeline: self
+                        .instanced_pipeline
+                        .as_ref()
+                        .expect("instanced pipeline exists"),
+                    model_view_projections: &transforms,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Instanced(&batches),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("instanced presentation");
+                self.step = 9;
+                Ok(false)
+            }
+            // The instance path remains valid through resolved color and post-processing.
+            9 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let transforms = [IDENTITY, SHIFTED];
+                let batches = [TexturedInstanceBatch {
+                    mesh: self.mesh.as_ref().expect("mesh exists"),
+                    texture: self.texture.as_ref().expect("texture exists"),
+                    pipeline: self
+                        .instanced_pipeline
+                        .as_ref()
+                        .expect("instanced pipeline exists"),
+                    model_view_projections: &transforms,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Instanced(&batches),
+                        output: SceneOutput::Postprocessed {
+                            pipeline: self
+                                .postprocess_pipeline
+                                .as_ref()
+                                .expect("postprocess pipeline exists"),
+                            targets: self
+                                .postprocess_targets
+                                .as_ref()
+                                .expect("postprocess targets exist"),
+                        },
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("postprocessed instanced presentation");
+                self.step = 10;
+                Ok(false)
+            }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            8 => {
+            10 => {
+                self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
                 let graphics = self.graphics.take().expect("session A is open");
@@ -458,11 +543,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 9;
+                self.step = 11;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            9 => {
+            11 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -484,7 +569,7 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 10;
+                self.step = 12;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.

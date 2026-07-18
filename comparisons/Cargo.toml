@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "wgpu-cube",
     "wgpu-input-cube",
+    "wgpu-instanced-scene",
     "wgpu-postprocess-cube",
     "wgpu-scene",
     "wgpu-showcase-cube",

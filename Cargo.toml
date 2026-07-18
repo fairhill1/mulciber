@@ -7,6 +7,7 @@ members = [
     "examples/clear",
     "examples/cube",
     "examples/input-cube",
+    "examples/instanced-scene",
     "examples/postprocess-cube",
     "examples/scene",
     "examples/showcase-cube",

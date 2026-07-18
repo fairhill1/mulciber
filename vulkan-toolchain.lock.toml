@@ -42,6 +42,14 @@ wgsl_sha256 = "d34a0524ac63b107d5db5ef1485f408cfcacb08f3cdc30dc292027b5120c0666"
 vulkan_artifact_sha256 = "ac9efc0e14ab02006bd00afd8ad980352d3e130dd1cd1f38b941285ecb9ad230"
 metal_artifact_sha256 = "55783ff83368f3c858e7c5055ad229786b4ad8e2fdad698259033b7b6d31c42c"
 
+[instanced_shader]
+compiler = "naga 30.0.0"
+target_environment = "vulkan1.3"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "5b49c8a69c18d95eed3469ed1a08b9ad81bbd6a2e0bb7dafe9cee74089149313"
+vulkan_artifact_sha256 = "23d528e5820a93f4055e0a58445c910e1b29f0447da3220bd9451f9accd44def"
+metal_artifact_sha256 = "9d70f1ab70cc54790a1b519f984ec2c716f7ed78d1029407a7d68a4614921254"
+
 [inputs]
 vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"
 vulkan_core_h_sha256 = "682de8fb5d47f9839d62732975e8c7d54f8d2e8c178d79977d698e34ebc64da9"

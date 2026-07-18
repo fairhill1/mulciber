@@ -142,6 +142,20 @@ contract, fair source-count split (214 Mulciber versus 809 wgpu lines), native b
 remaining Vulkan evidence gap are recorded in the
 [experimental multi-object scene contract](docs/scene-contract.md).
 
+A sixth pair groups the same 100 objects into four native instance batches while preserving the
+multi-draw pair above as its baseline:
+
+```sh
+cargo run -p mulciber-instanced-scene
+```
+
+Compare it with `comparisons/wgpu-instanced-scene`. The application composes `SceneContent` and
+`SceneOutput` through `Queue::render_and_present`, avoiding another composition-sized queue method
+or variant name without claiming a general command encoder. The public batch contract, native
+Metal/Vulkan behavior, source counts (233 Mulciber versus 794 wgpu lines), macOS evidence, and
+remaining physical Vulkan gap are recorded in the
+[experimental GPU instancing contract](docs/instancing-contract.md).
+
 Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
 probes instead of the examples:
 
@@ -152,8 +166,8 @@ cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
 ```
 
 `mulciber-api-conformance` additionally asserts invalid use, resource destruction/drop churn,
-replacement rendering, direct and postprocessed multi-draw, mixed-session rejection, and fallible
-shutdown.
+replacement rendering, direct and postprocessed multi-draw and instancing, mixed-session rejection,
+and fallible shutdown.
 
 ## Current probes
 

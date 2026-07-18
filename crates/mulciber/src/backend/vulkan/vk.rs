@@ -5440,6 +5440,16 @@ pub type PFN_vkCmdDraw = ::core::option::Option<
         firstInstance: u32,
     ),
 >;
+pub type PFN_vkCmdDrawIndexed = ::core::option::Option<
+    unsafe extern "C" fn(
+        commandBuffer: VkCommandBuffer,
+        indexCount: u32,
+        instanceCount: u32,
+        firstIndex: u32,
+        vertexOffset: i32,
+        firstInstance: u32,
+    ),
+>;
 pub type PFN_vkCmdDrawIndexedIndirect = ::core::option::Option<
     unsafe extern "C" fn(
         commandBuffer: VkCommandBuffer,

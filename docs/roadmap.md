@@ -163,10 +163,10 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [ ] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
-  resource-reclamation, multi-draw, and shutdown conformance tests: `probes/api-conformance` asserts sixteen
-  Metal cases across those categories (plus the Vulkan-only superseded-generation branch when
-  applicable) and exits nonzero on divergence; per-platform runs are recorded in the validation
-  ledgers as they are exercised.
+  resource-reclamation, multi-draw, instancing, and shutdown conformance tests:
+  `probes/api-conformance` currently asserts eighteen Metal cases across those categories (plus the
+  Vulkan-only superseded-generation branch when applicable) and exits nonzero on divergence;
+  per-platform runs are recorded in the validation ledgers as they are exercised.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
   dependency-tree, size, and clean-build measurements are recorded in the
@@ -225,8 +225,19 @@ transform. Metal and Vulkan keep one scene pass open and issue one indexed draw 
 100-object `mulciber-scene` / `wgpu-scene` pair establishes a heterogeneous baseline before GPU
 instancing; its application totals are 214 versus 809 Rust lines when equivalent scene data remains
 included. Metal passed visual and sixteen-case conformance checks under API Validation on the Apple
-M2 tier. Vulkan compiles for Windows, but physical Vulkan scene execution remains pending. See the
+M2 tier. On the Intel UHD 620 tier, Vulkan passed the seventeen-case conformance probe twice, the
+interactive field was reported visually correct, and a later interactive validation-layer run
+covered resize, minimize/restore, occlusion/reveal, and close. See the
 [experimental multi-object scene contract](scene-contract.md).
+
+GPU-instancing extraction progress: a distinct instance-rate pipeline plus non-empty homogeneous
+instance batches now drive four native indexed draws for the same 100-object field, with direct and
+postprocessed recipes selected through `Queue::render_and_present` and `SceneSubmission`. The
+`mulciber-instanced-scene` / `wgpu-instanced-scene` application totals are 233 versus 794 Rust lines
+with equivalent scene data included. Metal passed visual comparison and all eighteen conformance
+cases under API Validation on the Apple M2 tier. Vulkan compiles for Win32, but the new instance-rate
+path still requires physical Vulkan validation and visual evidence. See the
+[experimental GPU instancing contract](instancing-contract.md).
 
 Graphics lifecycle extraction progress: `mulciber` now exposes experimental physical surface extents,
 graphics-owned surface generations, nonfatal acquisition outcomes, and presented/abandoned frame

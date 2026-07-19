@@ -11,8 +11,9 @@ use mulciber::{
     TexturedDraw,
 };
 use mulciber_platform::{
-    Application, ButtonState, InputEvent, KeyCode, LogicalPosition, LogicalSize, PointerButton,
-    PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
+    Application, ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, LogicalSize,
+    PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, Window,
+    WindowDescriptor, WindowEvent,
 };
 
 use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, interactive_transform};
@@ -83,6 +84,11 @@ impl Interaction {
                 }
                 self.pointer = Some(position);
             }
+            InputEvent::PointerDelta {
+                delta_x, delta_y, ..
+            } => {
+                self.rotate(delta_x as f32 * 0.008, delta_y as f32 * 0.008);
+            }
             InputEvent::Scroll { delta, .. } => {
                 let y = match delta {
                     ScrollDelta::Precise { y, .. } => y * 0.015,
@@ -138,6 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "input: W/A/S/D or arrows rotate, primary-button drag orbits, scroll zooms, Space toggles spin, R resets"
     );
+    println!("input: C captures the pointer for relative look, Escape releases it");
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
     let texture = graphics
@@ -156,6 +163,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
             let metrics = match event {
                 WindowEvent::Input(input) => {
+                    match input {
+                        InputEvent::Keyboard {
+                            key: KeyCode::KeyC,
+                            state: ButtonState::Pressed,
+                            repeat: false,
+                            ..
+                        } => toggle_cursor_mode(&window)?,
+                        InputEvent::Keyboard {
+                            key: KeyCode::Escape,
+                            state: ButtonState::Pressed,
+                            ..
+                        } => window.set_cursor_mode(CursorMode::Normal)?,
+                        _ => {}
+                    }
                     interaction.handle(input);
                     return Ok(());
                 }
@@ -199,4 +220,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     graphics.shutdown()?;
     Ok(())
+}
+
+fn toggle_cursor_mode(window: &Window) -> Result<(), PlatformError> {
+    let target = match window.cursor_mode() {
+        CursorMode::Normal => CursorMode::Captured,
+        CursorMode::Captured => CursorMode::Normal,
+    };
+    match window.set_cursor_mode(target) {
+        Ok(()) => {
+            println!("cursor mode: {target:?}");
+            Ok(())
+        }
+        Err(error) if error.kind() == PlatformErrorKind::Unsupported => {
+            println!("pointer capture: unsupported on this backend");
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }

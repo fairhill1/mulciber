@@ -387,6 +387,21 @@ pub enum PointerButton {
     Other(u16),
 }
 
+/// How a window interacts with the system pointer.
+///
+/// Capture is an application intent; the platform owns the native cursor-visibility, pinning, and
+/// relative-motion policy behind it, so games do not restate the locked-versus-confined fallback
+/// that every surveyed consumer hand-rolls.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CursorMode {
+    /// The system pointer is visible and moves freely.
+    #[default]
+    Normal,
+    /// While the window is focused, the pointer is hidden, held inside the window, and reported
+    /// as relative [`InputEvent::PointerDelta`] motion instead of absolute positions.
+    Captured,
+}
+
 /// A scroll delta preserving whether the platform supplied precise or coarse units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(missing_docs)]
@@ -416,6 +431,13 @@ pub enum InputEvent {
     /// The pointer moved in logical client coordinates.
     PointerMoved {
         position: LogicalPosition,
+        modifiers: Modifiers,
+    },
+    /// The pointer moved by a relative delta while captured, in logical coordinates with
+    /// positive y pointing down. Delivered instead of [`Self::PointerMoved`] during capture.
+    PointerDelta {
+        delta_x: f64,
+        delta_y: f64,
         modifiers: Modifiers,
     },
     /// A pointer button changed state.

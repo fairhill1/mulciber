@@ -45,6 +45,35 @@ Physical `KeyCode` values describe key positions rather than text. An unrecogniz
 is preserved as `KeyCode::Unidentified` for diagnostics without treating its numeric value as
 portable.
 
+## Pointer capture and cursor modes
+
+`Window::set_cursor_mode` accepts an application intent, `CursorMode::Normal` or
+`CursorMode::Captured`, and the platform owns the native policy behind it. This exists because the
+[consumer evidence](consumer-evidence.md) shows all five surveyed games hand-rolling the same
+locked-versus-confined fallback, cursor hiding, and focus bookkeeping above `winit`.
+
+While capture is applied, the cursor is hidden and pinned inside the window, and motion arrives as
+`InputEvent::PointerDelta` (logical units, positive y down) instead of absolute `PointerMoved`
+positions. The requested mode is an intent that survives focus changes: the platform releases the
+native capture and restores the cursor on focus loss, reapplies it on focus gain, and always
+restores the system cursor when the window drops, so no error path can strand a hidden or detached
+cursor. Requesting `Normal` succeeds on every backend so portable release paths stay uniform;
+requesting `Captured` on a backend without an implementation reports an `Unsupported` platform
+error rather than pretending.
+
+Backend status: the AppKit implementation pins the cursor by warping it to the content-view center,
+detaching cursor movement with `CGAssociateMouseAndMouseCursorPosition`, and hiding it with
+`NSCursor`, reporting `NSEvent` deltas during capture. Win32, Wayland, and X11 currently report
+`Unsupported`; their implementations follow when those tiers can be physically exercised.
+
+`mulciber-input-cube` dogfoods the contract (C toggles capture into relative cube look, Escape
+releases), and `comparisons/wgpu-input-cube` implements the equivalent behavior the surveyed way:
+the `CursorGrabMode::Locked` then `Confined` fallback, manual visibility and focus suspension
+bookkeeping, and `DeviceEvent::MouseMotion` deltas. On 2026-07-19 an agent-driven AppKit smoke run
+exercised capture, Escape release, recapture, and close-while-captured with no native errors and a
+restored cursor; synthetic input cannot produce relative motion, so physical mouse-look
+verification remains an operator task recorded in the [macOS runbook](macos-validation.md).
+
 ## AppKit implementation checkpoint
 
 The AppKit backend inspects each `NSEvent` from the same queue it already owns, forwards it to

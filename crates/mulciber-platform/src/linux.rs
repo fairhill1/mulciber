@@ -11,8 +11,8 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use crate::{
-    PhysicalExtent, PlatformError, PlatformErrorKind, PumpStatus, WindowDescriptor, WindowEvent,
-    WindowMetrics, WindowRevision,
+    CursorMode, PhysicalExtent, PlatformError, PlatformErrorKind, PumpStatus, WindowDescriptor,
+    WindowEvent, WindowMetrics, WindowRevision,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,6 +200,31 @@ impl Window {
             native,
             _window: PhantomData,
         }
+    }
+
+    /// Requests how this window interacts with the system pointer.
+    ///
+    /// # Errors
+    ///
+    /// Pointer capture is not yet implemented on the Wayland and X11 backends, so requesting
+    /// [`CursorMode::Captured`] reports [`PlatformErrorKind::Unsupported`]; requesting the
+    /// already-active [`CursorMode::Normal`] succeeds so portable release paths stay uniform.
+    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    pub fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
+        match mode {
+            CursorMode::Normal => Ok(()),
+            CursorMode::Captured => Err(PlatformError::with_kind(
+                PlatformErrorKind::Unsupported,
+                "pointer capture is not yet implemented on the Wayland and X11 backends",
+            )),
+        }
+    }
+
+    /// Returns the requested cursor mode, which stays [`CursorMode::Normal`] on this backend.
+    #[must_use]
+    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    pub fn cursor_mode(&self) -> CursorMode {
+        CursorMode::Normal
     }
 
     fn current_window_metrics(&self) -> Option<WindowMetrics> {

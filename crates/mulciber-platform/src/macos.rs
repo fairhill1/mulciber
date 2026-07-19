@@ -7,9 +7,9 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::{
-    ButtonState, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PlatformError,
-    PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
-    WindowMetrics, WindowRevision,
+    ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
+    PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor,
+    WindowEvent, WindowMetrics, WindowRevision,
 };
 
 type Object = *mut c_void;
@@ -91,6 +91,12 @@ unsafe extern "C" {
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {
     static NSDefaultRunLoopMode: Object;
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+    fn CGWarpMouseCursorPosition(position: Point) -> i32;
 }
 
 #[link(name = "System")]
@@ -226,6 +232,8 @@ impl Application {
                 close_reported: Cell::new(false),
                 last_focused: Cell::new(focused),
                 captured_pointer_buttons: Cell::new(0),
+                cursor_mode: Cell::new(CursorMode::Normal),
+                capture_applied: Cell::new(false),
                 delegate,
                 _window_lease: window_lease,
                 _main_thread: PhantomData,
@@ -339,6 +347,8 @@ pub struct Window {
     close_reported: Cell<bool>,
     last_focused: Cell<bool>,
     captured_pointer_buttons: Cell<u32>,
+    cursor_mode: Cell<CursorMode>,
+    capture_applied: Cell<bool>,
     delegate: NonNull<c_void>,
     _window_lease: WindowLease,
     _main_thread: PhantomData<Rc<()>>,
@@ -360,13 +370,126 @@ impl Window {
         }
     }
 
+    /// Requests how this window interacts with the system pointer.
+    ///
+    /// Capture applies while the window is focused: the cursor is hidden and pinned at the
+    /// content-view center, and motion arrives as [`InputEvent::PointerDelta`] instead of
+    /// absolute positions. The requested mode persists across focus loss and is reapplied when
+    /// focus returns; dropping the window always restores the system cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native cursor services refuse the transition; the previous
+    /// association state is restored before reporting.
+    pub fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
+        self.cursor_mode.set(mode);
+        match mode {
+            CursorMode::Captured if self.delegate_state.focused.get() => {
+                self.apply_pointer_capture()
+            }
+            CursorMode::Captured => Ok(()),
+            CursorMode::Normal => self.release_pointer_capture(),
+        }
+    }
+
+    /// Returns the requested cursor mode, whether or not focus currently lets it apply.
+    #[must_use]
+    pub fn cursor_mode(&self) -> CursorMode {
+        self.cursor_mode.get()
+    }
+
+    fn apply_pointer_capture(&self) -> Result<(), PlatformError> {
+        if self.capture_applied.get() {
+            return Ok(());
+        }
+        // SAFETY: The window and view are alive on AppKit's main thread; the CoreGraphics cursor
+        // calls have no preconditions beyond a window-server connection.
+        unsafe {
+            self.warp_pointer_to_view_center()?;
+            if CGAssociateMouseAndMouseCursorPosition(0) != 0 {
+                return Err(PlatformError::new(
+                    "could not detach the cursor for pointer capture",
+                ));
+            }
+            void(class(c"NSCursor")?, c"hide");
+        }
+        self.capture_applied.set(true);
+        Ok(())
+    }
+
+    fn release_pointer_capture(&self) -> Result<(), PlatformError> {
+        if !self.capture_applied.replace(false) {
+            return Ok(());
+        }
+        // SAFETY: The calls balance the successful capture that set `capture_applied`.
+        unsafe {
+            let reassociated = CGAssociateMouseAndMouseCursorPosition(1) == 0;
+            void(class(c"NSCursor")?, c"unhide");
+            if !reassociated {
+                return Err(PlatformError::new(
+                    "could not reattach the cursor after pointer capture",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn warp_pointer_to_view_center(&self) -> Result<(), PlatformError> {
+        // SAFETY (caller): The view and window are alive on AppKit's main thread; converted
+        // aggregates follow the SDK ABI and are copied immediately.
+        unsafe {
+            let bounds = rect_value(self.view.as_ptr(), c"bounds");
+            let center = Point {
+                x: bounds.origin.x + bounds.size.width / 2.0,
+                y: bounds.origin.y + bounds.size.height / 2.0,
+            };
+            let window_point = point_object(
+                self.view.as_ptr(),
+                c"convertPoint:toView:",
+                center,
+                core::ptr::null_mut(),
+            );
+            let screen_rect = rect_rect(
+                self.raw.as_ptr(),
+                c"convertRectToScreen:",
+                Rect {
+                    origin: window_point,
+                    size: Size::default(),
+                },
+            );
+            let primary = object(object(class(c"NSScreen")?, c"screens"), c"firstObject");
+            if primary.is_null() {
+                // Without a display there is no cursor position to pin.
+                return Ok(());
+            }
+            let primary_height = rect_value(primary, c"frame").size.height;
+            let warped = CGWarpMouseCursorPosition(Point {
+                x: screen_rect.origin.x,
+                y: primary_height - screen_rect.origin.y,
+            });
+            if warped != 0 {
+                return Err(PlatformError::new(
+                    "could not move the cursor into the captured window",
+                ));
+            }
+            Ok(())
+        }
+    }
+
     fn take_focus_transition(&self) -> Option<InputEvent> {
         let focused = self.delegate_state.focused.get();
         if self.last_focused.replace(focused) == focused {
             return None;
         }
-        if !focused {
+        if focused {
+            if self.cursor_mode.get() == CursorMode::Captured {
+                // Best effort: a refused reapplication leaves the cursor free rather than
+                // failing the pump; the mode stays requested for the next transition.
+                let _ = self.apply_pointer_capture();
+            }
+        } else {
             self.captured_pointer_buttons.set(0);
+            let _ = self.release_pointer_capture();
         }
         Some(InputEvent::FocusChanged { focused })
     }
@@ -397,6 +520,15 @@ impl Window {
                 | EVENT_LEFT_MOUSE_DRAGGED
                 | EVENT_RIGHT_MOUSE_DRAGGED
                 | EVENT_OTHER_MOUSE_DRAGGED => {
+                    if self.capture_applied.get() {
+                        // The pinned cursor makes absolute positions meaningless; AppKit's
+                        // event deltas are already top-left oriented.
+                        return Some(InputEvent::PointerDelta {
+                            delta_x: f64_value(event, c"deltaX"),
+                            delta_y: f64_value(event, c"deltaY"),
+                            modifiers,
+                        });
+                    }
                     let (position, inside) = self.pointer_position(event);
                     (inside || self.captured_pointer_buttons.get() != 0).then_some(
                         InputEvent::PointerMoved {
@@ -525,6 +657,8 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
+        // The system cursor must never stay hidden or detached past the window's life.
+        let _ = self.release_pointer_capture();
         // Best-effort pool creation must not guard ownership cleanup: the delegate association
         // borrows close_requested, so leaving it attached while Rust fields drop would be unsound.
         let _pool = AutoreleasePool::new().ok();

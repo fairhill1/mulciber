@@ -109,6 +109,15 @@ factor `1.0`. They advance the same revision type on extent changes, but per-mon
 display-change, fractional-scaling, and explicit Wayland zero-sized-suspension behavior remain
 pending evidence and must not be inferred from the current value.
 
+### Pointer capture as intent
+
+`Window::set_cursor_mode` records an application intent (`Normal` or `Captured`) and the platform
+owns the native policy: cursor hiding and pinning, relative `PointerDelta` delivery, suspension on
+focus loss, reapplication on focus gain, and unconditional cursor restoration when the window
+drops. Backends without an implementation report `Unsupported` for capture while accepting the
+`Normal` release path, so portable shutdown code stays uniform. The event and per-backend details
+live in the [input contract](input-contract.md).
+
 ### Borrowed native integration
 
 `Window::surface_target` returns an opaque value borrowed for the window lifetime. It transfers no

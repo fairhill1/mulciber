@@ -15,10 +15,12 @@ use glam::Quat;
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 const SHADER: &str = include_str!("../../../examples/cube/src/cube.wgsl");
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -55,6 +57,8 @@ struct Interaction {
     distance_offset: f32,
     dragging: bool,
     pointer: Option<LogicalPosition<f64>>,
+    capture_intended: bool,
+    captured: bool,
 }
 
 impl Default for Interaction {
@@ -67,6 +71,8 @@ impl Default for Interaction {
             distance_offset: 0.0,
             dragging: false,
             pointer: None,
+            capture_intended: false,
+            captured: false,
         }
     }
 }
@@ -104,6 +110,10 @@ impl Interaction {
 
     fn primary_button(&mut self, state: ElementState) {
         self.dragging = state == ElementState::Pressed;
+    }
+
+    fn pointer_delta(&mut self, delta_x: f64, delta_y: f64) {
+        self.rotate(delta_x as f32 * 0.008, delta_y as f32 * 0.008);
     }
 
     fn scroll(&mut self, delta: MouseScrollDelta, scale_factor: f64) {
@@ -156,6 +166,9 @@ impl ApplicationHandler for App {
                         println!(
                             "input: W/A/S/D or arrows rotate, primary-button drag orbits, scroll zooms, Space toggles spin, R resets"
                         );
+                        println!(
+                            "input: C captures the pointer for relative look, Escape releases it"
+                        );
                         self.gpu = Some(gpu);
                         self.window = Some(window);
                     }
@@ -178,10 +191,44 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Focused(focused) => self.interaction.focus(focused),
+            WindowEvent::Focused(focused) => {
+                self.interaction.focus(focused);
+                // Hand-rolled capture suspension across focus changes; the platform offers none.
+                if focused {
+                    if self.interaction.capture_intended {
+                        self.interaction.captured = grab_pointer(window, true);
+                    }
+                } else if self.interaction.captured {
+                    grab_pointer(window, false);
+                    self.interaction.captured = false;
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let PhysicalKey::Code(key) = event.physical_key {
-                    self.interaction.key(key, event.repeat);
+                    match key {
+                        KeyCode::KeyC if !event.repeat => {
+                            if self.interaction.capture_intended {
+                                grab_pointer(window, false);
+                                self.interaction.capture_intended = false;
+                                self.interaction.captured = false;
+                                println!("cursor mode: Normal");
+                            } else if grab_pointer(window, true) {
+                                self.interaction.capture_intended = true;
+                                self.interaction.captured = true;
+                                println!("cursor mode: Captured");
+                            } else {
+                                println!("pointer capture: refused by the platform");
+                            }
+                        }
+                        KeyCode::Escape => {
+                            if self.interaction.captured {
+                                grab_pointer(window, false);
+                            }
+                            self.interaction.capture_intended = false;
+                            self.interaction.captured = false;
+                        }
+                        _ => self.interaction.key(key, event.repeat),
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => self
@@ -217,10 +264,35 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta: (x, y) } = event
+            && self.interaction.captured
+        {
+            self.interaction.pointer_delta(x, y);
+        }
+    }
+
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+/// The `CursorGrabMode::Locked` then `Confined` fallback plus visibility bookkeeping that every
+/// surveyed consumer hand-rolls above this stack.
+fn grab_pointer(window: &Window, capture: bool) -> bool {
+    if capture {
+        let grabbed = window.set_cursor_grab(CursorGrabMode::Locked).is_ok()
+            || window.set_cursor_grab(CursorGrabMode::Confined).is_ok();
+        if grabbed {
+            window.set_cursor_visible(false);
+        }
+        grabbed
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+        window.set_cursor_visible(true);
+        false
     }
 }
 

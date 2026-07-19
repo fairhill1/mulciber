@@ -1,5 +1,24 @@
 # macOS AppKit/Metal validation runbook
 
+## Pointer-capture checkpoint
+
+On 2026-07-19, an uncommitted tree added the `CursorMode` pointer-capture intent to
+`mulciber-platform` (AppKit implementation; explicit `Unsupported` on Win32/Wayland/X11) and
+exercised `mulciber-input-cube` on the Apple M2 / macOS 15.7.7 machine with agent-driven synthetic
+keystrokes: C applied capture, Escape released it (confirmed by the next C toggling back to
+Captured rather than Normal), and the window was closed while captured, exercising the drop-path
+cursor restoration. No `PlatformError` surfaced from the CoreGraphics warp, association, or hide
+calls, and the process exited zero with the cursor restored.
+
+Synthetic keystrokes cannot produce relative mouse motion, so this checkpoint claims state-machine
+and restoration behavior only. The pending operator pass must verify, in one session of
+`MTL_DEBUG_LAYER=1 cargo run -p mulciber-input-cube`: C hides the cursor and physical mouse motion
+rotates the cube through `PointerDelta` while the cursor stays pinned; Escape restores the visible,
+free cursor at the window center; Cmd+Tab away releases the capture and restores the cursor, and
+returning focus reapplies it; and titlebar close while captured leaves the system cursor normal.
+Record any cursor left hidden, detached, or visibly misplaced as a failure even if rendering is
+correct.
+
 ## Presentation feedback checkpoint
 
 On 2026-07-19, an uncommitted tree based on `edfb792` added presentation-feedback instrumentation

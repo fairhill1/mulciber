@@ -8,9 +8,9 @@ use std::ptr::{self, NonNull};
 use std::rc::Rc;
 
 use crate::{
-    ButtonState, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PlatformError,
-    PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent, WindowMetrics,
-    WindowRevision,
+    ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
+    PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor,
+    WindowEvent, WindowMetrics, WindowRevision,
 };
 
 type Handle = *mut c_void;
@@ -519,6 +519,31 @@ impl Window {
             window: self.handle,
             _window: PhantomData,
         }
+    }
+
+    /// Requests how this window interacts with the system pointer.
+    ///
+    /// # Errors
+    ///
+    /// Pointer capture is not yet implemented on the Win32 backend, so requesting
+    /// [`CursorMode::Captured`] reports [`PlatformErrorKind::Unsupported`]; requesting the
+    /// already-active [`CursorMode::Normal`] succeeds so portable release paths stay uniform.
+    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    pub fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
+        match mode {
+            CursorMode::Normal => Ok(()),
+            CursorMode::Captured => Err(PlatformError::with_kind(
+                PlatformErrorKind::Unsupported,
+                "pointer capture is not yet implemented on the Win32 backend",
+            )),
+        }
+    }
+
+    /// Returns the requested cursor mode, which stays [`CursorMode::Normal`] on this backend.
+    #[must_use]
+    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    pub fn cursor_mode(&self) -> CursorMode {
+        CursorMode::Normal
     }
 
     fn is_open(&self) -> bool {

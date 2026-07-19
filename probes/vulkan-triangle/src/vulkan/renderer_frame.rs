@@ -2,7 +2,8 @@ use super::{
     FRAME_SLOT_COUNT, FrameAcquire, FrameDisposition, FrameUniform, Instant, LiveResizeSample,
     POST_QUERY_END, POST_QUERY_START, ProbeError, Renderer, SCENE_QUERY_END, SCENE_QUERY_START,
     SHADOW_MAP_SIZE, SHADOW_QUERY_END, SHADOW_QUERY_START, SurfaceUnavailable, UINT64_MAX, check,
-    color_subresource_range, command_buffer_submit_info, depth_subresource_range, mem, ptr, vk,
+    color_subresource_range, command_buffer_submit_info, depth_subresource_range, mem, ptr, thread,
+    vk,
 };
 
 impl Renderer {
@@ -14,6 +15,9 @@ impl Renderer {
         live_resize: bool,
     ) -> Result<bool, ProbeError> {
         frame_trace("render begin");
+        if let Some(stall) = self.present_pacing.spike_sleep() {
+            thread::sleep(stall);
+        }
         let trace_started = self.live_resize_trace.begin(live_resize);
         let mut trace_sample = LiveResizeSample::default();
         let operation_started = Instant::now();
@@ -225,6 +229,7 @@ impl Renderer {
             println!("Acquired-frame abandonment: recovery confirmed by a later presented frame");
         }
         if matches!(result, vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR) {
+            self.present_pacing.record_present_return();
             let _disposition = FrameDisposition::Presented(
                 self.surface_info
                     .expect("a presented image has a configured surface generation")
@@ -882,6 +887,7 @@ impl Renderer {
             self.wait_for_frame()?;
             self.collect_frame_gpu_timestamps()?;
             self.report_gpu_timing();
+            self.finish_present_pacing()?;
             self.save_pipeline_cache()?;
             return self.frame_abandonment.require_recovery();
         }
@@ -938,6 +944,7 @@ impl Renderer {
             retired.present_pending.fill(false);
         }
         self.report_gpu_timing();
+        self.finish_present_pacing()?;
         self.save_pipeline_cache()?;
         self.frame_abandonment.require_recovery()
     }

@@ -192,9 +192,12 @@ impl<'window> TexturedSession<'window> {
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
 
-    /// Native Vulkan presentation feedback is not implemented yet: the
+    /// Native Vulkan presentation feedback is not implemented yet: the surveyed Intel tier
+    /// exposes no feedback extension, and the remaining
     /// `VK_KHR_present_id`/`VK_KHR_present_wait`, display-timing, and platform feedback survey is
     /// an outstanding Gate 4 pacing-plan step, so absence is reported rather than estimated here.
+    /// The receiver keeps the session call shape shared with the Metal implementation.
+    #[allow(clippy::unused_self)]
     pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
         PresentFeedback::Unsupported
     }

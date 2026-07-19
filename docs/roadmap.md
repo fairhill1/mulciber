@@ -63,9 +63,10 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [ ] Record per-platform presentation-feedback availability for the
   [Gate 4 pacing plan](gate4-pacing-plan.md) (Metal presented handlers with `presentedTime` and
   drawable-ID correlation are physically exercised on the Apple M2 60 Hz tier, including
-  vsync-quantized load-spike degradation and a per-frame CSV path; the Vulkan
-  `VK_KHR_present_id`/`present_wait`, display-timing, and Wayland presentation-time survey remains
-  outstanding).
+  vsync-quantized load-spike degradation and a per-frame CSV path; the Windows Intel UHD 620 tier
+  is surveyed and exposes none of `VK_KHR_present_id`/`present_wait`, `VK_GOOGLE_display_timing`,
+  or `VK_KHR_incremental_present`, making the estimation fallback the only path on that recorded
+  tier; the Nvidia tier and the Wayland presentation-time survey remain outstanding).
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.

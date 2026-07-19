@@ -9,6 +9,17 @@ pub(super) struct RunOptions {
     pub(super) abandon_acquired_frame_once: bool,
     pub(super) platform: Option<String>,
     pub(super) pipeline_cache: PipelineCacheOptions,
+    pub(super) pacing_csv: Option<PathBuf>,
+    pub(super) load_spike: Option<LoadSpike>,
+}
+
+/// A fixed CPU stall injected before a range of presented frames for the pre-registered
+/// load-spike pacing scenario.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LoadSpike {
+    pub(super) start: u64,
+    pub(super) count: u64,
+    pub(super) millis: u64,
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +63,18 @@ pub(super) fn parse_run_options(
             "--rebuild-pipeline-cache" => options.pipeline_cache.rebuild = true,
             "--require-pipeline-cache-hits" => options.pipeline_cache.strict = true,
             "--disable-pipeline-cache" => options.pipeline_cache.disabled = true,
+            "--pacing-csv" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| ProbeError("--pacing-csv requires a file path".into()))?;
+                options.pacing_csv = Some(PathBuf::from(value));
+            }
+            "--load-spike" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| ProbeError("--load-spike requires START:COUNT:MILLIS".into()))?;
+                options.load_spike = Some(parse_load_spike(&value)?);
+            }
             _ => return Err(ProbeError(format!("unknown argument: {argument}"))),
         }
     }
@@ -70,6 +93,31 @@ pub(super) fn parse_run_options(
         ));
     }
     Ok(options)
+}
+
+fn parse_load_spike(value: &str) -> Result<LoadSpike, ProbeError> {
+    let mut parts = value.splitn(3, ':');
+    let (Some(start), Some(count), Some(millis)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(ProbeError(
+            "--load-spike requires START:COUNT:MILLIS".into(),
+        ));
+    };
+    let parse = |part: &str, label: &str| {
+        part.parse::<u64>()
+            .map_err(|error| ProbeError(format!("invalid --load-spike {label}: {error}")))
+    };
+    let spike = LoadSpike {
+        start: parse(start, "start")?,
+        count: parse(count, "count")?,
+        millis: parse(millis, "millis")?,
+    };
+    if spike.count == 0 || spike.millis == 0 {
+        return Err(ProbeError(
+            "--load-spike count and millis must be positive".into(),
+        ));
+    }
+    Ok(spike)
 }
 
 #[cfg(test)]
@@ -108,6 +156,23 @@ mod tests {
                 .to_string()
                 .contains("--platform")
         );
+    }
+
+    #[test]
+    fn parses_pacing_controls() {
+        let options = parse_run_options([
+            "--pacing-csv".into(),
+            "pacing.csv".into(),
+            "--load-spike".into(),
+            "120:30:40".into(),
+        ])
+        .expect("valid pacing controls");
+        assert_eq!(options.pacing_csv, Some(PathBuf::from("pacing.csv")));
+        let spike = options.load_spike.expect("parsed load spike");
+        assert_eq!((spike.start, spike.count, spike.millis), (120, 30, 40));
+        assert!(parse_run_options(["--load-spike".into(), "120:30".into()]).is_err());
+        assert!(parse_run_options(["--load-spike".into(), "120:0:40".into()]).is_err());
+        assert!(parse_run_options(["--pacing-csv".into()]).is_err());
     }
 
     #[test]

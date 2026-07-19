@@ -512,6 +512,20 @@ is reported rather than silently estimated. Any other feedback output on Vulkan 
 Availability results feed the roadmap section 1 survey item. A tier without `present_wait` is
 evidence for the plan's estimation fallback, not a failed run.
 
+On a tier whose survey found no feedback extension, additionally record the estimation baseline
+(revision with the pacing instrumentation, `95c3021` descendants):
+
+```powershell
+cargo run -p mulciber-vulkan-triangle -- --frames 300 --pacing-csv vulkan-pacing-steady.csv
+cargo run -p mulciber-vulkan-triangle -- --frames 300 --load-spike 120:30:40 --pacing-csv vulkan-pacing-spike.csv
+```
+
+Each run prints a report labeled "CPU present-return estimation". Record both reports and keep the
+CSVs: they are the estimation-side data for the plan's timestamp-fidelity measurement. Expect
+steady intervals near the display refresh under FIFO backpressure with more jitter than a
+native-feedback report, and expect the spike run's non-spike intervals to stay near nominal while
+spike intervals reflect the injected stall.
+
 ## Manual fallback
 
 From the repository root:

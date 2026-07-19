@@ -22,6 +22,7 @@ mod renderer_compute;
 mod renderer_descriptors;
 mod renderer_frame;
 mod renderer_instrumentation;
+mod renderer_pacing;
 mod renderer_pipelines;
 mod renderer_present;
 mod renderer_retirement;
@@ -30,11 +31,12 @@ mod renderer_transfer;
 mod resize_trace;
 mod texture;
 
-use options::{RunOptions, parse_run_options};
+use options::{LoadSpike, RunOptions, parse_run_options};
 use pipeline_cache::{
     PipelineCacheIdentity, default_path as pipeline_cache_default_path, replace_file_atomically,
     uuid_hex as pipeline_cache_uuid_hex, validate_header as validate_pipeline_cache_header,
 };
+use renderer_pacing::PresentPacing;
 use resize_trace::{LiveResizeSample, LiveResizeTrace};
 use texture::{
     Bc1Support, TEXTURE_HEIGHT, TEXTURE_WIDTH, TextureMode, TexturePath, TextureSelection,
@@ -1505,6 +1507,7 @@ struct Renderer {
     acquire_timeout: u64,
     frame_abandonment: FrameAbandonmentState,
     live_resize_trace: LiveResizeTrace,
+    present_pacing: PresentPacing,
 }
 
 impl Renderer {
@@ -1594,6 +1597,7 @@ impl Renderer {
             acquire_timeout: platform::acquire_timeout(window),
             frame_abandonment: FrameAbandonmentState::new(options.abandon_acquired_frame_once),
             live_resize_trace: LiveResizeTrace::from_environment(),
+            present_pacing: PresentPacing::new(options),
         };
         if renderer.live_resize_trace.is_enabled() {
             println!("Live resize timing trace enabled");

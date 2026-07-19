@@ -1,8 +1,8 @@
 //! Geometry, texture, and grouped transform data equivalent to `mulciber-instanced-scene`.
 
 use glam::{
-    camera::rh::{proj::directx, view},
     Mat4, Quat, Vec3,
+    camera::rh::{proj::directx, view},
 };
 
 #[repr(C)]

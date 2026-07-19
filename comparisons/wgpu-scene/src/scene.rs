@@ -1,8 +1,8 @@
 //! Geometry, texture, and transform data equivalent to `mulciber-scene`.
 
 use glam::{
-    camera::rh::{proj::directx, view},
     Mat4, Quat, Vec3,
+    camera::rh::{proj::directx, view},
 };
 
 #[repr(C)]

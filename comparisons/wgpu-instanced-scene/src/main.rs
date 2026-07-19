@@ -52,7 +52,11 @@ impl ApplicationHandler for App {
                         println!(
                             "backend: wgpu ({:?}), samples: {}, scene objects: 100, instance batches: 4",
                             gpu.backend(),
-                            if gpu.sample_count() == 4 { "Four" } else { "One" }
+                            if gpu.sample_count() == 4 {
+                                "Four"
+                            } else {
+                                "One"
+                            }
                         );
                         self.gpu = Some(gpu);
                         self.window = Some(window);

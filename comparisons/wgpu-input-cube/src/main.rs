@@ -92,12 +92,12 @@ impl Interaction {
     }
 
     fn pointer_moved(&mut self, position: LogicalPosition<f64>) {
-        if self.dragging {
-            if let Some(previous) = self.pointer {
-                let yaw = (position.x - previous.x) as f32 * 0.008;
-                let pitch = (position.y - previous.y) as f32 * 0.008;
-                self.rotate(yaw, pitch);
-            }
+        if self.dragging
+            && let Some(previous) = self.pointer
+        {
+            let yaw = (position.x - previous.x) as f32 * 0.008;
+            let pitch = (position.y - previous.y) as f32 * 0.008;
+            self.rotate(yaw, pitch);
         }
         self.pointer = Some(position);
     }
@@ -125,10 +125,10 @@ impl Interaction {
     }
 
     fn animation_time(&mut self, frame_seconds: f32) -> f32 {
-        if let Some(previous) = self.last_frame_seconds {
-            if !self.paused {
-                self.animation_seconds += frame_seconds - previous;
-            }
+        if let Some(previous) = self.last_frame_seconds
+            && !self.paused
+        {
+            self.animation_seconds += frame_seconds - previous;
         }
         self.last_frame_seconds = Some(frame_seconds);
         self.animation_seconds

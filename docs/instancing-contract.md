@@ -69,7 +69,7 @@ module, are:
 | Source | Scene data | Application/GPU plumbing | Total |
 | --- | ---: | ---: | ---: |
 | `mulciber-instanced-scene` (`scene.rs` + `main.rs`) | 107 | 126 | 233 |
-| `wgpu-instanced-scene` (`scene.rs` + `main.rs` + `gpu.rs`) | 114 | 680 | 794 |
+| `wgpu-instanced-scene` (`scene.rs` + `main.rs` + `gpu.rs`) | 114 | 684 | 798 |
 
 The comparison measures application ergonomics, not total implementation or maintenance cost.
 Mulciber's native Metal and Vulkan implementation remains library code and part of the wider

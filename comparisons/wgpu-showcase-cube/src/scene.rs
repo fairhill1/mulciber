@@ -1,6 +1,6 @@
 //! Geometry and interactive transform data equivalent to the Mulciber showcase.
 
-use glam::{camera::rh::proj::directx, Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec3, camera::rh::proj::directx};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

@@ -1,7 +1,7 @@
 //! The same geometry, texture, and transform data as `examples/cube/src/scene.rs`, restated with
 //! this crate's own vertex type so the comparison target owns its application code end to end.
 
-use glam::{camera::rh::proj::directx, Mat4, Vec3};
+use glam::{Mat4, Vec3, camera::rh::proj::directx};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

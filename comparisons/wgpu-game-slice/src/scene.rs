@@ -1,8 +1,8 @@
 //! Geometry, textures, camera, and render transforms equivalent to Forge Run.
 
 use glam::{
-    camera::rh::{proj::directx, view},
     Mat4, Quat, Vec2, Vec3,
+    camera::rh::{proj::directx, view},
 };
 
 use crate::game::{Game, OBSTACLES};

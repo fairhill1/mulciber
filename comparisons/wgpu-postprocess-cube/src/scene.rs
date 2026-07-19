@@ -1,6 +1,6 @@
 //! Geometry and transform data equivalent to the Mulciber postprocess cube.
 
-use glam::{camera::rh::proj::directx, Mat4, Vec3};
+use glam::{Mat4, Vec3, camera::rh::proj::directx};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

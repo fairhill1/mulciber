@@ -92,7 +92,20 @@ collection, sentry collision, and normal close without Metal diagnostics beyond 
 This does not establish process/OS sleep behavior or Windows/Linux runtime-backed suspension.
 
 On 2026-07-19, at committed revision `9fdd733`, the operator replayed the slice that consumes
-`Surface::take_present_feedback` into the runtime pacing diagnostics and reported the session fine.
-The exit pacing report's console output was not preserved from that session, so no cadence numbers
-are claimed from it; captured distributions belong to the pre-registered
-[Gate 4 pacing plan](gate4-pacing-plan.md) measurement runs.
+`Surface::take_present_feedback` into the runtime pacing diagnostics, reported the session fine,
+and preserved the exit report:
+
+```
+presentation pacing: 851 presented frames (4 without a display time), estimated cadence 16.667 ms,
+recent intervals (n=240) min 16.667 ms, median 16.667 ms, p95 16.667 ms, max 16.667 ms,
+0 missed intervals
+```
+
+This is the first native-feedback distribution from real interactive play rather than a synthetic
+probe: across the retained 240-interval window the reported display times sit exactly on the 60 Hz
+vsync grid with zero spread and zero missed intervals, and the four presents without a display
+time flowed through the explicit untimed path. Contrast the CPU present-return estimation baselines,
+which show several milliseconds of interval noise around the same true cadence. This single steady
+session on one 60 Hz display does not exercise the load-spike or resume scenarios; those captured
+distributions belong to the pre-registered [Gate 4 pacing plan](gate4-pacing-plan.md) measurement
+runs.

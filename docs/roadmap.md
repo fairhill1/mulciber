@@ -192,10 +192,10 @@ fallback, and acquired-frame abandonment/recovery controls.
 - [ ] Add a pointer-capture/cursor-mode API to `mulciber-platform` that owns the native
   locked-versus-confined policy and cursor visibility; all five surveyed games hand-roll the same
   fallback (see the [consumer evidence](consumer-evidence.md)). The `CursorMode` intent,
-  `PointerDelta` events, and focus/drop restoration policy are extracted with the AppKit
-  implementation smoke-run and consumed by `mulciber-input-cube`; Win32, Wayland, and X11 report
-  explicit `Unsupported`, and the physical mouse-look pass is recorded as pending in the
-  [input contract](input-contract.md).
+  `PointerDelta` events, and focus/drop restoration policy are extracted and consumed by
+  `mulciber-input-cube`, with the AppKit implementation physically verified for relative
+  mouse-look on the Apple M2 tier; Win32, Wayland, and X11 report explicit `Unsupported` until
+  their tiers are exercised (see the [input contract](input-contract.md)).
 
 Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
 `mulciber-platform` and drive both full native probes. The extracted path passed the automated

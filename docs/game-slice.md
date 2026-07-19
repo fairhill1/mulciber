@@ -90,3 +90,9 @@ The operator held movement, minimized the window, released the key while minimiz
 restored it. They confirmed no catch-up jump and no stuck movement. The run also exercised
 collection, sentry collision, and normal close without Metal diagnostics beyond the enabled banner.
 This does not establish process/OS sleep behavior or Windows/Linux runtime-backed suspension.
+
+On 2026-07-19, at committed revision `9fdd733`, the operator replayed the slice that consumes
+`Surface::take_present_feedback` into the runtime pacing diagnostics and reported the session fine.
+The exit pacing report's console output was not preserved from that session, so no cadence numbers
+are claimed from it; captured distributions belong to the pre-registered
+[Gate 4 pacing plan](gate4-pacing-plan.md) measurement runs.

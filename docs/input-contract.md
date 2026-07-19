@@ -71,8 +71,9 @@ releases), and `comparisons/wgpu-input-cube` implements the equivalent behavior 
 the `CursorGrabMode::Locked` then `Confined` fallback, manual visibility and focus suspension
 bookkeeping, and `DeviceEvent::MouseMotion` deltas. On 2026-07-19 an agent-driven AppKit smoke run
 exercised capture, Escape release, recapture, and close-while-captured with no native errors and a
-restored cursor; synthetic input cannot produce relative motion, so physical mouse-look
-verification remains an operator task recorded in the [macOS runbook](macos-validation.md).
+restored cursor, and the operator then physically verified relative mouse-look capture on the
+Apple M2 tier; both records live in the [macOS runbook](macos-validation.md). Win32, Wayland, and
+X11 capture behavior remains unimplemented and unexercised.
 
 ## AppKit implementation checkpoint
 

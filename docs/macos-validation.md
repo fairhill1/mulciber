@@ -10,14 +10,20 @@ Captured rather than Normal), and the window was closed while captured, exercisi
 cursor restoration. No `PlatformError` surfaced from the CoreGraphics warp, association, or hide
 calls, and the process exited zero with the cursor restored.
 
-Synthetic keystrokes cannot produce relative mouse motion, so this checkpoint claims state-machine
-and restoration behavior only. The pending operator pass must verify, in one session of
+Synthetic keystrokes cannot produce relative mouse motion, so the agent run claims state-machine
+and restoration behavior only. The operator pass verifies, in one session of
 `MTL_DEBUG_LAYER=1 cargo run -p mulciber-input-cube`: C hides the cursor and physical mouse motion
 rotates the cube through `PointerDelta` while the cursor stays pinned; Escape restores the visible,
 free cursor at the window center; Cmd+Tab away releases the capture and restores the cursor, and
 returning focus reapplies it; and titlebar close while captured leaves the system cursor normal.
 Record any cursor left hidden, detached, or visibly misplaced as a failure even if rendering is
 correct.
+
+On 2026-07-19, at committed revision `9fdd733`, the operator performed the visual pass and reported
+it fine, establishing physical relative mouse-look capture on the Apple M2 tier. The report was a
+summary confirmation rather than an itemized checklist, so the individual focus-cycle and
+close-while-captured sub-checks additionally rest on the agent-run state-machine evidence above;
+re-verify them explicitly if a regression is suspected.
 
 ## Presentation feedback checkpoint
 

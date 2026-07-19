@@ -469,6 +469,30 @@ failure, and the script checks the captured logs again. The result is written to
 under `validation-artifacts/`. Use `-SkipInteractive` only for an automated preflight that will not be
 accepted as complete physical validation. `-Frames N` and `-OutputRoot PATH` override their defaults.
 
+## Presentation-feedback availability survey
+
+The [Gate 4 pacing plan](gate4-pacing-plan.md) requires recording per-adapter availability of the
+native presentation-feedback extensions on every physical tier before the Vulkan feedback path is
+implemented. On a tier that has pulled `95c3021` or later, run from the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\validate-windows.ps1 -SkipInteractive
+cargo run -q -p mulciber-vulkan-info -- --json > vulkan-info-<tier>.json
+cargo run -q -p mulciber-vulkan-info
+cargo run -p mulciber-api-cube -- --frames 300
+```
+
+Record, per adapter, the `presentation feedback extensions:` line
+(`present_id`, `present_wait`, `google_display_timing`, `incremental_present`) from the
+human-readable report, and keep the JSON capture, which contains the complete device extension
+list. The `mulciber-api-cube` run must present its frames and print
+`presentation feedback: unsupported on this backend`: the Vulkan session deliberately reports
+absence until the feedback path is implemented, and this run is the physical evidence that absence
+is reported rather than silently estimated. Any other feedback output on Vulkan is a finding.
+
+Availability results feed the roadmap section 1 survey item. A tier without `present_wait` is
+evidence for the plan's estimation fallback, not a failed run.
+
 ## Manual fallback
 
 From the repository root:

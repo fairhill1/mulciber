@@ -5,6 +5,25 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+On 2026-07-19 the CPU present-return pacing estimation baseline (revision `94d9313`, "Add CPU
+present-return pacing estimation to the Vulkan probe", clean tree) was recorded on the Windows 11 Home
+build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,
+loader/validation 1.4.350. Because this tier's feedback survey found no native presentation-feedback
+extension, the runbook requires the estimation-side baseline. Both `mulciber-vulkan-triangle` runs
+selected the adapter, presented 300 frames through the deferred-reacquisition FIFO path, printed the
+"CPU present-return estimation" report, learned then hit the pipeline cache, and shut down with no
+Vulkan validation or loader messages. The steady run
+(`--frames 300 --pacing-csv vulkan-pacing-steady-intel-uhd-620-20260719.csv`) reported 300 presents /
+299 intervals with steady n=299, min 2.354 ms, p50 16.665 ms, p95 17.924 ms, p99 19.640 ms, max
+21.427 ms, an estimated cadence of 16.665 ms (≈60 Hz), and 0 missed intervals (>1.5x estimate). The
+load-spike run (`--frames 300 --load-spike 120:30:40 --pacing-csv
+vulkan-pacing-spike-intel-uhd-620-20260719.csv`) partitioned cleanly: the 269 non-spike intervals held
+p50 16.665 ms with 0 missed, while the 30 injected-stall frames 120..150 rose to n=30, min 41.070 ms,
+p50 42.727 ms, max 43.224 ms — the 40 ms stall on top of the ~2.7 ms nominal present return. Both
+per-frame CSVs are preserved under `validation-artifacts/`. This is the estimation-side data for the
+[Gate 4 pacing plan](gate4-pacing-plan.md) timestamp-fidelity comparison on a single-display Intel
+Vulkan tier; it adds no other-driver-tier, multi-display, or Metal presentation-feedback claim.
+
 On 2026-07-19 the presentation-feedback availability survey (revision `8117719`, "Add the
 presentation-feedback survey to the Windows runbook", clean tree) was recorded on the Windows 11 Home
 build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,

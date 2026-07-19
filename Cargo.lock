@@ -157,6 +157,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-capability-report"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-clear"
 version = "0.0.0"
 dependencies = [

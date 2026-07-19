@@ -102,8 +102,11 @@ favorable first evidence.
 
 Addressed on 2026-07-19, same day: the new-program and shader-artifact conventions plus the
 suspension policy now have a "Writing your own program" section in the README, and the graphics
-contract states the pacing model. The minimal capability path/example and the mixed-session
-diagnostic changes remain open because they change code, not documentation.
+contract states the pacing model. The two code-level actions followed the same day: mixed-session
+diagnostics now name the offending handle and uniformly report `InvalidRequest` (recorded as an
+amendment in the [decision ledger](api-slice-decisions.md)), and `mulciber-capability-report` is
+the minimal no-rendering capability example; no new API was needed for it, so the friction was
+example coverage rather than an API gap.
 
 ## Confounds and threats
 

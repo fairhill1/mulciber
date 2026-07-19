@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-capability-report"
+description = "Minimal device-capability selection and fallback report without any rendering setup"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber" }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

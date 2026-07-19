@@ -70,6 +70,7 @@ line counts and measurements are single-sourced in the linked contract documents
 | Command | Workload | Details |
 | --- | --- | --- |
 | `cargo run -p mulciber-clear` | Clear-only surface lifecycle | [graphics contract](docs/api-graphics-contract.md) |
+| `cargo run -p mulciber-capability-report` | Device-capability selection report, no rendering setup | supports `--force-one-sample` |
 | `cargo run -p mulciber-cube` | Spinning indexed, textured, depth-tested cube | [cube contract](docs/api-cube-contract.md) |
 | `cargo run -p mulciber-input-cube` | Ordered native keyboard/pointer/scroll/focus input | [input contract](docs/input-contract.md) |
 | `cargo run -p mulciber-postprocess-cube` | Offscreen resolve plus fullscreen grade/vignette pass | [postprocess contract](docs/postprocess-contract.md) |

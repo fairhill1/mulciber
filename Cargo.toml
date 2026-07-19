@@ -5,6 +5,7 @@ members = [
     "crates/mulciber-platform",
     "crates/mulciber-runtime",
     "crates/mulciber-shader",
+    "examples/capability-report",
     "examples/clear",
     "examples/cube",
     "examples/game-slice",

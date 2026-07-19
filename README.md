@@ -94,6 +94,21 @@ cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
 replacement rendering, direct and postprocessed multi-draw and instancing, mixed-session rejection,
 and fallible shutdown.
 
+### Writing your own program
+
+New programs follow the `examples/` pattern: copy an example package (path dependencies on the
+Mulciber crates, `publish = false`, workspace lints), add it to the root workspace `members`, and
+start from the example nearest your workload. Two conventions are easy to miss:
+
+- Shaders are offline artifacts. No shader compiler ships in the game process and there is no
+  runtime-WGSL path; each example embeds a checked-in `.shaderbin` selected by its `build.rs`.
+  Reuse a checked-in artifact when your pipeline shape matches (several examples and probes share
+  the cube's artifact for the standard textured pipeline), or generate a new one with
+  [`mulciber-shader`](crates/mulciber-shader/README.md).
+- Rendering suspends while a window is minimized or fully occluded: redraw delivery pauses and
+  resumes with visibility, so a program counting presented frames stalls while hidden. See the
+  [platform contract](docs/api-platform-contract.md).
+
 ## Native probes
 
 The capability reports query each backend directly and emit versioned machine-readable output for

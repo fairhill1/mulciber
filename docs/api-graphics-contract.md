@@ -57,6 +57,15 @@ reconfiguration round-trip.
 Native result codes remain structured diagnostics but do not become the ordinary application state
 machine.
 
+### VSync pacing comes from the presentation path, not the loop
+
+The platform pump does not throttle. An ordinary loop that presents on every redraw is VSync-bound
+because the presentation path itself blocks at display rate: the Metal backend acquires drawables
+from a display-synced layer (`setDisplaySyncEnabled:`), and the Vulkan backend presents through a
+FIFO swapchain. This is why the examples run without explicit sleeps, and why a minimized or fully
+occluded window, whose redraw delivery the platform suspends, presents no frames instead of
+spinning.
+
 ### Every ready frame has one disposition
 
 A ready frame mutably borrows its surface and cannot outlive that surface generation. Presentation and

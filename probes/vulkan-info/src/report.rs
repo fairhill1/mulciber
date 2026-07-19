@@ -420,6 +420,13 @@ mod platform {
                     yes_no(adapter.has_extension("VK_KHR_ray_tracing_pipeline"))
                 );
                 println!(
+                    "  presentation feedback extensions: present_id={} present_wait={} google_display_timing={} incremental_present={}",
+                    yes_no(adapter.has_extension("VK_KHR_present_id")),
+                    yes_no(adapter.has_extension("VK_KHR_present_wait")),
+                    yes_no(adapter.has_extension("VK_GOOGLE_display_timing")),
+                    yes_no(adapter.has_extension("VK_KHR_incremental_present"))
+                );
+                println!(
                     "  limits: image2D={} uniform_buffer={} storage_buffer={} push_constants={} compute_invocations={} compute_shared_memory={}",
                     adapter.limits.maximum_image_2d,
                     adapter.limits.maximum_uniform_buffer_range,

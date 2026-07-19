@@ -5,6 +5,25 @@ physical Windows evidence required for each supported hardware and driver tier.
 
 ## Recorded validation
 
+On 2026-07-19 the presentation-feedback availability survey (revision `8117719`, "Add the
+presentation-feedback survey to the Windows runbook", clean tree) was recorded on the Windows 11 Home
+build 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,
+loader/validation 1.4.350. The `-SkipInteractive` automated preflight matrix passed end to end with
+exit zero and no Vulkan validation or loader messages; evidence:
+`validation-artifacts/windows-vulkan-20260719-113012.zip`. The native Mulciber capability report
+selected the sole adapter as baseline-compatible and reported its
+`presentation feedback extensions:` line as `present_id=no present_wait=no google_display_timing=no
+incremental_present=no`; none of the four extensions appear in the adapter's 109-entry device
+extension list. The complete JSON capture is preserved at
+`validation-artifacts/vulkan-info-intel-uhd-620-20260719.json`. The `mulciber-api-cube -- --frames
+300` run selected the Vulkan backend at four samples, presented 300 textured cube frames, and printed
+`presentation feedback: unsupported on this backend`, physically confirming that this tier reports
+feedback absence rather than silently estimating it; no other feedback output was emitted, so no
+finding is recorded. Because this Intel tier lacks `VK_KHR_present_wait`, this is evidence for the
+[Gate 4 pacing plan](gate4-pacing-plan.md) estimation fallback, not a failed run. This survey covers
+only the Intel Vulkan tier on a single display; it adds no other-driver-tier, multi-display, or Metal
+presentation-feedback claim.
+
 On 2026-07-18 the native GPU instancing scene slice (revision `7f812a4`, "Add native GPU instancing
 scene slice", clean tree) received its native Vulkan physical validation on the Windows 11 Home build
 22000 / Intel UHD Graphics 620 tier, driver 31.0.101.2115, Vulkan device API 1.3.215,

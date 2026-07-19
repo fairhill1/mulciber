@@ -1,4 +1,5 @@
 use core::cell::RefCell;
+use std::format;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -397,9 +398,10 @@ impl Device<'_> {
         kind: ResourceKind,
     ) -> Result<(), GraphicsError> {
         if lease.session != self.shared.id {
-            return Err(GraphicsError::invalid_request(
-                "graphics handles belong to different sessions",
-            ));
+            return Err(GraphicsError::invalid_request(format!(
+                "{} handle belongs to a different graphics session than this device",
+                kind.label()
+            )));
         }
         session_mut(&self.shared)?.destroy_resource(DestroyRequest { kind, id: lease.id })?;
         lease.disarm();
@@ -568,7 +570,7 @@ impl Queue<'_> {
         self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
         if scene.postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
-                "graphics handles belong to different sessions",
+                "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
         let token = frame
@@ -631,7 +633,7 @@ impl Queue<'_> {
         self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
         if postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
-                "graphics handles belong to different sessions",
+                "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
         let token = frame
@@ -647,6 +649,51 @@ impl Queue<'_> {
         )
     }
 
+    /// Rejects scene targets from another session as an invalid request, and same-session targets
+    /// whose surface information no longer matches the frame as stale, so the two failures keep
+    /// their distinct corrections: fix the caller versus rebuild the targets.
+    fn validate_targets(
+        &self,
+        frame_session: u64,
+        frame_info: SurfaceInfo,
+        targets: &impl SceneTargets,
+    ) -> Result<(), GraphicsError> {
+        let label = targets.label();
+        if targets.session() != self.shared.id || targets.session() != frame_session {
+            return Err(GraphicsError::invalid_request(format!(
+                "{label} belong to a different graphics session than the queue and frame"
+            )));
+        }
+        if targets.info() != frame_info {
+            return Err(GraphicsError::stale_resource(format!(
+                "{label} are stale for the frame's surface information; recreate them from the \
+                 frame's surface info"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_draw_handle_sessions(
+        queue_session: u64,
+        frame_session: u64,
+        mesh_session: u64,
+        texture_session: u64,
+        pipeline_session: u64,
+    ) -> Result<(), GraphicsError> {
+        for (label, session) in [
+            ("mesh", mesh_session),
+            ("texture", texture_session),
+            ("pipeline", pipeline_session),
+        ] {
+            if session != queue_session || session != frame_session {
+                return Err(GraphicsError::invalid_request(format!(
+                    "{label} belongs to a different graphics session than the queue and frame"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_scene(
         &self,
         frame_session: u64,
@@ -659,26 +706,15 @@ impl Queue<'_> {
                 "textured scene must contain at least one draw",
             ));
         }
-        if targets.session() != self.shared.id
-            || targets.session() != frame_session
-            || targets.info() != frame_info
-        {
-            return Err(GraphicsError::stale_resource(
-                "graphics handles belong to different sessions or stale surface targets",
-            ));
-        }
+        self.validate_targets(frame_session, frame_info, targets)?;
         for draw in draws {
-            for session in [
+            Self::validate_draw_handle_sessions(
+                self.shared.id,
+                frame_session,
                 draw.mesh.lease.session,
                 draw.texture.lease.session,
                 draw.pipeline.lease.session,
-            ] {
-                if session != self.shared.id || session != frame_session {
-                    return Err(GraphicsError::invalid_request(
-                        "graphics handles belong to different sessions",
-                    ));
-                }
-            }
+            )?;
             if !draw
                 .model_view_projection
                 .iter()
@@ -705,31 +741,20 @@ impl Queue<'_> {
                 "instanced textured scene must contain at least one batch",
             ));
         }
-        if targets.session() != self.shared.id
-            || targets.session() != frame_session
-            || targets.info() != frame_info
-        {
-            return Err(GraphicsError::stale_resource(
-                "graphics handles belong to different sessions or stale surface targets",
-            ));
-        }
+        self.validate_targets(frame_session, frame_info, targets)?;
         for batch in batches {
             if batch.model_view_projections.is_empty() {
                 return Err(GraphicsError::invalid_request(
                     "instanced textured scene batches must contain at least one transform",
                 ));
             }
-            for session in [
+            Self::validate_draw_handle_sessions(
+                self.shared.id,
+                frame_session,
                 batch.mesh.lease.session,
                 batch.texture.lease.session,
                 batch.pipeline.lease.session,
-            ] {
-                if session != self.shared.id || session != frame_session {
-                    return Err(GraphicsError::invalid_request(
-                        "graphics handles belong to different sessions",
-                    ));
-                }
-            }
+            )?;
             if !batch
                 .model_view_projections
                 .iter()
@@ -934,6 +959,7 @@ impl PostprocessTargets {
 trait SceneTargets {
     fn session(&self) -> u64;
     fn info(&self) -> SurfaceInfo;
+    fn label(&self) -> &'static str;
 }
 
 impl SceneTargets for RenderTargets {
@@ -944,6 +970,10 @@ impl SceneTargets for RenderTargets {
     fn info(&self) -> SurfaceInfo {
         self.info
     }
+
+    fn label(&self) -> &'static str {
+        ResourceKind::RenderTargets.label()
+    }
 }
 
 impl SceneTargets for PostprocessTargets {
@@ -953,6 +983,10 @@ impl SceneTargets for PostprocessTargets {
 
     fn info(&self) -> SurfaceInfo {
         self.info
+    }
+
+    fn label(&self) -> &'static str {
+        ResourceKind::PostprocessTargets.label()
     }
 }
 

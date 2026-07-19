@@ -24,6 +24,21 @@ pub(crate) enum ResourceKind {
     PostprocessTargets,
 }
 
+impl ResourceKind {
+    /// Diagnostic name used in error messages so a violation identifies the offending handle.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Mesh => "mesh",
+            Self::Texture => "texture",
+            Self::TexturedPipeline => "textured pipeline",
+            Self::InstancedTexturedPipeline => "instanced textured pipeline",
+            Self::PostprocessPipeline => "postprocess pipeline",
+            Self::RenderTargets => "render targets",
+            Self::PostprocessTargets => "postprocess targets",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DestroyRequest {
     pub(crate) kind: ResourceKind,

@@ -131,6 +131,14 @@ message text. Validation warnings and errors fail validation runs. Rich native d
 and physically exercised device-loss/out-of-memory recovery remain open in the
 [graphics contract](api-graphics-contract.md).
 
+Amended 2026-07-19 from the [Gate 3 cold-start run](gate3-cold-start-results.md): mixed-session
+handles are always `InvalidRequest` (a caller bug to correct), including scene targets, which
+previously reported `StaleResource` for the same conceptual violation; `StaleResource` on targets
+now means exactly the surface-information mismatch whose correction is a rebuild. Every
+mixed-session message names the offending handle (mesh, texture, pipeline, postprocess pipeline,
+render targets, postprocess targets) instead of the former generic "graphics handles belong to
+different sessions", closing the which-handle gap the run recorded.
+
 ## Native reach
 
 Deliberately open. The first slice exposes no backend-specific capability boundary; the hidden

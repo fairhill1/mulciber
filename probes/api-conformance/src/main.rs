@@ -572,7 +572,7 @@ impl<'window> Cases<'window> {
                         .draw_textured_and_present(frame, draw)
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
-                    "different sessions",
+                    "mesh belongs to a different graphics session",
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");

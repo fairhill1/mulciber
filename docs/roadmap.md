@@ -187,6 +187,13 @@ fallback, and acquired-frame abandonment/recovery controls.
   SDL3 GPU, Vulkano, and scoped raylib comparisons.
 - [ ] Record the Gate 2 pass, redesign, narrow, or stop decision from correctness, ergonomics,
   learnability, control, cost, performance, and single-backend results.
+- [ ] Run the Gate 3 cold-start suite across subjects and tiers. The first pre-registered
+  model-subject run on the Apple M2 tier completed five-for-five with first-compile success on
+  every task and no reliability deficit against the familiarity-assisted `wgpu`/`winit` control,
+  but claims no pass (the pre-registered task-by-task time condition failed on two
+  interference-confounded tasks); see the [plan](gate3-cold-start-plan.md) and
+  [2026-07-19 results](gate3-cold-start-results.md). The human arm, repetition, and the
+  Vulkan-side tiers remain open.
 - [ ] Keep backend-specific capabilities reachable without leaking native object ownership or
   bypassing presentation-retirement tracking.
 - [ ] Add a pointer-capture/cursor-mode API to `mulciber-platform` that owns the native

@@ -91,7 +91,9 @@ the repository than established alternatives are to recall from prior knowledge.
 
 Maintain a small cold-start task suite that an unfamiliar Rust developer and current coding models
 attempt using only the checked-out repository. Reuse the tasks and measurement rules in the
-[comparison plan](api-extraction-plan.md). It should cover:
+[comparison plan](api-extraction-plan.md). The [Gate 3 cold-start plan](gate3-cold-start-plan.md)
+pre-registers the run protocol; the first model-subject run is recorded in the
+[2026-07-19 results](gate3-cold-start-results.md), which claim no pass. The suite should cover:
 
 1. Open a window and clear it to a chosen color.
 2. Upload a mesh and texture and render them with depth.

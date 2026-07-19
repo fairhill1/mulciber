@@ -4,15 +4,16 @@
 game-development stack. The project is validating native Vulkan and Metal resource, rendering,
 presentation, and lifecycle implementations before it extracts a stable public graphics API.
 
-Version 0.3.0 grows the unstable extraction from surface/frame lifecycle into a narrow resource and
-scene vocabulary: public `Device`, `Queue`, and `Surface` owners; owning mesh, texture, pipeline,
-generation-bound render-target, and postprocess handles with explicit fallible destruction and
-drop-queued reclamation; ordered multi-draw scene submission and native GPU instance batches; a
-fixed two-pass postprocess operation; and a recovery-oriented error taxonomy that pairs contextual
-messages with small failure kinds. It tracks the `mulciber-platform` 0.3 input-event contract. The
-native Metal and Vulkan implementations consume the shared contract and have passed their platform
-validation matrices after integration. The API remains research-stage and may change without
-compatibility guarantees.
+Version 0.4.0 adds drained native presentation feedback: `Surface::take_present_feedback` returns
+identified presented frames carrying the display time when the native system reports one, keeps
+undrained samples in a bounded queue, and answers `Unsupported` on backends without native
+feedback, so estimation fallbacks are an observable application decision. Metal implements
+feedback through drawable presented handlers; the Vulkan implementation is deliberately absent
+until its extension-availability survey runs on physical tiers. Validation diagnostics now name
+the offending handle in mixed-session rejections and report every mixed-session handle as an
+invalid request, reserving stale-resource errors for surface-information mismatches whose
+correction is a rebuild. It tracks the `mulciber-platform` 0.4 pointer-capture contract. The API
+remains research-stage and may change without compatibility guarantees.
 
 Development, design contracts, runnable examples, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).

@@ -313,8 +313,9 @@ device recovery.
   rate (the diagnostics half is extracted: `Surface::take_present_feedback` drains identified
   presented times on Metal with explicit `Unsupported` on Vulkan, and
   `mulciber-runtime::PacingDiagnostics` reports cadence estimates, interval distributions, and
-  missed intervals, consumed by Forge Run and `mulciber-api-cube`; pacing policy and the Vulkan
-  feedback path remain outstanding per the [Gate 4 pacing plan](gate4-pacing-plan.md)).
+  missed intervals, consumed by Forge Run and `mulciber-api-cube`, and the pinned wgpu/winit Forge
+  Run peer carries the equivalent best-effort present-return estimator; pacing policy and the
+  Vulkan feedback path remain outstanding per the [Gate 4 pacing plan](gate4-pacing-plan.md)).
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.
 - [ ] Evaluate timestamped or per-tick input staging against a deterministic replay/rollback

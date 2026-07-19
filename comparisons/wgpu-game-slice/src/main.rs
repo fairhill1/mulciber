@@ -2,6 +2,7 @@
 
 mod game;
 mod gpu;
+mod pacing;
 mod scene;
 
 use std::collections::HashSet;
@@ -11,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use game::Game;
 use gpu::Gpu;
+use pacing::PacingEstimate;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
@@ -29,6 +31,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(failure) = app.failure {
         return Err(failure);
     }
+    println!(
+        "presentation pacing (present-return estimation; pinned wgpu/winit expose no \
+         presented-time feedback): {}",
+        app.pacing.report()
+    );
     Ok(())
 }
 
@@ -39,6 +46,7 @@ struct App {
     clock: Option<FrameClock>,
     input: InputState,
     game: Game,
+    pacing: PacingEstimate,
     occluded: bool,
     zero_sized: bool,
     failure: Option<Box<dyn Error>>,
@@ -233,10 +241,14 @@ impl ApplicationHandler for App {
                 self.game.variable_update(plan.frame_delta.as_secs_f32());
                 self.input.end_frame();
 
-                if let Err(error) = gpu.render(&self.game, plan.interpolation) {
-                    self.failure = Some(error);
-                    event_loop.exit();
-                    return;
+                match gpu.render(&self.game, plan.interpolation) {
+                    Ok(true) => self.pacing.record_present_return(Instant::now()),
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.failure = Some(error);
+                        event_loop.exit();
+                        return;
+                    }
                 }
                 window.request_redraw();
             }

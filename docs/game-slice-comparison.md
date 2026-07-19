@@ -29,6 +29,16 @@ wgpu/winit applications implement the consumed keyboard subset and accumulator l
 their graphics/window libraries do not provide that game-loop policy. The comparison does not
 recreate unused pointer, scroll, released-membership, configuration-validation, or dropped-time APIs.
 
+Since 2026-07-19, the Mulciber and wgpu/winit applications additionally print an exit
+presentation-pacing summary for the [Gate 4 pacing plan](gate4-pacing-plan.md). The Mulciber
+application drains backend-reported presented times through `Surface::take_present_feedback` into
+`mulciber-runtime::PacingDiagnostics`. The wgpu/winit application implements a local present-return
+estimator with the same window, cadence, and missed-interval semantics, because pinned wgpu 30.0.0
+and winit 0.30.13 expose no presented-time feedback; its report is labeled as estimation. The
+direct Metal peer has not yet gained the equivalent consumer (Metal exposes presented handlers, so
+it could report true times); that remains open for the measurement session rather than being
+claimed here.
+
 The direct Metal peer consumes the checked-in metallib payload generated from the same 67-line WGSL
 module used by the native Mulciber slice; it does not ship a runtime shader compiler. This holds the
 shader program constant and makes the comparison about application integration and rendering rather
@@ -43,16 +53,19 @@ and the shared 67-line WGSL shader.
 | Source responsibility | Mulciber | Direct AppKit/Metal | wgpu/winit |
 | --- | ---: | ---: | ---: |
 | Game rules and simulation state | 266 | 262 | 268 |
-| Window loop, input/timing/lifecycle coordination | included in top level | 263 | 252 |
+| Window loop, input/timing/lifecycle coordination | included in top level | 263 | 264 |
 | Geometry, game data, camera, and transforms | 175 | 188 | 194 |
-| Top-level resources and scene submission | 190 | included above | included above |
-| Explicit GPU setup, resources, resize, passes, synchronization, and presentation | included in top level | 443 | 626 |
-| **Total** | **631** | **1,156** | **1,340** |
+| Top-level resources, scene submission, and pacing consumption | 209 | included above | included above |
+| Presentation pacing estimation | provided by `mulciber-runtime` | not yet implemented | 88 |
+| Explicit GPU setup, resources, resize, passes, synchronization, and presentation | included in top level | 443 | 632 |
+| **Total** | **650** | **1,156** | **1,446** |
 
 The near-identical game-rule counts are useful: most of each difference is integration and graphics
 plumbing rather than different gameplay scope. Excluding those equivalent game-rule files, the
-outside-in platform/runtime/render portions are 365 Mulciber lines, 894 direct AppKit/Metal lines,
-and 1,072 wgpu/winit lines.
+outside-in platform/runtime/render portions are 384 Mulciber lines, 894 direct AppKit/Metal lines,
+and 1,178 wgpu/winit lines. Of the wgpu/winit growth over Mulciber's consumer, the 88-line
+estimator module plus its wiring is the application cost of pacing without presented-time feedback
+that Gate 4 measurement 2 records; the direct Metal total does not yet include a pacing consumer.
 
 This metric does not compare total implementation size or maturity. It excludes Mulciber's native
 backends and runtime implementation just as it excludes metal-rs, objc2, wgpu, and winit internals.
@@ -66,7 +79,10 @@ superiority.
 The following release builds ran sequentially from distinct empty `CARGO_TARGET_DIR` directories on
 the Apple M2 machine. Times are single observations from `/usr/bin/time -p`, not statistical build
 benchmarks. Package counts are unique normal dependency-tree entries including the application
-package and local Mulciber crates. Binary sizes are unstripped Cargo release outputs.
+package and local Mulciber crates. Binary sizes are unstripped Cargo release outputs. These
+2026-07-18 observations predate the pacing-consumer additions above and the comparisons workspace
+moving from edition 2021 to 2024 on 2026-07-19; they are retained as recorded rather than silently
+re-measured, and the Gate 4 cost-control measurement will produce fresh figures.
 
 | Measurement | Mulciber | Direct AppKit/Metal | wgpu/winit |
 | --- | ---: | ---: | ---: |

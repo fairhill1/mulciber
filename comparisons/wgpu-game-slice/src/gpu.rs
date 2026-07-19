@@ -260,22 +260,28 @@ impl Gpu {
         self.configured = true;
     }
 
+    /// Renders and presents one frame, reporting whether a present was actually issued so the
+    /// caller can timestamp it for pacing estimation.
     #[allow(clippy::cast_precision_loss)]
-    pub(crate) fn render(&mut self, game: &Game, interpolation: f64) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn render(
+        &mut self,
+        game: &Game,
+        interpolation: f64,
+    ) -> Result<bool, Box<dyn Error>> {
         if !self.configured {
-            return Ok(());
+            return Ok(false);
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(());
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 let (width, height) = (self.config.width, self.config.height);
                 self.configured = false;
                 self.resize(width, height);
-                return Ok(());
+                return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err("surface acquisition failed validation".into());
@@ -307,7 +313,7 @@ impl Gpu {
         self.encode_postprocess(&mut encoder, &frame_view);
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
-        Ok(())
+        Ok(true)
     }
 
     fn encode_scene(&self, encoder: &mut wgpu::CommandEncoder, ranges: &[(u64, u32); 5]) {

@@ -6,7 +6,9 @@ use std::{format, vec::Vec};
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
-use crate::graphics::{MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter};
+use crate::graphics::{
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
+};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -3211,23 +3213,47 @@ fn create_material_pipeline(
     let multisample = vk::VkPipelineMultisampleStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         rasterizationSamples: sample_count,
+        alphaToCoverageEnable: if matches!(config.blend, BlendMode::Cutout) {
+            vk::VK_TRUE
+        } else {
+            vk::VK_FALSE
+        },
         ..Default::default()
+    };
+    let (depth_test, depth_write) = match config.depth {
+        DepthMode::TestWrite => (vk::VK_TRUE, vk::VK_TRUE),
+        DepthMode::TestOnly => (vk::VK_TRUE, vk::VK_FALSE),
+        DepthMode::Off => (vk::VK_FALSE, vk::VK_FALSE),
     };
     let depth = vk::VkPipelineDepthStencilStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        depthTestEnable: vk::VK_TRUE,
-        depthWriteEnable: vk::VK_TRUE,
+        depthTestEnable: depth_test,
+        depthWriteEnable: depth_write,
         depthCompareOp: vk::VK_COMPARE_OP_LESS,
         minDepthBounds: 0.0,
         maxDepthBounds: 1.0,
         ..Default::default()
     };
-    let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
-        colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
-            | vk::VK_COLOR_COMPONENT_G_BIT
-            | vk::VK_COLOR_COMPONENT_B_BIT
-            | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
-        ..Default::default()
+    let write_mask = (vk::VK_COLOR_COMPONENT_R_BIT
+        | vk::VK_COLOR_COMPONENT_G_BIT
+        | vk::VK_COLOR_COMPONENT_B_BIT
+        | vk::VK_COLOR_COMPONENT_A_BIT) as u32;
+    let blend_attachment = if matches!(config.blend, BlendMode::PremultipliedTranslucent) {
+        vk::VkPipelineColorBlendAttachmentState {
+            blendEnable: vk::VK_TRUE,
+            srcColorBlendFactor: vk::VK_BLEND_FACTOR_ONE,
+            dstColorBlendFactor: vk::VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            colorBlendOp: vk::VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor: vk::VK_BLEND_FACTOR_ONE,
+            dstAlphaBlendFactor: vk::VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            alphaBlendOp: vk::VK_BLEND_OP_ADD,
+            colorWriteMask: write_mask,
+        }
+    } else {
+        vk::VkPipelineColorBlendAttachmentState {
+            colorWriteMask: write_mask,
+            ..Default::default()
+        }
     };
     let blend = vk::VkPipelineColorBlendStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,

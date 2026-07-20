@@ -38,13 +38,14 @@ pub use presentation::{
 pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErrorKind};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
-    Device, DeviceRequest, DeviceSelection, Frame, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT,
-    MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
-    PostprocessedDraw, PostprocessedScene, PresentFeedback, PresentedFrame, Queue, RenderTargets,
-    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
-    Surface, Texture, TexturedDraw, TexturedInstanceBatch, TexturedPipeline, TexturedScene,
-    TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, DepthMode, Device, DeviceRequest, DeviceSelection, Frame, InstancedTexturedPipeline,
+    MATERIAL_SLOT_LIMIT, MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline,
+    MaterialPipelineDescriptor, MaterialRecord, Mesh, MeshIndices, OpenedGraphics,
+    PostprocessPipeline, PostprocessTargets, PostprocessedDraw, PostprocessedScene,
+    PresentFeedback, PresentedFrame, Queue, RenderTargets, SampleCount, SamplerAddress,
+    SamplerFilter, SceneContent, SceneOutput, SceneSubmission, Surface, Texture, TexturedDraw,
+    TexturedInstanceBatch, TexturedPipeline, TexturedScene, TexturedSceneDraw, Vertex,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

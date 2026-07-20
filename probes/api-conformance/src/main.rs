@@ -10,11 +10,11 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, GraphicsErrorKind, MaterialBinding, MaterialRecord,
-    Mesh, MeshIndices, OpenedGraphics, PostprocessedScene, SampleCount, SamplerAddress,
-    SamplerFilter, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, TexturedDraw,
-    TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat,
-    VertexLayout,
+    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GraphicsErrorKind,
+    MaterialBinding, MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessedScene,
+    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexturedDraw, TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -587,6 +587,8 @@ impl<'window> Cases<'window> {
                                         address: SamplerAddress::Repeat,
                                     },
                                 ],
+                                blend: BlendMode::Opaque,
+                                depth: DepthMode::TestWrite,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -602,6 +604,8 @@ impl<'window> Cases<'window> {
                                 fragment_entry: "crystal_fragment",
                                 vertex_layout: MATERIAL_LAYOUT,
                                 bindings: &MATERIAL_BINDINGS,
+                                blend: BlendMode::Opaque,
+                                depth: DepthMode::TestWrite,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -620,6 +624,8 @@ impl<'window> Cases<'window> {
                                     attributes: &MATERIAL_LAYOUT.attributes[..3],
                                 },
                                 bindings: &MATERIAL_BINDINGS,
+                                blend: BlendMode::Opaque,
+                                depth: DepthMode::TestWrite,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -635,6 +641,8 @@ impl<'window> Cases<'window> {
                                 fragment_entry: "crystal_fragment",
                                 vertex_layout: MATERIAL_LAYOUT,
                                 bindings: &MATERIAL_BINDINGS[..3],
+                                blend: BlendMode::Opaque,
+                                depth: DepthMode::TestWrite,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -684,6 +692,8 @@ impl<'window> Cases<'window> {
                         fragment_entry: "crystal_fragment",
                         vertex_layout: MATERIAL_LAYOUT,
                         bindings: &MATERIAL_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
                     },
                 )?);
                 self.foreign_material_pipeline = Some(graphics.device.create_material_pipeline(
@@ -693,6 +703,8 @@ impl<'window> Cases<'window> {
                         fragment_entry: "crystal_fragment",
                         vertex_layout: MATERIAL_LAYOUT,
                         bindings: &MATERIAL_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
                     },
                 )?);
                 // 32-bit indices deliberately back the shared material mesh so every material
@@ -815,16 +827,19 @@ impl<'window> Cases<'window> {
                 self.step = 14;
                 Ok(false)
             }
-            // Two material records with application-packed uniform bytes present directly; the
-            // second record draws through a nearest-filter clamp-to-edge sampler pipeline so both
-            // declared sampler modes reach the native samplers in one submission.
+            // Four material records with application-packed uniform bytes present directly; after
+            // the baseline record, one draws through a nearest-filter clamp-to-edge sampler
+            // pipeline, one through an alpha-to-coverage cutout pipeline with depth off, and one
+            // through a premultiplied-translucent pipeline with a read-only depth test, so every
+            // declared sampler, blend, and depth mode reaches native pipeline state in one
+            // submission.
             14 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
-                let nearest_pipeline = {
+                let (nearest_pipeline, cutout_pipeline, translucent_pipeline) = {
                     let graphics = self.graphics.as_ref().expect("session A is open");
-                    graphics.device.create_material_pipeline(
+                    let nearest = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
@@ -843,8 +858,33 @@ impl<'window> Cases<'window> {
                                     address: SamplerAddress::ClampToEdge,
                                 },
                             ],
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWrite,
                         },
-                    )?
+                    )?;
+                    let cutout = graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::Cutout,
+                            depth: DepthMode::Off,
+                        },
+                    )?;
+                    let translucent = graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::PremultipliedTranslucent,
+                            depth: DepthMode::TestOnly,
+                        },
+                    )?;
+                    (nearest, cutout, translucent)
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
                 let textures = [texture, texture];
@@ -858,6 +898,18 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: &nearest_pipeline,
+                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        textures: &textures,
+                        uniform: &uniform,
+                    },
+                    MaterialRecord {
+                        pipeline: &cutout_pipeline,
+                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        textures: &textures,
+                        uniform: &uniform,
+                    },
+                    MaterialRecord {
+                        pipeline: &translucent_pipeline,
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
                         uniform: &uniform,
@@ -878,7 +930,13 @@ impl<'window> Cases<'window> {
                 graphics
                     .device
                     .destroy_material_pipeline(nearest_pipeline)?;
+                graphics.device.destroy_material_pipeline(cutout_pipeline)?;
+                graphics
+                    .device
+                    .destroy_material_pipeline(translucent_pipeline)?;
                 self.pass("nearest clamp sampler material presentation");
+                self.pass("cutout depth-off material presentation");
+                self.pass("translucent depth-test-only material presentation");
                 self.step = 15;
                 Ok(false)
             }
@@ -934,6 +992,8 @@ impl<'window> Cases<'window> {
                         fragment_entry: "crystal_fragment",
                         vertex_layout: MATERIAL_LAYOUT,
                         bindings: &MATERIAL_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
                     },
                 )?);
                 self.pass("material destruction and drop reclamation");

@@ -37,6 +37,11 @@ uniform region; no persistent application-owned buffer handle was forced by this
 pipeline, a layout-matching mesh, one texture per declared texture slot in ascending binding
 order, and its uniform bytes. Each sampler slot declares its filter (`Nearest`/`Linear`) and
 address mode (`Repeat`/`ClampToEdge`); the pipeline owns one native sampler per declared slot.
+The descriptor also declares the pipeline's `BlendMode` — `Opaque`, alpha-to-coverage `Cutout`,
+or `PremultipliedTranslucent` source-over — and `DepthMode` (`TestWrite`, `TestOnly`, `Off`), a
+fixed mode set baked into the native pipeline at creation rather than a general state object;
+ordering translucent records after the opaque geometry they composite over stays
+application-owned through record order.
 `MaterialPipeline` joins the existing explicit-destroy and drop-reclamation paths, and
 mixed-session diagnostics name the new handle kind.
 
@@ -49,18 +54,21 @@ indexed-indirect path; descriptor pools reset with the same texture-reclamation 
 buffer-growth rules as the fixed pipelines. Metal builds a vertex descriptor from the declared
 layout at reserved buffer index 30 (collision-free because slots are capped at 15), binds the
 uniform region and textures at their WGSL binding numbers on both vertex and fragment stages,
-and draws through the existing indirect encoder path.
+and draws through the existing indirect encoder path. Both backends bake the declared blend and
+depth modes into native creation-time state: Vulkan through the pipeline's color-blend,
+multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
+blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
 
 This checkpoint does not add application-composed passes, render-to-texture, load/store
-policy, compute or storage buffers, blending or non-opaque state, instance-rate custom
-layouts, bind-group abstractions, or new texture formats. Pass composition is expected to be
-the next forcing slice.
+policy, compute or storage buffers, arbitrary blend equations beyond the fixed mode set,
+instance-rate custom layouts, bind-group abstractions, or new texture formats. Pass
+composition is expected to be the next forcing slice.
 
 ## Evidence
 
 Automated Linux evidence — the material-scene slice on native Wayland, under a KWin resize
-storm, and on X11 through XWayland, plus thirty-one conformance cases including twelve material
-cases on both paths, all validation-clean — is recorded in the
-[Linux runbook](linux-validation.md). The Metal implementation compiles under the cross-host
+storm, and on X11 through XWayland, plus thirty-four conformance cases including the material,
+index-width, sampler-mode, and blend/depth-mode cases on both paths, all validation-clean — is
+recorded in the [Linux runbook](linux-validation.md). The Metal implementation compiles under the cross-host
 type check but has not yet run on the M2 tier; the Metal artifacts for the new container also
 await that session. No macOS claims are made at this revision.

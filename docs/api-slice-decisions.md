@@ -109,6 +109,21 @@ GPU-written data enough to justify a broad API. Recorded in the
 [multi-object scene contract](scene-contract.md), [GPU instancing contract](instancing-contract.md),
 and [custom-material contract](material-contract.md).
 
+## Blend and depth state
+
+Decided for the material slice as a fixed mode set, not a general state object. Material pipeline
+creation declares a `BlendMode` — `Opaque`, `Cutout` (alpha-to-coverage, degrading to a hard alpha
+threshold at one sample), or `PremultipliedTranslucent` (source-over with premultiplied alpha) —
+and a `DepthMode` (`TestWrite`, `TestOnly`, `Off` — off never writes). The set matches the material
+taxonomy a voxel-style dogfood needs (opaque terrain, foliage cutouts, translucent water, skybox
+and overlay depth control) without opening arbitrary blend equations, factors, per-attachment
+state, or comparison functions; both backends bake the modes into creation-time native pipeline
+state. Draw ordering stays application-owned through record order: translucent records composite
+over whatever the target holds when they draw. wgpu-style freeform state objects were considered
+and rejected — no slice has forced any combination outside these six values. The fixed pipeline
+recipes keep their recorded opaque test-write behavior. Recorded in the
+[material contract](material-contract.md).
+
 ## Resource ownership and reclamation
 
 Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning

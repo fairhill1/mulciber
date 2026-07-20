@@ -337,6 +337,19 @@ material-scene example ran validation-clean on native Wayland (Vulkan, four samp
 filtering and clamping are asserted by execution, not visually verified; the Metal sampler path
 again compiles cross-host and awaits the next M2 session.
 
+Still later on 2026-07-20, material pipelines gained declared blend and depth modes from the
+fixed set recorded in the [decision ledger](api-slice-decisions.md). The direct material
+presentation frame now submits four records — the opaque test-write baseline, the nearest/clamp
+sampler pipeline, an alpha-to-coverage cutout pipeline with depth off, and a
+premultiplied-translucent pipeline with a read-only depth test — so every blend and depth mode
+reaches native pipeline state in one submission. All thirty-five cases (thirty-four plus this
+driver's Vulkan-only superseded-generation branch) passed on both native Wayland and X11 through
+XWayland, exit zero, no validation output, and the material-scene example (updated to declare
+the opaque baseline explicitly) again ran validation-clean on native Wayland (Vulkan, four
+samples). Blending, coverage, and depth behavior are asserted by execution and validation
+cleanliness, not visually verified; the Metal path compiles under the cross-host
+`aarch64-apple-darwin` type check and awaits the next M2 session.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

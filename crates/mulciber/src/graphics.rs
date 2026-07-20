@@ -330,7 +330,7 @@ impl Device<'_> {
     ///
     /// The declaration is validated against the interface `mulciber-shader` recorded in the
     /// artifact; a mismatch names the offending attribute or slot. The pipeline uses the
-    /// session's selected sample count, opaque color output, and the standard depth test.
+    /// session's selected sample count plus the declared [`BlendMode`] and [`DepthMode`].
     ///
     /// # Errors
     ///
@@ -365,6 +365,8 @@ impl Device<'_> {
             uniform: declaration.uniform,
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
+            blend: descriptor.blend,
+            depth: descriptor.depth,
         };
         let id = session_mut(&self.shared)?.create_material_pipeline(descriptor.shader, &config)?;
         Ok(MaterialPipeline {
@@ -1403,6 +1405,33 @@ pub enum SamplerAddress {
     ClampToEdge,
 }
 
+/// How a material pipeline's fragment output combines with the color target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlendMode {
+    /// Fragment color replaces the target color; fragment alpha is ignored.
+    Opaque,
+    /// Fragment alpha drives multisample coverage (alpha-to-coverage), keeping depth writes
+    /// order-independent for hard-edged transparency such as foliage cutouts. At one sample
+    /// this degrades to a hard alpha threshold.
+    Cutout,
+    /// Premultiplied source-over blending: `target = source + (1 - source.a) * target`.
+    ///
+    /// Translucent records blend against whatever the target already holds, so the application
+    /// orders them after the opaque records they should composite over.
+    PremultipliedTranslucent,
+}
+
+/// How a material pipeline interacts with the scene depth target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DepthMode {
+    /// Test against the depth target and write surviving fragment depth (opaque geometry).
+    TestWrite,
+    /// Test against the depth target without writing (translucents occluded by opaque geometry).
+    TestOnly,
+    /// Neither test nor write (skyboxes drawn first, overlays drawn last).
+    Off,
+}
+
 /// One declared sampler slot handed to the native backends.
 #[derive(Clone, Copy)]
 pub(crate) struct SamplerSlot {
@@ -1455,9 +1484,13 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub vertex_layout: VertexLayout<'inputs>,
     /// Declared resource slots; must match the module's recorded bindings.
     pub bindings: &'inputs [MaterialBinding],
+    /// How fragment output combines with the color target.
+    pub blend: BlendMode,
+    /// How the pipeline interacts with the scene depth target.
+    pub depth: DepthMode,
 }
 
-/// Depth-tested application-authored material pipeline.
+/// Application-authored material pipeline with declared blend and depth modes.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MaterialPipeline {
     lease: ResourceLease,
@@ -1485,6 +1518,8 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) texture_bindings: &'inputs [u32],
     /// Declared sampler slots with their filter and address modes.
     pub(crate) sampler_bindings: &'inputs [SamplerSlot],
+    pub(crate) blend: BlendMode,
+    pub(crate) depth: DepthMode,
 }
 
 /// Extent- and generation-dependent color/depth targets.

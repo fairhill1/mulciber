@@ -8,7 +8,9 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
-use crate::graphics::{MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter};
+use crate::graphics::{
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
+};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -50,6 +52,9 @@ const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
 const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
+const COMPARE_FUNCTION_ALWAYS: usize = 7;
+const BLEND_FACTOR_ONE: usize = 1;
+const BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA: usize = 5;
 const SAMPLER_FILTER_NEAREST: usize = 0;
 const SAMPLER_FILTER_LINEAR: usize = 1;
 const SAMPLER_ADDRESS_CLAMP_TO_EDGE: usize = 0;
@@ -1768,6 +1773,27 @@ fn create_material_pipeline(
             "material pipeline color zero",
         )?;
         objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
+        match config.blend {
+            BlendMode::Opaque => {}
+            BlendMode::Cutout => {
+                objc::void_bool(descriptor, c"setAlphaToCoverageEnabled:", true);
+            }
+            BlendMode::PremultipliedTranslucent => {
+                objc::void_bool(color, c"setBlendingEnabled:", true);
+                objc::void_usize(color, c"setSourceRGBBlendFactor:", BLEND_FACTOR_ONE);
+                objc::void_usize(
+                    color,
+                    c"setDestinationRGBBlendFactor:",
+                    BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA,
+                );
+                objc::void_usize(color, c"setSourceAlphaBlendFactor:", BLEND_FACTOR_ONE);
+                objc::void_usize(
+                    color,
+                    c"setDestinationAlphaBlendFactor:",
+                    BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA,
+                );
+            }
+        }
 
         let vertex_descriptor = required(
             objc::object(objc::class(c"MTLVertexDescriptor"), c"vertexDescriptor"),
@@ -1834,12 +1860,17 @@ fn create_material_pipeline(
             objc::object(objc::class(c"MTLDepthStencilDescriptor"), c"new"),
             "Metal material depth descriptor",
         )?;
+        let (compare_function, depth_write) = match config.depth {
+            DepthMode::TestWrite => (COMPARE_FUNCTION_LESS, true),
+            DepthMode::TestOnly => (COMPARE_FUNCTION_LESS, false),
+            DepthMode::Off => (COMPARE_FUNCTION_ALWAYS, false),
+        };
         objc::void_usize(
             depth_descriptor,
             c"setDepthCompareFunction:",
-            COMPARE_FUNCTION_LESS,
+            compare_function,
         );
-        objc::void_bool(depth_descriptor, c"setDepthWriteEnabled:", true);
+        objc::void_bool(depth_descriptor, c"setDepthWriteEnabled:", depth_write);
         let depth_state = required(
             objc::object_object(
                 device,

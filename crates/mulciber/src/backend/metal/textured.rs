@@ -14,9 +14,9 @@ use crate::graphics::{
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
-    PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowRecord, ShadowSource,
-    SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GraphicsError,
+    MaterialRecord, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowRecord,
+    ShadowSource, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
 };
 
 use objc::{Object, Origin3, Region3, Size3};
@@ -167,6 +167,19 @@ struct ResolvedInstanceBatch {
     instance_count: usize,
 }
 
+/// Geometry for one material record resolved at encoding: an uploaded mesh's arena index, or
+/// offsets into the frame's transient-geometry region recomputed in staging order.
+#[derive(Clone, Copy)]
+enum ResolvedGeometry {
+    Mesh(usize),
+    Transient {
+        vertex_offset: usize,
+        index_offset: usize,
+        index_count: usize,
+        index_type: usize,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum PreparedScene<'resources> {
     Draws(&'resources [TexturedSceneDraw<'resources>]),
@@ -190,6 +203,9 @@ pub(crate) struct TexturedSession<'window> {
     /// Frame-transient read-only storage region for material and shadow records, in bytes.
     storage: Object,
     storage_capacity: usize,
+    /// Frame-transient indexed-geometry region for material records, in bytes.
+    transient_geometry: Object,
+    transient_capacity: usize,
     instance_transforms: Object,
     instance_capacity: usize,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
@@ -207,6 +223,7 @@ pub(crate) struct TexturedSession<'window> {
 }
 
 impl<'window> TexturedSession<'window> {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn new(
         target: SurfaceTarget<'window>,
         metrics: WindowMetrics,
@@ -248,6 +265,26 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
+        let transient_geometry = match unsafe {
+            required(
+                objc::object_two_usizes(
+                    surface.device,
+                    c"newBufferWithLength:options:",
+                    STORAGE_OFFSET_ALIGNMENT,
+                    0,
+                ),
+                "Metal transient geometry buffer",
+            )
+        } {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                unsafe {
+                    objc::void(storage, c"release");
+                    objc::void(uniform, c"release");
+                };
+                return Err(failure);
+            }
+        };
         let instance_transforms = match unsafe {
             required(
                 objc::object_two_usizes(
@@ -262,6 +299,7 @@ impl<'window> TexturedSession<'window> {
             Ok(buffer) => buffer,
             Err(failure) => {
                 unsafe {
+                    objc::void(transient_geometry, c"release");
                     objc::void(storage, c"release");
                     objc::void(uniform, c"release");
                 };
@@ -276,6 +314,8 @@ impl<'window> TexturedSession<'window> {
                 uniform_capacity: 1,
                 storage,
                 storage_capacity: STORAGE_OFFSET_ALIGNMENT,
+                transient_geometry,
+                transient_capacity: STORAGE_OFFSET_ALIGNMENT,
                 instance_transforms,
                 instance_capacity: 1,
                 resolved_instance_batches: Vec::new(),
@@ -970,7 +1010,9 @@ impl<'window> TexturedSession<'window> {
             }
         }
         for record in records {
-            self.meshes.get(record.mesh.id())?;
+            if let GeometrySource::Mesh(mesh) = record.geometry {
+                self.meshes.get(mesh.id())?;
+            }
             self.material_pipelines.get(record.pipeline.id())?;
             for texture in record.textures {
                 self.textures.get(texture.id())?;
@@ -1090,6 +1132,7 @@ impl<'window> TexturedSession<'window> {
                 }
             }
         }
+        self.stage_transient_geometry(records)?;
         match shadow {
             Some(ShadowPrepass::Single(pass)) => {
                 let index = self.shadow_maps.index_of(pass.map.id())?;
@@ -1100,6 +1143,94 @@ impl<'window> TexturedSession<'window> {
                 self.shadow_map_arrays[index].rendered = true;
             }
             None => {}
+        }
+        Ok(())
+    }
+
+    /// Copies every transient-geometry record supply into the frame's shared geometry region:
+    /// per record, aligned vertex bytes followed by aligned index bytes, packed in record order
+    /// so encoding recomputes the same offsets.
+    fn stage_transient_geometry(
+        &mut self,
+        records: &[MaterialRecord<'_>],
+    ) -> Result<(), GraphicsError> {
+        let geometry_bytes = records
+            .iter()
+            .filter_map(|record| match record.geometry {
+                GeometrySource::Transient(geometry) => Some(geometry),
+                GeometrySource::Mesh(_) => None,
+            })
+            .try_fold(0_usize, |total, geometry| {
+                geometry
+                    .vertices
+                    .len()
+                    .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+                    .and_then(|aligned| total.checked_add(aligned))
+                    .and_then(|total| {
+                        geometry
+                            .indices
+                            .byte_len()
+                            .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+                            .and_then(|aligned| total.checked_add(aligned))
+                    })
+                    .ok_or_else(|| GraphicsError::new("Metal transient geometry offsets overflow"))
+            })?;
+        if geometry_bytes > self.transient_capacity {
+            let capacity = geometry_bytes
+                .checked_next_power_of_two()
+                .ok_or_else(|| GraphicsError::new("Metal transient geometry capacity overflow"))?;
+            let replacement = unsafe {
+                required(
+                    objc::object_two_usizes(
+                        self.surface.device,
+                        c"newBufferWithLength:options:",
+                        capacity,
+                        0,
+                    ),
+                    "Metal transient geometry buffer",
+                )?
+            };
+            unsafe { objc::void(self.transient_geometry, c"release") };
+            self.transient_geometry = replacement;
+            self.transient_capacity = capacity;
+        }
+        if geometry_bytes > 0 {
+            unsafe {
+                let contents = objc::pointer_value(self.transient_geometry, c"contents");
+                if contents.is_null() {
+                    return Err(GraphicsError::new(
+                        "Metal transient geometry buffer has no CPU address",
+                    ));
+                }
+                let mut offset = 0_usize;
+                for record in records {
+                    let GeometrySource::Transient(geometry) = record.geometry else {
+                        continue;
+                    };
+                    ptr::copy_nonoverlapping(
+                        geometry.vertices.as_ptr(),
+                        contents.cast::<u8>().add(offset),
+                        geometry.vertices.len(),
+                    );
+                    offset += geometry
+                        .vertices
+                        .len()
+                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                    let index_pointer: *const u8 = match geometry.indices {
+                        MeshIndices::U16(indices) => indices.as_ptr().cast(),
+                        MeshIndices::U32(indices) => indices.as_ptr().cast(),
+                    };
+                    ptr::copy_nonoverlapping(
+                        index_pointer,
+                        contents.cast::<u8>().add(offset),
+                        geometry.indices.byte_len(),
+                    );
+                    offset += geometry
+                        .indices
+                        .byte_len()
+                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                }
+            }
         }
         Ok(())
     }
@@ -1752,10 +1883,37 @@ impl<'window> TexturedSession<'window> {
                 }
                 PreparedScene::Materials(records) => {
                     let mut storage_offset = 0_usize;
+                    let mut transient_offset = 0_usize;
                     for (index, record) in records.iter().enumerate() {
                         let pipeline = &self.material_pipelines
                             [self.material_pipelines.index_of(record.pipeline.id())?];
-                        let mesh = &self.meshes[self.meshes.index_of(record.mesh.id())?];
+                        let geometry = match record.geometry {
+                            GeometrySource::Mesh(mesh) => {
+                                ResolvedGeometry::Mesh(self.meshes.index_of(mesh.id())?)
+                            }
+                            GeometrySource::Transient(supply) => {
+                                let vertex_offset = transient_offset;
+                                let index_offset = vertex_offset
+                                    + supply
+                                        .vertices
+                                        .len()
+                                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                                transient_offset = index_offset
+                                    + supply
+                                        .indices
+                                        .byte_len()
+                                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                                ResolvedGeometry::Transient {
+                                    vertex_offset,
+                                    index_offset,
+                                    index_count: supply.indices.len(),
+                                    index_type: match supply.indices {
+                                        MeshIndices::U16(_) => INDEX_TYPE_UINT16,
+                                        MeshIndices::U32(_) => INDEX_TYPE_UINT32,
+                                    },
+                                }
+                            }
+                        };
                         objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                         objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
                         if let Some((binding, _)) = pipeline.uniform {
@@ -1796,13 +1954,24 @@ impl<'window> TexturedSession<'window> {
                             .storage
                             .len()
                             .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
-                        objc::void_object_two_usizes(
-                            encoder,
-                            c"setVertexBuffer:offset:atIndex:",
-                            mesh.vertices,
-                            0,
-                            MATERIAL_VERTEX_BUFFER_INDEX,
-                        );
+                        match geometry {
+                            ResolvedGeometry::Mesh(mesh) => objc::void_object_two_usizes(
+                                encoder,
+                                c"setVertexBuffer:offset:atIndex:",
+                                self.meshes[mesh].vertices,
+                                0,
+                                MATERIAL_VERTEX_BUFFER_INDEX,
+                            ),
+                            ResolvedGeometry::Transient { vertex_offset, .. } => {
+                                objc::void_object_two_usizes(
+                                    encoder,
+                                    c"setVertexBuffer:offset:atIndex:",
+                                    self.transient_geometry,
+                                    vertex_offset,
+                                    MATERIAL_VERTEX_BUFFER_INDEX,
+                                );
+                            }
+                        }
                         for (texture, &binding) in
                             record.textures.iter().zip(&pipeline.texture_bindings)
                         {
@@ -1885,16 +2054,38 @@ impl<'window> TexturedSession<'window> {
                                 slot,
                             );
                         }
-                        objc::void_two_usizes_object_usize_object_usize(
-                            encoder,
-                            c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                            PRIMITIVE_TYPE_TRIANGLE,
-                            mesh.index_type,
-                            mesh.indices,
-                            0,
-                            mesh.indirect,
-                            0,
-                        );
+                        match geometry {
+                            ResolvedGeometry::Mesh(mesh) => {
+                                let mesh = &self.meshes[mesh];
+                                objc::void_two_usizes_object_usize_object_usize(
+                                    encoder,
+                                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                                    PRIMITIVE_TYPE_TRIANGLE,
+                                    mesh.index_type,
+                                    mesh.indices,
+                                    0,
+                                    mesh.indirect,
+                                    0,
+                                );
+                            }
+                            ResolvedGeometry::Transient {
+                                index_offset,
+                                index_count,
+                                index_type,
+                                ..
+                            } => {
+                                objc::void_three_usizes_object_two_usizes(
+                                    encoder,
+                                    c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
+                                    PRIMITIVE_TYPE_TRIANGLE,
+                                    index_count,
+                                    index_type,
+                                    self.transient_geometry,
+                                    index_offset,
+                                    1,
+                                );
+                            }
+                        }
                     }
                 }
                 PreparedScene::Instances => {
@@ -1989,6 +2180,10 @@ impl<'window> TexturedSession<'window> {
             if !self.storage.is_null() {
                 objc::void(self.storage, c"release");
                 self.storage = ptr::null_mut();
+            }
+            if !self.transient_geometry.is_null() {
+                objc::void(self.transient_geometry, c"release");
+                self.transient_geometry = ptr::null_mut();
             }
             if !self.instance_transforms.is_null() {
                 objc::void(self.instance_transforms, c"release");

@@ -39,15 +39,16 @@ pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErr
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
     BlendMode, CascadedShadowPass, DepthMode, Device, DeviceRequest, DeviceSelection, Frame,
-    InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT,
+    GeometrySource, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT,
     MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
     MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
     PostprocessedDraw, PostprocessedScene, PresentFeedback, PresentedFrame, Queue, RenderScale,
     RenderTargets, SHADOW_MAP_LAYER_LIMIT, SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress,
     SamplerFilter, SceneContent, SceneOutput, SceneSubmission, ShadowMap, ShadowMapArray,
     ShadowPass, ShadowPipeline, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord,
-    ShadowSource, Surface, Texture, TexturedDraw, TexturedInstanceBatch, TexturedPipeline,
-    TexturedScene, TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    ShadowSource, Surface, TRANSIENT_GEOMETRY_SIZE_LIMIT, Texture, TexturedDraw,
+    TexturedInstanceBatch, TexturedPipeline, TexturedScene, TexturedSceneDraw, TransientGeometry,
+    Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

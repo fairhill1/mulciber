@@ -1117,6 +1117,7 @@ impl Queue<'_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn validate_material_scene(
         &self,
         frame_session: u64,
@@ -1131,21 +1132,23 @@ impl Queue<'_> {
         }
         self.validate_targets(frame_session, frame_info, targets)?;
         for record in records {
-            let handles = [
-                ("material pipeline", record.pipeline.lease.session),
-                ("mesh", record.mesh.lease.session),
-            ]
-            .into_iter()
-            .chain(
-                record
-                    .textures
-                    .iter()
-                    .map(|texture| ("texture", texture.lease.session)),
-            )
-            .chain(record.shadow_map.iter().map(|source| match source {
-                ShadowSource::Map(map) => ("shadow map", map.lease.session),
-                ShadowSource::Array(array) => ("shadow map array", array.lease.session),
-            }));
+            let mesh = match record.geometry {
+                GeometrySource::Mesh(mesh) => Some(mesh),
+                GeometrySource::Transient(_) => None,
+            };
+            let handles = [("material pipeline", record.pipeline.lease.session)]
+                .into_iter()
+                .chain(mesh.map(|mesh| ("mesh", mesh.lease.session)))
+                .chain(
+                    record
+                        .textures
+                        .iter()
+                        .map(|texture| ("texture", texture.lease.session)),
+                )
+                .chain(record.shadow_map.iter().map(|source| match source {
+                    ShadowSource::Map(map) => ("shadow map", map.lease.session),
+                    ShadowSource::Array(array) => ("shadow map array", array.lease.session),
+                }));
             for (label, session) in handles {
                 if session != self.shared.id || session != frame_session {
                     return Err(GraphicsError::invalid_request(format!(
@@ -1205,11 +1208,55 @@ impl Queue<'_> {
                     record.storage.len()
                 )));
             }
-            if record.mesh.layout != record.pipeline.layout {
-                return Err(GraphicsError::invalid_request(
-                    "material record's mesh vertex layout does not match its pipeline's declared \
-                     layout",
-                ));
+            match record.geometry {
+                GeometrySource::Mesh(mesh) => {
+                    if mesh.layout != record.pipeline.layout {
+                        return Err(GraphicsError::invalid_request(
+                            "material record's mesh vertex layout does not match its pipeline's \
+                             declared layout",
+                        ));
+                    }
+                }
+                GeometrySource::Transient(geometry) => {
+                    let stride = usize::try_from(record.pipeline.layout.stride)
+                        .expect("validated stride fits usize");
+                    if geometry.vertices.is_empty()
+                        || !geometry.vertices.len().is_multiple_of(stride)
+                    {
+                        return Err(GraphicsError::invalid_request(
+                            "material record's transient vertex bytes must be a non-zero \
+                             multiple of its pipeline's declared layout stride",
+                        ));
+                    }
+                    if geometry.indices.is_empty() {
+                        return Err(GraphicsError::invalid_request(
+                            "material record's transient geometry must supply at least one index",
+                        ));
+                    }
+                    if geometry
+                        .indices
+                        .out_of_range(geometry.vertices.len() / stride)
+                    {
+                        return Err(GraphicsError::invalid_request(
+                            "material record's transient geometry contains an out-of-range index",
+                        ));
+                    }
+                    let supplied = geometry
+                        .vertices
+                        .len()
+                        .checked_add(geometry.indices.byte_len())
+                        .filter(|&supplied| {
+                            supplied
+                                <= usize::try_from(TRANSIENT_GEOMETRY_SIZE_LIMIT)
+                                    .expect("u32 limit fits usize")
+                        });
+                    if supplied.is_none() {
+                        return Err(GraphicsError::invalid_request(format!(
+                            "material record's transient geometry exceeds the \
+                             {TRANSIENT_GEOMETRY_SIZE_LIMIT}-byte supply limit",
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -1650,6 +1697,13 @@ impl MeshIndices<'_> {
                 .any(|&index| usize::try_from(index).map_or(true, |index| index >= vertex_count)),
         }
     }
+
+    pub(crate) const fn byte_len(&self) -> usize {
+        match *self {
+            Self::U16(indices) => indices.len() * 2,
+            Self::U32(indices) => indices.len() * 4,
+        }
+    }
 }
 
 /// Uploaded indexed geometry.
@@ -1663,6 +1717,31 @@ impl Mesh {
     pub(crate) const fn id(&self) -> ResourceId {
         self.lease.id
     }
+}
+
+/// Frame-transient indexed geometry supplied inline with one material record.
+///
+/// The bytes are copied into the session's frame-transient geometry region at submission, so the
+/// application rebuilds them freely every frame — HUD text, gauges, debug lines, and other
+/// per-frame-authored geometry — without creating or destroying [`Mesh`] resources. The vertex
+/// bytes follow the record's pipeline-declared vertex layout; the application owns that layout
+/// correctness exactly as it owns uniform memory layout.
+#[derive(Clone, Copy)]
+pub struct TransientGeometry<'resources> {
+    /// Raw vertex bytes, a non-zero multiple of the pipeline's declared layout stride.
+    pub vertices: &'resources [u8],
+    /// Non-empty indices into the supplied vertices.
+    pub indices: MeshIndices<'resources>,
+}
+
+/// Geometry supply for one material record.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum GeometrySource<'resources> {
+    /// Uploaded geometry whose retained vertex layout must match the pipeline's declaration.
+    Mesh(&'resources Mesh),
+    /// Frame-transient geometry staged with this submission against the pipeline's declaration.
+    Transient(TransientGeometry<'resources>),
 }
 
 /// Uploaded RGBA8 sRGB texture.
@@ -1719,6 +1798,13 @@ pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
 /// any palette the skinned-record slice needs, while keeping the frame-transient storage region
 /// bounded.
 pub const MATERIAL_STORAGE_SIZE_LIMIT: u32 = 65536;
+
+/// Largest supported frame-transient geometry supply in bytes, vertices and indices combined.
+///
+/// Four mebibytes stages past a hundred thousand fixed-layout vertices — far beyond any
+/// practical per-record HUD or debug overlay — while keeping the frame-transient geometry
+/// region bounded, and it caps the index count well inside the native draw-call range.
+pub const TRANSIENT_GEOMETRY_SIZE_LIMIT: u32 = 4_194_304;
 
 /// Largest supported material binding slot and vertex attribute location.
 ///
@@ -2283,8 +2369,9 @@ pub struct TexturedInstanceBatch<'resources> {
 pub struct MaterialRecord<'resources> {
     /// Material pipeline compatible with the scene targets.
     pub pipeline: &'resources MaterialPipeline,
-    /// Geometry whose vertex layout matches the pipeline's declared layout.
-    pub mesh: &'resources Mesh,
+    /// Geometry supply: an uploaded mesh whose vertex layout matches the pipeline's declared
+    /// layout, or frame-transient bytes laid out per that declaration.
+    pub geometry: GeometrySource<'resources>,
     /// Textures for the pipeline's declared texture slots in ascending binding order.
     pub textures: &'resources [&'resources Texture],
     /// The depth resource feeding the pipeline's depth-texture slot; required exactly when the

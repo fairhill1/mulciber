@@ -4,9 +4,22 @@
 game-development stack. The project is validating native Vulkan and Metal resource, rendering,
 presentation, and lifecycle implementations before it extracts a stable public graphics API.
 
-Version 0.7.0 carries no graphics API change; it moves to the `mulciber-platform` 0.5 contract,
-whose window-mode intent adds fullscreen to the platform layer this crate's surface creation
-consumes, so one dependency tree can hold both crates.
+Version 0.8.0 extends the material vocabulary along three edges, each exercised
+validation-clean on Metal with the Vulkan peer compile-verified: the shadow pre-pass composes
+as a cascaded prepass (`Device::create_shadow_map_array`, `ShadowPrepass::Cascaded` with one
+depth-only record list per layer, and a declared `DepthTextureArray` slot fed through
+`ShadowSource`), with cascade policy — splits, light matrices, texel snapping, bias, selection
+— deliberately application-owned; postprocess targets accept a validated render scale (25
+through 200 percent) decoupling the offscreen scene extent from the presentable extent through
+the existing fullscreen resample; and material records supply their geometry through
+`GeometrySource` — an uploaded mesh, or frame-transient vertex and index bytes (capped at 4
+MiB per record) for per-frame-authored overlays such as HUDs. The reshaped `MaterialRecord`
+and `SceneSubmission.shadow` are breaking; depth-texture-array modules require paired
+`mulciber-shader` 0.4 artifacts, while earlier artifacts remain loadable.
+
+Version 0.7.0 carried no graphics API change; it moved to the `mulciber-platform` 0.5
+contract, whose window-mode intent adds fullscreen to the platform layer this crate's surface
+creation consumes, so one dependency tree can hold both crates.
 
 Version 0.6.0 extended 0.5's application-authored material vocabulary along three edges, each
 exercised validation-clean on both native backends:

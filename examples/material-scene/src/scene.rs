@@ -50,6 +50,44 @@ pub(crate) const LAVA_LAYOUT: VertexLayout<'static> = VertexLayout {
     ],
 };
 
+/// Bones in the kelp strand's palette, matching the WGSL `array<mat4x4<f32>, 6>`.
+pub(crate) const KELP_BONES: usize = 6;
+
+/// Vertical span one bone governs, from its pivot to the next.
+const KELP_SEGMENT_HEIGHT: f32 = 0.75;
+
+const KELP_RADIUS: f32 = 0.32;
+
+/// Sides of the strand's tube cross-section.
+const KELP_SIDES: usize = 6;
+
+/// Kelp vertices carry position, normal, two blended bone indices, and their weights.
+pub(crate) const SKINNED_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 56,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x3,
+            offset: 12,
+        },
+        VertexAttribute {
+            location: 2,
+            format: VertexFormat::Uint32x4,
+            offset: 24,
+        },
+        VertexAttribute {
+            location: 3,
+            format: VertexFormat::Float32x4,
+            offset: 40,
+        },
+    ],
+};
+
 pub(crate) const CUBE_INDICES: [u16; 36] = [
     0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17, 18,
     16, 18, 19, 20, 21, 22, 20, 22, 23,
@@ -58,6 +96,12 @@ pub(crate) const CUBE_INDICES: [u16; 36] = [
 pub(crate) const FLOOR_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
 
 fn push_f32s(bytes: &mut Vec<u8>, values: &[f32]) {
+    for value in values {
+        bytes.extend_from_slice(&value.to_ne_bytes());
+    }
+}
+
+fn push_u32s(bytes: &mut Vec<u8>, values: &[u32]) {
     for value in values {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
@@ -194,6 +238,97 @@ pub(crate) fn lava_texture() -> [u8; 16 * 16 * 4] {
         }
     }
     texels
+}
+
+/// A tapered tube of stacked rings: each ring blends the bone below and above its height, so
+/// the strand bends smoothly when the palette sways. The tip closes with a small fan.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub(crate) fn kelp_vertices() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity((KELP_SIDES * (KELP_BONES + 1) + 1) * 56);
+    for ring in 0..=KELP_BONES {
+        let y = ring as f32 * KELP_SEGMENT_HEIGHT;
+        let radius = KELP_RADIUS * (1.0 - 0.55 * ring as f32 / KELP_BONES as f32);
+        let lower = ring.saturating_sub(1) as u32;
+        let upper = ring.min(KELP_BONES - 1) as u32;
+        for side in 0..KELP_SIDES {
+            let angle = side as f32 * core::f32::consts::TAU / KELP_SIDES as f32;
+            let (sin, cos) = angle.sin_cos();
+            push_f32s(&mut bytes, &[radius * cos, y, radius * sin]);
+            push_f32s(&mut bytes, &[cos, 0.0, sin]);
+            push_u32s(&mut bytes, &[lower, upper, 0, 0]);
+            push_f32s(&mut bytes, &[0.5, 0.5, 0.0, 0.0]);
+        }
+    }
+    let top_bone = (KELP_BONES - 1) as u32;
+    push_f32s(
+        &mut bytes,
+        &[0.0, KELP_BONES as f32 * KELP_SEGMENT_HEIGHT, 0.0],
+    );
+    push_f32s(&mut bytes, &[0.0, 1.0, 0.0]);
+    push_u32s(&mut bytes, &[top_bone, top_bone, 0, 0]);
+    push_f32s(&mut bytes, &[0.5, 0.5, 0.0, 0.0]);
+    bytes
+}
+
+/// Outward-wound side quads between consecutive rings, then the tip fan.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn kelp_indices() -> Vec<u16> {
+    let mut indices = Vec::with_capacity(KELP_BONES * KELP_SIDES * 6 + KELP_SIDES * 3);
+    for ring in 0..KELP_BONES {
+        for side in 0..KELP_SIDES {
+            let a = (ring * KELP_SIDES + side) as u16;
+            let b = (ring * KELP_SIDES + (side + 1) % KELP_SIDES) as u16;
+            let c = a + KELP_SIDES as u16;
+            let d = b + KELP_SIDES as u16;
+            indices.extend_from_slice(&[a, d, b, a, c, d]);
+        }
+    }
+    let top_ring = (KELP_BONES * KELP_SIDES) as u16;
+    let center = top_ring + KELP_SIDES as u16;
+    for side in 0..KELP_SIDES {
+        indices.extend_from_slice(&[
+            center,
+            top_ring + ((side + 1) % KELP_SIDES) as u16,
+            top_ring + side as u16,
+        ]);
+    }
+    indices
+}
+
+/// Packs the strand's bone palette: an accumulated pivot chain, each bone swaying a little
+/// later than the one below, with the strand's floor anchor baked into every matrix. The
+/// matrices of neighboring bones agree exactly at their shared pivot, so blending two bones
+/// per ring stays continuous across segment boundaries.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn kelp_bone_palette(seconds: f32) -> Vec<u8> {
+    let mut current = Mat4::from_translation(Vec3::new(2.4, -1.6, -1.4));
+    let mut bytes = Vec::with_capacity(KELP_BONES * 64);
+    for bone in 0..KELP_BONES {
+        let pivot = Vec3::new(0.0, bone as f32 * KELP_SEGMENT_HEIGHT, 0.0);
+        let sway = 0.16 * (seconds * 1.1 + bone as f32 * 0.85).sin();
+        let drift = 0.11 * (seconds * 0.7 + bone as f32 * 0.6).cos();
+        current = current
+            * Mat4::from_translation(pivot)
+            * Mat4::from_rotation_z(sway)
+            * Mat4::from_rotation_x(drift)
+            * Mat4::from_translation(-pivot);
+        push_f32s(&mut bytes, &current.to_cols_array());
+    }
+    bytes
+}
+
+/// Packs `SkinnedParams`: the camera's view-projection; the bones place the strand.
+pub(crate) fn skinned_uniform(aspect: f32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    push_f32s(&mut bytes, &view_projection(aspect).to_cols_array());
+    bytes
+}
+
+/// Packs `SkinnedShadowParams`: the light's view-projection over the same palette.
+pub(crate) fn skinned_shadow_uniform() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    push_f32s(&mut bytes, &light_view_projection().to_cols_array());
+    bytes
 }
 
 fn view_projection(aspect: f32) -> Mat4 {

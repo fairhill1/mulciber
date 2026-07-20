@@ -387,6 +387,7 @@ impl Device<'_> {
             stride: layout.stride,
             attributes: &layout.attributes,
             uniform: declaration.uniform,
+            storage: declaration.storage,
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
             depth_texture_binding: declaration.depth_texture,
@@ -399,6 +400,7 @@ impl Device<'_> {
             lease: self.lease(id, ResourceKind::MaterialPipeline),
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
+            storage_size: declaration.storage.map_or(0, |(_, size)| size),
             texture_count: declaration.texture_bindings.len(),
             samples_shadow: declaration.depth_texture.is_some(),
         })
@@ -429,13 +431,15 @@ impl Device<'_> {
     ///
     /// The pipeline runs the named vertex entry point with no fragment stage into a
     /// [`ShadowMap`]'s depth target, testing and writing depth. Shadow pipelines support at
-    /// most one uniform binding; the module must record no other bindings.
+    /// most one uniform binding and one read-only storage binding (so skinned casters shadow
+    /// with the same bone palette as their material records); the module must record no other
+    /// bindings.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid layout, a missing vertex entry point, a declaration that
-    /// does not match the artifact's recorded interface, a non-uniform binding, or native shader
-    /// loading and pipeline creation failure.
+    /// does not match the artifact's recorded interface, a binding outside the uniform and
+    /// storage kinds, or native shader loading and pipeline creation failure.
     pub fn create_shadow_pipeline(
         &self,
         descriptor: ShadowPipelineDescriptor<'_>,
@@ -457,7 +461,7 @@ impl Device<'_> {
         {
             return Err(GraphicsError::with_kind(
                 GraphicsErrorKind::Unsupported,
-                "shadow pipelines support only uniform bindings",
+                "shadow pipelines support only uniform and storage bindings",
             ));
         }
         let config = ShadowPipelineConfig {
@@ -465,12 +469,14 @@ impl Device<'_> {
             stride: layout.stride,
             attributes: &consumed,
             uniform: declaration.uniform,
+            storage: declaration.storage,
         };
         let id = session_mut(&self.shared)?.create_shadow_pipeline(descriptor.shader, &config)?;
         Ok(ShadowPipeline {
             lease: self.lease(id, ResourceKind::ShadowPipeline),
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
+            storage_size: declaration.storage.map_or(0, |(_, size)| size),
         })
     }
 
@@ -1004,6 +1010,15 @@ impl Queue<'_> {
                     record.uniform.len()
                 )));
             }
+            let expected_storage =
+                usize::try_from(record.pipeline.storage_size).expect("u32 size fits usize");
+            if record.storage.len() != expected_storage {
+                return Err(GraphicsError::invalid_request(format!(
+                    "shadow record supplies {} storage bytes but its pipeline declares \
+                     {expected_storage}",
+                    record.storage.len()
+                )));
+            }
             if record.mesh.layout != record.pipeline.layout {
                 return Err(GraphicsError::invalid_request(
                     "shadow record's mesh vertex layout does not match its pipeline's declared \
@@ -1078,6 +1093,15 @@ impl Queue<'_> {
                     "material record supplies {} uniform bytes but its pipeline declares {}",
                     record.uniform.len(),
                     expected
+                )));
+            }
+            let expected_storage =
+                usize::try_from(record.pipeline.storage_size).expect("u32 size fits usize");
+            if record.storage.len() != expected_storage {
+                return Err(GraphicsError::invalid_request(format!(
+                    "material record supplies {} storage bytes but its pipeline declares \
+                     {expected_storage}",
+                    record.storage.len()
                 )));
             }
             if record.mesh.layout != record.pipeline.layout {
@@ -1588,6 +1612,13 @@ pub struct PostprocessPipeline {
 /// one declaration at this size.
 pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
 
+/// Largest supported read-only storage declaration in bytes.
+///
+/// Sixty-four kibibytes holds a thousand and twenty-four `mat4x4<f32>` bone matrices, well past
+/// any palette the skinned-record slice needs, while keeping the frame-transient storage region
+/// bounded.
+pub const MATERIAL_STORAGE_SIZE_LIMIT: u32 = 65536;
+
 /// Largest supported material binding slot and vertex attribute location.
 ///
 /// The range 0 through 15 fits inside every native binding namespace both backends guarantee,
@@ -1665,6 +1696,17 @@ pub enum MaterialBinding {
         /// Byte length of the uniform data supplied with each record.
         size: u32,
     },
+    /// Application-defined read-only storage data (`var<storage, read>`) supplied as bytes with
+    /// each draw record, sized by its creation-fixed WGSL type (typically a bone-matrix array).
+    ///
+    /// At most one storage slot may be declared, `size` must match the WGSL type size recorded
+    /// in the shader artifact, and it may not exceed [`MATERIAL_STORAGE_SIZE_LIMIT`].
+    Storage {
+        /// WGSL binding number.
+        binding: u32,
+        /// Byte length of the storage data supplied with each record.
+        size: u32,
+    },
     /// One sampled 2D color texture supplied with each draw record.
     Texture {
         /// WGSL binding number.
@@ -1724,6 +1766,8 @@ pub struct MaterialPipeline {
     layout: OwnedVertexLayout,
     /// Zero when no uniform slot is declared.
     uniform_size: u32,
+    /// Zero when no storage slot is declared.
+    storage_size: u32,
     texture_count: usize,
     /// Whether the pipeline declares a depth-texture slot fed from a shadow map per record.
     samples_shadow: bool,
@@ -1775,6 +1819,8 @@ pub struct ShadowPipeline {
     layout: OwnedVertexLayout,
     /// Zero when no uniform slot is declared.
     uniform_size: u32,
+    /// Zero when no storage slot is declared.
+    storage_size: u32,
 }
 
 impl ShadowPipeline {
@@ -1793,6 +1839,9 @@ pub struct ShadowRecord<'resources> {
     /// Uniform data matching the pipeline's declared uniform size (typically the light's
     /// view-projection times the record's model transform); empty when no uniform is declared.
     pub uniform: &'resources [u8],
+    /// Read-only storage data matching the pipeline's declared storage size (typically the same
+    /// bone-matrix palette as the caster's material record); empty when no storage is declared.
+    pub storage: &'resources [u8],
 }
 
 /// One depth-only pre-pass rendered into a shadow map before the scene pass samples it.
@@ -1812,6 +1861,8 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) attributes: &'inputs [VertexAttribute],
     /// Declared uniform slot as (binding, size).
     pub(crate) uniform: Option<(u32, u32)>,
+    /// Declared read-only storage slot as (binding, size).
+    pub(crate) storage: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     pub(crate) texture_bindings: &'inputs [u32],
     /// Declared sampler slots with their filter and address modes.
@@ -1831,6 +1882,8 @@ pub(crate) struct ShadowPipelineConfig<'inputs> {
     pub(crate) attributes: &'inputs [VertexAttribute],
     /// Declared uniform slot as (binding, size).
     pub(crate) uniform: Option<(u32, u32)>,
+    /// Declared read-only storage slot as (binding, size).
+    pub(crate) storage: Option<(u32, u32)>,
 }
 
 /// Extent- and generation-dependent color/depth targets.
@@ -1971,6 +2024,9 @@ pub struct MaterialRecord<'resources> {
     /// Uniform data matching the pipeline's declared uniform size; empty when the pipeline
     /// declares no uniform slot. The application owns WGSL memory-layout correctness.
     pub uniform: &'resources [u8],
+    /// Read-only storage data matching the pipeline's declared storage size (typically a
+    /// bone-matrix palette); empty when the pipeline declares no storage slot.
+    pub storage: &'resources [u8],
 }
 
 /// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
@@ -2280,6 +2336,8 @@ struct BindingDeclaration {
     sampler_bindings: Vec<SamplerSlot>,
     depth_texture: Option<u32>,
     comparison_sampler: Option<u32>,
+    /// Declared read-only storage slot as (binding, size).
+    storage: Option<(u32, u32)>,
 }
 
 const fn interface_binding_label(kind: u8) -> &'static str {
@@ -2312,16 +2370,6 @@ fn validate_bindings_against_interface(
                 ),
             ));
         }
-        if recorded.kind == shader::INTERFACE_BINDING_STORAGE {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                format!(
-                    "shader binding {} is a storage buffer, which the material vocabulary does not \
-                 support",
-                    recorded.binding
-                ),
-            ));
-        }
     }
     let mut declaration = BindingDeclaration {
         uniform: None,
@@ -2329,6 +2377,7 @@ fn validate_bindings_against_interface(
         sampler_bindings: Vec::new(),
         depth_texture: None,
         comparison_sampler: None,
+        storage: None,
     };
     let mut declared: Vec<(u32, u8, u32)> = Vec::with_capacity(bindings.len());
     for binding in bindings {
@@ -2351,6 +2400,25 @@ fn validate_bindings_against_interface(
                 }
                 declaration.uniform = Some((binding, size));
                 (binding, shader::INTERFACE_BINDING_UNIFORM, size)
+            }
+            MaterialBinding::Storage { binding, size } => {
+                if declaration.storage.is_some() {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        "material pipelines support at most one storage slot",
+                    ));
+                }
+                if size == 0 || size > MATERIAL_STORAGE_SIZE_LIMIT {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        format!(
+                            "material storage slot {binding} declares {size} bytes, outside the \
+                         supported 1 through {MATERIAL_STORAGE_SIZE_LIMIT}"
+                        ),
+                    ));
+                }
+                declaration.storage = Some((binding, size));
+                (binding, shader::INTERFACE_BINDING_STORAGE, size)
             }
             MaterialBinding::Texture { binding } => {
                 declaration.texture_bindings.push(binding);
@@ -2422,10 +2490,17 @@ fn validate_bindings_against_interface(
                 interface_binding_label(recorded.kind)
             )));
         }
-        if kind == shader::INTERFACE_BINDING_UNIFORM && recorded.size != size {
+        if (kind == shader::INTERFACE_BINDING_UNIFORM || kind == shader::INTERFACE_BINDING_STORAGE)
+            && recorded.size != size
+        {
             return Err(GraphicsError::invalid_request(format!(
-                "material uniform slot {slot} declares {size} bytes but the shader artifact \
+                "material {} slot {slot} declares {size} bytes but the shader artifact \
                  records {}",
+                if kind == shader::INTERFACE_BINDING_UNIFORM {
+                    "uniform"
+                } else {
+                    "storage"
+                },
                 recorded.size
             )));
         }

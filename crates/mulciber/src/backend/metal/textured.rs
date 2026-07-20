@@ -65,6 +65,9 @@ const SAMPLER_ADDRESS_CLAMP_TO_EDGE: usize = 0;
 const SAMPLER_ADDRESS_REPEAT: usize = 2;
 const DRAW_UNIFORM_SIZE: usize = 64;
 const DRAW_UNIFORM_STRIDE: usize = 256;
+/// Alignment for per-record offsets into the frame's read-only storage region, matching the
+/// uniform stride and every Metal buffer-offset requirement.
+const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
 
 #[link(name = "System")]
@@ -107,6 +110,8 @@ struct MaterialPipelineResource {
     samplers: Vec<(u32, Object)>,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
+    /// Declared read-only storage slot as (binding, size).
+    storage: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
     /// Declared depth-texture slot fed from a shadow map per record.
@@ -126,6 +131,8 @@ struct ShadowPipelineResource {
     depth_state: Object,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
+    /// Declared read-only storage slot as (binding, size).
+    storage: Option<(u32, u32)>,
 }
 
 struct TargetResource {
@@ -170,6 +177,9 @@ pub(crate) struct TexturedSession<'window> {
     sample_count: usize,
     uniform: Object,
     uniform_capacity: usize,
+    /// Frame-transient read-only storage region for material and shadow records, in bytes.
+    storage: Object,
+    storage_capacity: usize,
     instance_transforms: Object,
     instance_capacity: usize,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
@@ -210,6 +220,23 @@ impl<'window> TexturedSession<'window> {
                 "Metal cube uniform buffer",
             )?
         };
+        let storage = match unsafe {
+            required(
+                objc::object_two_usizes(
+                    surface.device,
+                    c"newBufferWithLength:options:",
+                    STORAGE_OFFSET_ALIGNMENT,
+                    0,
+                ),
+                "Metal record storage buffer",
+            )
+        } {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                unsafe { objc::void(uniform, c"release") };
+                return Err(failure);
+            }
+        };
         let instance_transforms = match unsafe {
             required(
                 objc::object_two_usizes(
@@ -223,7 +250,10 @@ impl<'window> TexturedSession<'window> {
         } {
             Ok(buffer) => buffer,
             Err(failure) => {
-                unsafe { objc::void(uniform, c"release") };
+                unsafe {
+                    objc::void(storage, c"release");
+                    objc::void(uniform, c"release");
+                };
                 return Err(failure);
             }
         };
@@ -233,6 +263,8 @@ impl<'window> TexturedSession<'window> {
                 sample_count,
                 uniform,
                 uniform_capacity: 1,
+                storage,
+                storage_capacity: STORAGE_OFFSET_ALIGNMENT,
                 instance_transforms,
                 instance_capacity: 1,
                 resolved_instance_batches: Vec::new(),
@@ -905,6 +937,64 @@ impl<'window> TexturedSession<'window> {
                 );
             }
         }
+        let storage_bytes = records
+            .iter()
+            .map(|record| record.storage)
+            .chain(
+                shadow
+                    .into_iter()
+                    .flat_map(|shadow| shadow.records.iter().map(|record| record.storage)),
+            )
+            .try_fold(0_usize, |total, storage| {
+                storage
+                    .len()
+                    .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+                    .and_then(|aligned| total.checked_add(aligned))
+                    .ok_or_else(|| GraphicsError::new("Metal record storage offsets overflow"))
+            })?;
+        if storage_bytes > self.storage_capacity {
+            let capacity = storage_bytes
+                .checked_next_power_of_two()
+                .ok_or_else(|| GraphicsError::new("Metal record storage capacity overflow"))?;
+            let replacement = unsafe {
+                required(
+                    objc::object_two_usizes(
+                        self.surface.device,
+                        c"newBufferWithLength:options:",
+                        capacity,
+                        0,
+                    ),
+                    "Metal record storage buffer",
+                )?
+            };
+            unsafe { objc::void(self.storage, c"release") };
+            self.storage = replacement;
+            self.storage_capacity = capacity;
+        }
+        if storage_bytes > 0 {
+            unsafe {
+                let contents = objc::pointer_value(self.storage, c"contents");
+                if contents.is_null() {
+                    return Err(GraphicsError::new(
+                        "Metal record storage buffer has no CPU address",
+                    ));
+                }
+                let sources = records.iter().map(|record| record.storage).chain(
+                    shadow
+                        .into_iter()
+                        .flat_map(|shadow| shadow.records.iter().map(|record| record.storage)),
+                );
+                let mut offset = 0_usize;
+                for storage in sources {
+                    ptr::copy_nonoverlapping(
+                        storage.as_ptr(),
+                        contents.cast::<u8>().add(offset),
+                        storage.len(),
+                    );
+                    offset += storage.len().next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                }
+            }
+        }
         if let Some(shadow) = shadow {
             let index = self.shadow_maps.index_of(shadow.map.id())?;
             self.shadow_maps[index].rendered = true;
@@ -919,6 +1009,7 @@ impl<'window> TexturedSession<'window> {
         command: Object,
         shadow: &ShadowPass<'_>,
         uniform_base: usize,
+        storage_base: usize,
     ) -> Result<(), GraphicsError> {
         unsafe {
             let map = &self.shadow_maps[self.shadow_maps.index_of(shadow.map.id())?];
@@ -941,6 +1032,7 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal shadow render encoder",
             )?;
+            let mut storage_offset = storage_base;
             for (index, record) in shadow.records.iter().enumerate() {
                 let pipeline =
                     &self.shadow_pipelines[self.shadow_pipelines.index_of(record.pipeline.id())?];
@@ -957,6 +1049,20 @@ impl<'window> TexturedSession<'window> {
                         slot,
                     );
                 }
+                if let Some((binding, _)) = pipeline.storage {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.storage,
+                        storage_offset,
+                        slot,
+                    );
+                }
+                storage_offset += record
+                    .storage
+                    .len()
+                    .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
                 objc::void_object_two_usizes(
                     encoder,
                     c"setVertexBuffer:offset:atIndex:",
@@ -1263,7 +1369,12 @@ impl<'window> TexturedSession<'window> {
                 "Metal cube command buffer",
             )?;
             if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
-                self.encode_shadow_pass(command, shadow, records.len())?;
+                self.encode_shadow_pass(
+                    command,
+                    shadow,
+                    records.len(),
+                    material_storage_len(records),
+                )?;
             }
             let encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
@@ -1376,7 +1487,12 @@ impl<'window> TexturedSession<'window> {
                 "Metal postprocess command buffer",
             )?;
             if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
-                self.encode_shadow_pass(command, shadow, records.len())?;
+                self.encode_shadow_pass(
+                    command,
+                    shadow,
+                    records.len(),
+                    material_storage_len(records),
+                )?;
             }
             let scene_encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
@@ -1476,6 +1592,7 @@ impl<'window> TexturedSession<'window> {
                     }
                 }
                 PreparedScene::Materials(records) => {
+                    let mut storage_offset = 0_usize;
                     for (index, record) in records.iter().enumerate() {
                         let pipeline = &self.material_pipelines
                             [self.material_pipelines.index_of(record.pipeline.id())?];
@@ -1499,6 +1616,27 @@ impl<'window> TexturedSession<'window> {
                                 slot,
                             );
                         }
+                        if let Some((binding, _)) = pipeline.storage {
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_two_usizes(
+                                encoder,
+                                c"setVertexBuffer:offset:atIndex:",
+                                self.storage,
+                                storage_offset,
+                                slot,
+                            );
+                            objc::void_object_two_usizes(
+                                encoder,
+                                c"setFragmentBuffer:offset:atIndex:",
+                                self.storage,
+                                storage_offset,
+                                slot,
+                            );
+                        }
+                        storage_offset += record
+                            .storage
+                            .len()
+                            .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
@@ -1671,6 +1809,10 @@ impl<'window> TexturedSession<'window> {
                 objc::void(self.uniform, c"release");
                 self.uniform = ptr::null_mut();
             }
+            if !self.storage.is_null() {
+                objc::void(self.storage, c"release");
+                self.storage = ptr::null_mut();
+            }
             if !self.instance_transforms.is_null() {
                 objc::void(self.instance_transforms, c"release");
                 self.instance_transforms = ptr::null_mut();
@@ -1773,6 +1915,7 @@ fn release_shadow_pipeline(pipeline: ShadowPipelineResource) {
         pipeline,
         depth_state,
         uniform: _,
+        storage: _,
     } = pipeline;
     unsafe {
         objc::void(depth_state, c"release");
@@ -2231,11 +2374,26 @@ fn create_material_pipeline(
             depth_state,
             samplers,
             uniform: config.uniform,
+            storage: config.storage,
             texture_bindings: config.texture_bindings.to_vec(),
             depth_texture_binding: config.depth_texture_binding,
             comparison_sampler,
         })
     }
+}
+
+/// Aligned bytes the material records occupy in the frame's read-only storage region; shadow
+/// records pack after them. Sizes were bounds-checked when the scene was prepared.
+fn material_storage_len(records: &[MaterialRecord<'_>]) -> usize {
+    records
+        .iter()
+        .map(|record| {
+            record
+                .storage
+                .len()
+                .next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+        })
+        .sum()
 }
 
 /// Builds a depth-only pipeline: the module's vertex entry point rasterized into a shadow map's
@@ -2377,6 +2535,7 @@ fn create_shadow_pipeline(
             pipeline,
             depth_state,
             uniform: config.uniform,
+            storage: config.storage,
         })
     }
 }

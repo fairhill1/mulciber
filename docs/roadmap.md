@@ -189,7 +189,7 @@ fallback, and acquired-frame abandonment/recovery controls.
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   resource-reclamation, multi-draw, instancing, material-declaration, and shutdown conformance
-  tests: `probes/api-conformance` currently asserts forty-five cases across those categories (plus the
+  tests: `probes/api-conformance` currently asserts fifty-three cases across those categories (plus the
   Vulkan-only superseded-generation branch when applicable) and exits nonzero on divergence;
   per-platform runs are recorded in the validation ledgers as they are exercised.
   `create_mesh_with_layout` additionally accepts 32-bit indices (`MeshIndices::U32`), exercised
@@ -201,7 +201,9 @@ fallback, and acquired-frame abandonment/recovery controls.
   full mip chain sampled through the declared per-slot filters, with native generation
   deliberately closed per the same ledger; and scene submissions compose one fixed depth-only
   shadow pre-pass whose map material pipelines sample through declared depth-texture and
-  fixed-recipe comparison-sampler slots, per the same ledger.
+  fixed-recipe comparison-sampler slots, per the same ledger; and material and shadow
+  pipelines declare one read-only storage slot supplied as per-record bytes, opened for
+  skeletal animation's bone palettes and recorded in the same ledger.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
   dependency-tree, size, and clean-build measurements are recorded in the

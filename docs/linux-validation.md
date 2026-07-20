@@ -386,6 +386,25 @@ session. The Metal implementation compiles under the cross-host
 await the next M2 session, which must run `mulciber-shader` natively before the example or
 probe will build there.
 
+Still on 2026-07-20, the read-only storage slot opened for skeletal animation (one
+`MaterialBinding::Storage` per material or shadow pipeline, supplied as per-record bytes,
+recorded in the [decision ledger](api-slice-decisions.md)). The material-scene example grew a
+skinned kelp strand: two new WGSL modules blend a six-bone palette — repacked every frame from
+an accumulated pivot chain — in both the material vertex stage and a depth-only caster whose
+entry consumes a subset of the skinned layout, so the strand sways and its shadow moves across
+the lava floor. The first smoke run caught a shared `descriptor_write` helper routing the new
+dynamic storage descriptor through `pImageInfo`; validation named it precisely and the fix
+routes all buffer-descriptor types through `pBufferInfo`. The conformance probe grew seven
+cases — a second storage slot, an oversized declaration, and a recorded-size mismatch rejected
+at creation, material and shadow record byte-length mismatches rejected at submission, plus a
+skinned presentation (palette flowing through both paths) and explicit destruction. All
+fifty-three cases passed on both native Wayland and X11 through XWayland, exit zero, no
+validation output, and the skinned material scene ran roughly ten seconds on each path to
+KWin-scripted closes, exit zero, validation-clean. Skinning is asserted by execution and
+validation cleanliness; the operator has not yet visually confirmed the swaying strand. The
+new `skinned` and `skinned-shadow` Metal artifacts await the next M2 session alongside the
+usual native regeneration.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

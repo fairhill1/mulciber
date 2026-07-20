@@ -1,9 +1,11 @@
 //! Renders application-authored materials through Mulciber's target-selected native backend.
 //!
-//! This is the forcing slice for the custom-material vocabulary: three WGSL modules the crate has
-//! never seen, two different application-declared vertex layouts, application-packed uniform
-//! bytes updated every frame, a material sampling two textures, and a depth-only shadow pass
-//! whose map the floor material samples through a comparison sampler.
+//! This is the forcing slice for the custom-material vocabulary: five WGSL modules the crate has
+//! never seen, three different application-declared vertex layouts, application-packed uniform
+//! bytes updated every frame, a material sampling two textures, a depth-only shadow pass whose
+//! map the floor material samples through a comparison sampler, and a skinned kelp strand whose
+//! bone palette flows through a read-only storage slot into both its material and its shadow
+//! caster.
 
 mod scene;
 
@@ -22,6 +24,11 @@ use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, 
 const CRYSTAL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/crystal.shaderbin"));
 const LAVA_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lava.shaderbin"));
 const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.shaderbin"));
+const SKINNED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skinned.shaderbin"));
+const SKINNED_SHADOW_SHADER: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/skinned-shadow.shaderbin"));
+/// Bytes in the kelp strand's palette: six column-major `mat4x4<f32>` bone matrices.
+const KELP_PALETTE_SIZE: u32 = 384;
 const CLEAR: ClearColor = ClearColor::opaque(0.015, 0.02, 0.045);
 
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
@@ -125,6 +132,50 @@ fn main() -> Result<(), Box<dyn Error>> {
                 size: 64,
             }],
         })?;
+    let kelp_mesh = graphics.device.create_mesh_with_layout(
+        scene::SKINNED_LAYOUT,
+        &scene::kelp_vertices(),
+        MeshIndices::U16(&scene::kelp_indices()),
+    )?;
+    let skinned_pipeline =
+        graphics
+            .device
+            .create_material_pipeline(MaterialPipelineDescriptor {
+                shader: ShaderArtifact::new(SKINNED_SHADER)?,
+                vertex_entry: "skinned_vertex",
+                fragment_entry: "skinned_fragment",
+                vertex_layout: scene::SKINNED_LAYOUT,
+                bindings: &[
+                    MaterialBinding::Uniform {
+                        binding: 0,
+                        size: 64,
+                    },
+                    MaterialBinding::Storage {
+                        binding: 1,
+                        size: KELP_PALETTE_SIZE,
+                    },
+                ],
+                blend: BlendMode::Opaque,
+                depth: DepthMode::TestWrite,
+            })?;
+    let skinned_shadow_pipeline =
+        graphics
+            .device
+            .create_shadow_pipeline(ShadowPipelineDescriptor {
+                shader: ShaderArtifact::new(SKINNED_SHADOW_SHADER)?,
+                vertex_entry: "skinned_shadow_vertex",
+                vertex_layout: scene::SKINNED_LAYOUT,
+                bindings: &[
+                    MaterialBinding::Uniform {
+                        binding: 0,
+                        size: 64,
+                    },
+                    MaterialBinding::Storage {
+                        binding: 1,
+                        size: KELP_PALETTE_SIZE,
+                    },
+                ],
+            })?;
     let shadow_map = graphics.device.create_shadow_map(1024)?;
     let mut targets = graphics
         .device
@@ -157,6 +208,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         })
                         .collect();
                     let lava_uniform = scene::lava_uniform(seconds, aspect);
+                    let kelp_palette = scene::kelp_bone_palette(seconds);
+                    let skinned_uniform = scene::skinned_uniform(aspect);
+                    let skinned_shadow_uniform = scene::skinned_shadow_uniform();
                     let shadow_uniforms: Vec<Vec<u8>> = crystal_offsets
                         .iter()
                         .enumerate()
@@ -164,23 +218,31 @@ fn main() -> Result<(), Box<dyn Error>> {
                             scene::crystal_shadow_uniform(seconds, index as f32 * 2.1, offset)
                         })
                         .collect();
-                    let shadow_records: Vec<ShadowRecord<'_>> = shadow_uniforms
+                    let mut shadow_records: Vec<ShadowRecord<'_>> = shadow_uniforms
                         .iter()
                         .map(|uniform| ShadowRecord {
                             pipeline: &shadow_pipeline,
                             mesh: &crystal_mesh,
                             uniform,
+                            storage: &[],
                         })
                         .collect();
+                    shadow_records.push(ShadowRecord {
+                        pipeline: &skinned_shadow_pipeline,
+                        mesh: &kelp_mesh,
+                        uniform: &skinned_shadow_uniform,
+                        storage: &kelp_palette,
+                    });
                     let crystal_textures = [&crystal_base, &crystal_glow];
                     let lava_textures = [&lava];
-                    let mut records = Vec::with_capacity(crystal_uniforms.len() + 1);
+                    let mut records = Vec::with_capacity(crystal_uniforms.len() + 2);
                     records.push(MaterialRecord {
                         pipeline: &lava_pipeline,
                         mesh: &floor_mesh,
                         textures: &lava_textures,
                         shadow_map: Some(&shadow_map),
                         uniform: &lava_uniform,
+                        storage: &[],
                     });
                     for uniform in &crystal_uniforms {
                         records.push(MaterialRecord {
@@ -189,8 +251,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                             textures: &crystal_textures,
                             shadow_map: None,
                             uniform,
+                            storage: &[],
                         });
                     }
+                    records.push(MaterialRecord {
+                        pipeline: &skinned_pipeline,
+                        mesh: &kelp_mesh,
+                        textures: &[],
+                        shadow_map: None,
+                        uniform: &skinned_uniform,
+                        storage: &kelp_palette,
+                    });
                     graphics.queue.render_and_present(
                         frame,
                         SceneSubmission {

@@ -25,6 +25,12 @@ const INSTANCED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/instan
 const MATERIAL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/material.shaderbin"));
 const LAVA_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lava.shaderbin"));
 const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.shaderbin"));
+const SKINNED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skinned.shaderbin"));
+const SKINNED_SHADOW_SHADER: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/skinned-shadow.shaderbin"));
+
+/// Bytes in the skinned module's recorded palette: six column-major `mat4x4<f32>` bones.
+const PALETTE_SIZE: u32 = 384;
 
 /// The crystal module's recorded vertex interface: position, normal, texture coordinate, and a
 /// per-vertex glow weight.
@@ -102,6 +108,46 @@ const LAVA_BINDINGS: [MaterialBinding; 5] = [
     },
     MaterialBinding::DepthTexture { binding: 3 },
     MaterialBinding::ComparisonSampler { binding: 4 },
+];
+
+/// The skinned module's recorded vertex interface: position, normal, bone indices, and weights.
+const SKINNED_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 56,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x3,
+            offset: 12,
+        },
+        VertexAttribute {
+            location: 2,
+            format: VertexFormat::Uint32x4,
+            offset: 24,
+        },
+        VertexAttribute {
+            location: 3,
+            format: VertexFormat::Float32x4,
+            offset: 40,
+        },
+    ],
+};
+
+/// The skinned module's recorded binding interface: one 64-byte uniform and the bone palette in
+/// a read-only storage slot.
+const SKINNED_BINDINGS: [MaterialBinding; 2] = [
+    MaterialBinding::Uniform {
+        binding: 0,
+        size: 64,
+    },
+    MaterialBinding::Storage {
+        binding: 1,
+        size: PALETTE_SIZE,
+    },
 ];
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -194,6 +240,9 @@ struct Cases<'window> {
     shadow_pipeline: Option<mulciber::ShadowPipeline>,
     shadowed_pipeline: Option<mulciber::MaterialPipeline>,
     floor_mesh: Option<Mesh>,
+    skinned_pipeline: Option<mulciber::MaterialPipeline>,
+    skinned_shadow_pipeline: Option<mulciber::ShadowPipeline>,
+    skinned_mesh: Option<Mesh>,
 }
 
 impl<'window> Cases<'window> {
@@ -220,6 +269,9 @@ impl<'window> Cases<'window> {
             shadow_pipeline: None,
             shadowed_pipeline: None,
             floor_mesh: None,
+            skinned_pipeline: None,
+            skinned_shadow_pipeline: None,
+            skinned_mesh: None,
         })
     }
 
@@ -777,6 +829,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &short_uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -815,6 +868,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -854,6 +908,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -948,6 +1003,7 @@ impl<'window> Cases<'window> {
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
+                        storage: &[],
                     },
                     MaterialRecord {
                         pipeline: &nearest_pipeline,
@@ -955,6 +1011,7 @@ impl<'window> Cases<'window> {
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
+                        storage: &[],
                     },
                     MaterialRecord {
                         pipeline: &cutout_pipeline,
@@ -962,6 +1019,7 @@ impl<'window> Cases<'window> {
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
+                        storage: &[],
                     },
                     MaterialRecord {
                         pipeline: &translucent_pipeline,
@@ -969,6 +1027,7 @@ impl<'window> Cases<'window> {
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
+                        storage: &[],
                     },
                 ];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1059,6 +1118,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -1133,7 +1193,7 @@ impl<'window> Cases<'window> {
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
-                    "only uniform bindings",
+                    "only uniform and storage bindings",
                     "non-uniform shadow binding rejected",
                 )?;
                 self.shadow_map = Some(graphics.device.create_shadow_map(512)?);
@@ -1199,6 +1259,7 @@ impl<'window> Cases<'window> {
                     textures: &lava_textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1238,6 +1299,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1278,6 +1340,7 @@ impl<'window> Cases<'window> {
                     textures: &lava_textures,
                     shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1317,12 +1380,14 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let short_uniform = [0_u8; 32];
                 let shadow_records = [ShadowRecord {
                     pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     uniform: &short_uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1351,10 +1416,274 @@ impl<'window> Cases<'window> {
                 self.step = 21;
                 Ok(false)
             }
+            // Storage vocabulary creation: a second storage slot, an oversized declaration, and
+            // a size that disagrees with the recorded WGSL type are rejected by name, then the
+            // skinned pipeline pair (the shadow variant consuming a subset of the skinned
+            // layout) and a skinned triangle are created for the cases below.
+            21 => {
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                expect_error(
+                    graphics
+                        .device
+                        .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(SKINNED_SHADER)?,
+                            vertex_entry: "skinned_vertex",
+                            fragment_entry: "skinned_fragment",
+                            vertex_layout: SKINNED_LAYOUT,
+                            bindings: &[
+                                MaterialBinding::Uniform {
+                                    binding: 0,
+                                    size: 64,
+                                },
+                                MaterialBinding::Storage {
+                                    binding: 1,
+                                    size: PALETTE_SIZE,
+                                },
+                                MaterialBinding::Storage {
+                                    binding: 2,
+                                    size: 64,
+                                },
+                            ],
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWrite,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::Unsupported,
+                    "at most one storage slot",
+                    "second storage slot rejected",
+                )?;
+                expect_error(
+                    graphics
+                        .device
+                        .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(SKINNED_SHADER)?,
+                            vertex_entry: "skinned_vertex",
+                            fragment_entry: "skinned_fragment",
+                            vertex_layout: SKINNED_LAYOUT,
+                            bindings: &[
+                                MaterialBinding::Uniform {
+                                    binding: 0,
+                                    size: 64,
+                                },
+                                MaterialBinding::Storage {
+                                    binding: 1,
+                                    size: 65_537,
+                                },
+                            ],
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWrite,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::Unsupported,
+                    "outside the supported 1 through",
+                    "oversized storage declaration rejected",
+                )?;
+                expect_error(
+                    graphics
+                        .device
+                        .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(SKINNED_SHADER)?,
+                            vertex_entry: "skinned_vertex",
+                            fragment_entry: "skinned_fragment",
+                            vertex_layout: SKINNED_LAYOUT,
+                            bindings: &[
+                                MaterialBinding::Uniform {
+                                    binding: 0,
+                                    size: 64,
+                                },
+                                MaterialBinding::Storage {
+                                    binding: 1,
+                                    size: 320,
+                                },
+                            ],
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWrite,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "storage slot 1 declares 320 bytes",
+                    "storage size mismatch rejected",
+                )?;
+                self.skinned_pipeline = Some(graphics.device.create_material_pipeline(
+                    mulciber::MaterialPipelineDescriptor {
+                        shader: ShaderArtifact::new(SKINNED_SHADER)?,
+                        vertex_entry: "skinned_vertex",
+                        fragment_entry: "skinned_fragment",
+                        vertex_layout: SKINNED_LAYOUT,
+                        bindings: &SKINNED_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
+                    },
+                )?);
+                self.skinned_shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
+                    mulciber::ShadowPipelineDescriptor {
+                        shader: ShaderArtifact::new(SKINNED_SHADOW_SHADER)?,
+                        vertex_entry: "skinned_shadow_vertex",
+                        vertex_layout: SKINNED_LAYOUT,
+                        bindings: &SKINNED_BINDINGS,
+                    },
+                )?);
+                self.skinned_mesh = Some(graphics.device.create_mesh_with_layout(
+                    SKINNED_LAYOUT,
+                    &skinned_triangle_vertices(),
+                    MeshIndices::U16(&[0, 1, 2]),
+                )?);
+                self.pass("second storage slot rejected");
+                self.pass("oversized storage declaration rejected");
+                self.pass("storage size mismatch rejected");
+                self.step = 22;
+                Ok(false)
+            }
+            // A material record's storage bytes must match its pipeline's declared size.
+            22 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let uniform = matrix_bytes(IDENTITY);
+                let short_palette = [0_u8; 64];
+                let records = [MaterialRecord {
+                    pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
+                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    textures: &[],
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &short_palette,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "supplies 64 storage bytes",
+                    "material storage length mismatch rejected",
+                )?;
+                self.pass("material storage length mismatch rejected");
+                self.step = 23;
+                Ok(false)
+            }
+            // A shadow record's storage bytes must match its pipeline's declared size.
+            23 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let uniform = matrix_bytes(IDENTITY);
+                let palette = identity_palette();
+                let records = [MaterialRecord {
+                    pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
+                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    textures: &[],
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &palette,
+                }];
+                let shadow_records = [ShadowRecord {
+                    pipeline: self
+                        .skinned_shadow_pipeline
+                        .as_ref()
+                        .expect("skinned shadow pipeline"),
+                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: Some(ShadowPass {
+                                    map: self.shadow_map.as_ref().expect("shadow map"),
+                                    records: &shadow_records,
+                                }),
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "shadow record supplies 0 storage bytes",
+                    "shadow storage length mismatch rejected",
+                )?;
+                self.pass("shadow storage length mismatch rejected");
+                self.step = 24;
+                Ok(false)
+            }
+            // The skinned record renders with its palette flowing through both the shadow and
+            // the material path, then the skinned resources destroy explicitly.
+            24 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let uniform = matrix_bytes(IDENTITY);
+                let palette = identity_palette();
+                let records = [MaterialRecord {
+                    pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
+                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    textures: &[],
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &palette,
+                }];
+                let shadow_records = [ShadowRecord {
+                    pipeline: self
+                        .skinned_shadow_pipeline
+                        .as_ref()
+                        .expect("skinned shadow pipeline"),
+                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    uniform: &uniform,
+                    storage: &palette,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: Some(ShadowPass {
+                            map: self.shadow_map.as_ref().expect("shadow map"),
+                            records: &shadow_records,
+                        }),
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("skinned material presentation");
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics.device.destroy_material_pipeline(
+                    self.skinned_pipeline.take().expect("skinned pipeline"),
+                )?;
+                graphics.device.destroy_shadow_pipeline(
+                    self.skinned_shadow_pipeline
+                        .take()
+                        .expect("skinned shadow pipeline"),
+                )?;
+                graphics
+                    .device
+                    .destroy_mesh(self.skinned_mesh.take().expect("skinned mesh"))?;
+                self.pass("skinned resource destruction");
+                self.step = 25;
+                Ok(false)
+            }
             // The depth-only pass renders the crystal-layout mesh into the map, the floor record
             // samples it through the comparison sampler in the same frame, and every shadow
             // resource kind then destroys explicitly.
-            21 => {
+            25 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1370,6 +1699,7 @@ impl<'window> Cases<'window> {
                         textures: &lava_textures,
                         shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
                         uniform: &lava_uniform,
+                        storage: &[],
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -1377,6 +1707,7 @@ impl<'window> Cases<'window> {
                         textures: &crystal_textures,
                         shadow_map: None,
                         uniform: &crystal_uniform,
+                        storage: &[],
                     },
                 ];
                 let shadow_uniform = matrix_bytes(IDENTITY);
@@ -1384,6 +1715,7 @@ impl<'window> Cases<'window> {
                     pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     uniform: &shadow_uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -1420,12 +1752,12 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.material_mesh.take().expect("material mesh"))?;
                 self.pass("shadow resource destruction");
-                self.step = 22;
+                self.step = 26;
                 Ok(false)
             }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            22 => {
+            26 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -1466,11 +1798,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 23;
+                self.step = 27;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            23 => {
+            27 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1493,11 +1825,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 24;
+                self.step = 28;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            24 => {
+            28 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1513,6 +1845,7 @@ impl<'window> Cases<'window> {
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
+                    storage: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session B is open");
                 expect_error(
@@ -1535,7 +1868,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 25;
+                self.step = 29;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -1668,6 +2001,50 @@ fn material_triangle_vertices() -> Vec<u8> {
         for value in vertex {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
+    }
+    bytes
+}
+
+/// One triangle packed against the skinned layout: position, normal, then two blended bone
+/// indices and their weights.
+fn skinned_triangle_vertices() -> Vec<u8> {
+    let vertices: [([f32; 6], [u32; 4], [f32; 4]); 3] = [
+        (
+            [-0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
+            [0, 1, 0, 0],
+            [0.5, 0.5, 0.0, 0.0],
+        ),
+        (
+            [0.5, -0.5, 0.0, 0.0, 0.0, 1.0],
+            [2, 3, 0, 0],
+            [0.75, 0.25, 0.0, 0.0],
+        ),
+        (
+            [0.0, 0.5, 0.0, 0.0, 0.0, 1.0],
+            [4, 5, 0, 0],
+            [0.25, 0.75, 0.0, 0.0],
+        ),
+    ];
+    let mut bytes = Vec::with_capacity(3 * 56);
+    for (floats, joints, weights) in vertices {
+        for value in floats {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in joints {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in weights {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
+/// Six identity bone matrices as the skinned module's palette bytes.
+fn identity_palette() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(384);
+    for _ in 0..6 {
+        bytes.extend_from_slice(&matrix_bytes(IDENTITY));
     }
     bytes
 }

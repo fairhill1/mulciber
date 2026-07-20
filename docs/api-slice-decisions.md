@@ -160,6 +160,27 @@ Arbitrary pass graphs, color render-to-texture, multiple shadow passes per submi
 textured cutout shadow casters stay closed until a slice forces them. Recorded in the
 [material contract](material-contract.md).
 
+## Read-only storage and skinned records
+
+Decided as one frame-transient read-only storage slot per pipeline, forced by skeletal
+animation's bone palettes outgrowing the 256-byte uniform stride. Material and shadow pipelines
+may declare at most one `MaterialBinding::Storage` slot (a WGSL `var<storage, read>` with a
+creation-fixed byte size, validated exactly against the recorded type and capped at 64 KiB),
+and each record supplies the bytes per frame — `MaterialRecord.storage` and
+`ShadowRecord.storage` — so a skinned caster shadows with the same palette as its material
+record. No persistent buffer handle was opened: palettes change every frame, and nothing in
+the slice forces retained application-owned buffers. `mulciber-shader` records the storage
+kind, which the container already reserved, with its byte size; read-write access and
+runtime-sized arrays are compile errors (Naga reports a runtime array's size as one element,
+Metal would need a sizes side-buffer, and creation-fixed sizes keep validation symmetric with
+uniforms). Joint indices and weights ride the existing `Uint32x4`/`Float32x4` vertex formats —
+packed vertex formats belong to the scale wall. Both backends pack record bytes into a second
+shared ring at 256-byte-aligned offsets (the specification's cap on
+`minStorageBufferOffsetAlignment`): Vulkan as one dynamic storage-buffer descriptor whose
+dynamic offsets order by binding number alongside the uniform's, Metal as one buffer bound at
+the WGSL slot per record. Compute, read-write storage, and general buffer vocabulary stay
+closed until a slice forces them. Recorded in the [material contract](material-contract.md).
+
 ## Resource ownership and reclamation
 
 Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning

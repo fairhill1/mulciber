@@ -16,10 +16,12 @@ and sampler slots, all identified by their WGSL group-0 binding numbers and capp
 `MATERIAL_SLOT_LIMIT` (15), a range inside every native namespace both backends guarantee.
 
 `mulciber-shader` records the module's interface — per entry point its stage, name, and
-vertex-input locations with formats, plus the module's bindings with kinds and uniform WGSL
-byte sizes — in the artifact container (`MULSHDR2`). `texture_depth_2d` and
-`sampler_comparison` bindings record as their own kinds inside the same container: existing
-artifacts stay valid, while artifacts using the new kinds require the paired crate. Pipeline
+vertex-input locations with formats, plus the module's bindings with kinds and, for uniform
+and read-only storage data, WGSL byte sizes — in the artifact container (`MULSHDR2`).
+`texture_depth_2d` and `sampler_comparison` bindings record as their own kinds inside the same
+container: existing artifacts stay valid, while artifacts using the new kinds require the
+paired crate. Read-only storage records under the kind the container already reserved, with
+its creation-fixed byte size; read-write access and runtime-sized arrays are compile errors. Pipeline
 creation validates the application's declaration against that record and rejects a mismatch as
 an invalid request naming the offending attribute, slot, or entry point; interface constructs
 outside the vocabulary (non-zero groups, storage buffers) are rejected as unsupported. The
@@ -42,6 +44,15 @@ validated against its extent. Sampler slots follow their declared filter across 
 declaration axis, and single-level textures sample exactly as before. Mip content
 (downsampling filter, color-space handling) is application policy; native generation is not
 part of the vocabulary.
+
+A material pipeline may declare one read-only storage slot (`MaterialBinding::Storage`): a
+WGSL `var<storage, read>` whose creation-fixed byte size must match the recorded type exactly,
+capped at `MATERIAL_STORAGE_SIZE_LIMIT` (64 KiB). Each record supplies the bytes per frame
+through the same frame-transient region model as uniforms — `MaterialRecord.storage` — sized
+exactly to the declaration; the slot exists for skeletal animation's bone palettes, which
+outgrow the 256-byte uniform stride. Shadow pipelines accept the same slot
+(`ShadowRecord.storage`), so a skinned caster shadows with the same palette as its material
+record. No persistent application-owned buffer handle is part of the vocabulary.
 
 `SceneContent` grows one form: `Material(&[MaterialRecord])`, each record selecting a material
 pipeline, a layout-matching mesh, one texture per declared texture slot in ascending binding
@@ -82,6 +93,13 @@ depth modes into native creation-time state: Vulkan through the pipeline's color
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
 
+Record storage bytes flow through a second shared frame-transient buffer at 256-byte-aligned
+per-record offsets, the specification's cap on `minStorageBufferOffsetAlignment`. Vulkan binds
+it as one dynamic storage-buffer descriptor in the pipeline's set — its dynamic offset ordered
+with the uniform's by binding number — growing and resetting descriptor pools under the same
+rules as the uniform ring; Metal binds the buffer at the record's offset on the WGSL slot for
+both scene stages, and vertex-only in the shadow encoder.
+
 The shadow pass shares the frame's per-draw uniform region, with shadow-record slots packed
 after the material records'. Vulkan encodes it as a depth-only dynamic-rendering pass at the
 map's extent before the scene pass, transitioning the map from its prior state into depth
@@ -94,16 +112,18 @@ entry alone: no fragment function, no color attachments, one sample, depth test-
 
 This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
 depth-only recipe, not an application-ordered graph — nor color render-to-texture, load/store
-policy, compute or storage buffers, arbitrary blend equations beyond the fixed mode set,
-instance-rate custom layouts, bind-group abstractions, new texture formats, native mip
-generation, multiple shadow passes per submission, or textured cutout shadow casters.
+policy, compute, read-write or runtime-sized storage, persistent application-owned buffer
+handles, arbitrary blend equations beyond the fixed mode set, instance-rate custom layouts,
+bind-group abstractions, new texture formats, packed vertex formats, native mip generation,
+multiple shadow passes per submission, or textured cutout shadow casters.
 
 ## Evidence
 
 Automated Linux evidence — the material-scene slice on native Wayland, under a KWin resize
-storm, and on X11 through XWayland, plus forty-five conformance cases including the material,
-index-width, sampler-mode, blend/depth-mode, mip-chain, and shadow cases on both paths, all
-validation-clean — is recorded in the [Linux runbook](linux-validation.md).
+storm, and on X11 through XWayland, plus fifty-three conformance cases including the material,
+index-width, sampler-mode, blend/depth-mode, mip-chain, shadow, and read-only-storage skinning
+cases on both paths, all validation-clean — is recorded in the
+[Linux runbook](linux-validation.md).
 
 On 2026-07-20, at `8b7e5c3`, the Metal implementation ran physically on the Apple M2 tier:
 `mulciber-shader` regenerated every Metal artifact for the new container natively (the probe

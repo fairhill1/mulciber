@@ -22,6 +22,10 @@ const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
 const LOD_CLAMP_NONE: f32 = 1000.0;
 const DRAW_UNIFORM_SIZE: usize = 64;
 const DRAW_UNIFORM_STRIDE: usize = 256;
+
+/// Alignment for per-record offsets into the frame's read-only storage region: the
+/// specification's cap on `minStorageBufferOffsetAlignment`, valid on every implementation.
+const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
 
 #[derive(Clone, Copy, Default)]
@@ -69,6 +73,8 @@ struct MaterialPipelineResource {
     samplers: Vec<(u32, vk::VkSampler)>,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
+    /// Declared read-only storage slot as (binding, size).
+    storage: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
     /// Declared depth-texture slot fed from a shadow map per record.
@@ -93,7 +99,9 @@ struct ShadowPipelineResource {
     descriptor_pool: vk::VkDescriptorPool,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
-    /// Uniform-only descriptor set cached until a pool reset.
+    /// Declared read-only storage slot as (binding, size).
+    storage: Option<(u32, u32)>,
+    /// Buffer-only descriptor set cached until a pool reset.
     descriptor: Option<vk::VkDescriptorSet>,
 }
 
@@ -132,8 +140,10 @@ struct ResolvedMaterialDraw {
     mesh: usize,
     pipeline: usize,
     descriptor: vk::VkDescriptorSet,
-    dynamic_offset: u32,
-    /// One when the pipeline declares a uniform slot, zero otherwise.
+    /// Uniform and storage dynamic offsets in ascending binding-number order, matching how
+    /// Vulkan consumes dynamic offsets across the set layout's dynamic descriptors.
+    dynamic_offsets: [u32; 2],
+    /// One dynamic offset per declared uniform and storage slot.
     dynamic_offset_count: u32,
 }
 
@@ -149,6 +159,9 @@ pub(crate) struct TexturedSession<'window> {
     sample_count: vk::VkSampleCountFlagBits,
     uniform: Buffer,
     uniform_capacity: usize,
+    /// Frame-transient read-only storage region for material and shadow records, in bytes.
+    storage: Buffer,
+    storage_capacity: usize,
     resolved_draws: Vec<ResolvedDraw>,
     instance_transforms: Buffer,
     instance_capacity: usize,
@@ -202,6 +215,18 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
+        let storage = match create_buffer(
+            &surface,
+            STORAGE_OFFSET_ALIGNMENT,
+            vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
+            &[],
+        ) {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                destroy_buffer(&surface, uniform);
+                return Err(failure);
+            }
+        };
         let instance_transforms = match create_buffer(
             &surface,
             INSTANCE_TRANSFORM_SIZE,
@@ -210,6 +235,7 @@ impl<'window> TexturedSession<'window> {
         ) {
             Ok(buffer) => buffer,
             Err(failure) => {
+                destroy_buffer(&surface, storage);
                 destroy_buffer(&surface, uniform);
                 return Err(failure);
             }
@@ -220,6 +246,8 @@ impl<'window> TexturedSession<'window> {
                 sample_count,
                 uniform,
                 uniform_capacity: 1,
+                storage,
+                storage_capacity: STORAGE_OFFSET_ALIGNMENT,
                 resolved_draws: Vec::new(),
                 instance_transforms,
                 instance_capacity: 1,
@@ -866,6 +894,15 @@ impl<'window> TexturedSession<'window> {
             .map_err(|_| error("Vulkan material uniform offsets exceed u32"))?;
         self.ensure_uniform_capacity(uniform_slots)?;
         write_material_uniforms(&self.surface, &self.uniform, records, shadow)?;
+        let (storage_offsets, storage_bytes) = material_storage_offsets(records, shadow)?;
+        self.ensure_storage_capacity(storage_bytes)?;
+        write_material_storage(
+            &self.surface,
+            &self.storage,
+            records,
+            shadow,
+            &storage_offsets,
+        )?;
         self.resolved_shadow_draws.clear();
         self.pending_shadow_target = None;
         if let Some(shadow) = shadow {
@@ -874,15 +911,20 @@ impl<'window> TexturedSession<'window> {
                 let mesh = self.meshes.index_of(record.mesh.id())?;
                 let pipeline = self.shadow_pipelines.index_of(record.pipeline.id())?;
                 let descriptor = self.shadow_descriptor_set(pipeline)?;
+                let uniform_offset = u32::try_from((records.len() + index) * DRAW_UNIFORM_STRIDE)
+                    .expect("shadow offset was validated");
+                let (dynamic_offsets, dynamic_offset_count) = dynamic_offsets_in_binding_order(
+                    self.shadow_pipelines[pipeline].uniform,
+                    self.shadow_pipelines[pipeline].storage,
+                    uniform_offset,
+                    storage_offsets[records.len() + index],
+                );
                 self.resolved_shadow_draws.push(ResolvedMaterialDraw {
                     mesh,
                     pipeline,
                     descriptor,
-                    dynamic_offset: u32::try_from((records.len() + index) * DRAW_UNIFORM_STRIDE)
-                        .expect("shadow offset was validated"),
-                    dynamic_offset_count: u32::from(
-                        self.shadow_pipelines[pipeline].uniform.is_some(),
-                    ),
+                    dynamic_offsets,
+                    dynamic_offset_count,
                 });
             }
             self.pending_shadow_target = Some(map_index);
@@ -912,17 +954,49 @@ impl<'window> TexturedSession<'window> {
                 &texture_indices,
                 shadow_view,
             )?;
+            let uniform_offset =
+                u32::try_from(index * DRAW_UNIFORM_STRIDE).expect("material offset was validated");
+            let (dynamic_offsets, dynamic_offset_count) = dynamic_offsets_in_binding_order(
+                self.material_pipelines[pipeline].uniform,
+                self.material_pipelines[pipeline].storage,
+                uniform_offset,
+                storage_offsets[index],
+            );
             self.resolved_material_draws.push(ResolvedMaterialDraw {
                 mesh,
                 pipeline,
                 descriptor,
-                dynamic_offset: u32::try_from(index * DRAW_UNIFORM_STRIDE)
-                    .expect("material offset was validated"),
-                dynamic_offset_count: u32::from(
-                    self.material_pipelines[pipeline].uniform.is_some(),
-                ),
+                dynamic_offsets,
+                dynamic_offset_count,
             });
         }
+        Ok(())
+    }
+
+    fn ensure_storage_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
+        if required <= self.storage_capacity {
+            return Ok(());
+        }
+        let capacity = required
+            .checked_next_power_of_two()
+            .ok_or_else(|| error("Vulkan record storage capacity overflow"))?;
+        self.surface.wait_for_frame()?;
+        let replacement = create_buffer(
+            &self.surface,
+            capacity,
+            vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
+            &[],
+        )?;
+        if let Err(failure) = self
+            .reset_descriptor_pools(false)
+            .and_then(|()| self.reset_descriptor_pools(true))
+        {
+            destroy_buffer(&self.surface, replacement);
+            return Err(failure);
+        }
+        let previous = mem::replace(&mut self.storage, replacement);
+        destroy_buffer(&self.surface, previous);
+        self.storage_capacity = capacity;
         Ok(())
     }
 
@@ -935,10 +1009,11 @@ impl<'window> TexturedSession<'window> {
             return Ok(set);
         }
         let pipeline = &self.shadow_pipelines[pipeline_index];
-        let (set_layout, descriptor_pool, pipeline_uniform) = (
+        let (set_layout, descriptor_pool, pipeline_uniform, pipeline_storage) = (
             pipeline.set_layout,
             pipeline.descriptor_pool,
             pipeline.uniform,
+            pipeline.storage,
         );
         let allocate = vk::VkDescriptorSetAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -962,18 +1037,44 @@ impl<'window> TexturedSession<'window> {
             },
             "vkAllocateDescriptorSets for shadow record",
         )?;
-        if let Some((binding, size)) = pipeline_uniform {
-            let buffer = vk::VkDescriptorBufferInfo {
-                buffer: self.uniform.handle,
-                offset: 0,
-                range: u64::from(size),
-            };
-            let write = descriptor_write(
+        let uniform_buffer = pipeline_uniform.map(|(binding, size)| {
+            (
+                binding,
+                vk::VkDescriptorBufferInfo {
+                    buffer: self.uniform.handle,
+                    offset: 0,
+                    range: u64::from(size),
+                },
+            )
+        });
+        let storage_buffer = pipeline_storage.map(|(binding, size)| {
+            (
+                binding,
+                vk::VkDescriptorBufferInfo {
+                    buffer: self.storage.handle,
+                    offset: 0,
+                    range: u64::from(size),
+                },
+            )
+        });
+        let mut writes = Vec::with_capacity(2);
+        if let Some((binding, ref buffer)) = uniform_buffer {
+            writes.push(descriptor_write(
                 set,
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                (&raw const buffer).cast(),
-            );
+                ptr::from_ref(buffer).cast(),
+            ));
+        }
+        if let Some((binding, ref buffer)) = storage_buffer {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                ptr::from_ref(buffer).cast(),
+            ));
+        }
+        if !writes.is_empty() {
             unsafe {
                 self.surface
                     .device()
@@ -981,8 +1082,8 @@ impl<'window> TexturedSession<'window> {
                     .update_descriptor_sets
                     .expect("loaded function")(
                     self.surface.device().handle,
-                    1,
-                    &raw const write,
+                    u32::try_from(writes.len()).expect("descriptor write count fits u32"),
+                    writes.as_ptr(),
                     0,
                     ptr::null(),
                 );
@@ -1605,6 +1706,7 @@ impl<'window> TexturedSession<'window> {
         let pipeline = &self.material_pipelines[pipeline_index];
         let (set_layout, descriptor_pool) = (pipeline.set_layout, pipeline.descriptor_pool);
         let pipeline_uniform = pipeline.uniform;
+        let pipeline_storage = pipeline.storage;
         let texture_bindings = pipeline.texture_bindings.clone();
         let samplers = pipeline.samplers.clone();
         let depth_texture_binding = pipeline.depth_texture_binding;
@@ -1635,6 +1737,11 @@ impl<'window> TexturedSession<'window> {
             buffer: self.uniform.handle,
             offset: 0,
             range: pipeline_uniform.map_or(1, |(_, size)| u64::from(size)),
+        };
+        let storage_buffer = vk::VkDescriptorBufferInfo {
+            buffer: self.storage.handle,
+            offset: 0,
+            range: pipeline_storage.map_or(1, |(_, size)| u64::from(size)),
         };
         let images: Vec<vk::VkDescriptorImageInfo> = texture_indices
             .iter()
@@ -1667,6 +1774,14 @@ impl<'window> TexturedSession<'window> {
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
                 (&raw const buffer).cast(),
+            ));
+        }
+        if let Some((binding, _)) = pipeline_storage {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+                (&raw const storage_buffer).cast(),
             ));
         }
         for (image, &binding) in images.iter().zip(texture_bindings.iter()) {
@@ -1918,7 +2033,7 @@ impl<'window> TexturedSession<'window> {
                     1,
                     &raw const draw.descriptor,
                     draw.dynamic_offset_count,
-                    &raw const draw.dynamic_offset,
+                    draw.dynamic_offsets.as_ptr(),
                 );
                 functions.cmd_bind_vertex_buffers.expect("loaded function")(
                     self.surface.command_buffer,
@@ -2534,7 +2649,7 @@ impl<'window> TexturedSession<'window> {
                             1,
                             &raw const draw.descriptor,
                             draw.dynamic_offset_count,
-                            &raw const draw.dynamic_offset,
+                            draw.dynamic_offsets.as_ptr(),
                         );
                         functions.cmd_bind_vertex_buffers.expect("loaded function")(
                             self.surface.command_buffer,
@@ -2644,6 +2759,7 @@ impl<'window> TexturedSession<'window> {
         }
         unsafe {
             destroy_buffer_device(device, mem::take(&mut self.uniform));
+            destroy_buffer_device(device, mem::take(&mut self.storage));
             destroy_buffer_device(device, mem::take(&mut self.instance_transforms));
         }
 
@@ -3068,6 +3184,110 @@ fn write_material_uniforms(
                 uniform.as_ptr(),
                 mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
                 uniform.len(),
+            );
+        }
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
+/// Per-record byte offsets into the frame's read-only storage region — material records first,
+/// then shadow records, each aligned to [`STORAGE_OFFSET_ALIGNMENT`] — plus the total bytes the
+/// region needs. Records without a storage slot occupy no bytes and keep offset zero.
+fn material_storage_offsets(
+    records: &[MaterialRecord<'_>],
+    shadow: Option<&ShadowPass<'_>>,
+) -> Result<(Vec<u32>, usize), GraphicsError> {
+    let lengths = records.iter().map(|record| record.storage.len()).chain(
+        shadow
+            .into_iter()
+            .flat_map(|shadow| shadow.records.iter().map(|record| record.storage.len())),
+    );
+    let mut offsets =
+        Vec::with_capacity(records.len() + shadow.map_or(0, |shadow| shadow.records.len()));
+    let mut running = 0_usize;
+    for length in lengths {
+        offsets
+            .push(u32::try_from(running).map_err(|_| error("Vulkan storage offsets exceed u32"))?);
+        let aligned = length
+            .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+            .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
+        running = running
+            .checked_add(aligned)
+            .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
+    }
+    Ok((offsets, running))
+}
+
+/// Uniform and storage dynamic offsets rearranged into ascending binding-number order, the order
+/// Vulkan consumes dynamic offsets across a set layout's dynamic descriptors.
+const fn dynamic_offsets_in_binding_order(
+    uniform: Option<(u32, u32)>,
+    storage: Option<(u32, u32)>,
+    uniform_offset: u32,
+    storage_offset: u32,
+) -> ([u32; 2], u32) {
+    match (uniform, storage) {
+        (None, None) => ([0, 0], 0),
+        (Some(_), None) => ([uniform_offset, 0], 1),
+        (None, Some(_)) => ([storage_offset, 0], 1),
+        (Some((uniform_binding, _)), Some((storage_binding, _))) => {
+            if uniform_binding < storage_binding {
+                ([uniform_offset, storage_offset], 2)
+            } else {
+                ([storage_offset, uniform_offset], 2)
+            }
+        }
+    }
+}
+
+fn write_material_storage(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    records: &[MaterialRecord<'_>],
+    shadow: Option<&ShadowPass<'_>>,
+    offsets: &[u32],
+) -> Result<(), GraphicsError> {
+    let contents = records.iter().map(|record| record.storage).chain(
+        shadow
+            .into_iter()
+            .flat_map(|shadow| shadow.records.iter().map(|record| record.storage)),
+    );
+    if records.iter().all(|record| record.storage.is_empty())
+        && shadow.is_none_or(|shadow| {
+            shadow
+                .records
+                .iter()
+                .all(|record| record.storage.is_empty())
+        })
+    {
+        return Ok(());
+    }
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for record storage",
+    )?;
+    unsafe {
+        for (bytes, &offset) in contents.zip(offsets) {
+            debug_assert!(
+                offset as usize + bytes.len() <= usize::try_from(buffer.size).expect("size fits"),
+                "storage capacity was ensured before writing"
+            );
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                mapped.cast::<u8>().add(offset as usize),
+                bytes.len(),
             );
         }
         device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
@@ -3561,6 +3781,13 @@ fn create_material_pipeline(
             stages,
         ));
     }
+    if let Some((binding, _)) = config.storage {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            stages,
+        ));
+    }
     for &binding in config.texture_bindings {
         layout_bindings.push(layout_binding(
             binding,
@@ -3603,6 +3830,7 @@ fn create_material_pipeline(
         descriptor_pool: ptr::null_mut(),
         samplers: Vec::with_capacity(config.sampler_bindings.len()),
         uniform: config.uniform,
+        storage: config.storage,
         texture_bindings: config.texture_bindings.to_vec(),
         depth_texture_binding: config.depth_texture_binding,
         comparison_sampler: None,
@@ -3909,6 +4137,13 @@ fn create_shadow_pipeline(
             vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
         ));
     }
+    if let Some((binding, _)) = config.storage {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
+        ));
+    }
     let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         bindingCount: u32::try_from(layout_bindings.len())
@@ -3922,6 +4157,7 @@ fn create_shadow_pipeline(
         pipeline: ptr::null_mut(),
         descriptor_pool: ptr::null_mut(),
         uniform: config.uniform,
+        storage: config.storage,
         descriptor: None,
     };
     check(
@@ -4343,13 +4579,14 @@ fn create_pipeline_descriptor_pool(
 ) -> Result<vk::VkDescriptorPool, GraphicsError> {
     let pool_sizes = [
         pool_size(uniform_type),
+        pool_size(vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE),
         pool_size(vk::VK_DESCRIPTOR_TYPE_SAMPLER),
     ];
     let pool_info = vk::VkDescriptorPoolCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         maxSets: 64,
-        poolSizeCount: 3,
+        poolSizeCount: 4,
         pPoolSizes: pool_sizes.as_ptr(),
         ..Default::default()
     };
@@ -4522,7 +4759,9 @@ fn descriptor_write(
     };
     if matches!(
         descriptor_type,
-        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER | vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+            | vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+            | vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
     ) {
         write.pBufferInfo = info.cast();
     } else {

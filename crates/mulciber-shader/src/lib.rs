@@ -107,9 +107,11 @@ pub fn compile_wgsl(
 
 /// Encodes the module's pipeline-facing interface: per entry point its stage, name, and
 /// vertex-stage input locations with formats, then the module's resource bindings with their
-/// kinds and, for uniform data, the WGSL byte size. `mulciber` validates application pipeline
+/// kinds and, for uniform and read-only storage data, the WGSL byte size. `mulciber` validates
+/// application pipeline
 /// declarations against this section, so an interface construct without a proven mapping is a
 /// compile error rather than a silently unnamed slot.
+#[allow(clippy::too_many_lines)]
 fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> {
     let mut bytes = Vec::new();
     push_count(&mut bytes, module.entry_points.len(), "entry points")?;
@@ -156,7 +158,23 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
         let inner = &module.types[variable.ty].inner;
         let (kind, size) = match (&variable.space, inner) {
             (AddressSpace::Uniform, _) => (BINDING_UNIFORM, inner.size(module.to_ctx())),
-            (AddressSpace::Storage { .. }, _) => (BINDING_STORAGE, 0),
+            (AddressSpace::Storage { access }, _) => {
+                if *access != naga::StorageAccess::LOAD {
+                    return Err(fail(format!(
+                        "WGSL binding {}:{} is writable storage, which has no proven interface \
+                         mapping",
+                        binding.group, binding.binding
+                    )));
+                }
+                if inner.is_dynamically_sized(&module.types) {
+                    return Err(fail(format!(
+                        "WGSL binding {}:{} is runtime-sized storage, which has no proven \
+                         interface mapping; declare a creation-fixed array size",
+                        binding.group, binding.binding
+                    )));
+                }
+                (BINDING_STORAGE, inner.size(module.to_ctx()))
+            }
             (
                 AddressSpace::Handle,
                 TypeInner::Image {
@@ -532,5 +550,47 @@ mod tests {
         }
 
         assert_eq!(interface, expected);
+    }
+
+    #[test]
+    fn read_only_fixed_storage_records_kind_and_size() {
+        let source = "
+            @group(0) @binding(0) var<storage, read> bones: array<mat4x4<f32>, 8>;
+            @vertex fn skin(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
+                return bones[0] * vec4<f32>(position, 1.0);
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
+        let interface = shader_interface(&module).expect("storage interface");
+        // The binding record trails the interface: group, binding, kind 3, 8 * 64 bytes.
+        let record = &interface[interface.len() - 13..];
+        assert_eq!(record[8], 3);
+        assert_eq!(record[9..], 512_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn writable_storage_is_rejected() {
+        let source = "
+            @group(0) @binding(0) var<storage, read_write> data: array<vec4<f32>, 4>;
+            @vertex fn main_vertex() -> @builtin(position) vec4<f32> {
+                return data[0];
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
+        let failure = shader_interface(&module).expect_err("writable storage is rejected");
+        assert!(failure.to_string().contains("writable storage"));
+    }
+
+    #[test]
+    fn runtime_sized_storage_is_rejected() {
+        let source = "
+            @group(0) @binding(0) var<storage, read> data: array<vec4<f32>>;
+            @vertex fn main_vertex() -> @builtin(position) vec4<f32> {
+                return data[0];
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
+        let failure = shader_interface(&module).expect_err("runtime-sized storage is rejected");
+        assert!(failure.to_string().contains("runtime-sized storage"));
     }
 }

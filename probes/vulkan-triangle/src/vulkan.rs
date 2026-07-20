@@ -27,6 +27,7 @@ mod renderer_pipelines;
 mod renderer_present;
 mod renderer_retirement;
 mod renderer_setup;
+mod renderer_timing;
 mod renderer_transfer;
 mod resize_trace;
 mod texture;
@@ -37,6 +38,7 @@ use pipeline_cache::{
     uuid_hex as pipeline_cache_uuid_hex, validate_header as validate_pipeline_cache_header,
 };
 use renderer_pacing::PresentPacing;
+use renderer_timing::SwapchainPresentTiming;
 use resize_trace::{LiveResizeSample, LiveResizeTrace};
 use texture::{
     Bc1Support, TEXTURE_HEIGHT, TEXTURE_WIDTH, TextureMode, TexturePath, TextureSelection,
@@ -441,6 +443,7 @@ struct InstanceFns {
     get_queue_family_properties: vk::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
     get_surface_support: vk::PFN_vkGetPhysicalDeviceSurfaceSupportKHR,
     get_surface_capabilities: vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR,
+    get_surface_capabilities2: vk::PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR,
     get_surface_formats: vk::PFN_vkGetPhysicalDeviceSurfaceFormatsKHR,
     get_surface_present_modes: vk::PFN_vkGetPhysicalDeviceSurfacePresentModesKHR,
     enumerate_device_extensions: vk::PFN_vkEnumerateDeviceExtensionProperties,
@@ -453,6 +456,7 @@ impl InstanceFns {
         entry: &Entry,
         instance: vk::VkInstance,
         window: &Window,
+        surface_capabilities2: bool,
     ) -> Result<Self, ProbeError> {
         macro_rules! load {
             ($name:literal) => {
@@ -475,6 +479,11 @@ impl InstanceFns {
             get_queue_family_properties: load!(c"vkGetPhysicalDeviceQueueFamilyProperties"),
             get_surface_support: load!(c"vkGetPhysicalDeviceSurfaceSupportKHR"),
             get_surface_capabilities: load!(c"vkGetPhysicalDeviceSurfaceCapabilitiesKHR"),
+            get_surface_capabilities2: if surface_capabilities2 {
+                load!(c"vkGetPhysicalDeviceSurfaceCapabilities2KHR")
+            } else {
+                None
+            },
             get_surface_formats: load!(c"vkGetPhysicalDeviceSurfaceFormatsKHR"),
             get_surface_present_modes: load!(c"vkGetPhysicalDeviceSurfacePresentModesKHR"),
             enumerate_device_extensions: load!(c"vkEnumerateDeviceExtensionProperties"),
@@ -490,6 +499,7 @@ struct InstanceContext {
     handle: vk::VkInstance,
     debug_messenger: vk::VkDebugUtilsMessengerEXT,
     surface: vk::VkSurfaceKHR,
+    surface_capabilities2: bool,
     surface_maintenance1: bool,
 }
 
@@ -528,20 +538,23 @@ impl InstanceContext {
                 .iter()
                 .any(|candidate| candidate == name.strip_suffix(&[0]).unwrap())
         };
+        let surface_capabilities2 =
+            has_extension(vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
         let surface_maintenance1 =
-            has_extension(vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)
-                && has_extension(vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+            surface_capabilities2 && has_extension(vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
         let mut extensions = vec![
             c"VK_KHR_surface".as_ptr(),
             platform::surface_extension(window).as_ptr(),
             c"VK_EXT_debug_utils".as_ptr(),
         ];
-        if surface_maintenance1 {
+        if surface_capabilities2 {
             extensions.push(
                 vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
                     .as_ptr()
                     .cast(),
             );
+        }
+        if surface_maintenance1 {
             extensions.push(
                 vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME
                     .as_ptr()
@@ -574,13 +587,15 @@ impl InstanceContext {
         )?;
 
         // SAFETY: `handle` is a live instance and names/types are paired in `load`.
-        let functions = unsafe { InstanceFns::load(&entry, handle, window) }?;
+        let functions =
+            unsafe { InstanceFns::load(&entry, handle, window, surface_capabilities2) }?;
         let mut context = Self {
             _entry: entry,
             functions,
             handle,
             debug_messenger: ptr::null_mut(),
             surface: ptr::null_mut(),
+            surface_capabilities2,
             surface_maintenance1,
         };
 
@@ -652,6 +667,41 @@ struct Adapter {
     timestamp_valid_bits: u32,
     timestamp_period: f32,
     texture: TextureSelection,
+    present_timing: Result<PresentTimingSelection, &'static str>,
+}
+
+/// Native `VK_EXT_present_timing` feedback selected for the chosen adapter and surface, or the
+/// observable reason the CPU present-return estimation fallback is the only path.
+#[derive(Clone, Copy)]
+struct PresentTimingSelection {
+    /// The single present stage this probe requests timestamps for.
+    stage: u32,
+}
+
+fn present_stage_name(stage: u32) -> &'static str {
+    if stage == vk::VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT as u32 {
+        "first-pixel-visible stage"
+    } else if stage == vk::VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT as u32 {
+        "first-pixel-out stage"
+    } else if stage == vk::VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT as u32 {
+        "request-dequeued stage"
+    } else if stage == vk::VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT as u32 {
+        "queue-operations-end stage"
+    } else {
+        "unknown stage"
+    }
+}
+
+/// Prefers the stage closest to light leaving the display, falling back through earlier stages.
+fn choose_present_stage(supported: u32) -> Option<u32> {
+    [
+        vk::VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT as u32,
+        vk::VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT as u32,
+        vk::VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT as u32,
+        vk::VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT as u32,
+    ]
+    .into_iter()
+    .find(|stage| supported & stage != 0)
 }
 
 struct DeviceFns {
@@ -733,13 +783,19 @@ struct DeviceFns {
     get_fence_status: vk::PFN_vkGetFenceStatus,
     get_query_pool_results: vk::PFN_vkGetQueryPoolResults,
     queue_submit2: vk::PFN_vkQueueSubmit2,
+    set_swapchain_present_timing_queue_size: vk::PFN_vkSetSwapchainPresentTimingQueueSizeEXT,
+    get_swapchain_timing_properties: vk::PFN_vkGetSwapchainTimingPropertiesEXT,
+    get_swapchain_time_domain_properties: vk::PFN_vkGetSwapchainTimeDomainPropertiesEXT,
+    get_past_presentation_timing: vk::PFN_vkGetPastPresentationTimingEXT,
 }
 
 impl DeviceFns {
+    #[allow(clippy::too_many_lines)]
     unsafe fn load(
         instance: &InstanceContext,
         device: vk::VkDevice,
         swapchain_maintenance1: bool,
+        present_timing: bool,
     ) -> Result<Self, ProbeError> {
         let get = instance
             .functions
@@ -839,6 +895,26 @@ impl DeviceFns {
             get_fence_status: load!(c"vkGetFenceStatus"),
             get_query_pool_results: load!(c"vkGetQueryPoolResults"),
             queue_submit2: load!(c"vkQueueSubmit2"),
+            set_swapchain_present_timing_queue_size: if present_timing {
+                load!(c"vkSetSwapchainPresentTimingQueueSizeEXT")
+            } else {
+                None
+            },
+            get_swapchain_timing_properties: if present_timing {
+                load!(c"vkGetSwapchainTimingPropertiesEXT")
+            } else {
+                None
+            },
+            get_swapchain_time_domain_properties: if present_timing {
+                load!(c"vkGetSwapchainTimeDomainPropertiesEXT")
+            } else {
+                None
+            },
+            get_past_presentation_timing: if present_timing {
+                load!(c"vkGetPastPresentationTimingEXT")
+            } else {
+                None
+            },
         })
     }
 }
@@ -852,6 +928,7 @@ struct DeviceContext {
 }
 
 impl DeviceContext {
+    #[allow(clippy::too_many_lines)]
     fn new(instance: InstanceContext) -> Result<Self, ProbeError> {
         let adapter = choose_adapter(&instance)?;
         let priority = 1.0_f32;
@@ -862,8 +939,34 @@ impl DeviceContext {
             pQueuePriorities: &raw const priority,
             ..Default::default()
         };
+        let mut present_id2_features = vk::VkPhysicalDevicePresentId2FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR,
+            presentId2: vk::VK_TRUE,
+            ..Default::default()
+        };
+        let mut present_timing_features = vk::VkPhysicalDevicePresentTimingFeaturesEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
+            pNext: (&raw mut present_id2_features).cast(),
+            presentTiming: vk::VK_TRUE,
+            ..Default::default()
+        };
+        let timing_head: *mut c_void = if adapter.present_timing.is_ok() {
+            (&raw mut present_timing_features).cast()
+        } else {
+            ptr::null_mut()
+        };
+        let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+            pNext: timing_head,
+            swapchainMaintenance1: vk::VK_TRUE,
+        };
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            pNext: if adapter.swapchain_maintenance1 {
+                (&raw mut maintenance1).cast()
+            } else {
+                timing_head
+            },
             synchronization2: vk::VK_TRUE,
             dynamicRendering: vk::VK_TRUE,
             pipelineCreationCacheControl: if adapter.pipeline_creation_cache_control {
@@ -873,14 +976,6 @@ impl DeviceContext {
             },
             ..Default::default()
         };
-        let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
-            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
-            swapchainMaintenance1: vk::VK_TRUE,
-            ..Default::default()
-        };
-        if adapter.swapchain_maintenance1 {
-            features13.pNext = (&raw mut maintenance1).cast();
-        }
         let enabled_features = vk::VkPhysicalDeviceFeatures {
             textureCompressionBC: if adapter.texture.path == TexturePath::Bc1 {
                 vk::VK_TRUE
@@ -896,6 +991,15 @@ impl DeviceContext {
                     .as_ptr()
                     .cast(),
             );
+        }
+        if adapter.present_timing.is_ok() {
+            extensions.push(vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr().cast());
+            extensions.push(
+                vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+            extensions.push(vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_ptr().cast());
         }
         let device_info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -922,8 +1026,14 @@ impl DeviceContext {
             "vkCreateDevice",
         )?;
         // SAFETY: `handle` is live and names/types are paired in the loader.
-        let functions =
-            unsafe { DeviceFns::load(&instance, handle, adapter.swapchain_maintenance1) }?;
+        let functions = unsafe {
+            DeviceFns::load(
+                &instance,
+                handle,
+                adapter.swapchain_maintenance1,
+                adapter.present_timing.is_ok(),
+            )
+        }?;
         let mut queue = ptr::null_mut();
         // SAFETY: Queue zero exists because one queue was requested from this family.
         unsafe {
@@ -1010,12 +1120,89 @@ fn require_name(names: &[Vec<u8>], name: &CStr, description: &str) -> Result<(),
     }
 }
 
+/// Selects native present-timing feedback for one candidate adapter, or names the observable
+/// reason the CPU present-return estimation fallback is the only path on this tier.
+fn choose_present_timing(
+    instance: &InstanceContext,
+    device: vk::VkPhysicalDevice,
+    force_fallback: bool,
+    timing_extensions: bool,
+    present_id2_features: &vk::VkPhysicalDevicePresentId2FeaturesKHR,
+    present_timing_features: &vk::VkPhysicalDevicePresentTimingFeaturesEXT,
+) -> Result<Result<PresentTimingSelection, &'static str>, ProbeError> {
+    if force_fallback {
+        return Ok(Err(
+            "forced fallback (MULCIBER_VULKAN_FORCE_PRESENT_TIMING_FALLBACK)",
+        ));
+    }
+    if !timing_extensions {
+        return Ok(Err(
+            "device lacks VK_KHR_present_id2, VK_KHR_calibrated_timestamps, or \
+             VK_EXT_present_timing",
+        ));
+    }
+    if !instance.surface_capabilities2 {
+        return Ok(Err("instance lacks VK_KHR_get_surface_capabilities2"));
+    }
+    if present_id2_features.presentId2 != vk::VK_TRUE
+        || present_timing_features.presentTiming != vk::VK_TRUE
+    {
+        return Ok(Err(
+            "device does not enable the presentId2/presentTiming features",
+        ));
+    }
+    let mut id2_capabilities = vk::VkSurfaceCapabilitiesPresentId2KHR {
+        sType: vk::VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR,
+        ..Default::default()
+    };
+    let mut timing_capabilities = vk::VkPresentTimingSurfaceCapabilitiesEXT {
+        sType: vk::VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT,
+        pNext: (&raw mut id2_capabilities).cast(),
+        ..Default::default()
+    };
+    let mut capabilities = vk::VkSurfaceCapabilities2KHR {
+        sType: vk::VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
+        pNext: (&raw mut timing_capabilities).cast(),
+        ..Default::default()
+    };
+    let surface_info = vk::VkPhysicalDeviceSurfaceInfo2KHR {
+        sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+        surface: instance.surface,
+        ..Default::default()
+    };
+    // SAFETY: Device and surface are live, and the query chain structs are writable.
+    check(
+        unsafe {
+            instance
+                .functions
+                .get_surface_capabilities2
+                .expect("loaded function")(
+                device, &raw const surface_info, &raw mut capabilities
+            )
+        },
+        "vkGetPhysicalDeviceSurfaceCapabilities2KHR",
+    )?;
+    if timing_capabilities.presentTimingSupported != vk::VK_TRUE {
+        return Ok(Err("surface reports no present-timing support"));
+    }
+    if id2_capabilities.presentId2Supported != vk::VK_TRUE {
+        return Ok(Err("surface reports no present-id2 support"));
+    }
+    Ok(
+        choose_present_stage(timing_capabilities.presentStageQueries)
+            .map(|stage| PresentTimingSelection { stage })
+            .ok_or("surface exposes no present-stage timestamps"),
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
     let texture_mode = texture_mode_from_environment()?;
     let force_swapchain_fallback =
         env::var_os("MULCIBER_VULKAN_FORCE_SWAPCHAIN_FALLBACK").is_some();
     let force_msaa_1x = env::var_os("MULCIBER_VULKAN_FORCE_MSAA_1X").is_some();
+    let force_present_timing_fallback =
+        env::var_os("MULCIBER_VULKAN_FORCE_PRESENT_TIMING_FALLBACK").is_some();
     let enumerate = instance
         .functions
         .enumerate_physical_devices
@@ -1063,18 +1250,45 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                     .strip_suffix(&[0])
                     .unwrap()
             });
+        let timing_extensions = [
+            vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_slice(),
+            vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME.as_slice(),
+            vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_slice(),
+        ]
+        .into_iter()
+        .all(|required| {
+            extensions
+                .iter()
+                .any(|name| name == required.strip_suffix(&[0]).unwrap())
+        });
+        let mut present_id2_features = vk::VkPhysicalDevicePresentId2FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR,
+            ..Default::default()
+        };
+        let mut present_timing_features = vk::VkPhysicalDevicePresentTimingFeaturesEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
+            pNext: (&raw mut present_id2_features).cast(),
+            ..Default::default()
+        };
+        let timing_head: *mut c_void = if timing_extensions {
+            (&raw mut present_timing_features).cast()
+        } else {
+            ptr::null_mut()
+        };
         let mut maintenance1 = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+            pNext: timing_head,
             ..Default::default()
         };
-
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            pNext: if maintenance_extension {
+                (&raw mut maintenance1).cast()
+            } else {
+                timing_head
+            },
             ..Default::default()
         };
-        if maintenance_extension {
-            features13.pNext = (&raw mut maintenance1).cast();
-        }
         let mut features = vk::VkPhysicalDeviceFeatures2 {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
             pNext: (&raw mut features13).cast(),
@@ -1092,6 +1306,14 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
         {
             continue;
         }
+        let present_timing = choose_present_timing(
+            instance,
+            device,
+            force_present_timing_fallback,
+            timing_extensions,
+            &present_id2_features,
+            &present_timing_features,
+        )?;
         let mut bc1_properties = vk::VkFormatProperties::default();
         // SAFETY: The physical device is live and properties storage is writable.
         unsafe {
@@ -1191,6 +1413,7 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
                         timestamp_valid_bits: family.timestampValidBits,
                         timestamp_period: properties.limits.timestampPeriod,
                         texture,
+                        present_timing,
                     },
                     fixed_c_string(&properties.deviceName),
                 ));
@@ -1236,6 +1459,13 @@ fn choose_adapter(instance: &InstanceContext) -> Result<Adapter, ProbeError> {
             "unavailable (feedback-only strict proof)"
         }
     );
+    match adapter.present_timing {
+        Ok(selection) => println!(
+            "Present timing: native VK_EXT_present_timing, {}",
+            present_stage_name(selection.stage)
+        ),
+        Err(reason) => println!("Present timing: CPU present-return estimation; {reason}"),
+    }
     println!(
         "BC1 capability: textureCompressionBC={}, optimalTilingFeatures=0x{:08x}",
         if adapter.texture.bc1.core_feature {
@@ -1508,6 +1738,7 @@ struct Renderer {
     frame_abandonment: FrameAbandonmentState,
     live_resize_trace: LiveResizeTrace,
     present_pacing: PresentPacing,
+    present_timing: Option<SwapchainPresentTiming>,
 }
 
 impl Renderer {
@@ -1518,6 +1749,7 @@ impl Renderer {
         options: &RunOptions,
     ) -> Result<Self, ProbeError> {
         let pipeline_cache_options = &options.pipeline_cache;
+        let present_timing_selection = device.adapter.present_timing;
         let depth_format = choose_depth_format(&device)?;
         require_offscreen_format(&device)?;
         let pipeline_cache_path = pipeline_cache_options
@@ -1597,7 +1829,8 @@ impl Renderer {
             acquire_timeout: platform::acquire_timeout(window),
             frame_abandonment: FrameAbandonmentState::new(options.abandon_acquired_frame_once),
             live_resize_trace: LiveResizeTrace::from_environment(),
-            present_pacing: PresentPacing::new(options),
+            present_pacing: PresentPacing::new(options, present_timing_selection),
+            present_timing: None,
         };
         if renderer.live_resize_trace.is_enabled() {
             println!("Live resize timing trace enabled");

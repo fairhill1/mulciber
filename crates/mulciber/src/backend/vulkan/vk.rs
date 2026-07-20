@@ -17,9 +17,13 @@ pub const VK_TRUE: u32 = 1;
 pub const VK_KHR_SWAPCHAIN_EXTENSION_NAME: &[u8; 17] = b"VK_KHR_swapchain\0";
 pub const VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME: &[u8; 33] =
     b"VK_KHR_get_surface_capabilities2\0";
+pub const VK_KHR_PRESENT_ID_2_EXTENSION_NAME: &[u8; 19] = b"VK_KHR_present_id2\0";
 pub const VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME: &[u8; 28] = b"VK_KHR_surface_maintenance1\0";
 pub const VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME: &[u8; 30] =
     b"VK_KHR_swapchain_maintenance1\0";
+pub const VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME: &[u8; 29] =
+    b"VK_KHR_calibrated_timestamps\0";
+pub const VK_EXT_PRESENT_TIMING_EXTENSION_NAME: &[u8; 22] = b"VK_EXT_present_timing\0";
 pub type VkBool32 = u32;
 pub type VkDeviceSize = u64;
 pub type VkFlags = u32;
@@ -6195,6 +6199,18 @@ pub struct VkSwapchainKHR_T {
     _unused: [u8; 0],
 }
 pub type VkSwapchainKHR = *mut VkSwapchainKHR_T;
+pub const VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 1;
+pub const VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 2;
+pub const VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 4;
+pub const VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT: VkSwapchainCreateFlagBitsKHR = 512;
+pub const VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 64;
+pub const VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 128;
+pub const VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_KHR: VkSwapchainCreateFlagBitsKHR = 8;
+pub const VK_SWAPCHAIN_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT:
+    VkSwapchainCreateFlagBitsKHR = 256;
+pub const VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT: VkSwapchainCreateFlagBitsKHR = 8;
+pub const VK_SWAPCHAIN_CREATE_FLAG_BITS_MAX_ENUM_KHR: VkSwapchainCreateFlagBitsKHR = 2147483647;
+pub type VkSwapchainCreateFlagBitsKHR = ::core::ffi::c_int;
 pub type VkSwapchainCreateFlagsKHR = VkFlags;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -6286,6 +6302,94 @@ pub type PFN_vkQueuePresentKHR = ::core::option::Option<
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkPhysicalDeviceSurfaceInfo2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub surface: VkSurfaceKHR,
+}
+impl Default for VkPhysicalDeviceSurfaceInfo2KHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSurfaceCapabilities2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub surfaceCapabilities: VkSurfaceCapabilitiesKHR,
+}
+impl Default for VkSurfaceCapabilities2KHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR = ::core::option::Option<
+    unsafe extern "C" fn(
+        physicalDevice: VkPhysicalDevice,
+        pSurfaceInfo: *const VkPhysicalDeviceSurfaceInfo2KHR,
+        pSurfaceCapabilities: *mut VkSurfaceCapabilities2KHR,
+    ) -> VkResult,
+>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSurfaceCapabilitiesPresentId2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentId2Supported: VkBool32,
+}
+impl Default for VkSurfaceCapabilitiesPresentId2KHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPresentId2KHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub swapchainCount: u32,
+    pub pPresentIds: *const u64,
+}
+impl Default for VkPresentId2KHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPhysicalDevicePresentId2FeaturesKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentId2: VkBool32,
+}
+impl Default for VkPhysicalDevicePresentId2FeaturesKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
     pub sType: VkStructureType,
     pub pNext: *mut ::core::ffi::c_void,
@@ -6341,6 +6445,18 @@ pub type PFN_vkReleaseSwapchainImagesKHR = ::core::option::Option<
         pReleaseInfo: *const VkReleaseSwapchainImagesInfoKHR,
     ) -> VkResult,
 >;
+pub const VK_TIME_DOMAIN_DEVICE_KHR: VkTimeDomainKHR = 0;
+pub const VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR: VkTimeDomainKHR = 1;
+pub const VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR: VkTimeDomainKHR = 2;
+pub const VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR: VkTimeDomainKHR = 3;
+pub const VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT: VkTimeDomainKHR = 1000208000;
+pub const VK_TIME_DOMAIN_SWAPCHAIN_LOCAL_EXT: VkTimeDomainKHR = 1000208001;
+pub const VK_TIME_DOMAIN_DEVICE_EXT: VkTimeDomainKHR = 0;
+pub const VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT: VkTimeDomainKHR = 1;
+pub const VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT: VkTimeDomainKHR = 2;
+pub const VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT: VkTimeDomainKHR = 3;
+pub const VK_TIME_DOMAIN_MAX_ENUM_KHR: VkTimeDomainKHR = 2147483647;
+pub type VkTimeDomainKHR = ::core::ffi::c_int;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VkDebugUtilsMessengerEXT_T {
@@ -6476,6 +6592,214 @@ pub type PFN_vkDestroyDebugUtilsMessengerEXT = ::core::option::Option<
         messenger: VkDebugUtilsMessengerEXT,
         pAllocator: *const VkAllocationCallbacks,
     ),
+>;
+pub const VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT: VkPresentStageFlagBitsEXT = 1;
+pub const VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT: VkPresentStageFlagBitsEXT = 2;
+pub const VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT: VkPresentStageFlagBitsEXT = 4;
+pub const VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT: VkPresentStageFlagBitsEXT = 8;
+pub const VK_PRESENT_STAGE_FLAG_BITS_MAX_ENUM_EXT: VkPresentStageFlagBitsEXT = 2147483647;
+pub type VkPresentStageFlagBitsEXT = ::core::ffi::c_int;
+pub type VkPresentStageFlagsEXT = VkFlags;
+pub type VkPastPresentationTimingFlagsEXT = VkFlags;
+pub type VkPresentTimingInfoFlagsEXT = VkFlags;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPhysicalDevicePresentTimingFeaturesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentTiming: VkBool32,
+    pub presentAtAbsoluteTime: VkBool32,
+    pub presentAtRelativeTime: VkBool32,
+}
+impl Default for VkPhysicalDevicePresentTimingFeaturesEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPresentTimingSurfaceCapabilitiesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentTimingSupported: VkBool32,
+    pub presentAtAbsoluteTimeSupported: VkBool32,
+    pub presentAtRelativeTimeSupported: VkBool32,
+    pub presentStageQueries: VkPresentStageFlagsEXT,
+}
+impl Default for VkPresentTimingSurfaceCapabilitiesEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSwapchainTimingPropertiesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub refreshDuration: u64,
+    pub refreshInterval: u64,
+}
+impl Default for VkSwapchainTimingPropertiesEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSwapchainTimeDomainPropertiesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub timeDomainCount: u32,
+    pub pTimeDomains: *mut VkTimeDomainKHR,
+    pub pTimeDomainIds: *mut u64,
+}
+impl Default for VkSwapchainTimeDomainPropertiesEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPastPresentationTimingInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkPastPresentationTimingFlagsEXT,
+    pub swapchain: VkSwapchainKHR,
+}
+impl Default for VkPastPresentationTimingInfoEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkPresentStageTimeEXT {
+    pub stage: VkPresentStageFlagsEXT,
+    pub time: u64,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPastPresentationTimingEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentId: u64,
+    pub targetTime: u64,
+    pub presentStageCount: u32,
+    pub pPresentStages: *mut VkPresentStageTimeEXT,
+    pub timeDomain: VkTimeDomainKHR,
+    pub timeDomainId: u64,
+    pub reportComplete: VkBool32,
+}
+impl Default for VkPastPresentationTimingEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPastPresentationTimingPropertiesEXT {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub timingPropertiesCounter: u64,
+    pub timeDomainsCounter: u64,
+    pub presentationTimingCount: u32,
+    pub pPresentationTimings: *mut VkPastPresentationTimingEXT,
+}
+impl Default for VkPastPresentationTimingPropertiesEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPresentTimingInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub flags: VkPresentTimingInfoFlagsEXT,
+    pub targetTime: u64,
+    pub timeDomainId: u64,
+    pub presentStageQueries: VkPresentStageFlagsEXT,
+    pub targetTimeDomainPresentStage: VkPresentStageFlagsEXT,
+}
+impl Default for VkPresentTimingInfoEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPresentTimingsInfoEXT {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub swapchainCount: u32,
+    pub pTimingInfos: *const VkPresentTimingInfoEXT,
+}
+impl Default for VkPresentTimingsInfoEXT {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+pub type PFN_vkSetSwapchainPresentTimingQueueSizeEXT = ::core::option::Option<
+    unsafe extern "C" fn(device: VkDevice, swapchain: VkSwapchainKHR, size: u32) -> VkResult,
+>;
+pub type PFN_vkGetSwapchainTimingPropertiesEXT = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        swapchain: VkSwapchainKHR,
+        pSwapchainTimingProperties: *mut VkSwapchainTimingPropertiesEXT,
+        pSwapchainTimingPropertiesCounter: *mut u64,
+    ) -> VkResult,
+>;
+pub type PFN_vkGetSwapchainTimeDomainPropertiesEXT = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        swapchain: VkSwapchainKHR,
+        pSwapchainTimeDomainProperties: *mut VkSwapchainTimeDomainPropertiesEXT,
+        pTimeDomainsCounter: *mut u64,
+    ) -> VkResult,
+>;
+pub type PFN_vkGetPastPresentationTimingEXT = ::core::option::Option<
+    unsafe extern "C" fn(
+        device: VkDevice,
+        pPastPresentationTimingInfo: *const VkPastPresentationTimingInfoEXT,
+        pPastPresentationTimingProperties: *mut VkPastPresentationTimingPropertiesEXT,
+    ) -> VkResult,
 >;
 pub type HINSTANCE = *mut ::core::ffi::c_void;
 pub type HWND = *mut ::core::ffi::c_void;

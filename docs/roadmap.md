@@ -70,9 +70,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   or `VK_KHR_incremental_present`, making the estimation fallback the only path on that recorded
   tier; the Linux Nvidia tier is surveyed as of 2026-07-20 and advertises `VK_KHR_present_id`,
   `VK_KHR_present_wait`, `VK_KHR_incremental_present`, `VK_EXT_present_timing`, `wp_presentation`
-  version 2, and the XPresent extension — every candidate source, availability only
-  ([Linux runbook](linux-validation.md)); the Windows Nvidia survey and exercised Vulkan feedback
-  behavior remain outstanding).
+  version 2, and the XPresent extension — and the probe now physically exercises
+  `VK_EXT_present_timing` there: Wayland reports first-pixel-out times on the vsync grid with
+  vsync-quantized load-spike degradation, while XWayland offers only the queue-operations-end
+  stage ([Linux runbook](linux-validation.md)); the Windows Nvidia survey and the Wayland
+  `wp_presentation` protocol path remain outstanding).
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.
@@ -345,8 +347,10 @@ device recovery.
   presented times on Metal with explicit `Unsupported` on Vulkan, and
   `mulciber-runtime::PacingDiagnostics` reports cadence estimates, interval distributions, and
   missed intervals, consumed by Forge Run and `mulciber-api-cube`, and the pinned wgpu/winit Forge
-  Run peer carries the equivalent best-effort present-return estimator; pacing policy and the
-  Vulkan feedback path remain outstanding per the [Gate 4 pacing plan](gate4-pacing-plan.md)).
+  Run peer carries the equivalent best-effort present-return estimator; the Vulkan probe-first
+  feedback path is exercised on the Linux Nvidia tier via `VK_EXT_present_timing`, while its
+  extraction into `Surface::take_present_feedback` and pacing policy remain outstanding per the
+  [Gate 4 pacing plan](gate4-pacing-plan.md)).
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.
 - [ ] Evaluate timestamped or per-tick input staging against a deterministic replay/rollback

@@ -197,6 +197,59 @@ candidate feedback source the pacing plan names is advertised on this tier. Whic
 delivers accurate identified presentation times through the Wayland and XWayland WSI paths is
 behavior evidence for the plan's probe-first step; advertisement is not exercised-path evidence.
 
+### Native present-timing probe evidence
+
+Later on 2026-07-20, an uncommitted tree based on `e0b0c0e` extended the Vulkan triangle probe
+with the `VK_EXT_present_timing` feedback path: the device enables
+`VK_KHR_present_id2`/`VK_KHR_calibrated_timestamps`/`VK_EXT_present_timing` with the `presentId2`
+and `presentTiming` features when the surface reports support, creates the swapchain with the
+present-id-2 and present-timing flags, sizes the timing queue, selects a swapchain time domain
+(preferring `CLOCK_MONOTONIC`), chains a per-present id and one-stage timing request, and drains
+completed reports after every present into the pacing record beside the retained CPU
+present-return estimation. Tiers without the chain keep the estimation-only report with the
+observable reason, and `MULCIBER_VULKAN_FORCE_PRESENT_TIMING_FALLBACK=1` forces that path.
+
+Automated finite runs on the machine above (KDE Plasma 6.7.3, 74.971 Hz display), all with
+validation enabled, exit code zero, and no validation output:
+
+- **Native Wayland, 300 frames**: the surface offered the first-pixel-out stage (not
+  first-pixel-visible) and a non-monotonic device-selected time domain; the driver reported
+  `refreshDuration` as zero, which the probe treats as unknown. 296 presents carried native times
+  (4 untimed at the shutdown tail). Native intervals: min 13.289 ms, p50 13.338 ms, p99 13.388 ms,
+  max 13.415 ms — tightly on the 13.339 ms vsync grid — while the same run's CPU present-return
+  intervals spread 0.139–15.190 ms.
+- **Native Wayland, 300 frames with the pre-registered 40 ms load spike over frames 100..130**:
+  native spike intervals reported p50 40.016 ms, exactly three refresh periods, demonstrating
+  vsync-quantized degradation; the CPU estimation reported noisy 40.31–40.55 ms returns. Steady
+  native intervals kept 0 missed against the measured median.
+- **X11 through XWayland, 300 frames**: the extension chain works but the surface offers only the
+  queue-operations-end stage, whose times track present-return closely (p50 13.027 ms with the
+  same 0.2–31 ms spread as the returns) — display-side feedback is not available through this WSI
+  path on this tier.
+- **Abandonment interplay**: `--frames 120 --abandon-acquired-frame-once` on both the
+  `vkReleaseSwapchainImagesKHR` path and the forced whole-generation-replacement fallback (which
+  resets the per-swapchain present-id sequence through swapchain recreation) completed
+  validation-clean with 116 of 120 presents timed.
+- **Forced estimation fallback**: `MULCIBER_VULKAN_FORCE_PRESENT_TIMING_FALLBACK=1` produced the
+  labeled estimation-only report and exited zero.
+- `--pacing-csv` now emits per-frame native offset/interval columns beside the return columns.
+
+A physical interactive Wayland session (drag resize, minimize/restore, titlebar close) then
+exposed a defect the finite runs could not: a nonsense interval of roughly 21,000 seconds,
+because native times from different swapchains were paired across a live-resize recreation, and
+each swapchain's time domain carries its own epoch. Intervals and CSV columns are now
+generation-scoped — a swapchain recreation breaks a pair exactly like an untimed frame does. The
+re-run interactive smoke (600 presents through continuous drag resize and titlebar close)
+reported 491 timed presents with native intervals min 13.067 ms, p50 13.339 ms, max 13.566 ms
+and 0 missed against the now-reported 13.338 ms refresh duration; the 109 untimed presents
+belong to swapchains retired mid-resize. The driver reports `refreshDuration` as zero on the
+first swapchain but real values after recreation, so a zero report is treated as unknown.
+
+This is the first exercised Vulkan native presentation-feedback evidence in the project, single
+machine and single display. The Wayland `wp_presentation` protocol path, Windows tiers, pacing
+policy, and extraction into `Surface::take_present_feedback` remain open per the
+[Gate 4 pacing plan](gate4-pacing-plan.md).
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

@@ -137,8 +137,10 @@ Both probes accept `--frames N` and `--abandon-acquired-frame-once`, print a pre
 report, and support `--pacing-csv PATH` for per-frame samples plus `--load-spike START:COUNT:MILLIS`
 for the load-spike scenario in the [Gate 4 pacing plan](docs/gate4-pacing-plan.md). The Metal
 report uses native presented-time feedback from drawable presented handlers against the queried
-display cadence; the Vulkan report is labeled CPU present-return estimation, because the surveyed
-tier exposes no native feedback extension. The Metal probe generates and
+display cadence; the Vulkan report drains native `VK_EXT_present_timing` presented-stage times
+beside the CPU present-return estimation where the surveyed tier exposes the extension chain
+(currently the Linux Nvidia tier), and remains labeled estimation-only with the observable reason
+elsewhere. The Metal probe generates and
 strictly reloads a device-specific binary archive; pass `--binary-archive PATH` to select a
 different artifact or `--rebuild-binary-archive` after changing shaders, pipeline descriptors, the
 OS, or the GPU. The Vulkan probe requires the Khronos validation layer and loads the platform

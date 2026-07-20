@@ -7,6 +7,10 @@ use super::{
 impl Renderer {
     pub(super) fn recreate_swapchain(&mut self, width: u32, height: u32) -> Result<(), ProbeError> {
         self.wait_for_frame()?;
+        // Salvage completed timing reports from the outgoing swapchain; frames still pending
+        // when it retires stay untimed.
+        self.drain_present_timing()?;
+        self.abandon_present_timing();
 
         let mut capabilities = vk::VkSurfaceCapabilitiesKHR::default();
         // SAFETY: Adapter/surface are live and output storage is writable.
@@ -37,6 +41,12 @@ impl Renderer {
             .ok_or_else(|| ProbeError("surface exposes no composite-alpha mode".into()))?;
         let create_info = vk::VkSwapchainCreateInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            flags: if self.device.adapter.present_timing.is_ok() {
+                (vk::VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR
+                    | vk::VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) as u32
+            } else {
+                0
+            },
             surface: self.device.instance.surface,
             minImageCount: image_count,
             imageFormat: format.format,
@@ -79,6 +89,7 @@ impl Renderer {
             self.surface_info,
             SurfaceExtent::new(extent.width, extent.height),
         )?);
+        self.configure_present_timing()?;
         self.images = self.swapchain_images()?;
         self.create_present_resources()?;
         self.presented = vec![false; self.images.len()];

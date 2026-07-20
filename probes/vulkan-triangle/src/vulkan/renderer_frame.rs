@@ -184,12 +184,41 @@ impl Renderer {
             pFences: &raw const present_fence,
             ..Default::default()
         };
+        let fence_chain: *const std::ffi::c_void = if present_fence.is_null() {
+            ptr::null()
+        } else {
+            (&raw const present_fence_info).cast()
+        };
+        let timing_request = self.present_timing_request();
+        let present_id = timing_request
+            .as_ref()
+            .map_or(0, |request| request.present_id);
+        let present_id2 = vk::VkPresentId2KHR {
+            sType: vk::VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
+            pNext: fence_chain,
+            swapchainCount: 1,
+            pPresentIds: &raw const present_id,
+        };
+        let timing_info = vk::VkPresentTimingInfoEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+            timeDomainId: timing_request
+                .as_ref()
+                .map_or(0, |request| request.time_domain_id),
+            presentStageQueries: timing_request.as_ref().map_or(0, |request| request.stage),
+            ..Default::default()
+        };
+        let timing_chain_info = vk::VkPresentTimingsInfoEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
+            pNext: (&raw const present_id2).cast(),
+            swapchainCount: 1,
+            pTimingInfos: &raw const timing_info,
+        };
         let present = vk::VkPresentInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            pNext: if present_fence.is_null() {
-                ptr::null()
+            pNext: if timing_request.is_some() {
+                (&raw const timing_chain_info).cast()
             } else {
-                (&raw const present_fence_info).cast()
+                fence_chain
             },
             waitSemaphoreCount: 1,
             pWaitSemaphores: &raw const render_finished,
@@ -235,6 +264,12 @@ impl Renderer {
                     .expect("a presented image has a configured surface generation")
                     .generation(),
             );
+        }
+        if let Some(request) = timing_request {
+            let frame = matches!(result, vk::VK_SUCCESS | vk::VK_SUBOPTIMAL_KHR)
+                .then(|| self.present_pacing.presents_recorded() - 1);
+            self.record_present_timing_outcome(request.present_id, frame);
+            self.drain_present_timing()?;
         }
         self.live_resize_trace
             .finish(trace_started, trace_sample, true);

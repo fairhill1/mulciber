@@ -12,8 +12,8 @@ use std::time::Instant;
 use glam::Vec3;
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, MaterialBinding, MaterialPipelineDescriptor,
-    MaterialRecord, OpenedGraphics, SampleCount, SceneContent, SceneOutput, SceneSubmission,
-    ShaderArtifact,
+    MaterialRecord, MeshIndices, OpenedGraphics, SampleCount, SceneContent, SceneOutput,
+    SceneSubmission, ShaderArtifact,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -45,12 +45,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let crystal_mesh = graphics.device.create_mesh_with_layout(
         scene::CRYSTAL_LAYOUT,
         &scene::crystal_vertices(),
-        &scene::CUBE_INDICES,
+        MeshIndices::U16(&scene::CUBE_INDICES),
     )?;
     let floor_mesh = graphics.device.create_mesh_with_layout(
         scene::LAVA_LAYOUT,
         &scene::floor_vertices(),
-        &scene::FLOOR_INDICES,
+        MeshIndices::U16(&scene::FLOOR_INDICES),
     )?;
     let crystal_base =
         graphics

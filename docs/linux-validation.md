@@ -316,6 +316,17 @@ XWayland, exit zero, no validation output. These are automated runs; the visual 
 the material scene and the Metal implementation await operator confirmation and the next M2
 session respectively.
 
+### Mesh index-width evidence
+
+On 2026-07-20, `Device::create_mesh_with_layout` gained `MeshIndices` (16- or 32-bit), with the
+index type stored per mesh and passed to every native index-buffer bind. The conformance probe's
+shared material mesh now uploads 32-bit indices, so every material draw, presentation, and
+reclamation case runs the u32 path, and a new creation-time case asserts an out-of-range u32
+index is rejected. All thirty-two cases (thirty-one plus this driver's Vulkan-only
+superseded-generation branch) passed on this machine's KDE Plasma session on both native Wayland
+and X11 through XWayland, exit zero, no validation output. The Metal path compiles under the
+cross-host `aarch64-apple-darwin` type check but awaits the next M2 session.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

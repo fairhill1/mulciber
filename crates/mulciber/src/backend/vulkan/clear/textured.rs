@@ -6,7 +6,7 @@ use std::{format, vec::Vec};
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
-use crate::graphics::MaterialPipelineConfig;
+use crate::graphics::{MaterialPipelineConfig, MeshIndices};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -38,6 +38,7 @@ struct MeshResource {
     indices: Buffer,
     indirect: Buffer,
     index_count: u32,
+    index_type: vk::VkIndexType,
 }
 
 struct TextureResource {
@@ -234,15 +235,18 @@ impl<'window> TexturedSession<'window> {
         vertices: &[Vertex],
         indices: &[u16],
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_mesh_from_bytes(bytes_of_slice(vertices), indices)
+        self.create_mesh_from_bytes(bytes_of_slice(vertices), MeshIndices::U16(indices))
     }
 
     pub(crate) fn create_mesh_from_bytes(
         &mut self,
         vertex_bytes: &[u8],
-        indices: &[u16],
+        indices: MeshIndices<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        let index_bytes = bytes_of_slice(indices);
+        let (index_bytes, index_type) = match indices {
+            MeshIndices::U16(indices) => (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT16),
+            MeshIndices::U32(indices) => (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT32),
+        };
         let draw = vk::VkDrawIndexedIndirectCommand {
             indexCount: u32::try_from(indices.len())
                 .map_err(|_| error("mesh index count exceeds u32"))?,
@@ -287,6 +291,7 @@ impl<'window> TexturedSession<'window> {
             indices,
             indirect,
             index_count: draw.indexCount,
+            index_type,
         })
     }
 
@@ -2043,7 +2048,7 @@ impl<'window> TexturedSession<'window> {
                             self.surface.command_buffer,
                             mesh.indices.handle,
                             0,
-                            vk::VK_INDEX_TYPE_UINT16,
+                            mesh.index_type,
                         );
                         functions
                             .cmd_draw_indexed_indirect
@@ -2088,7 +2093,7 @@ impl<'window> TexturedSession<'window> {
                             self.surface.command_buffer,
                             mesh.indices.handle,
                             0,
-                            vk::VK_INDEX_TYPE_UINT16,
+                            mesh.index_type,
                         );
                         functions
                             .cmd_draw_indexed_indirect
@@ -2135,7 +2140,7 @@ impl<'window> TexturedSession<'window> {
                             self.surface.command_buffer,
                             mesh.indices.handle,
                             0,
-                            vk::VK_INDEX_TYPE_UINT16,
+                            mesh.index_type,
                         );
                         functions.cmd_draw_indexed.expect("loaded function")(
                             self.surface.command_buffer,

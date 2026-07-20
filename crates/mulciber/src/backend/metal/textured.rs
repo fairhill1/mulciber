@@ -8,7 +8,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
-use crate::graphics::MaterialPipelineConfig;
+use crate::graphics::{MaterialPipelineConfig, MeshIndices};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -43,6 +43,7 @@ const STORE_ACTION_DONT_CARE: usize = 0;
 const STORE_ACTION_MULTISAMPLE_RESOLVE: usize = 2;
 const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
 const INDEX_TYPE_UINT16: usize = 0;
+const INDEX_TYPE_UINT32: usize = 1;
 const STORAGE_MODE_PRIVATE: usize = 2;
 const STORAGE_MODE_MEMORYLESS: usize = 3;
 const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
@@ -70,6 +71,7 @@ struct MeshResource {
     indices: Object,
     indirect: Object,
     index_count: u32,
+    index_type: usize,
 }
 
 struct TextureResource {
@@ -247,14 +249,26 @@ impl<'window> TexturedSession<'window> {
         let bytes = unsafe {
             core::slice::from_raw_parts(vertices.as_ptr().cast(), mem::size_of_val(vertices))
         };
-        self.create_mesh_from_bytes(bytes, indices)
+        self.create_mesh_from_bytes(bytes, MeshIndices::U16(indices))
     }
 
     pub(crate) fn create_mesh_from_bytes(
         &mut self,
         vertices: &[u8],
-        indices: &[u16],
+        indices: MeshIndices<'_>,
     ) -> Result<ResourceId, GraphicsError> {
+        let (index_pointer, index_length, index_type) = match indices {
+            MeshIndices::U16(indices) => (
+                indices.as_ptr().cast(),
+                mem::size_of_val(indices),
+                INDEX_TYPE_UINT16,
+            ),
+            MeshIndices::U32(indices) => (
+                indices.as_ptr().cast(),
+                mem::size_of_val(indices),
+                INDEX_TYPE_UINT32,
+            ),
+        };
         let draw = IndexedIndirectArguments {
             index_count: u32::try_from(indices.len())
                 .map_err(|_| GraphicsError::new("mesh index count exceeds u32"))?,
@@ -278,8 +292,8 @@ impl<'window> TexturedSession<'window> {
                 objc::object_bytes(
                     self.surface.device,
                     c"newBufferWithBytes:length:options:",
-                    indices.as_ptr().cast(),
-                    mem::size_of_val(indices),
+                    index_pointer,
+                    index_length,
                     0,
                 ),
                 "Metal cube index buffer",
@@ -299,6 +313,7 @@ impl<'window> TexturedSession<'window> {
                 indices,
                 indirect,
                 index_count: draw.index_count,
+                index_type,
             })
         }
     }
@@ -1241,7 +1256,7 @@ impl<'window> TexturedSession<'window> {
                             encoder,
                             c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                             PRIMITIVE_TYPE_TRIANGLE,
-                            INDEX_TYPE_UINT16,
+                            mesh.index_type,
                             mesh.indices,
                             0,
                             mesh.indirect,
@@ -1317,7 +1332,7 @@ impl<'window> TexturedSession<'window> {
                             encoder,
                             c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                             PRIMITIVE_TYPE_TRIANGLE,
-                            INDEX_TYPE_UINT16,
+                            mesh.index_type,
                             mesh.indices,
                             0,
                             mesh.indirect,
@@ -1363,7 +1378,7 @@ impl<'window> TexturedSession<'window> {
                             c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
                             PRIMITIVE_TYPE_TRIANGLE,
                             usize::try_from(mesh.index_count).expect("u32 index count fits usize"),
-                            INDEX_TYPE_UINT16,
+                            mesh.index_type,
                             mesh.indices,
                             0,
                             batch.instance_count,
@@ -1434,6 +1449,7 @@ fn release_mesh(mesh: MeshResource) {
         indices,
         indirect,
         index_count: _,
+        index_type: _,
     } = mesh;
     unsafe {
         objc::void(indirect, c"release");

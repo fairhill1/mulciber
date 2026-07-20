@@ -40,7 +40,7 @@ pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErr
 pub use graphics::{
     Device, DeviceRequest, DeviceSelection, Frame, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT,
     MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, Mesh, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
+    MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
     PostprocessedDraw, PostprocessedScene, PresentFeedback, PresentedFrame, Queue, RenderTargets,
     SampleCount, SceneContent, SceneOutput, SceneSubmission, Surface, Texture, TexturedDraw,
     TexturedInstanceBatch, TexturedPipeline, TexturedScene, TexturedSceneDraw, Vertex,

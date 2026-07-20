@@ -24,9 +24,11 @@ vocabulary (non-zero groups, storage buffers) are rejected as unsupported. The c
 is deliberately breaking: the tool and crate ship together and no artifact stability was
 promised.
 
-`Device::create_mesh_with_layout` uploads raw vertex bytes against a declared layout; every
-mesh (including the fixed `Vertex` path, which carries `VertexLayout::VERTEX`) retains its
-layout, and a draw whose mesh and pipeline layouts differ is rejected at submission. Uniform
+`Device::create_mesh_with_layout` uploads raw vertex bytes against a declared layout with
+16- or 32-bit indices (`MeshIndices`), lifting the fixed path's `u16` bound for chunked or
+merged geometry; every mesh (including the fixed `Vertex` path, which carries
+`VertexLayout::VERTEX`) retains its layout, and a draw whose mesh and pipeline layouts differ
+is rejected at submission. Uniform
 data is supplied per record as plain bytes of exactly the declared size — the application owns
 WGSL memory-layout correctness — and flows through the session's frame-transient per-draw
 uniform region; no persistent application-owned buffer handle was forced by this slice.

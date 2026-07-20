@@ -169,6 +169,9 @@ pub struct Device<'window> {
 impl Device<'_> {
     /// Uploads fixed-layout vertices and `u16` indices.
     ///
+    /// Meshes that need 32-bit indices declare their layout and pass [`MeshIndices::U32`]
+    /// through [`Device::create_mesh_with_layout`].
+    ///
     /// # Errors
     ///
     /// Returns an error for empty geometry, an out-of-range index, or native allocation/upload
@@ -207,7 +210,7 @@ impl Device<'_> {
         &self,
         layout: VertexLayout<'_>,
         vertices: &[u8],
-        indices: &[u16],
+        indices: MeshIndices<'_>,
     ) -> Result<Mesh, GraphicsError> {
         let owned = validate_vertex_layout(layout)?;
         let stride = usize::try_from(layout.stride).map_err(|_| {
@@ -224,10 +227,7 @@ impl Device<'_> {
                 "mesh vertices and indices must be non-empty",
             ));
         }
-        if indices
-            .iter()
-            .any(|&index| usize::from(index) >= vertex_count)
-        {
+        if indices.out_of_range(vertex_count) {
             return Err(GraphicsError::invalid_request(
                 "mesh contains an out-of-range index",
             ));
@@ -1276,6 +1276,46 @@ impl VertexLayout<'_> {
 pub(crate) struct OwnedVertexLayout {
     pub(crate) stride: u32,
     pub(crate) attributes: Vec<VertexAttribute>,
+}
+
+/// Index data for mesh creation.
+///
+/// `U16` covers meshes whose vertex count fits sixteen bits; `U32` removes that bound for
+/// workloads such as chunked or merged geometry.
+#[derive(Clone, Copy, Debug)]
+pub enum MeshIndices<'indices> {
+    /// 16-bit indices.
+    U16(&'indices [u16]),
+    /// 32-bit indices.
+    U32(&'indices [u32]),
+}
+
+impl MeshIndices<'_> {
+    /// Number of indices.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        match self {
+            Self::U16(indices) => indices.len(),
+            Self::U32(indices) => indices.len(),
+        }
+    }
+
+    /// Whether no indices are present.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn out_of_range(&self, vertex_count: usize) -> bool {
+        match *self {
+            Self::U16(indices) => indices
+                .iter()
+                .any(|&index| usize::from(index) >= vertex_count),
+            Self::U32(indices) => indices
+                .iter()
+                .any(|&index| usize::try_from(index).map_or(true, |index| index >= vertex_count)),
+        }
+    }
 }
 
 /// Uploaded indexed geometry.

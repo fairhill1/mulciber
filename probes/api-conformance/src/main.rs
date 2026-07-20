@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, GraphicsErrorKind, MaterialBinding, MaterialRecord,
-    Mesh, OpenedGraphics, PostprocessedScene, SampleCount, SceneContent, SceneOutput,
+    Mesh, MeshIndices, OpenedGraphics, PostprocessedScene, SampleCount, SceneContent, SceneOutput,
     SceneSubmission, ShaderArtifact, TexturedDraw, TexturedInstanceBatch, TexturedScene,
     TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
@@ -639,12 +639,25 @@ impl<'window> Cases<'window> {
                             .create_mesh_with_layout(
                                 MATERIAL_LAYOUT,
                                 &truncated[..truncated.len() - 4],
-                                &[0, 1, 2],
+                                MeshIndices::U16(&[0, 1, 2]),
                             )
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "multiple of the layout stride",
                         "vertex byte stride mismatch rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
+                            .create_mesh_with_layout(
+                                MATERIAL_LAYOUT,
+                                &material_triangle_vertices(),
+                                MeshIndices::U32(&[0, 1, 3]),
+                            )
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "out-of-range index",
+                        "out-of-range u32 mesh index rejected",
                     )?;
                 }
                 self.pass("material uniform size mismatch rejected");
@@ -652,6 +665,7 @@ impl<'window> Cases<'window> {
                 self.pass("undeclared vertex input rejected");
                 self.pass("undeclared binding slot rejected");
                 self.pass("vertex byte stride mismatch rejected");
+                self.pass("out-of-range u32 mesh index rejected");
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 self.material_pipeline = Some(graphics.device.create_material_pipeline(
@@ -672,10 +686,12 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                     },
                 )?);
+                // 32-bit indices deliberately back the shared material mesh so every material
+                // draw, presentation, and reclamation case exercises the u32 index path.
                 self.material_mesh = Some(graphics.device.create_mesh_with_layout(
                     MATERIAL_LAYOUT,
                     &material_triangle_vertices(),
-                    &[0, 1, 2],
+                    MeshIndices::U32(&[0, 1, 2]),
                 )?);
                 self.step = 11;
                 Ok(false)

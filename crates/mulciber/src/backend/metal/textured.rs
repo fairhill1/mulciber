@@ -10,6 +10,7 @@ use std::ffi::CString;
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
+    mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -57,6 +58,8 @@ const BLEND_FACTOR_ONE: usize = 1;
 const BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA: usize = 5;
 const SAMPLER_FILTER_NEAREST: usize = 0;
 const SAMPLER_FILTER_LINEAR: usize = 1;
+const SAMPLER_MIP_FILTER_NEAREST: usize = 1;
+const SAMPLER_MIP_FILTER_LINEAR: usize = 2;
 const SAMPLER_ADDRESS_CLAMP_TO_EDGE: usize = 0;
 const SAMPLER_ADDRESS_REPEAT: usize = 2;
 const DRAW_UNIFORM_SIZE: usize = 64;
@@ -328,21 +331,19 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         width: u32,
         height: u32,
-        texels: &[u8],
+        levels: &[&[u8]],
     ) -> Result<ResourceId, GraphicsError> {
-        let width = usize::try_from(width)
-            .map_err(|_| GraphicsError::new("texture width exceeds usize"))?;
-        let height = usize::try_from(height)
-            .map_err(|_| GraphicsError::new("texture height exceeds usize"))?;
         unsafe {
             let descriptor = required(
                 objc::object_three_usizes_bool(
                     objc::class(c"MTLTextureDescriptor"),
                     c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
                     PIXEL_FORMAT_RGBA8_UNORM_SRGB,
-                    width,
-                    height,
-                    false,
+                    usize::try_from(width)
+                        .map_err(|_| GraphicsError::new("texture width exceeds usize"))?,
+                    usize::try_from(height)
+                        .map_err(|_| GraphicsError::new("texture height exceeds usize"))?,
+                    levels.len() > 1,
                 ),
                 "Metal cube texture descriptor",
             )?;
@@ -355,21 +356,29 @@ impl<'window> TexturedSession<'window> {
                 ),
                 "Metal cube texture",
             )?;
-            objc::void_region_usize_bytes_usize(
-                texture,
-                c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
-                Region3 {
-                    origin: Origin3 { x: 0, y: 0, z: 0 },
-                    size: Size3 {
-                        width,
-                        height,
-                        depth: 1,
+            for (level, texels) in levels.iter().enumerate() {
+                let level_index = u32::try_from(level)
+                    .map_err(|_| GraphicsError::new("mip chain length exceeds u32"))?;
+                let level_width = usize::try_from(mip_extent(width, level_index))
+                    .map_err(|_| GraphicsError::new("texture width exceeds usize"))?;
+                let level_height = usize::try_from(mip_extent(height, level_index))
+                    .map_err(|_| GraphicsError::new("texture height exceeds usize"))?;
+                objc::void_region_usize_bytes_usize(
+                    texture,
+                    c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
+                    Region3 {
+                        origin: Origin3 { x: 0, y: 0, z: 0 },
+                        size: Size3 {
+                            width: level_width,
+                            height: level_height,
+                            depth: 1,
+                        },
                     },
-                },
-                0,
-                texels.as_ptr().cast(),
-                width * 4,
-            );
+                    level,
+                    texels.as_ptr().cast(),
+                    level_width * 4,
+                );
+            }
             let sampler_descriptor = required(
                 objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
                 "Metal sampler descriptor",
@@ -1885,6 +1894,10 @@ fn create_material_pipeline(
                 SamplerFilter::Nearest => SAMPLER_FILTER_NEAREST,
                 SamplerFilter::Linear => SAMPLER_FILTER_LINEAR,
             };
+            let mip_filter = match slot.filter {
+                SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
+                SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
+            };
             let address = match slot.address {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
                 SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
@@ -1895,6 +1908,7 @@ fn create_material_pipeline(
             )?;
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
+            objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
             objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
             objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
             let sampler = required(

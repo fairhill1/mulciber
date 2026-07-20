@@ -940,14 +940,61 @@ impl<'window> Cases<'window> {
                 self.step = 15;
                 Ok(false)
             }
-            // The material path remains valid through resolved color and post-processing, and the
-            // new handle kind supports explicit destruction plus drop-driven reclamation.
+            // The material path remains valid through resolved color and post-processing — with
+            // one sampled texture carrying an application-supplied mip chain — and the new handle
+            // kind supports explicit destruction plus drop-driven reclamation. Chains that stop
+            // short of 1x1 and levels with mismatched byte counts are rejected by name.
             15 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
+                let mip_levels: [Vec<u8>; 4] = [
+                    vec![255_u8; 8 * 8 * 4],
+                    vec![200_u8; 4 * 4 * 4],
+                    vec![128_u8; 2 * 2 * 4],
+                    vec![64_u8; 4],
+                ];
+                let mip_refs: [&[u8]; 4] = [
+                    &mip_levels[0],
+                    &mip_levels[1],
+                    &mip_levels[2],
+                    &mip_levels[3],
+                ];
+                let mip_texture = {
+                    let graphics = self.graphics.as_ref().expect("session A is open");
+                    expect_error(
+                        graphics
+                            .device
+                            .create_rgba8_srgb_texture_with_mips(8, 8, &mip_refs[..2])
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "needs 4 levels",
+                        "partial mip chain rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
+                            .create_rgba8_srgb_texture_with_mips(
+                                8,
+                                8,
+                                &[
+                                    &mip_levels[0],
+                                    &mip_levels[1],
+                                    &mip_levels[3],
+                                    &mip_levels[3],
+                                ],
+                            )
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "mip level 2",
+                        "mip level byte mismatch rejected",
+                    )?;
+                    graphics
+                        .device
+                        .create_rgba8_srgb_texture_with_mips(8, 8, &mip_refs)?
+                };
                 let texture = self.texture.as_ref().expect("texture exists");
-                let textures = [texture, texture];
+                let textures = [&mip_texture, texture];
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -975,8 +1022,12 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("postprocessed material presentation");
+                self.pass("partial mip chain rejected");
+                self.pass("mip level byte mismatch rejected");
+                self.pass("mip-chained material presentation");
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics.device.destroy_texture(mip_texture)?;
                 graphics.device.destroy_material_pipeline(
                     self.material_pipeline
                         .take()

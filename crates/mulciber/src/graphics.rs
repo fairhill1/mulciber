@@ -251,23 +251,47 @@ impl Device<'_> {
         height: u32,
         texels: &[u8],
     ) -> Result<Texture, GraphicsError> {
-        let expected = usize::try_from(width)
-            .ok()
-            .and_then(|width| {
-                usize::try_from(height)
-                    .ok()
-                    .and_then(|height| width.checked_mul(height))
-            })
-            .and_then(|texels| texels.checked_mul(4))
-            .ok_or_else(|| {
-                GraphicsError::invalid_request("texture dimensions overflow address space")
-            })?;
-        if expected == 0 || texels.len() != expected {
+        validate_mip_level(width, height, 0, texels)?;
+        let id = session_mut(&self.shared)?.create_texture(width, height, &[texels])?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+        })
+    }
+
+    /// Uploads a tightly packed RGBA8 sRGB texture with an application-supplied mip chain.
+    ///
+    /// `levels[0]` holds the base image; each following level halves both dimensions (flooring at
+    /// one texel), and the chain must run to its final 1×1 level. The application owns mip
+    /// content, including its downsampling filter and color-space handling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty dimensions, a chain that does not run from the base level to
+    /// 1×1, a level whose byte count does not match its dimensions, overflow, or native upload
+    /// failure.
+    pub fn create_rgba8_srgb_texture_with_mips(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[u8]],
+    ) -> Result<Texture, GraphicsError> {
+        if width == 0 || height == 0 {
             return Err(GraphicsError::invalid_request(
                 "texture byte count does not match its dimensions",
             ));
         }
-        let id = session_mut(&self.shared)?.create_texture(width, height, texels)?;
+        let expected_levels = full_mip_chain_len(width, height);
+        if levels.len() != expected_levels {
+            return Err(GraphicsError::invalid_request(format!(
+                "texture mip chain supplies {} levels but {width}x{height} needs {expected_levels} \
+                 levels to reach 1x1",
+                levels.len()
+            )));
+        }
+        for (level, texels) in (0_u32..).zip(levels) {
+            validate_mip_level(width, height, level, texels)?;
+        }
+        let id = session_mut(&self.shared)?.create_texture(width, height, levels)?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
         })
@@ -1766,6 +1790,58 @@ impl Drop for Frame<'_> {
             session.defer_abandon(token);
         }
     }
+}
+
+/// Number of levels in a full mip chain from the base extent down to its 1x1 level.
+fn full_mip_chain_len(width: u32, height: u32) -> usize {
+    let largest = width.max(height);
+    usize::try_from(32 - largest.leading_zeros()).expect("level count fits usize")
+}
+
+/// Extent of one mip level along one axis, flooring at one texel.
+pub(crate) const fn mip_extent(base: u32, level: u32) -> u32 {
+    let scaled = base >> level;
+    if scaled == 0 { 1 } else { scaled }
+}
+
+/// Checks that one mip level's byte count matches its tightly packed RGBA8 extent.
+fn validate_mip_level(
+    width: u32,
+    height: u32,
+    level: u32,
+    texels: &[u8],
+) -> Result<(), GraphicsError> {
+    if width == 0 || height == 0 {
+        return Err(GraphicsError::invalid_request(
+            "texture byte count does not match its dimensions",
+        ));
+    }
+    let level_width = mip_extent(width, level);
+    let level_height = mip_extent(height, level);
+    let expected = usize::try_from(level_width)
+        .ok()
+        .and_then(|level_width| {
+            usize::try_from(level_height)
+                .ok()
+                .and_then(|level_height| level_width.checked_mul(level_height))
+        })
+        .and_then(|texels| texels.checked_mul(4))
+        .ok_or_else(|| {
+            GraphicsError::invalid_request("texture dimensions overflow address space")
+        })?;
+    if texels.len() != expected {
+        if level == 0 {
+            return Err(GraphicsError::invalid_request(
+                "texture byte count does not match its dimensions",
+            ));
+        }
+        return Err(GraphicsError::invalid_request(format!(
+            "texture mip level {level} supplies {} bytes but its {level_width}x{level_height} \
+             extent needs {expected}",
+            texels.len()
+        )));
+    }
+    Ok(())
 }
 
 /// Checks stride and attribute fit, and returns the location-sorted owned layout.

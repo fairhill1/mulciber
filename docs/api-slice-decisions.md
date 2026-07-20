@@ -124,6 +124,20 @@ and rejected — no slice has forced any combination outside these six values. T
 recipes keep their recorded opaque test-write behavior. Recorded in the
 [material contract](material-contract.md).
 
+## Texture mip chains
+
+Decided as an application-supplied chain, not native generation.
+`Device::create_rgba8_srgb_texture_with_mips` uploads a complete chain from the base level to
+1x1 — each level halving both extents and flooring at one texel, every level's byte count
+validated against its extent, partial chains rejected by name. Mip content is application
+policy in the same sense as packed uniform bytes and WGSL modules: the downsampling filter,
+color-space handling, and any per-level authoring stay outside the engine, and blit-based
+native generation stays closed until a slice forces it. Mip filtering derives from each
+sampler slot's declared filter — `Linear` interpolates between levels, `Nearest` picks one —
+so no separate mip-filter axis opens; single-level textures sample exactly as before. The
+fixed-recipe texture and postprocess samplers keep their recorded single-level behavior.
+Recorded in the [material contract](material-contract.md).
+
 ## Resource ownership and reclamation
 
 Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning

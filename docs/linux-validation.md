@@ -350,6 +350,21 @@ samples). Blending, coverage, and depth behavior are asserted by execution and v
 cleanliness, not visually verified; the Metal path compiles under the cross-host
 `aarch64-apple-darwin` type check and awaits the next M2 session.
 
+Also on 2026-07-20, textures gained application-supplied mip chains
+(`create_rgba8_srgb_texture_with_mips`, recorded in the
+[decision ledger](api-slice-decisions.md)). The postprocessed material presentation now samples
+an 8x8-through-1x1 four-level chain through the material pipeline's linear sampler (trilinear
+on Vulkan via `maxLod` unclamped and per-filter mipmap mode), and two new creation-time cases
+assert a chain stopping short of 1x1 and a level with mismatched bytes are rejected by name.
+All thirty-eight cases (thirty-seven plus this driver's Vulkan-only superseded-generation
+branch) passed on both native Wayland and X11 through XWayland, exit zero, no validation
+output, and the unchanged material-scene example — whose linear material samplers now build
+with per-filter mipmap mode and unclamped `maxLod` over single-level textures — ran roughly ten
+seconds on native Wayland to a KWin-scripted close, exit zero, no validation output. Mip
+selection is asserted by execution and validation cleanliness, not visually
+verified; the Metal path compiles under the cross-host `aarch64-apple-darwin` type check and
+awaits the next M2 session.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

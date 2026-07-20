@@ -33,6 +33,14 @@ data is supplied per record as plain bytes of exactly the declared size — the 
 WGSL memory-layout correctness — and flows through the session's frame-transient per-draw
 uniform region; no persistent application-owned buffer handle was forced by this slice.
 
+`Device::create_rgba8_srgb_texture_with_mips` uploads an application-supplied mip chain: the
+base level through 1x1, each level halving and flooring at one texel, every level's byte count
+validated against its extent. Sampler slots follow their declared filter across levels —
+`Linear` interpolates between them, `Nearest` picks one — so mip behavior costs no new
+declaration axis, and single-level textures sample exactly as before. Mip content
+(downsampling filter, color-space handling) is application policy; native generation is not
+part of the vocabulary.
+
 `SceneContent` grows one form: `Material(&[MaterialRecord])`, each record selecting a material
 pipeline, a layout-matching mesh, one texture per declared texture slot in ascending binding
 order, and its uniform bytes. Each sampler slot declares its filter (`Nearest`/`Linear`) and
@@ -61,15 +69,15 @@ blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
 
 This checkpoint does not add application-composed passes, render-to-texture, load/store
 policy, compute or storage buffers, arbitrary blend equations beyond the fixed mode set,
-instance-rate custom layouts, bind-group abstractions, or new texture formats. Pass
-composition is expected to be the next forcing slice.
+instance-rate custom layouts, bind-group abstractions, new texture formats, or native mip
+generation. Pass composition is expected to be the next forcing slice.
 
 ## Evidence
 
 Automated Linux evidence — the material-scene slice on native Wayland, under a KWin resize
-storm, and on X11 through XWayland, plus thirty-four conformance cases including the material,
-index-width, sampler-mode, and blend/depth-mode cases on both paths, all validation-clean — is
-recorded in the [Linux runbook](linux-validation.md).
+storm, and on X11 through XWayland, plus thirty-seven conformance cases including the material,
+index-width, sampler-mode, blend/depth-mode, and mip-chain cases on both paths, all
+validation-clean — is recorded in the [Linux runbook](linux-validation.md).
 
 On 2026-07-20, at `8b7e5c3`, the Metal implementation ran physically on the Apple M2 tier:
 `mulciber-shader` regenerated every Metal artifact for the new container natively (the probe

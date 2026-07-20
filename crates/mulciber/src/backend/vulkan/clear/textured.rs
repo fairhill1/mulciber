@@ -8,6 +8,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
+    mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -17,6 +18,8 @@ use crate::{
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
+/// The specification's `VK_LOD_CLAMP_NONE`, absent from the generated bindings.
+const LOD_CLAMP_NONE: f32 = 1000.0;
 const DRAW_UNIFORM_SIZE: usize = 64;
 const DRAW_UNIFORM_STRIDE: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
@@ -301,13 +304,19 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         width: u32,
         height: u32,
-        texels: &[u8],
+        levels: &[&[u8]],
     ) -> Result<ResourceId, GraphicsError> {
+        let mip_levels =
+            u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
+        let mut packed = Vec::with_capacity(levels.iter().map(|texels| texels.len()).sum());
+        for texels in levels {
+            packed.extend_from_slice(texels);
+        }
         let staging = create_buffer(
             &self.surface,
-            texels.len(),
+            packed.len(),
             vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
-            texels,
+            &packed,
         )?;
         let image = match create_image(
             &self.surface,
@@ -317,6 +326,7 @@ impl<'window> TexturedSession<'window> {
             (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,
+            mip_levels,
         ) {
             Ok(image) => image,
             Err(failure) => {
@@ -324,7 +334,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let upload = self.upload_texture(&staging, &image, width, height);
+        let upload = self.upload_texture(&staging, &image, width, height, levels);
         destroy_buffer(&self.surface, staging);
         if let Err(failure) = upload {
             destroy_image(&self.surface, image);
@@ -490,6 +500,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
             vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
             self.sample_count,
+            1,
         )?;
         let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
             match create_image(
@@ -500,6 +511,7 @@ impl<'window> TexturedSession<'window> {
                 vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
                 vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
                 self.sample_count,
+                1,
             ) {
                 Ok(image) => Some(image),
                 Err(failure) => {
@@ -531,6 +543,7 @@ impl<'window> TexturedSession<'window> {
             (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,
+            1,
         )?;
         let depth = match create_image(
             &self.surface,
@@ -540,6 +553,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
             vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
             self.sample_count,
+            1,
         ) {
             Ok(depth) => depth,
             Err(failure) => {
@@ -556,6 +570,7 @@ impl<'window> TexturedSession<'window> {
                 vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
                 vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
                 self.sample_count,
+                1,
             ) {
                 Ok(image) => Some(image),
                 Err(failure) => {
@@ -1089,7 +1104,33 @@ impl<'window> TexturedSession<'window> {
         image: &Image,
         width: u32,
         height: u32,
+        levels: &[&[u8]],
     ) -> Result<(), GraphicsError> {
+        let mip_levels =
+            u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
+        let mut regions = Vec::with_capacity(levels.len());
+        let mut buffer_offset = 0_u64;
+        for (level, texels) in levels.iter().enumerate() {
+            let level = u32::try_from(level).map_err(|_| error("mip chain length exceeds u32"))?;
+            regions.push(vk::VkBufferImageCopy2 {
+                sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+                bufferOffset: buffer_offset,
+                imageSubresource: vk::VkImageSubresourceLayers {
+                    aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                    mipLevel: level,
+                    layerCount: 1,
+                    ..Default::default()
+                },
+                imageExtent: vk::VkExtent3D {
+                    width: mip_extent(width, level),
+                    height: mip_extent(height, level),
+                    depth: 1,
+                },
+                ..Default::default()
+            });
+            buffer_offset += u64::try_from(texels.len())
+                .map_err(|_| error("mip level bytes exceed Vulkan address space"))?;
+        }
         self.begin_upload()?;
         let to_transfer = image_barrier(
             image.handle,
@@ -1099,30 +1140,16 @@ impl<'window> TexturedSession<'window> {
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
             vk::VK_ACCESS_2_NONE,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            color_subresource_range(),
+            color_subresource_levels(mip_levels),
         );
         pipeline_barrier(&self.surface, &to_transfer);
-        let region = vk::VkBufferImageCopy2 {
-            sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-            imageSubresource: vk::VkImageSubresourceLayers {
-                aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
-                layerCount: 1,
-                ..Default::default()
-            },
-            imageExtent: vk::VkExtent3D {
-                width,
-                height,
-                depth: 1,
-            },
-            ..Default::default()
-        };
         let copy = vk::VkCopyBufferToImageInfo2 {
             sType: vk::VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
             srcBuffer: staging.handle,
             dstImage: image.handle,
             dstImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            regionCount: 1,
-            pRegions: &raw const region,
+            regionCount: u32::try_from(regions.len()).expect("mip chain length fits u32"),
+            pRegions: regions.as_ptr(),
             ..Default::default()
         };
         unsafe {
@@ -1140,7 +1167,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            color_subresource_range(),
+            color_subresource_levels(mip_levels),
         );
         pipeline_barrier(&self.surface, &to_sampled);
         self.end_upload()
@@ -2633,6 +2660,7 @@ fn write_instance_transforms(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_image(
     surface: &ClearSurface<'_>,
     width: u32,
@@ -2641,6 +2669,7 @@ fn create_image(
     usage: u32,
     aspect: u32,
     samples: vk::VkSampleCountFlagBits,
+    mip_levels: u32,
 ) -> Result<Image, GraphicsError> {
     let info = vk::VkImageCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -2651,7 +2680,7 @@ fn create_image(
             height,
             depth: 1,
         },
-        mipLevels: 1,
+        mipLevels: mip_levels,
         arrayLayers: 1,
         samples,
         tiling: vk::VK_IMAGE_TILING_OPTIMAL,
@@ -2673,7 +2702,7 @@ fn create_image(
         },
         "vkCreateImage for textured slice",
     )?;
-    if let Err(failure) = complete_image_storage(device, &mut image, format, aspect) {
+    if let Err(failure) = complete_image_storage(device, &mut image, format, aspect, mip_levels) {
         // SAFETY: The device is live and the destroy helper skips null child handles left by
         // partial construction.
         unsafe { destroy_image_device(device, image) };
@@ -2687,6 +2716,7 @@ fn complete_image_storage(
     image: &mut Image,
     format: vk::VkFormat,
     aspect: u32,
+    mip_levels: u32,
 ) -> Result<(), GraphicsError> {
     let mut requirements = vk::VkMemoryRequirements::default();
     unsafe {
@@ -2736,7 +2766,7 @@ fn complete_image_storage(
         format,
         subresourceRange: vk::VkImageSubresourceRange {
             aspectMask: aspect,
-            levelCount: 1,
+            levelCount: mip_levels,
             layerCount: 1,
             ..Default::default()
         },
@@ -3319,16 +3349,20 @@ fn create_material_pipeline(
     for slot in config.sampler_bindings {
         let filter = material_filter(slot.filter);
         let address = material_address(slot.address);
+        let mipmap_mode = match slot.filter {
+            SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        };
         let sampler_info = vk::VkSamplerCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             magFilter: filter,
             minFilter: filter,
-            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            mipmapMode: mipmap_mode,
             addressModeU: address,
             addressModeV: address,
             addressModeW: address,
             maxAnisotropy: 1.0,
-            maxLod: 0.0,
+            maxLod: LOD_CLAMP_NONE,
             ..Default::default()
         };
         let mut sampler = ptr::null_mut();
@@ -3689,6 +3723,15 @@ const fn depth_subresource_range() -> vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
         baseMipLevel: 0,
         levelCount: 1,
+        baseArrayLayer: 0,
+        layerCount: 1,
+    }
+}
+const fn color_subresource_levels(levels: u32) -> vk::VkImageSubresourceRange {
+    vk::VkImageSubresourceRange {
+        aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
+        baseMipLevel: 0,
+        levelCount: levels,
         baseArrayLayer: 0,
         layerCount: 1,
     }

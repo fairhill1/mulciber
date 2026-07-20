@@ -122,5 +122,7 @@ hold-movement/minimize/release-while-minimized/restore sequence with no catch-up
 movement, focus-loss clearing of held keys, mid-game drag resize and maximize/restore, and clean
 closes (titlebar on Wayland, Alt-F4 on X11), exiting zero with the Vulkan validation layer enabled
 and no validation output. Both exits reported
-`presentation feedback: unsupported on this backend`, the expected explicit Vulkan feedback gap.
-Full session details live in the [Linux runbook](linux-validation.md).
+`presentation feedback: unsupported on this backend`, the expected explicit Vulkan feedback gap at
+that revision; the gap has since closed — the extracted `VK_EXT_present_timing` path now reports
+native display times on this tier, with an automated Wayland session recorded in the
+[Linux runbook](linux-validation.md). Full session details live there as well.

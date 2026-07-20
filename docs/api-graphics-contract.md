@@ -88,9 +88,15 @@ is coming on screen or occluded. Undrained samples are kept in a bounded queue s
 costs fixed memory and no per-frame work. A backend without native feedback answers `Unsupported`
 on every drain, so estimation fallbacks are an observable application decision rather than a silent
 library substitution. Metal implements feedback through drawable presented handlers registered
-before presentation; the Vulkan implementation is deliberately absent until the
-`VK_KHR_present_id`/`VK_KHR_present_wait`, display-timing, and platform-feedback availability
-survey from the [Gate 4 pacing plan](gate4-pacing-plan.md) runs on physical tiers.
+before presentation. Vulkan implements it through the `VK_KHR_present_id2` +
+`VK_KHR_calibrated_timestamps` + `VK_EXT_present_timing` chain where the adapter and surface
+support it, chaining a per-present id and one present-stage timing request and draining completed
+reports after every present; a tier without the chain answers `Unsupported`. Vulkan display times
+arrive in a swapchain-scoped time domain whose epoch is not the process clock on the surveyed
+tier, so each swapchain's times are re-anchored to the drain instant of its first completed
+report — intervals between reported times are native-exact within one swapchain and are never
+paired across recreations, while absolute placement carries at most one drain latency of bias.
+Physical evidence lives in the [Linux runbook](linux-validation.md).
 
 ### The clear checkpoint keeps topology private
 

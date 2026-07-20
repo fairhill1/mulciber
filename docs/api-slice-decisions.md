@@ -62,10 +62,12 @@ occlusion cases. Absence is explicit: a backend without native feedback answers 
 every drain instead of silently estimating. Collection is always on and bounded (registration
 costs one native call per present; undrained queues are capped), while consumption is opt-in.
 Cadence estimation lives in `mulciber-runtime::PacingDiagnostics` over plain `Instant`s, keeping
-the runtime graphics-agnostic. Pacing policy and scheduling hooks are deliberately not part of
-this decision; they wait on the [Gate 4 pacing plan](gate4-pacing-plan.md) probe evidence and the
-Vulkan availability survey. Recorded in the
-[experimental graphics lifecycle contract](api-graphics-contract.md) and the
+the runtime graphics-agnostic. Both backends now construct samples: Metal from drawable presented
+handlers, Vulkan from the probe-proven `VK_EXT_present_timing` drain, whose swapchain-scoped time
+domains are re-anchored per swapchain to the process clock so intervals stay native-exact and are
+never paired across recreations. Pacing policy and scheduling hooks are deliberately not part of
+this decision; they wait on the [Gate 4 pacing plan](gate4-pacing-plan.md) measurement runs.
+Recorded in the [experimental graphics lifecycle contract](api-graphics-contract.md) and the
 [runtime contract](runtime-contract.md).
 
 ## Resource use and synchronization

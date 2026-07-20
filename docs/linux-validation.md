@@ -246,8 +246,46 @@ belong to swapchains retired mid-resize. The driver reports `refreshDuration` as
 first swapchain but real values after recreation, so a zero report is treated as unknown.
 
 This is the first exercised Vulkan native presentation-feedback evidence in the project, single
-machine and single display. The Wayland `wp_presentation` protocol path, Windows tiers, pacing
-policy, and extraction into `Surface::take_present_feedback` remain open per the
+machine and single display. The Wayland `wp_presentation` protocol path, Windows tiers, and pacing
+policy remain open per the [Gate 4 pacing plan](gate4-pacing-plan.md); the extraction into
+`Surface::take_present_feedback` is recorded next.
+
+### Extracted present-feedback evidence
+
+Later on 2026-07-20, the probe-proven feedback path above was extracted into the `mulciber`
+crate: the Vulkan backend enables the same extension chain when the adapter and surface support
+it, creates swapchains with the present-id-2/present-timing flags, chains a per-present id and
+one-stage timing request at both present sites, and drains completed reports into the bounded
+queue behind `Surface::take_present_feedback`, which previously answered `Unsupported` on every
+Vulkan drain. Native times arrive in a swapchain-scoped time domain whose epoch is not the
+process clock on this tier, so each swapchain's times are re-anchored to the drain instant of its
+first completed report: intervals stay native-exact within one swapchain, absolute placement
+carries at most one drain latency of bias, and times are never paired across recreations.
+Unsupported tiers keep the explicit `Unsupported` answer with the selection reason recorded
+internally.
+
+Automated runs on the machine above, all with validation enforced at shutdown and exit code zero:
+
+- `mulciber-api-cube --frames 120 --abandon-acquired-frame-once`, native Wayland: 117 presented
+  frames reported, 0 without a display time, estimated cadence 13.338 ms, intervals min 13.300 /
+  median 13.338 / p95 13.349 / max 13.379 ms, 0 missed — native vsync-grid intervals flowing
+  through the public API into `mulciber-runtime::PacingDiagnostics`, spanning the
+  abandonment-driven swapchain recreation without an epoch artifact.
+- The same probe on X11 through XWayland: 120 frames reported, intervals min 0.086 / median
+  13.323 / max 30.070 ms with 11 missed — the queue-operations-end-only stage from the probe
+  survey tracks present-return rather than the display and is passed through faithfully.
+- A KWin-scripted ten-second continuous resize storm over the probe: 2,545 presents across 201
+  swapchain generations, 1,934 reported with display times, largest interval 547 ms from real
+  recreation stalls with no cross-epoch artifact, validation-clean exit.
+- `mulciber-api-clear --frames 120 --abandon-acquired-frame-once` and the nineteen-case
+  `mulciber-api-conformance` suite passed with the timing chain active.
+- `mulciber-game-slice` on native Wayland with a KWin-scripted close: 1,938 presented frames
+  reported, 0 without a display time, cadence 13.338 ms, intervals 13.280–13.399 ms with 1
+  missed — replacing the `presentation feedback: unsupported on this backend` line from the
+  physical sessions at `3075d0e`.
+
+These are automated static-window and scripted-resize runs; no new physical interactive claims
+are made. Pacing policy and the remaining platform surveys stay open per the
 [Gate 4 pacing plan](gate4-pacing-plan.md).
 
 ### Conformance probe evidence

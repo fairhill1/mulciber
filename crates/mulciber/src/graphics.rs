@@ -830,8 +830,8 @@ pub struct PresentedFrame {
 }
 
 impl PresentedFrame {
-    /// Only the Metal backend constructs samples until the Vulkan feedback survey lands.
-    #[cfg(target_os = "macos")]
+    /// Constructed only by backends with native presentation feedback: Metal drawable presented
+    /// handlers and the Vulkan `VK_EXT_present_timing` drain.
     pub(crate) const fn new(index: u64, presented_at: Option<Instant>) -> Self {
         Self {
             index,

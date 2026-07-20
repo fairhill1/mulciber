@@ -344,12 +344,12 @@ device recovery.
   held-input clearing; physically exercise minimize/restore on macOS.
 - [ ] Establish native presentation pacing and cadence diagnostics independently from simulation
   rate (the diagnostics half is extracted: `Surface::take_present_feedback` drains identified
-  presented times on Metal with explicit `Unsupported` on Vulkan, and
+  presented times on Metal and, since the probe-proven `VK_EXT_present_timing` path landed, on
+  Vulkan where the tier exposes the chain, with explicit `Unsupported` elsewhere, and
   `mulciber-runtime::PacingDiagnostics` reports cadence estimates, interval distributions, and
   missed intervals, consumed by Forge Run and `mulciber-api-cube`, and the pinned wgpu/winit Forge
-  Run peer carries the equivalent best-effort present-return estimator; the Vulkan probe-first
-  feedback path is exercised on the Linux Nvidia tier via `VK_EXT_present_timing`, while its
-  extraction into `Surface::take_present_feedback` and pacing policy remain outstanding per the
+  Run peer carries the equivalent best-effort present-return estimator; extraction evidence lives
+  in the [Linux runbook](linux-validation.md), while pacing policy remains outstanding per the
   [Gate 4 pacing plan](gate4-pacing-plan.md)).
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.

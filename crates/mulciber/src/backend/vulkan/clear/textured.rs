@@ -192,14 +192,8 @@ impl<'window> TexturedSession<'window> {
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
 
-    /// Native Vulkan presentation feedback is not implemented yet: the surveyed Intel tier
-    /// exposes no feedback extension, and the remaining
-    /// `VK_KHR_present_id`/`VK_KHR_present_wait`, display-timing, and platform feedback survey is
-    /// an outstanding Gate 4 pacing-plan step, so absence is reported rather than estimated here.
-    /// The receiver keeps the session call shape shared with the Metal implementation.
-    #[allow(clippy::unused_self)]
     pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
-        PresentFeedback::Unsupported
+        self.surface.take_present_feedback()
     }
 
     pub(crate) fn create_mesh(
@@ -2012,26 +2006,11 @@ impl ClearSurface<'_> {
         )?;
         self.frame_pending = true;
         self.swapchain.initialized[slot] = true;
-        let present = vk::VkPresentInfoKHR {
-            sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            waitSemaphoreCount: 1,
-            pWaitSemaphores: &raw const render_finished,
-            swapchainCount: 1,
-            pSwapchains: &raw const self.swapchain.handle,
-            pImageIndices: &raw const image_index,
-            ..Default::default()
-        };
-        let result = unsafe {
-            self.device()
-                .functions
-                .queue_present
-                .expect("loaded function")(self.device().queue, &raw const present)
-        };
-        if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
-            self.recreate_after_present = true;
-        } else {
-            check(result, "vkQueuePresentKHR for textured frame")?;
-        }
+        self.queue_present_with_feedback(
+            image_index,
+            render_finished,
+            "vkQueuePresentKHR for textured frame",
+        )?;
         Ok(FrameDisposition::Presented(self.info.generation()))
     }
 }

@@ -2,6 +2,7 @@ use core::ffi::{CStr, c_char, c_void};
 use core::marker::PhantomData;
 use core::time::Duration;
 use core::{mem, ptr};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use std::vec::Vec;
@@ -11,8 +12,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{platform, vk};
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, SurfaceExtent,
-    SurfaceInfo, SurfaceUnavailable,
+    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, PresentedFrame,
+    SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
 };
 
 pub(crate) const BACKEND_NAME: &str = "Vulkan";
@@ -36,6 +37,9 @@ pub(crate) struct ClearSurface<'window> {
     resize_pace: Duration,
     last_resize_recreate: Option<Instant>,
     deferred_error: Option<GraphicsError>,
+    presented_count: u64,
+    present_timing: Option<timing::PresentTiming>,
+    feedback: VecDeque<PresentedFrame>,
     _target: PhantomData<SurfaceTarget<'window>>,
 }
 
@@ -76,6 +80,9 @@ impl<'window> ClearSurface<'window> {
             resize_pace,
             last_resize_recreate: None,
             deferred_error: None,
+            presented_count: 0,
+            present_timing: None,
+            feedback: VecDeque::new(),
             _target: PhantomData,
         };
         surface.create_frame_resources()?;
@@ -257,6 +264,7 @@ impl<'window> ClearSurface<'window> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn recreate_swapchain(
         &mut self,
         requested: SurfaceExtent,
@@ -264,6 +272,10 @@ impl<'window> ClearSurface<'window> {
     ) -> Result<(), GraphicsError> {
         self.wait_for_frame()?;
         if !self.swapchain.handle.is_null() {
+            // Salvage completed timing reports before this swapchain and its time-domain epoch
+            // are retired; frames whose reports never arrived stay unreported.
+            self.drain_present_timing()?;
+            self.abandon_present_timing();
             // Base `VK_KHR_swapchain` has no presentation-completion fence. Follow the conventional
             // compatibility path before each reconfiguration while only one generation exists;
             // this avoids accumulating presentation-owned swapchains during a resize storm.
@@ -309,6 +321,12 @@ impl<'window> ClearSurface<'window> {
             .ok_or_else(|| unsupported("surface exposes no supported composite-alpha mode"))?;
         let create_info = vk::VkSwapchainCreateInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            flags: if device.adapter.present_timing.is_ok() {
+                (vk::VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR
+                    | vk::VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) as u32
+            } else {
+                0
+            },
             surface: device.instance.surface,
             minImageCount: image_count,
             imageFormat: format.format,
@@ -351,6 +369,7 @@ impl<'window> ClearSurface<'window> {
         if !old.handle.is_null() {
             destroy_swapchain(self.device(), old);
         }
+        self.configure_present_timing()?;
         self.info = if advance_generation {
             self.info
                 .reconfigured(extent_info)
@@ -474,27 +493,7 @@ impl<'window> ClearSurface<'window> {
         self.frame_pending = true;
         self.swapchain.initialized[slot] = true;
 
-        let present = vk::VkPresentInfoKHR {
-            sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            waitSemaphoreCount: 1,
-            pWaitSemaphores: &raw const render_finished,
-            swapchainCount: 1,
-            pSwapchains: &raw const self.swapchain.handle,
-            pImageIndices: &raw const image_index,
-            ..Default::default()
-        };
-        let result = unsafe {
-            // SAFETY: Queue, swapchain, image index, and wait semaphore are valid.
-            self.device()
-                .functions
-                .queue_present
-                .expect("loaded function")(self.device().queue, &raw const present)
-        };
-        if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
-            self.recreate_after_present = true;
-        } else {
-            check(result, "vkQueuePresentKHR")?;
-        }
+        self.queue_present_with_feedback(image_index, render_finished, "vkQueuePresentKHR")?;
         Ok(FrameDisposition::Presented(self.info.generation()))
     }
 
@@ -743,6 +742,7 @@ impl<'window> ClearSurface<'window> {
 }
 
 mod textured;
+mod timing;
 pub(crate) use textured::{TexturedFrameToken, TexturedSession};
 
 impl Drop for ClearSurface<'_> {
@@ -901,13 +901,18 @@ struct InstanceFns {
     get_surface_capabilities: vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR,
     get_surface_formats: vk::PFN_vkGetPhysicalDeviceSurfaceFormatsKHR,
     get_surface_present_modes: vk::PFN_vkGetPhysicalDeviceSurfacePresentModesKHR,
+    get_surface_capabilities2: vk::PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR,
     enumerate_device_extensions: vk::PFN_vkEnumerateDeviceExtensionProperties,
     create_device: vk::PFN_vkCreateDevice,
     get_device_proc_addr: vk::PFN_vkGetDeviceProcAddr,
 }
 
 impl InstanceFns {
-    unsafe fn load(entry: &Entry, instance: vk::VkInstance) -> Result<Self, GraphicsError> {
+    unsafe fn load(
+        entry: &Entry,
+        instance: vk::VkInstance,
+        surface_capabilities2: bool,
+    ) -> Result<Self, GraphicsError> {
         macro_rules! load {
             ($name:literal) => {
                 unsafe { entry.instance_proc(instance, $name) }?
@@ -928,6 +933,11 @@ impl InstanceFns {
             get_surface_capabilities: load!(c"vkGetPhysicalDeviceSurfaceCapabilitiesKHR"),
             get_surface_formats: load!(c"vkGetPhysicalDeviceSurfaceFormatsKHR"),
             get_surface_present_modes: load!(c"vkGetPhysicalDeviceSurfacePresentModesKHR"),
+            get_surface_capabilities2: if surface_capabilities2 {
+                load!(c"vkGetPhysicalDeviceSurfaceCapabilities2KHR")
+            } else {
+                None
+            },
             enumerate_device_extensions: load!(c"vkEnumerateDeviceExtensionProperties"),
             create_device: load!(c"vkCreateDevice"),
             get_device_proc_addr: load!(c"vkGetDeviceProcAddr"),
@@ -941,9 +951,11 @@ struct Instance {
     handle: vk::VkInstance,
     debug_messenger: vk::VkDebugUtilsMessengerEXT,
     surface: vk::VkSurfaceKHR,
+    surface_capabilities2: bool,
 }
 
 impl Instance {
+    #[allow(clippy::too_many_lines)]
     fn new(entry: Entry, target: &SurfaceTarget<'_>) -> Result<Self, GraphicsError> {
         require_name(
             &enumerate_instance_layers(&entry)?,
@@ -959,6 +971,14 @@ impl Instance {
         for name in required {
             require_name(&available, name, "instance extension")?;
         }
+        // Surface-capability queries with a pNext chain feed native present-timing selection;
+        // its absence is a recorded fallback reason rather than a hard requirement.
+        let surface_capabilities2 = available.iter().any(|candidate| {
+            candidate
+                == vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .strip_suffix(&[0])
+                    .expect("NUL suffix")
+        });
         let application = vk::VkApplicationInfo {
             sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
             pApplicationName: c"Mulciber clear slice".as_ptr(),
@@ -969,7 +989,15 @@ impl Instance {
             ..Default::default()
         };
         let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
-        let extensions = required.map(CStr::as_ptr);
+        let mut extensions: Vec<*const c_char> =
+            required.iter().map(|name| name.as_ptr()).collect();
+        if surface_capabilities2 {
+            extensions.push(
+                vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+        }
         let debug_info = debug_messenger_info();
         let create_info = vk::VkInstanceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -977,7 +1005,8 @@ impl Instance {
             pApplicationInfo: &raw const application,
             enabledLayerCount: 1,
             ppEnabledLayerNames: layers.as_ptr(),
-            enabledExtensionCount: 3,
+            enabledExtensionCount: u32::try_from(extensions.len())
+                .expect("instance extension count fits u32"),
             ppEnabledExtensionNames: extensions.as_ptr(),
             ..Default::default()
         };
@@ -995,7 +1024,7 @@ impl Instance {
         )?;
         let functions = unsafe {
             // SAFETY: Instance is live and each loaded type matches its symbol.
-            InstanceFns::load(&entry, handle)
+            InstanceFns::load(&entry, handle, surface_capabilities2)
         }?;
         let mut instance = Self {
             entry,
@@ -1003,6 +1032,7 @@ impl Instance {
             handle,
             debug_messenger: ptr::null_mut(),
             surface: ptr::null_mut(),
+            surface_capabilities2,
         };
         check(
             unsafe {
@@ -1071,6 +1101,7 @@ struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
     sample_count: vk::VkSampleCountFlagBits,
+    present_timing: Result<timing::PresentTimingSelection, &'static str>,
 }
 
 struct DeviceFns {
@@ -1136,10 +1167,17 @@ struct DeviceFns {
     wait_for_fences: vk::PFN_vkWaitForFences,
     reset_fences: vk::PFN_vkResetFences,
     queue_submit2: vk::PFN_vkQueueSubmit2,
+    set_swapchain_present_timing_queue_size: vk::PFN_vkSetSwapchainPresentTimingQueueSizeEXT,
+    get_swapchain_time_domain_properties: vk::PFN_vkGetSwapchainTimeDomainPropertiesEXT,
+    get_past_presentation_timing: vk::PFN_vkGetPastPresentationTimingEXT,
 }
 
 impl DeviceFns {
-    unsafe fn load(instance: &Instance, device: vk::VkDevice) -> Result<Self, GraphicsError> {
+    unsafe fn load(
+        instance: &Instance,
+        device: vk::VkDevice,
+        present_timing: bool,
+    ) -> Result<Self, GraphicsError> {
         let get = instance
             .functions
             .get_device_proc_addr
@@ -1217,6 +1255,21 @@ impl DeviceFns {
             wait_for_fences: load!(c"vkWaitForFences"),
             reset_fences: load!(c"vkResetFences"),
             queue_submit2: load!(c"vkQueueSubmit2"),
+            set_swapchain_present_timing_queue_size: if present_timing {
+                load!(c"vkSetSwapchainPresentTimingQueueSizeEXT")
+            } else {
+                None
+            },
+            get_swapchain_time_domain_properties: if present_timing {
+                load!(c"vkGetSwapchainTimeDomainPropertiesEXT")
+            } else {
+                None
+            },
+            get_past_presentation_timing: if present_timing {
+                load!(c"vkGetPastPresentationTimingEXT")
+            } else {
+                None
+            },
         })
     }
 }
@@ -1240,19 +1293,46 @@ impl Device {
             pQueuePriorities: &raw const priority,
             ..Default::default()
         };
+        let mut present_id2_features = vk::VkPhysicalDevicePresentId2FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR,
+            presentId2: vk::VK_TRUE,
+            ..Default::default()
+        };
+        let mut present_timing_features = vk::VkPhysicalDevicePresentTimingFeaturesEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
+            pNext: (&raw mut present_id2_features).cast(),
+            presentTiming: vk::VK_TRUE,
+            ..Default::default()
+        };
+        let timing_head: *mut c_void = if adapter.present_timing.is_ok() {
+            (&raw mut present_timing_features).cast()
+        } else {
+            ptr::null_mut()
+        };
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            pNext: timing_head,
             synchronization2: vk::VK_TRUE,
             dynamicRendering: vk::VK_TRUE,
             ..Default::default()
         };
-        let extensions = [vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
+        let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
+        if adapter.present_timing.is_ok() {
+            extensions.push(vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr().cast());
+            extensions.push(
+                vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+            extensions.push(vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_ptr().cast());
+        }
         let info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             pNext: (&raw mut features13).cast(),
             queueCreateInfoCount: 1,
             pQueueCreateInfos: &raw const queue_info,
-            enabledExtensionCount: 1,
+            enabledExtensionCount: u32::try_from(extensions.len())
+                .expect("device extension count fits u32"),
             ppEnabledExtensionNames: extensions.as_ptr(),
             ..Default::default()
         };
@@ -1271,7 +1351,7 @@ impl Device {
         )?;
         let functions = unsafe {
             // SAFETY: Device is live and symbol/type pairs match.
-            DeviceFns::load(&instance, handle)
+            DeviceFns::load(&instance, handle, adapter.present_timing.is_ok())
         }?;
         let mut queue = ptr::null_mut();
         unsafe {
@@ -1335,7 +1415,8 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
             rejections.push(format!("{name}: API version is below Vulkan 1.3"));
             continue;
         }
-        if !device_extensions(instance, handle)?.iter().any(|name| {
+        let extensions = device_extensions(instance, handle)?;
+        if !extensions.iter().any(|name| {
             name == vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME
                 .strip_suffix(&[0])
                 .expect("NUL suffix")
@@ -1343,8 +1424,34 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
             rejections.push(format!("{name}: VK_KHR_swapchain is unavailable"));
             continue;
         }
+        let timing_extensions = [
+            vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_slice(),
+            vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME.as_slice(),
+            vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_slice(),
+        ]
+        .into_iter()
+        .all(|required| {
+            extensions
+                .iter()
+                .any(|name| name == required.strip_suffix(&[0]).expect("NUL suffix"))
+        });
+        let mut present_id2_features = vk::VkPhysicalDevicePresentId2FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR,
+            ..Default::default()
+        };
+        let mut present_timing_features = vk::VkPhysicalDevicePresentTimingFeaturesEXT {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
+            pNext: (&raw mut present_id2_features).cast(),
+            ..Default::default()
+        };
+        let timing_head: *mut c_void = if timing_extensions {
+            (&raw mut present_timing_features).cast()
+        } else {
+            ptr::null_mut()
+        };
         let mut features13 = vk::VkPhysicalDeviceVulkan13Features {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            pNext: timing_head,
             ..Default::default()
         };
         let mut features = vk::VkPhysicalDeviceFeatures2 {
@@ -1367,6 +1474,13 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
             ));
             continue;
         }
+        let present_timing = timing::choose_present_timing(
+            instance,
+            handle,
+            timing_extensions,
+            &present_id2_features,
+            &present_timing_features,
+        )?;
         let mut family_count = 0;
         unsafe {
             instance
@@ -1426,6 +1540,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         } else {
                             vk::VK_SAMPLE_COUNT_1_BIT
                         },
+                        present_timing,
                     },
                 ));
                 break;

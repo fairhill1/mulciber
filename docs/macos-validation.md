@@ -1,5 +1,39 @@
 # macOS AppKit/Metal validation runbook
 
+## Custom-material vocabulary checkpoint
+
+On 2026-07-20, at committed revision `8b7e5c3`, the custom-material checkpoint (see the
+[material contract](material-contract.md)) ran for the first time on the Apple M2 / macOS 15.7.7
+machine. The container bump to `MULSHDR2` is breaking, so `mulciber-shader` first regenerated the
+Metal artifacts natively: the two new material modules
+(`crystal.metal.shaderbin`, SHA-256
+`0e9cc99e0b6161d831e7476a6d3fd0b7f97f159346dfd45b10dba543a736eb63`, and
+`lava.metal.shaderbin`, SHA-256
+`078330e7b4daf3637364a25742a6953fb249a1d87bbea1d71d522682935180ab`) plus the three existing cube,
+instanced, and postprocess Metal artifacts, whose old-container versions the conformance probe
+correctly rejected with an invalid-header `InvalidRequest` before regeneration. The structural
+preflight (fmt, check, clippy `-D warnings`, workspace tests, `git diff --check`) passed natively
+with the regenerated artifacts in the tree.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 34 Metal cases — including the
+five material declaration-versus-artifact rejections, the three draw-time record rejections, the
+out-of-range u32 mesh-index rejection, direct, nearest/clamp-sampler, cutout depth-off,
+translucent depth-test-only, and postprocessed material presentations, material destruction and
+drop reclamation, and the mixed-session material-pipeline rejection — with exit zero and no
+diagnostic beyond the validation-enabled banner. Metal runs the stable-generation abandonment
+branch, so the Vulkan-only superseded-generation case does not apply here (34 versus the Linux
+runbook's 35).
+
+`mulciber-material-scene` then ran under `MTL_DEBUG_LAYER=1`, selected Metal and four samples,
+rendered roughly nine seconds of frames, and was closed through an agent-scripted titlebar close
+button click, exiting zero with no validation output beyond the banner. This is an agent-driven
+automated run: it establishes the Metal material, layout, sampler-mode, and blend/depth-mode
+paths execute validation-clean on this tier, not visual correctness, resize, or broader
+lifecycle behavior. An earlier same-session scripted-close attempt raced a concurrently open
+operator instance of the same example and closed a window before drawable metrics arrived; the
+resulting startup-lifecycle `PlatformError` was environmental interference, not a code defect,
+and the clean rerun above supersedes it.
+
 ## Pointer-capture checkpoint
 
 On 2026-07-19, an uncommitted tree added the `CursorMode` pointer-capture intent to

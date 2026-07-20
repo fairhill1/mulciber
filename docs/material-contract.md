@@ -69,6 +69,12 @@ composition is expected to be the next forcing slice.
 Automated Linux evidence — the material-scene slice on native Wayland, under a KWin resize
 storm, and on X11 through XWayland, plus thirty-four conformance cases including the material,
 index-width, sampler-mode, and blend/depth-mode cases on both paths, all validation-clean — is
-recorded in the [Linux runbook](linux-validation.md). The Metal implementation compiles under the cross-host
-type check but has not yet run on the M2 tier; the Metal artifacts for the new container also
-await that session. No macOS claims are made at this revision.
+recorded in the [Linux runbook](linux-validation.md).
+
+On 2026-07-20, at `8b7e5c3`, the Metal implementation ran physically on the Apple M2 tier:
+`mulciber-shader` regenerated every Metal artifact for the new container natively (the probe
+rejected the old-container artifacts with an invalid-header error, as intended), all 34 Metal
+conformance cases passed under Metal API Validation, and `mulciber-material-scene` ran
+validation-clean (Metal, four samples) through a scripted titlebar close. This is automated
+execution evidence; visual confirmation of the material scene remains an operator claim.
+Details are in the [macOS runbook](macos-validation.md).

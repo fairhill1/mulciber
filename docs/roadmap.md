@@ -179,7 +179,8 @@ fallback, and acquired-frame abandonment/recovery controls.
   those concepts. The first forcing slice landed: the [material slice plan](material-slice-plan.md)
   and [custom-material contract](material-contract.md) open application-authored shaders, vertex
   layouts, slot-explicit bindings, and per-record uniform bytes inside the fixed frame shape, with
-  automated Linux evidence in the [Linux runbook](linux-validation.md); pass composition,
+  automated Linux evidence in the [Linux runbook](linux-validation.md) and automated Metal
+  evidence on the Apple M2 tier in the [macOS runbook](macos-validation.md); pass composition,
   persistent buffers, and compute/storage remain closed until their own forcing slices.
 - [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
   Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;

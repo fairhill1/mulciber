@@ -8,7 +8,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
-use crate::graphics::{MaterialPipelineConfig, MeshIndices};
+use crate::graphics::{MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -50,7 +50,9 @@ const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
 const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
+const SAMPLER_FILTER_NEAREST: usize = 0;
 const SAMPLER_FILTER_LINEAR: usize = 1;
+const SAMPLER_ADDRESS_CLAMP_TO_EDGE: usize = 0;
 const SAMPLER_ADDRESS_REPEAT: usize = 2;
 const DRAW_UNIFORM_SIZE: usize = 64;
 const DRAW_UNIFORM_STRIDE: usize = 256;
@@ -92,13 +94,12 @@ struct PostprocessPipelineResource {
 struct MaterialPipelineResource {
     pipeline: Object,
     depth_state: Object,
-    /// Crate-owned linear repeat sampler; null when no sampler slots are declared.
-    sampler: Object,
+    /// One pipeline-owned sampler state per declared slot as (binding, sampler).
+    samplers: Vec<(u32, Object)>,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
-    sampler_bindings: Vec<u32>,
 }
 
 struct TargetResource {
@@ -1313,18 +1314,18 @@ impl<'window> TexturedSession<'window> {
                                 slot,
                             );
                         }
-                        for &binding in &pipeline.sampler_bindings {
+                        for &(binding, sampler) in &pipeline.samplers {
                             let slot = usize::try_from(binding).expect("validated slot fits usize");
                             objc::void_object_usize(
                                 encoder,
                                 c"setVertexSamplerState:atIndex:",
-                                pipeline.sampler,
+                                sampler,
                                 slot,
                             );
                             objc::void_object_usize(
                                 encoder,
                                 c"setFragmentSamplerState:atIndex:",
-                                pipeline.sampler,
+                                sampler,
                                 slot,
                             );
                         }
@@ -1491,8 +1492,8 @@ fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_material_pipeline(pipeline: MaterialPipelineResource) {
     unsafe {
-        if !pipeline.sampler.is_null() {
-            objc::void(pipeline.sampler, c"release");
+        for &(_, sampler) in &pipeline.samplers {
+            objc::void(sampler, c"release");
         }
         objc::void(pipeline.depth_state, c"release");
         objc::void(pipeline.pipeline, c"release");
@@ -1847,25 +1848,24 @@ fn create_material_pipeline(
             ),
             "Metal material depth state",
         )?;
-        let sampler = if config.sampler_bindings.is_empty() {
-            ptr::null_mut()
-        } else {
+        let mut samplers = Vec::with_capacity(config.sampler_bindings.len());
+        for slot in config.sampler_bindings {
+            let filter = match slot.filter {
+                SamplerFilter::Nearest => SAMPLER_FILTER_NEAREST,
+                SamplerFilter::Linear => SAMPLER_FILTER_LINEAR,
+            };
+            let address = match slot.address {
+                SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
+                SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
+            };
             let sampler_descriptor = required(
                 objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
                 "Metal material sampler descriptor",
             )?;
-            objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
-            objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
-            objc::void_usize(
-                sampler_descriptor,
-                c"setSAddressMode:",
-                SAMPLER_ADDRESS_REPEAT,
-            );
-            objc::void_usize(
-                sampler_descriptor,
-                c"setTAddressMode:",
-                SAMPLER_ADDRESS_REPEAT,
-            );
+            objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
+            objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
+            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
+            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
             let sampler = required(
                 objc::object_object(
                     device,
@@ -1875,18 +1875,17 @@ fn create_material_pipeline(
                 "Metal material sampler",
             )?;
             objc::void(sampler_descriptor, c"release");
-            sampler
-        };
+            samplers.push((slot.binding, sampler));
+        }
         for object in [depth_descriptor, descriptor, fragment, vertex, library] {
             objc::void(object, c"release");
         }
         Ok(MaterialPipelineResource {
             pipeline,
             depth_state,
-            sampler,
+            samplers,
             uniform: config.uniform,
             texture_bindings: config.texture_bindings.to_vec(),
-            sampler_bindings: config.sampler_bindings.to_vec(),
         })
     }
 }

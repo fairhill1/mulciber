@@ -1385,6 +1385,32 @@ pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
 /// including Metal's sixteen sampler-state slots.
 pub const MATERIAL_SLOT_LIMIT: u32 = 15;
 
+/// Minification and magnification filtering for one material sampler slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SamplerFilter {
+    /// Nearest-texel sampling, keeping texel edges crisp (pixel art, texture atlases).
+    Nearest,
+    /// Linear interpolation between adjacent texels.
+    Linear,
+}
+
+/// Texture-coordinate addressing for one material sampler slot, applied on both axes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SamplerAddress {
+    /// Coordinates wrap, tiling the texture.
+    Repeat,
+    /// Coordinates clamp to the edge texel.
+    ClampToEdge,
+}
+
+/// One declared sampler slot handed to the native backends.
+#[derive(Clone, Copy)]
+pub(crate) struct SamplerSlot {
+    pub(crate) binding: u32,
+    pub(crate) filter: SamplerFilter,
+    pub(crate) address: SamplerAddress,
+}
+
 /// One resource slot declared by a material pipeline, identified by its WGSL binding number in
 /// group 0.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1405,10 +1431,14 @@ pub enum MaterialBinding {
         /// WGSL binding number.
         binding: u32,
     },
-    /// A crate-owned linear repeat sampler.
+    /// A pipeline-owned sampler with the declared filter and address modes.
     Sampler {
         /// WGSL binding number.
         binding: u32,
+        /// Minification and magnification filtering.
+        filter: SamplerFilter,
+        /// Texture-coordinate addressing on both axes.
+        address: SamplerAddress,
     },
 }
 
@@ -1453,8 +1483,8 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) uniform: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     pub(crate) texture_bindings: &'inputs [u32],
-    /// Declared sampler binding numbers.
-    pub(crate) sampler_bindings: &'inputs [u32],
+    /// Declared sampler slots with their filter and address modes.
+    pub(crate) sampler_bindings: &'inputs [SamplerSlot],
 }
 
 /// Extent- and generation-dependent color/depth targets.
@@ -1809,7 +1839,7 @@ fn validate_layout_against_entry(
 struct BindingDeclaration {
     uniform: Option<(u32, u32)>,
     texture_bindings: Vec<u32>,
-    sampler_bindings: Vec<u32>,
+    sampler_bindings: Vec<SamplerSlot>,
 }
 
 const fn interface_binding_label(kind: u8) -> &'static str {
@@ -1882,8 +1912,16 @@ fn validate_bindings_against_interface(
                 declaration.texture_bindings.push(binding);
                 (binding, shader::INTERFACE_BINDING_SAMPLED_TEXTURE, 0)
             }
-            MaterialBinding::Sampler { binding } => {
-                declaration.sampler_bindings.push(binding);
+            MaterialBinding::Sampler {
+                binding,
+                filter,
+                address,
+            } => {
+                declaration.sampler_bindings.push(SamplerSlot {
+                    binding,
+                    filter,
+                    address,
+                });
                 (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
             }
         };
@@ -1941,7 +1979,9 @@ fn validate_bindings_against_interface(
         }
     }
     declaration.texture_bindings.sort_unstable();
-    declaration.sampler_bindings.sort_unstable();
+    declaration
+        .sampler_bindings
+        .sort_unstable_by_key(|slot| slot.binding);
     Ok(declaration)
 }
 

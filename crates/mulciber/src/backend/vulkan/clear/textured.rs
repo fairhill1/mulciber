@@ -6,7 +6,7 @@ use std::{format, vec::Vec};
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
-use crate::graphics::{MaterialPipelineConfig, MeshIndices};
+use crate::graphics::{MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter};
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
@@ -60,12 +60,12 @@ struct MaterialPipelineResource {
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
     descriptor_pool: vk::VkDescriptorPool,
-    sampler: vk::VkSampler,
+    /// One pipeline-owned sampler per declared slot as (binding, sampler).
+    samplers: Vec<(u32, vk::VkSampler)>,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
-    sampler_bindings: Vec<u32>,
     /// Descriptor sets cached per texture-identity tuple in slot order.
     bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
 }
@@ -1328,14 +1328,10 @@ impl<'window> TexturedSession<'window> {
             return Ok(*set);
         }
         let pipeline = &self.material_pipelines[pipeline_index];
-        let (set_layout, descriptor_pool, sampler) = (
-            pipeline.set_layout,
-            pipeline.descriptor_pool,
-            pipeline.sampler,
-        );
+        let (set_layout, descriptor_pool) = (pipeline.set_layout, pipeline.descriptor_pool);
         let pipeline_uniform = pipeline.uniform;
         let texture_bindings = pipeline.texture_bindings.clone();
-        let sampler_bindings = pipeline.sampler_bindings.clone();
+        let samplers = pipeline.samplers.clone();
         let allocate = vk::VkDescriptorSetAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             descriptorPool: descriptor_pool,
@@ -1371,11 +1367,14 @@ impl<'window> TexturedSession<'window> {
                 imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             })
             .collect();
-        let sampler_info = vk::VkDescriptorImageInfo {
-            sampler,
-            ..Default::default()
-        };
-        let mut writes = Vec::with_capacity(1 + images.len() + sampler_bindings.len());
+        let sampler_infos: Vec<vk::VkDescriptorImageInfo> = samplers
+            .iter()
+            .map(|&(_, sampler)| vk::VkDescriptorImageInfo {
+                sampler,
+                ..Default::default()
+            })
+            .collect();
+        let mut writes = Vec::with_capacity(1 + images.len() + sampler_infos.len());
         if let Some((binding, _)) = pipeline_uniform {
             writes.push(descriptor_write(
                 set,
@@ -1392,12 +1391,12 @@ impl<'window> TexturedSession<'window> {
                 ptr::from_ref(image).cast(),
             ));
         }
-        for &binding in &sampler_bindings {
+        for (info, &(binding, _)) in sampler_infos.iter().zip(samplers.iter()) {
             writes.push(descriptor_write(
                 set,
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_SAMPLER,
-                (&raw const sampler_info).cast(),
+                ptr::from_ref(info).cast(),
             ));
         }
         unsafe {
@@ -2263,6 +2262,15 @@ fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPipelineResource) {
+    for &(_, sampler) in &pipeline.samplers {
+        unsafe {
+            device.functions.destroy_sampler.expect("loaded function")(
+                device.handle,
+                sampler,
+                ptr::null(),
+            );
+        }
+    }
     destroy_pipeline_device(
         device,
         PipelineResource {
@@ -2270,7 +2278,7 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
             layout: pipeline.layout,
             pipeline: pipeline.pipeline,
             descriptor_pool: pipeline.descriptor_pool,
-            sampler: pipeline.sampler,
+            sampler: ptr::null_mut(),
             bindings: Vec::new(),
         },
     );
@@ -3009,6 +3017,20 @@ fn create_material_descriptor_pool(
     )
 }
 
+const fn material_filter(filter: SamplerFilter) -> vk::VkFilter {
+    match filter {
+        SamplerFilter::Nearest => vk::VK_FILTER_NEAREST,
+        SamplerFilter::Linear => vk::VK_FILTER_LINEAR,
+    }
+}
+
+const fn material_address(address: SamplerAddress) -> vk::VkSamplerAddressMode {
+    match address {
+        SamplerAddress::Repeat => vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        SamplerAddress::ClampToEdge => vk::VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+    }
+}
+
 const fn material_vertex_format(format: VertexFormat) -> vk::VkFormat {
     match format {
         VertexFormat::Float32 => vk::VK_FORMAT_R32_SFLOAT,
@@ -3050,9 +3072,9 @@ fn create_material_pipeline(
             stages,
         ));
     }
-    for &binding in config.sampler_bindings {
+    for slot in config.sampler_bindings {
         layout_bindings.push(layout_binding(
-            binding,
+            slot.binding,
             vk::VK_DESCRIPTOR_TYPE_SAMPLER,
             stages,
         ));
@@ -3069,10 +3091,9 @@ fn create_material_pipeline(
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
         descriptor_pool: ptr::null_mut(),
-        sampler: ptr::null_mut(),
+        samplers: Vec::with_capacity(config.sampler_bindings.len()),
         uniform: config.uniform,
         texture_bindings: config.texture_bindings.to_vec(),
-        sampler_bindings: config.sampler_bindings.to_vec(),
         bindings: Vec::new(),
     };
     check(
@@ -3269,30 +3290,34 @@ fn create_material_pipeline(
             .expect("loaded function")(device.handle, module, ptr::null());
     };
     result?;
-    if !config.sampler_bindings.is_empty() {
+    for slot in config.sampler_bindings {
+        let filter = material_filter(slot.filter);
+        let address = material_address(slot.address);
         let sampler_info = vk::VkSamplerCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            magFilter: vk::VK_FILTER_LINEAR,
-            minFilter: vk::VK_FILTER_LINEAR,
+            magFilter: filter,
+            minFilter: filter,
             mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
-            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
-            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
-            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeU: address,
+            addressModeV: address,
+            addressModeW: address,
             maxAnisotropy: 1.0,
             maxLod: 0.0,
             ..Default::default()
         };
+        let mut sampler = ptr::null_mut();
         check(
             unsafe {
                 device.functions.create_sampler.expect("loaded function")(
                     device.handle,
                     &raw const sampler_info,
                     ptr::null(),
-                    &raw mut resource.sampler,
+                    &raw mut sampler,
                 )
             },
             "vkCreateSampler for material pipeline",
         )?;
+        resource.samplers.push((slot.binding, sampler));
     }
     resource.descriptor_pool = create_material_descriptor_pool(device)?;
     Ok(resource)

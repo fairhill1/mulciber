@@ -316,7 +316,7 @@ XWayland, exit zero, no validation output. These are automated runs; the visual 
 the material scene and the Metal implementation await operator confirmation and the next M2
 session respectively.
 
-### Mesh index-width evidence
+### Mesh index-width and sampler-mode evidence
 
 On 2026-07-20, `Device::create_mesh_with_layout` gained `MeshIndices` (16- or 32-bit), with the
 index type stored per mesh and passed to every native index-buffer bind. The conformance probe's
@@ -326,6 +326,16 @@ index is rejected. All thirty-two cases (thirty-one plus this driver's Vulkan-on
 superseded-generation branch) passed on this machine's KDE Plasma session on both native Wayland
 and X11 through XWayland, exit zero, no validation output. The Metal path compiles under the
 cross-host `aarch64-apple-darwin` type check but awaits the next M2 session.
+
+Later the same day, material sampler slots gained declared per-slot filter (`Nearest`/`Linear`)
+and address (`Repeat`/`ClampToEdge`) modes, replacing the single crate-owned linear repeat
+sampler with one pipeline-owned native sampler per declared slot on both backends. The direct
+material presentation case now submits a second record through a nearest/clamp pipeline in the
+same frame, asserting both sampler modes reach the native samplers. All thirty-three cases passed
+on both native Wayland and X11 through XWayland, exit zero, no validation output, and the
+material-scene example ran validation-clean on native Wayland (Vulkan, four samples). Nearest
+filtering and clamping are asserted by execution, not visually verified; the Metal sampler path
+again compiles cross-host and awaits the next M2 session.
 
 ### Conformance probe evidence
 

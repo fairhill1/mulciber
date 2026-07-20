@@ -11,9 +11,10 @@ use std::time::Instant;
 
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, GraphicsErrorKind, MaterialBinding, MaterialRecord,
-    Mesh, MeshIndices, OpenedGraphics, PostprocessedScene, SampleCount, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact, TexturedDraw, TexturedInstanceBatch, TexturedScene,
-    TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    Mesh, MeshIndices, OpenedGraphics, PostprocessedScene, SampleCount, SamplerAddress,
+    SamplerFilter, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, TexturedDraw,
+    TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -60,7 +61,11 @@ const MATERIAL_BINDINGS: [MaterialBinding; 4] = [
     },
     MaterialBinding::Texture { binding: 1 },
     MaterialBinding::Texture { binding: 2 },
-    MaterialBinding::Sampler { binding: 3 },
+    MaterialBinding::Sampler {
+        binding: 3,
+        filter: SamplerFilter::Linear,
+        address: SamplerAddress::Repeat,
+    },
 ];
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -576,7 +581,11 @@ impl<'window> Cases<'window> {
                                     },
                                     MaterialBinding::Texture { binding: 1 },
                                     MaterialBinding::Texture { binding: 2 },
-                                    MaterialBinding::Sampler { binding: 3 },
+                                    MaterialBinding::Sampler {
+                                        binding: 3,
+                                        filter: SamplerFilter::Linear,
+                                        address: SamplerAddress::Repeat,
+                                    },
                                 ],
                             })
                             .map(|_| ()),
@@ -806,10 +815,36 @@ impl<'window> Cases<'window> {
                 self.step = 14;
                 Ok(false)
             }
-            // Two material records with application-packed uniform bytes present directly.
+            // Two material records with application-packed uniform bytes present directly; the
+            // second record draws through a nearest-filter clamp-to-edge sampler pipeline so both
+            // declared sampler modes reach the native samplers in one submission.
             14 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
+                };
+                let nearest_pipeline = {
+                    let graphics = self.graphics.as_ref().expect("session A is open");
+                    graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &[
+                                MaterialBinding::Uniform {
+                                    binding: 0,
+                                    size: 144,
+                                },
+                                MaterialBinding::Texture { binding: 1 },
+                                MaterialBinding::Texture { binding: 2 },
+                                MaterialBinding::Sampler {
+                                    binding: 3,
+                                    filter: SamplerFilter::Nearest,
+                                    address: SamplerAddress::ClampToEdge,
+                                },
+                            ],
+                        },
+                    )?
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
                 let textures = [texture, texture];
@@ -822,7 +857,7 @@ impl<'window> Cases<'window> {
                         uniform: &uniform,
                     },
                     MaterialRecord {
-                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        pipeline: &nearest_pipeline,
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
                         uniform: &uniform,
@@ -839,6 +874,11 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("material presentation");
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics
+                    .device
+                    .destroy_material_pipeline(nearest_pipeline)?;
+                self.pass("nearest clamp sampler material presentation");
                 self.step = 15;
                 Ok(false)
             }

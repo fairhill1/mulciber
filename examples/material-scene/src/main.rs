@@ -12,8 +12,8 @@ use std::time::Instant;
 use glam::Vec3;
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, MaterialBinding, MaterialPipelineDescriptor,
-    MaterialRecord, MeshIndices, OpenedGraphics, SampleCount, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact,
+    MaterialRecord, MeshIndices, OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter,
+    SceneContent, SceneOutput, SceneSubmission, ShaderArtifact,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -78,7 +78,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     },
                     MaterialBinding::Texture { binding: 1 },
                     MaterialBinding::Texture { binding: 2 },
-                    MaterialBinding::Sampler { binding: 3 },
+                    MaterialBinding::Sampler {
+                        binding: 3,
+                        filter: SamplerFilter::Linear,
+                        address: SamplerAddress::Repeat,
+                    },
                 ],
             })?;
     let lava_pipeline = graphics
@@ -94,7 +98,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     size: 80,
                 },
                 MaterialBinding::Texture { binding: 1 },
-                MaterialBinding::Sampler { binding: 2 },
+                MaterialBinding::Sampler {
+                    binding: 2,
+                    filter: SamplerFilter::Linear,
+                    address: SamplerAddress::Repeat,
+                },
             ],
         })?;
     let mut targets = graphics

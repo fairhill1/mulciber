@@ -35,7 +35,8 @@ uniform region; no persistent application-owned buffer handle was forced by this
 
 `SceneContent` grows one form: `Material(&[MaterialRecord])`, each record selecting a material
 pipeline, a layout-matching mesh, one texture per declared texture slot in ascending binding
-order, and its uniform bytes. Sampler slots bind a crate-owned linear repeat sampler.
+order, and its uniform bytes. Each sampler slot declares its filter (`Nearest`/`Linear`) and
+address mode (`Repeat`/`ClampToEdge`); the pipeline owns one native sampler per declared slot.
 `MaterialPipeline` joins the existing explicit-destroy and drop-reclamation paths, and
 mixed-session diagnostics name the new handle kind.
 

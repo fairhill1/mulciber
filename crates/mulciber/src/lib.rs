@@ -42,9 +42,9 @@ pub use graphics::{
     MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
     MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
     PostprocessedDraw, PostprocessedScene, PresentFeedback, PresentedFrame, Queue, RenderTargets,
-    SampleCount, SceneContent, SceneOutput, SceneSubmission, Surface, Texture, TexturedDraw,
-    TexturedInstanceBatch, TexturedPipeline, TexturedScene, TexturedSceneDraw, Vertex,
-    VertexAttribute, VertexFormat, VertexLayout,
+    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
+    Surface, Texture, TexturedDraw, TexturedInstanceBatch, TexturedPipeline, TexturedScene,
+    TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

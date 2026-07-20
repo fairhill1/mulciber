@@ -12,7 +12,7 @@ const HEADER_LENGTH: usize = 20;
 
 const STAGE_LIMIT: u8 = 2;
 const VERTEX_FORMAT_LIMIT: u8 = 11;
-const BINDING_KIND_LIMIT: u8 = 5;
+const BINDING_KIND_LIMIT: u8 = 6;
 
 /// Target-selected native shader code produced from one WGSL module by
 /// `mulciber-shader`.
@@ -156,6 +156,7 @@ pub(crate) const INTERFACE_BINDING_SAMPLER: u8 = 2;
 pub(crate) const INTERFACE_BINDING_STORAGE: u8 = 3;
 pub(crate) const INTERFACE_BINDING_DEPTH_TEXTURE: u8 = 4;
 pub(crate) const INTERFACE_BINDING_COMPARISON_SAMPLER: u8 = 5;
+pub(crate) const INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 
 /// The compiler-recorded interface of one shader module.
 pub(crate) struct ShaderInterface {

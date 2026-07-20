@@ -21,3 +21,8 @@ mapping. The container is unchanged from 0.2, so earlier artifacts remain loadab
 using the new slot kinds must be built with this version, whose records `mulciber` 0.6 validates
 material and shadow pipeline declarations against. The tool and the `mulciber` crate ship
 together; no artifact stability is promised.
+
+The cascaded-shadow extension additionally records `texture_depth_2d_array` bindings as their
+own interface kind for `mulciber`'s `DepthTextureArray` material slot. The container is again
+unchanged, so earlier artifacts remain loadable, but modules sampling a depth-texture array
+must be built with this version and the paired crate.

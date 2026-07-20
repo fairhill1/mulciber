@@ -13,8 +13,8 @@ use crate::graphics::{
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
-    PresentFeedback, SampleCount, ShaderArtifact, ShadowPass, SurfaceInfo, TexturedInstanceBatch,
-    TexturedSceneDraw, Vertex, VertexFormat,
+    PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowSource, SurfaceInfo,
+    TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
@@ -79,9 +79,12 @@ struct MaterialPipelineResource {
     texture_bindings: Vec<u32>,
     /// Declared depth-texture slot fed from a shadow map per record.
     depth_texture_binding: Option<u32>,
+    /// Declared depth-texture-array slot fed from a shadow map array per record.
+    depth_texture_array_binding: Option<u32>,
     /// Pipeline-owned fixed-recipe comparison sampler as (binding, sampler).
     comparison_sampler: Option<(u32, vk::VkSampler)>,
-    /// Descriptor sets cached per sampled-identity tuple (textures, then the shadow map).
+    /// Descriptor sets cached per sampled-identity tuple (textures, then the shadow map or
+    /// array).
     bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
 }
 
@@ -89,6 +92,21 @@ struct ShadowMapResource {
     image: Image,
     size: u32,
     /// Whether any shadow pass has rendered into this map; sampling before that is rejected.
+    rendered: bool,
+}
+
+struct ShadowMapArrayResource {
+    /// Layered depth image backing every cascade.
+    image: vk::VkImage,
+    memory: vk::VkDeviceMemory,
+    /// One single-layer rendering view per cascade in layer order.
+    layer_views: Vec<vk::VkImageView>,
+    /// Whole-array view the scene pass samples.
+    array_view: vk::VkImageView,
+    size: u32,
+    layers: u32,
+    /// Whether any cascaded shadow pass has rendered into this array; sampling before that is
+    /// rejected.
     rendered: bool,
 }
 
@@ -113,6 +131,8 @@ struct TargetResource {
 
 struct PostprocessTargetResource {
     info: SurfaceInfo,
+    /// Offscreen scene extent — the render-scale-adjusted extent the scene pass renders at.
+    scene_extent: vk::VkExtent2D,
     scene_color: Option<Image>,
     multisample_color: Option<Image>,
     depth: Option<Image>,
@@ -147,6 +167,23 @@ struct ResolvedMaterialDraw {
     dynamic_offset_count: u32,
 }
 
+/// Destination of the prepared frame's depth-only pre-pass.
+#[derive(Clone, Copy)]
+enum PendingShadowTarget {
+    /// Shadow map arena index for a single pass.
+    Map(usize),
+    /// Shadow map array arena index for a cascaded pass.
+    Array(usize),
+}
+
+/// The rendered depth view a material record samples, routed to the pipeline's plain or array
+/// depth-texture slot.
+#[derive(Clone, Copy)]
+enum ShadowView {
+    Map(vk::VkImageView),
+    Array(vk::VkImageView),
+}
+
 #[derive(Clone, Copy)]
 enum PreparedScene {
     Draws,
@@ -168,14 +205,18 @@ pub(crate) struct TexturedSession<'window> {
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
     resolved_material_draws: Vec<ResolvedMaterialDraw>,
     resolved_shadow_draws: Vec<ResolvedMaterialDraw>,
-    /// Shadow map arena index for the prepared frame's depth-only pre-pass.
-    pending_shadow_target: Option<usize>,
+    /// Per-cascade draw counts splitting `resolved_shadow_draws` in layer order; empty unless
+    /// the prepared pre-pass targets a shadow map array.
+    resolved_shadow_cascades: Vec<usize>,
+    /// Target of the prepared frame's depth-only pre-pass.
+    pending_shadow_target: Option<PendingShadowTarget>,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
     instanced_pipelines: Arena<PipelineResource>,
     material_pipelines: Arena<MaterialPipelineResource>,
     shadow_maps: Arena<ShadowMapResource>,
+    shadow_map_arrays: Arena<ShadowMapArrayResource>,
     shadow_pipelines: Arena<ShadowPipelineResource>,
     targets: Arena<TargetResource>,
     postprocess_pipelines: Arena<PipelineResource>,
@@ -254,6 +295,7 @@ impl<'window> TexturedSession<'window> {
                 resolved_instance_batches: Vec::new(),
                 resolved_material_draws: Vec::new(),
                 resolved_shadow_draws: Vec::new(),
+                resolved_shadow_cascades: Vec::new(),
                 pending_shadow_target: None,
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
@@ -261,6 +303,7 @@ impl<'window> TexturedSession<'window> {
                 instanced_pipelines: Arena::new("instanced textured pipeline"),
                 material_pipelines: Arena::new("material pipeline"),
                 shadow_maps: Arena::new("shadow map"),
+                shadow_map_arrays: Arena::new("shadow map array"),
                 shadow_pipelines: Arena::new("shadow pipeline"),
                 targets: Arena::new("render targets"),
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
@@ -507,6 +550,36 @@ impl<'window> TexturedSession<'window> {
         })
     }
 
+    pub(crate) fn create_shadow_map_array(
+        &mut self,
+        size: u32,
+        layers: u32,
+    ) -> Result<ResourceId, GraphicsError> {
+        let mut properties = vk::VkFormatProperties::default();
+        unsafe {
+            self.surface
+                .device()
+                .instance
+                .functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                self.surface.device().adapter.handle,
+                DEPTH_FORMAT,
+                &raw mut properties,
+            );
+        }
+        let required = (vk::VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+            | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
+            | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) as u32;
+        if properties.optimalTilingFeatures & required != required {
+            return Err(error(
+                "adapter does not support rendering and comparison-sampling D32_FLOAT shadow maps",
+            ));
+        }
+        let array = create_shadow_map_array_storage(&self.surface, size, layers)?;
+        self.shadow_map_arrays.insert(array)
+    }
+
     pub(crate) fn create_shadow_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
@@ -637,16 +710,19 @@ impl<'window> TexturedSession<'window> {
         })
     }
 
+    /// Creates the two-pass targets: offscreen scene storage at `scene_extent` — the
+    /// render-scale-adjusted extent — while presentation stays at the surface extent carried
+    /// by `info`.
     pub(crate) fn create_postprocess_targets(
         &mut self,
         info: SurfaceInfo,
+        scene_extent: crate::SurfaceExtent,
     ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets()?;
-        let extent = info.extent();
         let scene_color = create_image(
             &self.surface,
-            extent.width(),
-            extent.height(),
+            scene_extent.width(),
+            scene_extent.height(),
             self.surface.swapchain.format,
             (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
@@ -655,8 +731,8 @@ impl<'window> TexturedSession<'window> {
         )?;
         let depth = match create_image(
             &self.surface,
-            extent.width(),
-            extent.height(),
+            scene_extent.width(),
+            scene_extent.height(),
             DEPTH_FORMAT,
             vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
             vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
@@ -672,8 +748,8 @@ impl<'window> TexturedSession<'window> {
         let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
             match create_image(
                 &self.surface,
-                extent.width(),
-                extent.height(),
+                scene_extent.width(),
+                scene_extent.height(),
                 self.surface.swapchain.format,
                 vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
                 vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
@@ -692,6 +768,10 @@ impl<'window> TexturedSession<'window> {
         };
         self.postprocess_targets.insert(PostprocessTargetResource {
             info,
+            scene_extent: vk::VkExtent2D {
+                width: scene_extent.width(),
+                height: scene_extent.height(),
+            },
             scene_color: Some(scene_color),
             multisample_color,
             depth: Some(depth),
@@ -805,17 +885,38 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn validate_shadow_sampling(
         &self,
         records: &[MaterialRecord<'_>],
-        shadow: Option<&ShadowPass<'_>>,
+        shadow: Option<&ShadowPrepass<'_>>,
     ) -> Result<(), GraphicsError> {
-        let pending = shadow.map(|shadow| shadow.map.id());
+        let pending_map = match shadow {
+            Some(ShadowPrepass::Single(pass)) => Some(pass.map.id()),
+            _ => None,
+        };
+        let pending_array = match shadow {
+            Some(ShadowPrepass::Cascaded(pass)) => Some(pass.map.id()),
+            _ => None,
+        };
         for record in records {
-            if let Some(map) = record.shadow_map {
-                let index = self.shadow_maps.index_of(map.id())?;
-                if !self.shadow_maps[index].rendered && pending != Some(map.id()) {
-                    return Err(GraphicsError::invalid_request(
-                        "material record samples a shadow map that no shadow pass has rendered",
-                    ));
+            match record.shadow_map {
+                Some(ShadowSource::Map(map)) => {
+                    let index = self.shadow_maps.index_of(map.id())?;
+                    if !self.shadow_maps[index].rendered && pending_map != Some(map.id()) {
+                        return Err(GraphicsError::invalid_request(
+                            "material record samples a shadow map that no shadow pass has \
+                             rendered",
+                        ));
+                    }
                 }
+                Some(ShadowSource::Array(array)) => {
+                    let index = self.shadow_map_arrays.index_of(array.id())?;
+                    if !self.shadow_map_arrays[index].rendered && pending_array != Some(array.id())
+                    {
+                        return Err(GraphicsError::invalid_request(
+                            "material record samples a shadow map array that no cascaded shadow \
+                             pass has rendered",
+                        ));
+                    }
+                }
+                None => {}
             }
         }
         Ok(())
@@ -825,7 +926,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
-        shadow: Option<&ShadowPass<'_>>,
+        shadow: Option<&ShadowPrepass<'_>>,
         targets: ResourceId,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -849,7 +950,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
-        shadow: Option<&ShadowPass<'_>>,
+        shadow: Option<&ShadowPrepass<'_>>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         clear: ClearColor,
@@ -876,12 +977,13 @@ impl<'window> TexturedSession<'window> {
         self.surface.submit_recorded(token.image_index)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare_material_scene(
         &mut self,
         records: &[MaterialRecord<'_>],
-        shadow: Option<&ShadowPass<'_>>,
+        shadow: Option<&ShadowPrepass<'_>>,
     ) -> Result<(), GraphicsError> {
-        let shadow_records = shadow.map_or(0, |shadow| shadow.records.len());
+        let shadow_records = shadow.map_or(0, |shadow| shadow.records().count());
         let uniform_slots = records
             .len()
             .checked_add(shadow_records)
@@ -904,10 +1006,21 @@ impl<'window> TexturedSession<'window> {
             &storage_offsets,
         )?;
         self.resolved_shadow_draws.clear();
+        self.resolved_shadow_cascades.clear();
         self.pending_shadow_target = None;
         if let Some(shadow) = shadow {
-            let map_index = self.shadow_maps.index_of(shadow.map.id())?;
-            for (index, record) in shadow.records.iter().enumerate() {
+            let target = match shadow {
+                ShadowPrepass::Single(pass) => {
+                    PendingShadowTarget::Map(self.shadow_maps.index_of(pass.map.id())?)
+                }
+                ShadowPrepass::Cascaded(pass) => {
+                    let array_index = self.shadow_map_arrays.index_of(pass.map.id())?;
+                    self.resolved_shadow_cascades
+                        .extend(pass.cascades.iter().map(|records| records.len()));
+                    PendingShadowTarget::Array(array_index)
+                }
+            };
+            for (index, record) in shadow.records().enumerate() {
                 let mesh = self.meshes.index_of(record.mesh.id())?;
                 let pipeline = self.shadow_pipelines.index_of(record.pipeline.id())?;
                 let descriptor = self.shadow_descriptor_set(pipeline)?;
@@ -927,7 +1040,7 @@ impl<'window> TexturedSession<'window> {
                     dynamic_offset_count,
                 });
             }
-            self.pending_shadow_target = Some(map_index);
+            self.pending_shadow_target = Some(target);
         }
         self.resolved_material_draws.clear();
         let mut sampled_ids = Vec::new();
@@ -941,12 +1054,20 @@ impl<'window> TexturedSession<'window> {
                 sampled_ids.push(texture.id());
                 texture_indices.push(self.textures.index_of(texture.id())?);
             }
-            let shadow_view = if let Some(map) = record.shadow_map {
-                let map_index = self.shadow_maps.index_of(map.id())?;
-                sampled_ids.push(map.id());
-                Some(self.shadow_maps[map_index].image.view)
-            } else {
-                None
+            let shadow_view = match record.shadow_map {
+                Some(ShadowSource::Map(map)) => {
+                    let map_index = self.shadow_maps.index_of(map.id())?;
+                    sampled_ids.push(map.id());
+                    Some(ShadowView::Map(self.shadow_maps[map_index].image.view))
+                }
+                Some(ShadowSource::Array(array)) => {
+                    let array_index = self.shadow_map_arrays.index_of(array.id())?;
+                    sampled_ids.push(array.id());
+                    Some(ShadowView::Array(
+                        self.shadow_map_arrays[array_index].array_view,
+                    ))
+                }
+                None => None,
             };
             let descriptor = self.material_descriptor_set(
                 pipeline,
@@ -1245,6 +1366,8 @@ impl<'window> TexturedSession<'window> {
             (request.kind == ResourceKind::Texture && self.textures.get(request.id).is_ok())
                 || (request.kind == ResourceKind::ShadowMap
                     && self.shadow_maps.get(request.id).is_ok())
+                || (request.kind == ResourceKind::ShadowMapArray
+                    && self.shadow_map_arrays.get(request.id).is_ok())
         });
         let reset_postprocess_descriptors = requests.iter().any(|request| {
             request.kind == ResourceKind::PostprocessTargets
@@ -1272,6 +1395,9 @@ impl<'window> TexturedSession<'window> {
             self.reset_descriptor_pools(false)?;
         } else if request.kind == ResourceKind::ShadowMap {
             self.shadow_maps.get(request.id)?;
+            self.reset_descriptor_pools(false)?;
+        } else if request.kind == ResourceKind::ShadowMapArray {
+            self.shadow_map_arrays.get(request.id)?;
             self.reset_descriptor_pools(false)?;
         } else if request.kind == ResourceKind::PostprocessTargets {
             self.postprocess_targets.get(request.id)?;
@@ -1301,6 +1427,9 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::ShadowMap => {
                 let map = self.shadow_maps.remove(request.id)?;
                 unsafe { destroy_image_device(device, map.image) };
+            }
+            ResourceKind::ShadowMapArray => {
+                destroy_shadow_map_array_device(device, self.shadow_map_arrays.remove(request.id)?);
             }
             ResourceKind::ShadowPipeline => {
                 destroy_shadow_pipeline_device(device, self.shadow_pipelines.remove(request.id)?);
@@ -1347,6 +1476,10 @@ impl<'window> TexturedSession<'window> {
                 .shadow_maps
                 .remove_if_live(request.id)
                 .map(|resource| unsafe { destroy_image_device(device, resource.image) }),
+            ResourceKind::ShadowMapArray => self
+                .shadow_map_arrays
+                .remove_if_live(request.id)
+                .map(|resource| destroy_shadow_map_array_device(device, resource)),
             ResourceKind::ShadowPipeline => self
                 .shadow_pipelines
                 .remove_if_live(request.id)
@@ -1694,7 +1827,7 @@ impl<'window> TexturedSession<'window> {
         pipeline_index: usize,
         sampled_ids: &[ResourceId],
         texture_indices: &[usize],
-        shadow_view: Option<vk::VkImageView>,
+        shadow_view: Option<ShadowView>,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
         if let Some((_, set)) = self.material_pipelines[pipeline_index]
             .bindings
@@ -1710,6 +1843,7 @@ impl<'window> TexturedSession<'window> {
         let texture_bindings = pipeline.texture_bindings.clone();
         let samplers = pipeline.samplers.clone();
         let depth_texture_binding = pipeline.depth_texture_binding;
+        let depth_texture_array_binding = pipeline.depth_texture_array_binding;
         let comparison_sampler = pipeline.comparison_sampler;
         let allocate = vk::VkDescriptorSetAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1758,10 +1892,22 @@ impl<'window> TexturedSession<'window> {
                 ..Default::default()
             })
             .collect();
-        let shadow_image = shadow_view.map(|view| vk::VkDescriptorImageInfo {
-            sampler: ptr::null_mut(),
-            imageView: view,
-            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        let shadow_image = match shadow_view {
+            Some(ShadowView::Map(view)) => depth_texture_binding.map(|binding| (binding, view)),
+            Some(ShadowView::Array(view)) => {
+                depth_texture_array_binding.map(|binding| (binding, view))
+            }
+            None => None,
+        }
+        .map(|(binding, view)| {
+            (
+                binding,
+                vk::VkDescriptorImageInfo {
+                    sampler: ptr::null_mut(),
+                    imageView: view,
+                    imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                },
+            )
         });
         let comparison_info = comparison_sampler.map(|(_, sampler)| vk::VkDescriptorImageInfo {
             sampler,
@@ -1800,7 +1946,7 @@ impl<'window> TexturedSession<'window> {
                 ptr::from_ref(info).cast(),
             ));
         }
-        if let (Some(image), Some(binding)) = (shadow_image.as_ref(), depth_texture_binding) {
+        if let Some((binding, ref image)) = shadow_image {
             writes.push(descriptor_write(
                 set,
                 binding,
@@ -1925,17 +2071,29 @@ impl<'window> TexturedSession<'window> {
         Ok(set)
     }
 
-    /// Encodes the prepared depth-only shadow pass into the open command buffer, transitioning
-    /// the map from its prior state into depth rendering and out to fragment-sampled reading.
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    /// Encodes the prepared depth-only shadow work — one pass for a single map, or one pass per
+    /// cascade layer — into the open command buffer, transitioning the target from its prior
+    /// state into depth rendering and out to fragment-sampled reading.
     fn record_shadow_pass_if_pending(&mut self) {
-        let Some(map_index) = self.pending_shadow_target.take() else {
+        let Some(target) = self.pending_shadow_target.take() else {
             return;
         };
-        let rendered_before = self.shadow_maps[map_index].rendered;
-        self.shadow_maps[map_index].rendered = true;
-        let map_image = self.shadow_maps[map_index].image;
-        let size = self.shadow_maps[map_index].size;
+        let (handle, layers, rendered_before) = match target {
+            PendingShadowTarget::Map(index) => {
+                let rendered_before = self.shadow_maps[index].rendered;
+                self.shadow_maps[index].rendered = true;
+                (self.shadow_maps[index].image.handle, 1, rendered_before)
+            }
+            PendingShadowTarget::Array(index) => {
+                let rendered_before = self.shadow_map_arrays[index].rendered;
+                self.shadow_map_arrays[index].rendered = true;
+                (
+                    self.shadow_map_arrays[index].image,
+                    self.shadow_map_arrays[index].layers,
+                    rendered_before,
+                )
+            }
+        };
         let (old_layout, src_stage, src_access) = if rendered_before {
             (
                 vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1950,7 +2108,7 @@ impl<'window> TexturedSession<'window> {
             )
         };
         let to_attachment = image_barrier(
-            map_image.handle,
+            handle,
             old_layout,
             vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             src_stage,
@@ -1958,12 +2116,53 @@ impl<'window> TexturedSession<'window> {
                 | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             src_access,
             vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            depth_subresource_range(),
+            depth_subresource_layers(layers),
         );
         pipeline_barrier(&self.surface, &to_attachment);
+        match target {
+            PendingShadowTarget::Map(index) => {
+                let map = &self.shadow_maps[index];
+                self.record_shadow_layer(map.image.view, map.size, &self.resolved_shadow_draws);
+            }
+            PendingShadowTarget::Array(index) => {
+                let array = &self.shadow_map_arrays[index];
+                let mut start = 0_usize;
+                for (&view, &count) in array.layer_views.iter().zip(&self.resolved_shadow_cascades)
+                {
+                    self.record_shadow_layer(
+                        view,
+                        array.size,
+                        &self.resolved_shadow_draws[start..start + count],
+                    );
+                    start += count;
+                }
+            }
+        }
+        let to_sampled = image_barrier(
+            handle,
+            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            depth_subresource_layers(layers),
+        );
+        pipeline_barrier(&self.surface, &to_sampled);
+    }
+
+    /// Encodes one depth-only pass into a shadow target view — the whole map, or one array
+    /// layer — clearing it to the far plane before its records.
+    #[allow(clippy::cast_precision_loss)]
+    fn record_shadow_layer(
+        &self,
+        view: vk::VkImageView,
+        size: u32,
+        draws: &[ResolvedMaterialDraw],
+    ) {
         let depth_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-            imageView: map_image.view,
+            imageView: view,
             imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
             storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
@@ -2017,7 +2216,7 @@ impl<'window> TexturedSession<'window> {
                 &raw const area,
             );
             let offset = 0_u64;
-            for draw in &self.resolved_shadow_draws {
+            for draw in draws {
                 let mesh = &self.meshes[draw.mesh];
                 let pipeline = &self.shadow_pipelines[draw.pipeline];
                 functions.cmd_bind_pipeline.expect("loaded function")(
@@ -2061,17 +2260,6 @@ impl<'window> TexturedSession<'window> {
             }
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
-        let to_sampled = image_barrier(
-            map_image.handle,
-            vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            depth_subresource_range(),
-        );
-        pipeline_barrier(&self.surface, &to_sampled);
     }
 
     #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
@@ -2299,6 +2487,7 @@ impl<'window> TexturedSession<'window> {
             .depth
             .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
         let multisample_color = target.multisample_color;
+        let scene_extent = target.scene_extent;
         let image = self.surface.swapchain.images[slot];
         let view = self.surface.swapchain.views[slot];
         let old_layout = if self.surface.swapchain.initialized[slot] {
@@ -2451,14 +2640,26 @@ impl<'window> TexturedSession<'window> {
             offset: vk::VkOffset2D { x: 0, y: 0 },
             extent: self.surface.swapchain.extent,
         };
+        let scene_area = vk::VkRect2D {
+            offset: vk::VkOffset2D { x: 0, y: 0 },
+            extent: scene_extent,
+        };
         let scene_rendering = vk::VkRenderingInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_INFO,
-            renderArea: area,
+            renderArea: scene_area,
             layerCount: 1,
             colorAttachmentCount: 1,
             pColorAttachments: &raw const scene_attachment,
             pDepthAttachment: &raw const depth_attachment,
             ..Default::default()
+        };
+        let scene_viewport = vk::VkViewport {
+            x: 0.0,
+            y: 0.0,
+            width: scene_area.extent.width as f32,
+            height: scene_area.extent.height as f32,
+            minDepth: 0.0,
+            maxDepth: 1.0,
         };
         let viewport = vk::VkViewport {
             x: 0.0,
@@ -2478,13 +2679,13 @@ impl<'window> TexturedSession<'window> {
                 self.surface.command_buffer,
                 0,
                 1,
-                &raw const viewport,
+                &raw const scene_viewport,
             );
             functions.cmd_set_scissor.expect("loaded function")(
                 self.surface.command_buffer,
                 0,
                 1,
-                &raw const area,
+                &raw const scene_area,
             );
             self.record_prepared_scene(scene);
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
@@ -2745,6 +2946,9 @@ impl<'window> TexturedSession<'window> {
         for map in self.shadow_maps.take_all() {
             unsafe { destroy_image_device(device, map.image) };
         }
+        for array in self.shadow_map_arrays.take_all() {
+            destroy_shadow_map_array_device(device, array);
+        }
         for texture in self.textures.take_all() {
             destroy_texture_device(device, texture);
         }
@@ -2863,6 +3067,40 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
             bindings: Vec::new(),
         },
     );
+}
+
+// Views fall before the image, and the image before its memory, so the validation layers
+// observe no dangling child handles.
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_shadow_map_array_device(device: &super::Device, array: ShadowMapArrayResource) {
+    unsafe {
+        for &view in array
+            .layer_views
+            .iter()
+            .chain(core::iter::once(&array.array_view))
+        {
+            if !view.is_null() {
+                device
+                    .functions
+                    .destroy_image_view
+                    .expect("loaded function")(device.handle, view, ptr::null());
+            }
+        }
+        if !array.image.is_null() {
+            device.functions.destroy_image.expect("loaded function")(
+                device.handle,
+                array.image,
+                ptr::null(),
+            );
+        }
+        if !array.memory.is_null() {
+            device.functions.free_memory.expect("loaded function")(
+                device.handle,
+                array.memory,
+                ptr::null(),
+            );
+        }
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -3132,9 +3370,9 @@ fn write_material_uniforms(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
     records: &[MaterialRecord<'_>],
-    shadow: Option<&ShadowPass<'_>>,
+    shadow: Option<&ShadowPrepass<'_>>,
 ) -> Result<(), GraphicsError> {
-    let shadow_records = shadow.map_or(0, |shadow| shadow.records.len());
+    let shadow_records = shadow.map_or(0, |shadow| shadow.records().count());
     let required = records
         .len()
         .checked_add(shadow_records)
@@ -3153,7 +3391,7 @@ fn write_material_uniforms(
             .chain(
                 shadow
                     .into_iter()
-                    .flat_map(|shadow| shadow.records.iter().map(|record| record.uniform))
+                    .flat_map(|shadow| shadow.records().map(|record| record.uniform))
             )
             .all(|uniform| uniform.len() <= DRAW_UNIFORM_STRIDE),
         "uniform sizes were validated at pipeline creation"
@@ -3177,7 +3415,7 @@ fn write_material_uniforms(
         let uniforms = records.iter().map(|record| record.uniform).chain(
             shadow
                 .into_iter()
-                .flat_map(|shadow| shadow.records.iter().map(|record| record.uniform)),
+                .flat_map(|shadow| shadow.records().map(|record| record.uniform)),
         );
         for (index, uniform) in uniforms.enumerate() {
             ptr::copy_nonoverlapping(
@@ -3196,15 +3434,15 @@ fn write_material_uniforms(
 /// region needs. Records without a storage slot occupy no bytes and keep offset zero.
 fn material_storage_offsets(
     records: &[MaterialRecord<'_>],
-    shadow: Option<&ShadowPass<'_>>,
+    shadow: Option<&ShadowPrepass<'_>>,
 ) -> Result<(Vec<u32>, usize), GraphicsError> {
     let lengths = records.iter().map(|record| record.storage.len()).chain(
         shadow
             .into_iter()
-            .flat_map(|shadow| shadow.records.iter().map(|record| record.storage.len())),
+            .flat_map(|shadow| shadow.records().map(|record| record.storage.len())),
     );
     let mut offsets =
-        Vec::with_capacity(records.len() + shadow.map_or(0, |shadow| shadow.records.len()));
+        Vec::with_capacity(records.len() + shadow.map_or(0, |shadow| shadow.records().count()));
     let mut running = 0_usize;
     for length in lengths {
         offsets
@@ -3245,21 +3483,16 @@ fn write_material_storage(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
     records: &[MaterialRecord<'_>],
-    shadow: Option<&ShadowPass<'_>>,
+    shadow: Option<&ShadowPrepass<'_>>,
     offsets: &[u32],
 ) -> Result<(), GraphicsError> {
     let contents = records.iter().map(|record| record.storage).chain(
         shadow
             .into_iter()
-            .flat_map(|shadow| shadow.records.iter().map(|record| record.storage)),
+            .flat_map(|shadow| shadow.records().map(|record| record.storage)),
     );
     if records.iter().all(|record| record.storage.is_empty())
-        && shadow.is_none_or(|shadow| {
-            shadow
-                .records
-                .iter()
-                .all(|record| record.storage.is_empty())
-        })
+        && shadow.is_none_or(|shadow| shadow.records().all(|record| record.storage.is_empty()))
     {
         return Ok(());
     }
@@ -3466,6 +3699,164 @@ fn complete_image_storage(
             )
         },
         "vkCreateImageView for textured slice",
+    )?;
+    Ok(())
+}
+
+/// Creates the layered depth image backing one shadow map array, its per-layer rendering views,
+/// and its whole-array sampling view.
+fn create_shadow_map_array_storage(
+    surface: &ClearSurface<'_>,
+    size: u32,
+    layers: u32,
+) -> Result<ShadowMapArrayResource, GraphicsError> {
+    let layer_count =
+        usize::try_from(layers).map_err(|_| error("shadow map array layer count exceeds usize"))?;
+    let info = vk::VkImageCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        imageType: vk::VK_IMAGE_TYPE_2D,
+        format: DEPTH_FORMAT,
+        extent: vk::VkExtent3D {
+            width: size,
+            height: size,
+            depth: 1,
+        },
+        mipLevels: 1,
+        arrayLayers: layers,
+        samples: vk::VK_SAMPLE_COUNT_1_BIT,
+        tiling: vk::VK_IMAGE_TILING_OPTIMAL,
+        usage: (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT)
+            as u32,
+        sharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
+        initialLayout: vk::VK_IMAGE_LAYOUT_UNDEFINED,
+        ..Default::default()
+    };
+    let device = surface.device();
+    let mut array = ShadowMapArrayResource {
+        image: ptr::null_mut(),
+        memory: ptr::null_mut(),
+        layer_views: Vec::with_capacity(layer_count),
+        array_view: ptr::null_mut(),
+        size,
+        layers,
+        rendered: false,
+    };
+    check(
+        unsafe {
+            device.functions.create_image.expect("loaded function")(
+                device.handle,
+                &raw const info,
+                ptr::null(),
+                &raw mut array.image,
+            )
+        },
+        "vkCreateImage for shadow map array",
+    )?;
+    if let Err(failure) = complete_shadow_map_array_storage(device, &mut array) {
+        destroy_shadow_map_array_device(device, array);
+        return Err(failure);
+    }
+    Ok(array)
+}
+
+fn complete_shadow_map_array_storage(
+    device: &super::Device,
+    array: &mut ShadowMapArrayResource,
+) -> Result<(), GraphicsError> {
+    let mut requirements = vk::VkMemoryRequirements::default();
+    unsafe {
+        device
+            .functions
+            .get_image_memory_requirements
+            .expect("loaded function")(device.handle, array.image, &raw mut requirements);
+    };
+    let memory_type = find_memory_type(
+        device,
+        requirements.memoryTypeBits,
+        vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT as u32,
+    )
+    .ok_or_else(|| error("no device-local Vulkan image memory type"))?;
+    let allocate = vk::VkMemoryAllocateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        allocationSize: requirements.size,
+        memoryTypeIndex: memory_type,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.allocate_memory.expect("loaded function")(
+                device.handle,
+                &raw const allocate,
+                ptr::null(),
+                &raw mut array.memory,
+            )
+        },
+        "vkAllocateMemory for shadow map array",
+    )?;
+    check(
+        unsafe {
+            device.functions.bind_image_memory.expect("loaded function")(
+                device.handle,
+                array.image,
+                array.memory,
+                0,
+            )
+        },
+        "vkBindImageMemory for shadow map array",
+    )?;
+    for layer in 0..array.layers {
+        let view_info = vk::VkImageViewCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            image: array.image,
+            viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+            format: DEPTH_FORMAT,
+            subresourceRange: vk::VkImageSubresourceRange {
+                aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
+                levelCount: 1,
+                baseArrayLayer: layer,
+                layerCount: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut view = ptr::null_mut();
+        check(
+            unsafe {
+                device.functions.create_image_view.expect("loaded function")(
+                    device.handle,
+                    &raw const view_info,
+                    ptr::null(),
+                    &raw mut view,
+                )
+            },
+            "vkCreateImageView for shadow map array layer",
+        )?;
+        array.layer_views.push(view);
+    }
+    let view_info = vk::VkImageViewCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        image: array.image,
+        viewType: vk::VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+        format: DEPTH_FORMAT,
+        subresourceRange: vk::VkImageSubresourceRange {
+            aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
+            levelCount: 1,
+            baseArrayLayer: 0,
+            layerCount: array.layers,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device.functions.create_image_view.expect("loaded function")(
+                device.handle,
+                &raw const view_info,
+                ptr::null(),
+                &raw mut array.array_view,
+            )
+        },
+        "vkCreateImageView for shadow map array",
     )?;
     Ok(())
 }
@@ -3809,6 +4200,13 @@ fn create_material_pipeline(
             stages,
         ));
     }
+    if let Some(binding) = config.depth_texture_array_binding {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            stages,
+        ));
+    }
     if let Some(binding) = config.comparison_sampler_binding {
         layout_bindings.push(layout_binding(
             binding,
@@ -3833,6 +4231,7 @@ fn create_material_pipeline(
         storage: config.storage,
         texture_bindings: config.texture_bindings.to_vec(),
         depth_texture_binding: config.depth_texture_binding,
+        depth_texture_array_binding: config.depth_texture_array_binding,
         comparison_sampler: None,
         bindings: Vec::new(),
     };
@@ -4682,12 +5081,15 @@ fn bytes_of_slice<T>(values: &[T]) -> &[u8] {
     unsafe { slice::from_raw_parts(values.as_ptr().cast(), mem::size_of_val(values)) }
 }
 const fn depth_subresource_range() -> vk::VkImageSubresourceRange {
+    depth_subresource_layers(1)
+}
+const fn depth_subresource_layers(layers: u32) -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
         baseMipLevel: 0,
         levelCount: 1,
         baseArrayLayer: 0,
-        layerCount: 1,
+        layerCount: layers,
     }
 }
 const fn color_subresource_levels(levels: u32) -> vk::VkImageSubresourceRange {

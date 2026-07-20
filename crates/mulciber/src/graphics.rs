@@ -12,7 +12,7 @@ use crate::resource::{DestroyRequest, DropQueue, ResourceId, ResourceKind, Resou
 use crate::shader;
 use crate::{
     ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, ShaderArtifact,
-    SurfaceInfo,
+    SurfaceExtent, SurfaceInfo,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -391,6 +391,7 @@ impl Device<'_> {
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
             depth_texture_binding: declaration.depth_texture,
+            depth_texture_array_binding: declaration.depth_texture_array,
             comparison_sampler_binding: declaration.comparison_sampler,
             blend: descriptor.blend,
             depth: descriptor.depth,
@@ -402,7 +403,13 @@ impl Device<'_> {
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
             storage_size: declaration.storage.map_or(0, |(_, size)| size),
             texture_count: declaration.texture_bindings.len(),
-            samples_shadow: declaration.depth_texture.is_some(),
+            shadow_slot: if declaration.depth_texture.is_some() {
+                Some(ShadowSlotKind::Map)
+            } else if declaration.depth_texture_array.is_some() {
+                Some(ShadowSlotKind::Array)
+            } else {
+                None
+            },
         })
     }
 
@@ -423,6 +430,39 @@ impl Device<'_> {
         Ok(ShadowMap {
             lease: self.lease(id, ResourceKind::ShadowMap),
             size,
+        })
+    }
+
+    /// Creates a square layered sampleable depth target for cascaded shadow passes, one
+    /// cascade per layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, an extent above [`SHADOW_MAP_SIZE_LIMIT`], a zero
+    /// layer count, a layer count above [`SHADOW_MAP_LAYER_LIMIT`], or native image allocation
+    /// failure.
+    pub fn create_shadow_map_array(
+        &self,
+        size: u32,
+        layers: u32,
+    ) -> Result<ShadowMapArray, GraphicsError> {
+        if size == 0 || size > SHADOW_MAP_SIZE_LIMIT {
+            return Err(GraphicsError::invalid_request(format!(
+                "shadow map array extent {size} is outside the supported 1 through \
+                 {SHADOW_MAP_SIZE_LIMIT}"
+            )));
+        }
+        if layers == 0 || layers > SHADOW_MAP_LAYER_LIMIT {
+            return Err(GraphicsError::invalid_request(format!(
+                "shadow map array layer count {layers} is outside the supported 1 through \
+                 {SHADOW_MAP_LAYER_LIMIT}"
+            )));
+        }
+        let id = session_mut(&self.shared)?.create_shadow_map_array(size, layers)?;
+        Ok(ShadowMapArray {
+            lease: self.lease(id, ResourceKind::ShadowMapArray),
+            size,
+            layers,
         })
     }
 
@@ -457,6 +497,7 @@ impl Device<'_> {
         if !declaration.texture_bindings.is_empty()
             || !declaration.sampler_bindings.is_empty()
             || declaration.depth_texture.is_some()
+            || declaration.depth_texture_array.is_some()
             || declaration.comparison_sampler.is_some()
         {
             return Err(GraphicsError::with_kind(
@@ -494,7 +535,7 @@ impl Device<'_> {
     }
 
     /// Creates depth, resolved scene color, and optional multisample color storage for one surface
-    /// generation.
+    /// generation, rendered at the surface's native extent.
     ///
     /// The resolved scene color is both a render target and the sampled input to the fullscreen
     /// post-processing pass.
@@ -506,10 +547,32 @@ impl Device<'_> {
         &self,
         info: SurfaceInfo,
     ) -> Result<PostprocessTargets, GraphicsError> {
-        let id = session_mut(&self.shared)?.create_postprocess_targets(info)?;
+        self.create_scaled_postprocess_targets(info, RenderScale::NATIVE)
+    }
+
+    /// Creates postprocess targets whose offscreen scene extent is scaled relative to the
+    /// presentable extent.
+    ///
+    /// The scene pass renders into the scaled offscreen storage, and the fullscreen
+    /// post-processing pass resamples it to the surface's native extent through its linear
+    /// sampler, so a scale below native trades scene-pass fill cost for sharpness while text
+    /// or overlays drawn by the postprocess stage stay native. Scales above native
+    /// supersample. Both dimensions floor at one texel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty extent or native image allocation failure.
+    pub fn create_scaled_postprocess_targets(
+        &self,
+        info: SurfaceInfo,
+        scale: RenderScale,
+    ) -> Result<PostprocessTargets, GraphicsError> {
+        let scene_extent = scale.scene_extent(info.extent());
+        let id = session_mut(&self.shared)?.create_postprocess_targets(info, scene_extent)?;
         Ok(PostprocessTargets {
             lease: self.lease(id, ResourceKind::PostprocessTargets),
             info,
+            scale,
         })
     }
 
@@ -589,6 +652,15 @@ impl Device<'_> {
     /// Returns an error for a mixed-session or stale handle, or when native completion fails.
     pub fn destroy_shadow_map(&self, mut map: ShadowMap) -> Result<(), GraphicsError> {
         self.destroy_lease(&mut map.lease, ResourceKind::ShadowMap)
+    }
+
+    /// Destroys a shadow map array after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_shadow_map_array(&self, mut array: ShadowMapArray) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut array.lease, ResourceKind::ShadowMapArray)
     }
 
     /// Destroys a shadow pipeline after its last submitted GPU use completes.
@@ -916,7 +988,7 @@ impl Queue<'_> {
         &mut self,
         mut frame: Frame<'_>,
         records: &[MaterialRecord<'_>],
-        shadow: Option<ShadowPass<'_>>,
+        shadow: Option<ShadowPrepass<'_>>,
         targets: &RenderTargets,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -943,7 +1015,7 @@ impl Queue<'_> {
         &mut self,
         mut frame: Frame<'_>,
         records: &[MaterialRecord<'_>],
-        shadow: Option<ShadowPass<'_>>,
+        shadow: Option<ShadowPrepass<'_>>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
         clear: ClearColor,
@@ -970,30 +1042,46 @@ impl Queue<'_> {
         )
     }
 
-    /// Validates a shadow pass's handles, record shape, and uniform/layout agreement.
+    /// Validates a shadow prepass's handles, record shape, cascade agreement, and
+    /// uniform/layout agreement.
     fn validate_shadow_pass(
         &self,
         frame_session: u64,
-        shadow: Option<&ShadowPass<'_>>,
+        shadow: Option<&ShadowPrepass<'_>>,
     ) -> Result<(), GraphicsError> {
         let Some(shadow) = shadow else {
             return Ok(());
         };
-        if shadow.records.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "shadow pass must contain at least one record",
-            ));
-        }
+        let target_session = match shadow {
+            ShadowPrepass::Single(pass) => {
+                if pass.records.is_empty() {
+                    return Err(GraphicsError::invalid_request(
+                        "shadow pass must contain at least one record",
+                    ));
+                }
+                ("shadow map", pass.map.lease.session)
+            }
+            ShadowPrepass::Cascaded(pass) => {
+                let layers = usize::try_from(pass.map.layers()).expect("u32 layers fit usize");
+                if pass.cascades.len() != layers {
+                    return Err(GraphicsError::invalid_request(format!(
+                        "cascaded shadow pass supplies {} cascade record lists but its map has \
+                         {layers} layers",
+                        pass.cascades.len()
+                    )));
+                }
+                ("shadow map array", pass.map.lease.session)
+            }
+        };
         for (label, session) in shadow
-            .records
-            .iter()
+            .records()
             .flat_map(|record| {
                 [
                     ("shadow pipeline", record.pipeline.lease.session),
                     ("mesh", record.mesh.lease.session),
                 ]
             })
-            .chain([("shadow map", shadow.map.lease.session)])
+            .chain([target_session])
         {
             if session != self.shared.id || session != frame_session {
                 return Err(GraphicsError::invalid_request(format!(
@@ -1001,7 +1089,7 @@ impl Queue<'_> {
                 )));
             }
         }
-        for record in shadow.records {
+        for record in shadow.records() {
             let expected =
                 usize::try_from(record.pipeline.uniform_size).expect("u32 size fits usize");
             if record.uniform.len() != expected {
@@ -1054,12 +1142,10 @@ impl Queue<'_> {
                     .iter()
                     .map(|texture| ("texture", texture.lease.session)),
             )
-            .chain(
-                record
-                    .shadow_map
-                    .iter()
-                    .map(|map| ("shadow map", map.lease.session)),
-            );
+            .chain(record.shadow_map.iter().map(|source| match source {
+                ShadowSource::Map(map) => ("shadow map", map.lease.session),
+                ShadowSource::Array(array) => ("shadow map array", array.lease.session),
+            }));
             for (label, session) in handles {
                 if session != self.shared.id || session != frame_session {
                     return Err(GraphicsError::invalid_request(format!(
@@ -1067,14 +1153,29 @@ impl Queue<'_> {
                     )));
                 }
             }
-            if record.shadow_map.is_some() != record.pipeline.samples_shadow {
+            let supplied = record.shadow_map.map(|source| match source {
+                ShadowSource::Map(_) => ShadowSlotKind::Map,
+                ShadowSource::Array(_) => ShadowSlotKind::Array,
+            });
+            if supplied != record.pipeline.shadow_slot {
                 return Err(GraphicsError::invalid_request(
-                    if record.shadow_map.is_some() {
-                        "material record supplies a shadow map but its pipeline declares no \
-                     depth-texture slot"
-                    } else {
-                        "material record supplies no shadow map but its pipeline declares a \
-                     depth-texture slot"
+                    match (supplied, record.pipeline.shadow_slot) {
+                        (Some(_), None) => {
+                            "material record supplies a shadow map but its pipeline declares no \
+                             depth-texture slot"
+                        }
+                        (None, Some(_)) => {
+                            "material record supplies no shadow map but its pipeline declares a \
+                             depth-texture slot"
+                        }
+                        (Some(ShadowSlotKind::Map), _) => {
+                            "material record supplies a single shadow map but its pipeline \
+                             declares a depth-texture-array slot"
+                        }
+                        _ => {
+                            "material record supplies a shadow map array but its pipeline \
+                             declares a plain depth-texture slot"
+                        }
                     },
                 ));
             }
@@ -1628,6 +1729,13 @@ pub const MATERIAL_SLOT_LIMIT: u32 = 15;
 /// Largest supported shadow map extent along either axis.
 pub const SHADOW_MAP_SIZE_LIMIT: u32 = 8192;
 
+/// Largest supported shadow map array layer count.
+///
+/// Eight layers covers every practical cascade scheme while keeping the per-frame layered
+/// pre-pass bounded; cascade policy itself (split distances, per-cascade matrices, selection)
+/// stays application-owned.
+pub const SHADOW_MAP_LAYER_LIMIT: u32 = 8;
+
 /// Minification and magnification filtering for one material sampler slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SamplerFilter {
@@ -1723,8 +1831,18 @@ pub enum MaterialBinding {
     },
     /// One sampled `texture_depth_2d` supplied per draw record from a [`ShadowMap`].
     ///
-    /// At most one depth-texture slot may be declared per material pipeline.
+    /// At most one depth-texture slot — plain or arrayed — may be declared per material
+    /// pipeline.
     DepthTexture {
+        /// WGSL binding number.
+        binding: u32,
+    },
+    /// One sampled `texture_depth_2d_array` supplied per draw record from a
+    /// [`ShadowMapArray`], typically holding one shadow cascade per layer.
+    ///
+    /// At most one depth-texture slot — plain or arrayed — may be declared per material
+    /// pipeline.
+    DepthTextureArray {
         /// WGSL binding number.
         binding: u32,
     },
@@ -1769,8 +1887,17 @@ pub struct MaterialPipeline {
     /// Zero when no storage slot is declared.
     storage_size: u32,
     texture_count: usize,
-    /// Whether the pipeline declares a depth-texture slot fed from a shadow map per record.
-    samples_shadow: bool,
+    /// The kind of depth-texture slot the pipeline declares, fed per record.
+    shadow_slot: Option<ShadowSlotKind>,
+}
+
+/// Which depth-texture slot kind a material pipeline declares.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShadowSlotKind {
+    /// A `texture_depth_2d` slot fed from a [`ShadowMap`].
+    Map,
+    /// A `texture_depth_2d_array` slot fed from a [`ShadowMapArray`].
+    Array,
 }
 
 impl MaterialPipeline {
@@ -1796,6 +1923,45 @@ impl ShadowMap {
     pub(crate) const fn id(&self) -> ResourceId {
         self.lease.id
     }
+}
+
+/// A square layered sampleable depth target rendered by a scene submission's cascaded shadow
+/// pass, one cascade per layer.
+///
+/// All layers share one extent; per-cascade fitting happens entirely in the application's
+/// light matrices.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ShadowMapArray {
+    lease: ResourceLease,
+    size: u32,
+    layers: u32,
+}
+
+impl ShadowMapArray {
+    /// Extent of every layer along both axes.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Number of layers, each holding one cascade.
+    #[must_use]
+    pub const fn layers(&self) -> u32 {
+        self.layers
+    }
+
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
+/// The rendered depth resource feeding a material record's declared depth-texture slot.
+#[derive(Clone, Copy)]
+pub enum ShadowSource<'resources> {
+    /// A single square map for a pipeline declaring [`MaterialBinding::DepthTexture`].
+    Map(&'resources ShadowMap),
+    /// A layered map for a pipeline declaring [`MaterialBinding::DepthTextureArray`].
+    Array(&'resources ShadowMapArray),
 }
 
 /// Everything needed to create one application-authored depth-only shadow pipeline.
@@ -1853,6 +2019,46 @@ pub struct ShadowPass<'resources> {
     pub records: &'resources [ShadowRecord<'resources>],
 }
 
+/// One depth-only pre-pass per cascade layer, rendered into a shadow map array before the
+/// scene pass samples it.
+///
+/// Each cascade renders with its own record list because every cascade carries its own light
+/// matrix in its record uniforms, and the application may cull casters per cascade.
+#[derive(Clone, Copy)]
+pub struct CascadedShadowPass<'resources> {
+    /// Destination layered map; every layer is cleared to the far plane before its records.
+    pub map: &'resources ShadowMapArray,
+    /// One depth-only record list per layer in layer order; the list count must equal the
+    /// map's layer count. A cascade with no records still clears its layer, leaving that
+    /// cascade fully lit.
+    pub cascades: &'resources [&'resources [ShadowRecord<'resources>]],
+}
+
+/// Depth-only pre-pass work submitted ahead of one material scene pass.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum ShadowPrepass<'resources> {
+    /// One pass into a single square map.
+    Single(ShadowPass<'resources>),
+    /// One pass per cascade layer into a layered map.
+    Cascaded(CascadedShadowPass<'resources>),
+}
+
+impl<'resources> ShadowPrepass<'resources> {
+    /// Every record in encode order: the single pass's list, or each cascade's list in layer
+    /// order.
+    pub(crate) fn records(&self) -> impl Iterator<Item = &'resources ShadowRecord<'resources>> {
+        let (single, cascaded): (
+            &'resources [ShadowRecord<'resources>],
+            &'resources [&'resources [ShadowRecord<'resources>]],
+        ) = match *self {
+            Self::Single(pass) => (pass.records, &[]),
+            Self::Cascaded(pass) => (&[], pass.cascades),
+        };
+        single.iter().chain(cascaded.iter().copied().flatten())
+    }
+}
+
 /// Validated creation inputs handed to the native backends.
 pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) vertex_entry: &'inputs str,
@@ -1869,6 +2075,8 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) sampler_bindings: &'inputs [SamplerSlot],
     /// Declared depth-texture slot fed from a shadow map per record.
     pub(crate) depth_texture_binding: Option<u32>,
+    /// Declared depth-texture-array slot fed from a shadow map array per record.
+    pub(crate) depth_texture_array_binding: Option<u32>,
     /// Declared fixed-recipe comparison-sampler slot.
     pub(crate) comparison_sampler_binding: Option<u32>,
     pub(crate) blend: BlendMode,
@@ -1893,11 +2101,66 @@ pub struct RenderTargets {
     info: SurfaceInfo,
 }
 
+/// Scale applied to the offscreen scene extent of postprocess targets, in percent of the
+/// presentable extent.
+///
+/// The scale is a property of created targets rather than a per-frame toggle: changing it
+/// means creating replacement targets, exactly like reacting to a surface reconfiguration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderScale {
+    percent: u32,
+}
+
+impl RenderScale {
+    /// Native 1:1 rendering.
+    pub const NATIVE: Self = Self { percent: 100 };
+
+    /// Smallest supported scale in percent.
+    pub const MIN_PERCENT: u32 = 25;
+
+    /// Largest supported scale in percent; values above one hundred supersample.
+    pub const MAX_PERCENT: u32 = 200;
+
+    /// Selects a scale in percent of the presentable extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a value outside [`RenderScale::MIN_PERCENT`] through
+    /// [`RenderScale::MAX_PERCENT`].
+    pub fn percent(percent: u32) -> Result<Self, GraphicsError> {
+        if !(Self::MIN_PERCENT..=Self::MAX_PERCENT).contains(&percent) {
+            return Err(GraphicsError::invalid_request(format!(
+                "render scale {percent} percent is outside the supported {} through {}",
+                Self::MIN_PERCENT,
+                Self::MAX_PERCENT
+            )));
+        }
+        Ok(Self { percent })
+    }
+
+    /// Value in percent of the presentable extent.
+    #[must_use]
+    pub const fn as_percent(self) -> u32 {
+        self.percent
+    }
+
+    /// The offscreen scene extent this scale selects for one presentable extent, flooring
+    /// each dimension at one texel.
+    pub(crate) fn scene_extent(self, extent: SurfaceExtent) -> SurfaceExtent {
+        let scale = |axis: u32| -> u32 {
+            let scaled = u64::from(axis) * u64::from(self.percent) / 100;
+            u32::try_from(scaled).unwrap_or(u32::MAX).max(1)
+        };
+        SurfaceExtent::new(scale(extent.width()), scale(extent.height()))
+    }
+}
+
 /// Extent- and generation-dependent two-pass color/depth targets.
 #[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessTargets {
     lease: ResourceLease,
     info: SurfaceInfo,
+    scale: RenderScale,
 }
 
 impl PostprocessTargets {
@@ -1907,6 +2170,12 @@ impl PostprocessTargets {
     #[must_use]
     pub const fn info(&self) -> SurfaceInfo {
         self.info
+    }
+
+    /// Scale applied to the offscreen scene extent relative to the presentable extent.
+    #[must_use]
+    pub const fn render_scale(&self) -> RenderScale {
+        self.scale
     }
 }
 
@@ -2018,9 +2287,10 @@ pub struct MaterialRecord<'resources> {
     pub mesh: &'resources Mesh,
     /// Textures for the pipeline's declared texture slots in ascending binding order.
     pub textures: &'resources [&'resources Texture],
-    /// The map feeding the pipeline's depth-texture slot; required exactly when the pipeline
-    /// declares one, and it must have been rendered by a shadow pass (this frame or earlier).
-    pub shadow_map: Option<&'resources ShadowMap>,
+    /// The depth resource feeding the pipeline's depth-texture slot; required exactly when the
+    /// pipeline declares one, matching the declared kind (plain map or layered array), and it
+    /// must have been rendered by a shadow pass (this frame or earlier).
+    pub shadow_map: Option<ShadowSource<'resources>>,
     /// Uniform data matching the pipeline's declared uniform size; empty when the pipeline
     /// declares no uniform slot. The application owns WGSL memory-layout correctness.
     pub uniform: &'resources [u8],
@@ -2068,9 +2338,9 @@ pub struct SceneSubmission<'resources> {
     pub content: SceneContent<'resources>,
     /// Direct or postprocessed destination for the scene pass.
     pub output: SceneOutput<'resources>,
-    /// Optional depth-only pre-pass rendered into a shadow map before the scene pass; composes
-    /// with material content only.
-    pub shadow: Option<ShadowPass<'resources>>,
+    /// Optional depth-only pre-pass work — a single map or one pass per cascade layer —
+    /// rendered before the scene pass; composes with material content only.
+    pub shadow: Option<ShadowPrepass<'resources>>,
     /// Linear color used to clear the scene before its first draw or batch.
     pub clear: ClearColor,
 }
@@ -2335,6 +2605,7 @@ struct BindingDeclaration {
     texture_bindings: Vec<u32>,
     sampler_bindings: Vec<SamplerSlot>,
     depth_texture: Option<u32>,
+    depth_texture_array: Option<u32>,
     comparison_sampler: Option<u32>,
     /// Declared read-only storage slot as (binding, size).
     storage: Option<(u32, u32)>,
@@ -2348,6 +2619,7 @@ const fn interface_binding_label(kind: u8) -> &'static str {
         shader::INTERFACE_BINDING_STORAGE => "a storage buffer",
         shader::INTERFACE_BINDING_DEPTH_TEXTURE => "a depth texture",
         shader::INTERFACE_BINDING_COMPARISON_SAMPLER => "a comparison sampler",
+        shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY => "a depth texture array",
         _ => "an unsupported resource",
     }
 }
@@ -2376,6 +2648,7 @@ fn validate_bindings_against_interface(
         texture_bindings: Vec::new(),
         sampler_bindings: Vec::new(),
         depth_texture: None,
+        depth_texture_array: None,
         comparison_sampler: None,
         storage: None,
     };
@@ -2437,7 +2710,8 @@ fn validate_bindings_against_interface(
                 (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
             }
             MaterialBinding::DepthTexture { binding } => {
-                if declaration.depth_texture.is_some() {
+                if declaration.depth_texture.is_some() || declaration.depth_texture_array.is_some()
+                {
                     return Err(GraphicsError::with_kind(
                         GraphicsErrorKind::Unsupported,
                         "material pipelines support at most one depth-texture slot",
@@ -2445,6 +2719,17 @@ fn validate_bindings_against_interface(
                 }
                 declaration.depth_texture = Some(binding);
                 (binding, shader::INTERFACE_BINDING_DEPTH_TEXTURE, 0)
+            }
+            MaterialBinding::DepthTextureArray { binding } => {
+                if declaration.depth_texture.is_some() || declaration.depth_texture_array.is_some()
+                {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        "material pipelines support at most one depth-texture slot",
+                    ));
+                }
+                declaration.depth_texture_array = Some(binding);
+                (binding, shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY, 0)
             }
             MaterialBinding::ComparisonSampler { binding } => {
                 if declaration.comparison_sampler.is_some() {

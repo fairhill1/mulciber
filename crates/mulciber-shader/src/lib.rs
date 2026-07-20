@@ -26,6 +26,7 @@ const BINDING_SAMPLER: u8 = 2;
 const BINDING_STORAGE: u8 = 3;
 const BINDING_DEPTH_TEXTURE: u8 = 4;
 const BINDING_COMPARISON_SAMPLER: u8 = 5;
+const BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,10 +192,17 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
                 AddressSpace::Handle,
                 TypeInner::Image {
                     dim: naga::ImageDimension::D2,
-                    arrayed: false,
+                    arrayed,
                     class: naga::ImageClass::Depth { multi: false },
                 },
-            ) => (BINDING_DEPTH_TEXTURE, 0),
+            ) => (
+                if *arrayed {
+                    BINDING_DEPTH_TEXTURE_ARRAY
+                } else {
+                    BINDING_DEPTH_TEXTURE
+                },
+                0,
+            ),
             (AddressSpace::Handle, TypeInner::Sampler { comparison }) => (
                 if *comparison {
                     BINDING_COMPARISON_SAMPLER
@@ -550,6 +558,32 @@ mod tests {
         }
 
         assert_eq!(interface, expected);
+    }
+
+    #[test]
+    fn depth_texture_array_records_its_own_kind() {
+        let source = "
+            @group(0) @binding(0) var cascades: texture_depth_2d_array;
+            @group(0) @binding(1) var comparison: sampler_comparison;
+            @fragment fn main_fragment() -> @location(0) vec4<f32> {
+                let lit = textureSampleCompareLevel(
+                    cascades,
+                    comparison,
+                    vec2<f32>(0.5, 0.5),
+                    0,
+                    0.5,
+                );
+                return vec4<f32>(lit);
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("array WGSL parses");
+        let interface = shader_interface(&module).expect("array interface");
+        // Two binding records trail the interface: the depth-texture array records kind 6 and
+        // the comparison sampler records kind 5, each with a zero byte size.
+        let records = &interface[interface.len() - 26..];
+        assert_eq!(records[8], 6);
+        assert_eq!(records[21], 5);
+        assert_eq!(metal_resources(&module).expect("Metal mapping").len(), 2);
     }
 
     #[test]

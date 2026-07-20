@@ -1,13 +1,15 @@
 //! Renders application-authored materials through Mulciber's target-selected native backend.
 //!
-//! This is the forcing slice for the custom-material vocabulary: five WGSL modules the crate has
-//! never seen, three different application-declared vertex layouts, application-packed uniform
+//! This is the forcing slice for the custom-material vocabulary: six WGSL modules the crate has
+//! never seen, four different application-declared vertex layouts, application-packed uniform
 //! bytes updated every frame, a material sampling two textures, a cascaded depth-only shadow
-//! pre-pass whose layered map the floor material samples through a comparison sampler, and a
+//! pre-pass whose layered map the floor material samples through a comparison sampler, a
 //! skinned kelp strand whose bone palette flows through a read-only storage slot into both its
-//! material and its per-cascade shadow casters. Cascade policy — split distances, per-cascade
-//! light matrices, texel snapping, depth bias, and cascade selection — is application code; the
-//! crate only sees the layered map, per-cascade record lists, and bytes.
+//! material and its per-cascade shadow casters, and a depth-off translucent HUD gauge whose
+//! geometry is rebuilt every frame and submitted as frame-transient bytes. Cascade policy —
+//! split distances, per-cascade light matrices, texel snapping, depth bias, and cascade
+//! selection — is application code; the crate only sees the layered map, per-cascade record
+//! lists, and bytes.
 
 mod scene;
 
@@ -17,13 +19,15 @@ use std::time::Instant;
 use glam::Vec3;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics,
-    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
-    ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource,
+    GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
+    OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
+    SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord,
+    ShadowSource, TransientGeometry,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
 const CRYSTAL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/crystal.shaderbin"));
+const HUD_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hud.shaderbin"));
 const LAVA_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lava.shaderbin"));
 const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.shaderbin"));
 const SKINNED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skinned.shaderbin"));
@@ -129,6 +133,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+        })?;
+    let hud_pipeline = graphics
+        .device
+        .create_material_pipeline(MaterialPipelineDescriptor {
+            shader: ShaderArtifact::new(HUD_SHADER)?,
+            vertex_entry: "hud_vertex",
+            fragment_entry: "hud_fragment",
+            vertex_layout: scene::HUD_LAYOUT,
+            bindings: &[],
+            blend: BlendMode::PremultipliedTranslucent,
+            depth: DepthMode::Off,
         })?;
     let shadow_pipeline = graphics
         .device
@@ -268,10 +283,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         cascade_records.iter().map(Vec::as_slice).collect();
                     let crystal_textures = [&crystal_base, &crystal_glow];
                     let lava_textures = [&lava];
-                    let mut records = Vec::with_capacity(crystal_uniforms.len() + 2);
+                    let (hud_vertices, hud_indices) = scene::hud_geometry(seconds);
+                    let mut records = Vec::with_capacity(crystal_uniforms.len() + 3);
                     records.push(MaterialRecord {
                         pipeline: &lava_pipeline,
-                        mesh: &floor_mesh,
+                        geometry: GeometrySource::Mesh(&floor_mesh),
                         textures: &lava_textures,
                         shadow_map: Some(ShadowSource::Array(&shadow_map)),
                         uniform: &lava_uniform,
@@ -280,7 +296,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     for uniform in &crystal_uniforms {
                         records.push(MaterialRecord {
                             pipeline: &crystal_pipeline,
-                            mesh: &crystal_mesh,
+                            geometry: GeometrySource::Mesh(&crystal_mesh),
                             textures: &crystal_textures,
                             shadow_map: None,
                             uniform,
@@ -289,11 +305,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     records.push(MaterialRecord {
                         pipeline: &skinned_pipeline,
-                        mesh: &kelp_mesh,
+                        geometry: GeometrySource::Mesh(&kelp_mesh),
                         textures: &[],
                         shadow_map: None,
                         uniform: &skinned_uniform,
                         storage: &kelp_palette,
+                    });
+                    // The overlay draws last with depth off, its geometry rebuilt this frame
+                    // and staged through the frame-transient geometry region.
+                    records.push(MaterialRecord {
+                        pipeline: &hud_pipeline,
+                        geometry: GeometrySource::Transient(TransientGeometry {
+                            vertices: &hud_vertices,
+                            indices: MeshIndices::U16(&hud_indices),
+                        }),
+                        textures: &[],
+                        shadow_map: None,
+                        uniform: &[],
+                        storage: &[],
                     });
                     graphics.queue.render_and_present(
                         frame,

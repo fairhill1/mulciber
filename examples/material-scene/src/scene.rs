@@ -106,6 +106,24 @@ pub(crate) const SKINNED_LAYOUT: VertexLayout<'static> = VertexLayout {
     ],
 };
 
+/// HUD vertices carry a clip-space position and a premultiplied linear color; the overlay's
+/// geometry is rebuilt every frame and submitted as frame-transient bytes.
+pub(crate) const HUD_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 24,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x2,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x4,
+            offset: 8,
+        },
+    ],
+};
+
 pub(crate) const CUBE_INDICES: [u16; 36] = [
     0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17, 18,
     16, 18, 19, 20, 21, 22, 20, 22, 23,
@@ -469,4 +487,84 @@ pub(crate) fn lava_cascades(lights: &[Mat4; CASCADE_COUNT]) -> Vec<u8> {
         push_f32s(&mut bytes, &light.to_cols_array());
     }
     bytes
+}
+
+/// Appends one axis-aligned HUD quad with a left-to-right color gradient; colors are supplied
+/// straight (with alpha) and packed premultiplied for the overlay's translucent blend mode.
+fn push_hud_quad(
+    vertices: &mut Vec<u8>,
+    indices: &mut Vec<u16>,
+    min: (f32, f32),
+    max: (f32, f32),
+    left: Vec4,
+    right: Vec4,
+) {
+    let base = u16::try_from(vertices.len() / HUD_LAYOUT.stride as usize)
+        .expect("HUD overlay stays within 16-bit indexing");
+    let corners = [
+        (min.0, min.1, left),
+        (max.0, min.1, right),
+        (max.0, max.1, right),
+        (min.0, max.1, left),
+    ];
+    for (x, y, color) in corners {
+        push_f32s(
+            vertices,
+            &[
+                x,
+                y,
+                color.x * color.w,
+                color.y * color.w,
+                color.z * color.w,
+                color.w,
+            ],
+        );
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Builds the frame's energy-gauge overlay in clip space: a translucent backplate, a fill bar
+/// whose width breathes with time, and one divider tick per filled tenth, so both the vertex
+/// and index counts genuinely change from frame to frame.
+pub(crate) fn hud_geometry(seconds: f32) -> (Vec<u8>, Vec<u16>) {
+    const LEFT: f32 = -0.92;
+    const RIGHT: f32 = -0.22;
+    const TOP: f32 = 0.90;
+    const BOTTOM: f32 = 0.82;
+    const PADDING: f32 = 0.012;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    push_hud_quad(
+        &mut vertices,
+        &mut indices,
+        (LEFT - PADDING, BOTTOM - PADDING),
+        (RIGHT + PADDING, TOP + PADDING),
+        Vec4::new(0.02, 0.05, 0.09, 0.6),
+        Vec4::new(0.02, 0.05, 0.09, 0.6),
+    );
+    let energy = 0.5 + 0.5 * (seconds * 0.7).sin();
+    let fill_right = LEFT + (RIGHT - LEFT) * energy.max(0.02);
+    push_hud_quad(
+        &mut vertices,
+        &mut indices,
+        (LEFT, BOTTOM),
+        (fill_right, TOP),
+        Vec4::new(0.05, 0.7, 0.55, 0.85),
+        Vec4::new(0.5, 0.95, 0.6, 0.85),
+    );
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let filled_tenths = (energy * 10.0) as usize;
+    for tenth in 1..=filled_tenths {
+        #[allow(clippy::cast_precision_loss)]
+        let x = LEFT + (RIGHT - LEFT) * (tenth as f32 / 10.0);
+        push_hud_quad(
+            &mut vertices,
+            &mut indices,
+            (x - 0.002, BOTTOM),
+            (x + 0.002, TOP),
+            Vec4::new(0.0, 0.0, 0.0, 0.7),
+            Vec4::new(0.0, 0.0, 0.0, 0.7),
+        );
+    }
+    (vertices, indices)
 }

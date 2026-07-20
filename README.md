@@ -78,7 +78,7 @@ line counts and measurements are single-sourced in the linked contract documents
 | `cargo run -p mulciber-showcase-cube` | Input and two-pass composition for side-by-side review | composes the two above |
 | `cargo run -p mulciber-scene` | 100-object heterogeneous multi-draw scene | [scene contract](docs/scene-contract.md) |
 | `cargo run -p mulciber-instanced-scene` | Same field grouped into four native instance batches | [instancing contract](docs/instancing-contract.md) |
-| `cargo run -p mulciber-material-scene` | Application-authored materials, layouts, uniform bytes, and cascaded shadow maps | [material contract](docs/material-contract.md) |
+| `cargo run -p mulciber-material-scene` | Application-authored materials, layouts, uniform bytes, cascaded shadow maps, and a frame-transient HUD overlay | [material contract](docs/material-contract.md) |
 | `cargo run -p mulciber-game-slice` | Playable Forge Run dogfood on `mulciber-runtime` | [game contract](docs/game-slice.md), [comparison](docs/game-slice-comparison.md) |
 
 The examples are ordinary interactive programs; Mulciber prefers 4x MSAA and reports a fallback to

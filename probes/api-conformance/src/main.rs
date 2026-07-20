@@ -4,18 +4,20 @@
 //! observable outcome and the process exits nonzero on the first divergence. The cases cover
 //! invalid usage, deferred abandonment recovery, abandonment-driven surface generations, the
 //! observable one-sample fallback, explicit and drop-driven resource reclamation, mixed-session
-//! rejection, material declaration/interface validation, and fallible shutdown.
+//! rejection, material declaration/interface validation, frame-transient geometry supply and
+//! validation, and fallible shutdown.
 
 use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices, OpenedGraphics,
-    PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord,
-    ShadowSource, TexturedDraw, TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
-    VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices,
+    OpenedGraphics, PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter,
+    SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass,
+    ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch,
+    TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -837,7 +839,9 @@ impl<'window> Cases<'window> {
                 let short_uniform = [0_u8; 80];
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &short_uniform,
@@ -876,7 +880,9 @@ impl<'window> Cases<'window> {
                 let uniform = [0_u8; 144];
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -916,7 +922,9 @@ impl<'window> Cases<'window> {
                 let uniform = [0_u8; 144];
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.mesh.as_ref().expect("fixed-layout mesh exists"),
+                    geometry: GeometrySource::Mesh(
+                        self.mesh.as_ref().expect("fixed-layout mesh exists"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -1011,7 +1019,9 @@ impl<'window> Cases<'window> {
                 let records = [
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
@@ -1019,7 +1029,9 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: &nearest_pipeline,
-                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
@@ -1027,7 +1039,9 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: &cutout_pipeline,
-                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
@@ -1035,7 +1049,9 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: &translucent_pipeline,
-                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
                         textures: &textures,
                         shadow_map: None,
                         uniform: &uniform,
@@ -1126,7 +1142,9 @@ impl<'window> Cases<'window> {
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -1284,7 +1302,7 @@ impl<'window> Cases<'window> {
                 let cascades = lava_cascades();
                 let records = [MaterialRecord {
                     pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
-                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    geometry: GeometrySource::Mesh(self.floor_mesh.as_ref().expect("floor mesh")),
                     textures: &lava_textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -1324,7 +1342,9 @@ impl<'window> Cases<'window> {
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: Some(ShadowSource::Map(
                         self.shadow_map.as_ref().expect("shadow map"),
@@ -1367,7 +1387,7 @@ impl<'window> Cases<'window> {
                 let cascades = lava_cascades();
                 let records = [MaterialRecord {
                     pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
-                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    geometry: GeometrySource::Mesh(self.floor_mesh.as_ref().expect("floor mesh")),
                     textures: &lava_textures,
                     shadow_map: Some(ShadowSource::Map(
                         self.shadow_map.as_ref().expect("shadow map"),
@@ -1411,7 +1431,7 @@ impl<'window> Cases<'window> {
                 let cascades = lava_cascades();
                 let records = [MaterialRecord {
                     pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
-                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    geometry: GeometrySource::Mesh(self.floor_mesh.as_ref().expect("floor mesh")),
                     textures: &lava_textures,
                     shadow_map: Some(ShadowSource::Array(
                         self.shadow_map_array.as_ref().expect("shadow map array"),
@@ -1453,7 +1473,9 @@ impl<'window> Cases<'window> {
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -1504,7 +1526,9 @@ impl<'window> Cases<'window> {
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.material_mesh.as_ref().expect("material mesh"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -1700,7 +1724,9 @@ impl<'window> Cases<'window> {
                 let short_palette = [0_u8; 64];
                 let records = [MaterialRecord {
                     pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
-                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    ),
                     textures: &[],
                     shadow_map: None,
                     uniform: &uniform,
@@ -1739,7 +1765,9 @@ impl<'window> Cases<'window> {
                 let palette = identity_palette();
                 let records = [MaterialRecord {
                     pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
-                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    ),
                     textures: &[],
                     shadow_map: None,
                     uniform: &uniform,
@@ -1791,7 +1819,9 @@ impl<'window> Cases<'window> {
                 let palette = identity_palette();
                 let records = [MaterialRecord {
                     pipeline: self.skinned_pipeline.as_ref().expect("skinned pipeline"),
-                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    geometry: GeometrySource::Mesh(
+                        self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    ),
                     textures: &[],
                     shadow_map: None,
                     uniform: &uniform,
@@ -1837,10 +1867,273 @@ impl<'window> Cases<'window> {
                 self.step = 28;
                 Ok(false)
             }
+            // A record supplying frame-transient geometry against the crystal pipeline's
+            // declared layout presents validation-clean alongside an uploaded-mesh record, with
+            // no Mesh handle backing the transient supply.
+            28 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let transient_vertices = material_triangle_vertices();
+                let records = [
+                    MaterialRecord {
+                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                    MaterialRecord {
+                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        geometry: GeometrySource::Transient(TransientGeometry {
+                            vertices: &transient_vertices,
+                            indices: MeshIndices::U16(&[0, 1, 2]),
+                        }),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                ];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: None,
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("transient geometry presentation");
+                self.step = 29;
+                Ok(false)
+            }
+            // The same transient supply presents through the 32-bit index path.
+            29 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let transient_vertices = material_triangle_vertices();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    geometry: GeometrySource::Transient(TransientGeometry {
+                        vertices: &transient_vertices,
+                        indices: MeshIndices::U32(&[0, 1, 2]),
+                    }),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: None,
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("u32-indexed transient geometry presentation");
+                self.step = 30;
+                Ok(false)
+            }
+            // Transient vertex bytes that are not a multiple of the pipeline's declared layout
+            // stride are rejected.
+            30 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let truncated = material_triangle_vertices();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    geometry: GeometrySource::Transient(TransientGeometry {
+                        vertices: &truncated[..truncated.len() - 4],
+                        indices: MeshIndices::U16(&[0, 1, 2]),
+                    }),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "multiple of its pipeline's declared layout stride",
+                    "transient vertex stride mismatch rejected",
+                )?;
+                self.pass("transient vertex stride mismatch rejected");
+                self.step = 31;
+                Ok(false)
+            }
+            // A transient supply with no indices is rejected.
+            31 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let transient_vertices = material_triangle_vertices();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    geometry: GeometrySource::Transient(TransientGeometry {
+                        vertices: &transient_vertices,
+                        indices: MeshIndices::U16(&[]),
+                    }),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "must supply at least one index",
+                    "empty transient indices rejected",
+                )?;
+                self.pass("empty transient indices rejected");
+                self.step = 32;
+                Ok(false)
+            }
+            // A transient index past the supplied vertex count is rejected.
+            32 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let transient_vertices = material_triangle_vertices();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    geometry: GeometrySource::Transient(TransientGeometry {
+                        vertices: &transient_vertices,
+                        indices: MeshIndices::U16(&[0, 1, 3]),
+                    }),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "transient geometry contains an out-of-range index",
+                    "out-of-range transient index rejected",
+                )?;
+                self.pass("out-of-range transient index rejected");
+                self.step = 33;
+                Ok(false)
+            }
+            // A combined vertex-plus-index supply just over the transient limit is rejected:
+            // 116,508 crystal-stride vertices occupy 4,194,288 bytes, and nine 16-bit indices
+            // push the total to 4,194,306 — two bytes past the limit.
+            33 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let oversized_vertices = vec![0_u8; 116_508 * 36];
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    geometry: GeometrySource::Transient(TransientGeometry {
+                        vertices: &oversized_vertices,
+                        indices: MeshIndices::U16(&[0; 9]),
+                    }),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    &format!("exceeds the {TRANSIENT_GEOMETRY_SIZE_LIMIT}-byte supply limit"),
+                    "over-limit transient supply rejected",
+                )?;
+                self.pass("over-limit transient supply rejected");
+                self.step = 34;
+                Ok(false)
+            }
             // The cascaded depth-only pass renders the crystal-layout mesh into both layers of
             // the array, the floor record samples the array through the comparison sampler in
             // the same frame, and every shadow resource kind then destroys explicitly.
-            28 => {
+            34 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1853,7 +2146,9 @@ impl<'window> Cases<'window> {
                 let records = [
                     MaterialRecord {
                         pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
-                        mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.floor_mesh.as_ref().expect("floor mesh"),
+                        ),
                         textures: &lava_textures,
                         shadow_map: Some(ShadowSource::Array(
                             self.shadow_map_array.as_ref().expect("shadow map array"),
@@ -1863,7 +2158,9 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
                         textures: &crystal_textures,
                         shadow_map: None,
                         uniform: &crystal_uniform,
@@ -1916,12 +2213,12 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.material_mesh.take().expect("material mesh"))?;
                 self.pass("shadow resource destruction");
-                self.step = 29;
+                self.step = 35;
                 Ok(false)
             }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            29 => {
+            35 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -1962,11 +2259,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 30;
+                self.step = 36;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            30 => {
+            36 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1989,11 +2286,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 31;
+                self.step = 37;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            31 => {
+            37 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2005,7 +2302,9 @@ impl<'window> Cases<'window> {
                         .foreign_material_pipeline
                         .as_ref()
                         .expect("session A material pipeline kept"),
-                    mesh: self.mesh.as_ref().expect("session B mesh exists"),
+                    geometry: GeometrySource::Mesh(
+                        self.mesh.as_ref().expect("session B mesh exists"),
+                    ),
                     textures: &textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -2032,7 +2331,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 32;
+                self.step = 38;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.

@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-shader"
-version = "0.1.2"
+version = "0.2.0"
 description = "Offline single-source shader compiler for Mulciber's native Metal and Vulkan backends"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"

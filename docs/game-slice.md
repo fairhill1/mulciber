@@ -24,9 +24,9 @@ Run it with:
 cargo run -p mulciber-game-slice
 ```
 
-Input is currently implemented by `mulciber-platform` on AppKit and Win32. The example can render on
-the existing Linux Vulkan path, but it is not a playable Linux claim until Wayland and X11 input
-peers exist.
+Input is implemented by `mulciber-platform` on AppKit, Win32, Wayland, and X11. The slice was
+physically played on Linux on 2026-07-20, once on native Wayland and once on X11 through XWayland
+(see the Linux checkpoint below).
 
 ## Runtime extraction
 
@@ -56,7 +56,8 @@ the native event pump, and rendering remain application-owned. See the
 This is not Gate 5 completion. Native frame-pacing policy, suspension, fullscreen/display changes,
 device recovery, supported Linux input, process/OS suspension, and the full lifecycle comparison
 remain pending. Rendering suspension from zero-sized, minimized, or occluded windows is now
-coordinated, with focused physical evidence on macOS only.
+coordinated, with focused physical minimize/restore evidence on macOS and, since 2026-07-20, on
+both Linux paths.
 
 The focused timing/input/rendering comparison is now implemented as
 `comparisons/wgpu-game-slice`. It locally composes equivalent held/pressed input and fixed-step
@@ -109,3 +110,17 @@ which show several milliseconds of interval noise around the same true cadence. 
 session on one 60 Hz display does not exercise the load-spike or resume scenarios; those captured
 distributions belong to the pre-registered [Gate 4 pacing plan](gate4-pacing-plan.md) measurement
 runs.
+
+## Linux checkpoint
+
+On 2026-07-20, at committed revision `3075d0e`, the operator physically played the slice on the
+KDE Plasma 6.7.3 / RTX 3060 Ti machine, once on native Wayland and once on X11 through XWayland.
+The Wayland session collected all eight crystals through the win transition, took a sentry hit,
+reset with R, and started a second run; the X11 session exercised collection, an R reset, and a
+sentry hit without reaching the win transition. Both sessions passed the
+hold-movement/minimize/release-while-minimized/restore sequence with no catch-up jump and no stuck
+movement, focus-loss clearing of held keys, mid-game drag resize and maximize/restore, and clean
+closes (titlebar on Wayland, Alt-F4 on X11), exiting zero with the Vulkan validation layer enabled
+and no validation output. Both exits reported
+`presentation feedback: unsupported on this backend`, the expected explicit Vulkan feedback gap.
+Full session details live in the [Linux runbook](linux-validation.md).

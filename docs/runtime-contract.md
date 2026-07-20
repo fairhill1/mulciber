@@ -128,10 +128,15 @@ of graphics acquisition so drawable unavailability does not directly gate game t
 The application-owned and runtime-backed Forge Run checkpoints were physically exercised on an Apple
 M2 running macOS 15.7.7, where the operator reported that the game and interpolated movement felt
 correct. A later Metal-validation run physically confirmed that hold/minimize/release/wait/restore
-caused no catch-up jump or stuck movement. The Windows validation ledger separately establishes
+caused no catch-up jump or stuck movement. On 2026-07-20, physically played Forge Run sessions on
+native Wayland and on X11 through XWayland (committed `3075d0e`, KDE tier) repeated the
+hold/minimize/release/wait/restore sequence on both paths with no catch-up jump or stuck movement
+and exercised focus-loss clearing of held keys; see the
+[Linux runbook](linux-validation.md). The Windows validation ledger separately establishes
 Vulkan graphics and Win32 input slices, while the runtime-backed game currently has only Windows
 cross-build evidence; it does not record a physical Windows Forge Run. No measured frame-cadence,
-runtime-backed Windows/Linux, process/OS suspension, display-transition, or recovery claim is inferred
-from the focused macOS check. The wgpu/winit peer passed the general visual and interaction review through
-Metal with API Validation enabled; its updated local suspension path launched and closed cleanly, but
-no explicit physical hold/minimize/restore observation was recorded.
+runtime-backed Windows, process/OS suspension, display-transition, or recovery claim is inferred
+from the focused macOS and Linux checks. The wgpu/winit peer passed the general visual and
+interaction review through Metal with API Validation enabled; its updated local suspension path
+launched and closed cleanly, but no explicit physical hold/minimize/restore observation was
+recorded.

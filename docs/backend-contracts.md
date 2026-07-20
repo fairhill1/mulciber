@@ -163,11 +163,12 @@ is not a resolution by itself.
 - Additional AppKit display-change, multi-display/backing-scale, macOS 26 / Metal 4, and broader
   Apple-silicon hardware evidence; resize, minimize/restore, zoom/restore, occlusion/reveal, and
   shutdown are physically established on the current Apple M2 tier for the full probe.
-- Complete Wayland XDG-shell evidence for display changes, explicit zero-sized suspension, input,
-  and broader compositors/hardware; the KDE Plasma presentation/resize/lifecycle path is
-  physically established through the runtime dispatch layer. X11 presentation is physically
-  established through XWayland with live sync-gated interactive resize and unlocked pacing;
-  display changes, input, multi-display, and native Xorg coverage remain pending.
+- Complete Wayland XDG-shell evidence for display changes, explicit zero-sized suspension, and
+  broader compositors/hardware; the KDE Plasma presentation/resize/lifecycle path is physically
+  established through the runtime dispatch layer, and KDE-tier physical input evidence is recorded
+  in the input contract. X11 presentation is physically established through XWayland with live
+  sync-gated interactive resize and unlocked pacing; display changes, multi-display, and native
+  Xorg coverage remain pending.
 - Windows baseline hardware and broader driver coverage; one Intel UHD 620 / driver 31.0.101.2115
   tier now supplies automated Vulkan 1.3 and naturally swapchain-maintenance-less evidence, but the
   GTX 1060-class contract and broader vendor/driver tiers remain pending.

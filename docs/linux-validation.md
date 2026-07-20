@@ -14,6 +14,9 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 - One-shot acquired-frame non-presentation was physically exercised on native Wayland on
   2026-07-17 through both `VK_KHR_swapchain_maintenance1` image release and the forced
   base-swapchain generation-replacement path, followed by 120 presented recovery frames.
+- Physical human input, pointer-capture, and playable game-slice evidence on native Wayland and
+  X11 through XWayland was recorded on 2026-07-20 at committed `3075d0e`; modifier-transition,
+  trackpad-unit, repeat-cadence, non-KDE-compositor, and native Xorg coverage remain pending.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
 - The Vulkan triangle probe consumes runtime-selected peer Wayland and X11 modules from
   `mulciber-platform`, behind a `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection.
@@ -130,6 +133,46 @@ modifier and focus-transition coverage, native Xorg, and non-KDE compositors rem
 The Wayland keymap path adds `libxkbcommon` as a Linux link-time dependency beside
 `libwayland-client`/`libX11`/`libXext`, used solely to resolve modifier-mask bit positions from
 the compositor-supplied keymap; the single-backend `ldd` list recorded above predates it.
+
+### Physical Linux input, capture, and game-slice evidence
+
+On 2026-07-20, the operator physically exercised committed revision `3075d0e` (clean tree equal to
+`origin/main`) on the same physical machine: CachyOS, Linux 7.1.3, KDE Plasma 6.7.3 in a native
+Wayland session, Nvidia RTX 3060 Ti (vulkaninfo `driverVersion` 610.43.3.0, device API 1.4.341).
+Four interactive sessions ran the ordinary examples — whose Vulkan backend requires and enables the
+Khronos validation layer and fails shutdown on any validation message — once each on native Wayland
+and on X11 through the session's XWayland with `WAYLAND_DISPLAY` unset. All four processes selected
+Vulkan with four samples and exited zero with no validation output.
+
+- **`mulciber-input-cube` on native Wayland** (server-side decorations confirmed): per-tap W/A/S/D
+  and arrow rotation; held-key rotation through the client-synthesized repeat path; Space
+  pause/resume without repeat retriggering; R reset; primary-button drag orbit; wheel zoom; C
+  capture with a hidden cursor and relative look the pointer could not escape; Escape release
+  restoring the arrow cursor; Alt-Tab away while captured releasing cleanly; a held key cleared by
+  focus loss with no stuck rotation on return; minimize/restore; maximize/restore; live drag
+  resize including very small sizes; titlebar close. The console log records repeated
+  capture/release cycles and ends in the captured state, so window teardown from active capture was
+  also exercised.
+- **`mulciber-input-cube` on X11**: the same checklist through detectable auto-repeat and the
+  confined-grab/warp-to-center capture path, with no observed look drift, stutter, or visible
+  cursor reappearance while captured; closed through Alt-F4, covering the second close path
+  interactively.
+- **`mulciber-game-slice` on native Wayland** — the first physically played Linux run of Forge Run:
+  movement with per-axis obstacle collision and camera follow, one sentry hit, all eight crystals
+  collected through the win transition, an R reset, and a second partial run, all corroborated by
+  the console log. The suspension sequence (hold a movement key, minimize, release while minimized,
+  wait, restore) produced no catch-up jump and no stuck movement; Alt-Tab with a held key cleared
+  it; drag resize and maximize/restore ran mid-game; titlebar close. Exit reported
+  `presentation feedback: unsupported on this backend`, the expected explicit Vulkan gap from the
+  [Gate 4 pacing plan](gate4-pacing-plan.md).
+- **`mulciber-game-slice` on X11**: movement, collection (the log records two crystals, an R reset,
+  then three more), one sentry hit, the same suspension and focus-loss checks, mid-game resize, and
+  Alt-F4 close. The eight-crystal win transition was exercised on the Wayland session only.
+
+This retires the physical-human-verification caveat on the KDE tier for both Linux input paths.
+Still unexercised: modifier-key transitions, precise trackpad scroll units (a coarse wheel was
+used), key-repeat cadence measured against the configured rate, the X11 win transition, display
+changes, multi-display, non-KDE compositors, native Xorg, and other hardware/driver tiers.
 
 ### Conformance probe evidence
 

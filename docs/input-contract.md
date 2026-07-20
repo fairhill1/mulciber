@@ -83,8 +83,11 @@ restored cursor, and the operator then physically verified relative mouse-look c
 Apple M2 tier; both records live in the [macOS runbook](macos-validation.md). On 2026-07-20 an
 agent-driven session recorded automated Wayland and X11 capture evidence — including an
 XTEST-driven X11 run whose pointer stayed pinned at the measured content center through relative
-motion and moved freely after Escape — in the [Linux runbook](linux-validation.md); physical
-(human) capture verification on both Linux paths and the Win32 implementation remain outstanding.
+motion and moved freely after Escape — in the [Linux runbook](linux-validation.md). Later that day
+the operator physically verified capture on both Linux paths at committed `3075d0e`: relative look
+with a hidden, escape-proof pointer, Escape restoring the cursor, Alt-Tab releasing the capture
+cleanly, and Wayland window teardown from the captured state. The Win32 implementation remains
+outstanding.
 
 ## AppKit implementation checkpoint
 
@@ -168,15 +171,18 @@ computation, Wayland axis-frame precise/coarse folding, X11 core-mask translatio
 backends' button identities. The 2026-07-20 agent-driven Linux runs recorded in the
 [Linux runbook](linux-validation.md) exercised the full X11 pipeline through XTEST (keys, drag,
 wheel, capture, warp-pinned deltas, release, both close paths) and the Wayland capture protocol
-against live KWin; they did not exercise physical human input, key-repeat cadence, or modifier
-transitions on either path.
+against live KWin. The same day's physical human session at committed `3075d0e` (recorded in the
+same runbook) then exercised typed transitions, held-key repeat through both repeat paths, drag,
+wheel, capture feel, focus-loss clearing, lifecycle, and both close paths on Wayland and X11;
+modifier transitions, trackpad precise-scroll units, and repeat cadence measured against the
+configured rate remain unexercised on either path.
 
 Before stabilizing names or snapshot behavior:
 
 1. complete the remaining Win32 pressure tests listed above;
-2. physically exercise the Wayland and X11 slices (typed transitions, repeats against the
-   configured cadence, modifier and focus transitions, trackpad versus wheel units, capture feel)
-   on the KDE tier, then on a non-KDE compositor and native Xorg;
+2. complete the remaining Wayland and X11 physical coverage (modifier transitions, trackpad
+   versus wheel units, repeats against the configured cadence) on the KDE tier, then repeat the
+   slices on a non-KDE compositor and native Xorg;
 3. implement Win32 pointer capture so the capture contract has all four backends;
 4. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
    application ergonomics with the equivalent `wgpu-input-cube`, direct native stacks, and SDL3;

@@ -42,8 +42,9 @@ evaluated against the pre-registered comparisons in the
 [API extraction and comparison plan](docs/api-extraction-plan.md). Current state:
 
 - `mulciber-platform` owns peer AppKit, Win32, Wayland, and X11 application/window, event, and
-  lifecycle modules, plus a pointer-capture/cursor-mode intent implemented on AppKit and reported
-  as unsupported on the other backends until their tiers are exercised
+  lifecycle modules, plus a pointer-capture/cursor-mode intent implemented on AppKit, Wayland, and
+  X11 — physically verified on the Apple M2 and KDE Linux tiers — with Win32 reporting explicit
+  unsupported until its tier is exercised
   ([platform contract](docs/api-platform-contract.md)).
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
   generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation

@@ -45,14 +45,16 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
 - [ ] Wayland XDG-shell window with a Vulkan 1.3+ swapchain and triangle (implemented and physically
   exercised on KDE Plasma/Wayland with server-side decorations, validation-clean rendering,
   responsive paced resize, minimize/restore, maximize/restore, titlebar close, and clean Vulkan/XDG
-  shutdown; display-change, explicit zero-sized suspension, input, and broader compositor/hardware
-  evidence remain outstanding).
+  shutdown; display-change, explicit zero-sized suspension, and broader compositor/hardware evidence
+  remain outstanding, while KDE-tier input evidence is recorded in the
+  [input contract](input-contract.md)).
 - [ ] X11 window with a Vulkan 1.3+ swapchain and triangle (implemented as a runtime-selected peer
   of the Wayland module with `WM_DELETE_WINDOW`, structure-notification, and
   `_NET_WM_SYNC_REQUEST` interactive-resize handling; physically exercised on KDE Plasma through
   XWayland with validation-clean unlocked 75 Hz pacing, live drag resize, minimize/restore,
-  maximize/restore, window-manager close, and clean shutdown; display changes, input,
-  multi-display, and native Xorg coverage remain outstanding).
+  maximize/restore, window-manager close, and clean shutdown; display changes, multi-display, and
+  native Xorg coverage remain outstanding, while KDE-tier input evidence is recorded in the
+  [input contract](input-contract.md)).
 - [x] Replace conventional device-idle swapchain retirement with tracked presentation completion
   using presentation fences when available and a deferred-retirement fallback.
 - [x] Prove one-shot Vulkan acquired-frame non-presentation through
@@ -205,9 +207,10 @@ fallback, and acquired-frame abandonment/recovery controls.
   pointer, cursor-shape restore, `Unsupported` naming any missing global) and the X11
   implementation (confined grab, invisible cursor, warp-to-center deltas) passed agent-driven
   automated runs on the KDE tier on 2026-07-20 — including an XTEST-driven X11 run with the
-  pointer measurably pinned to the content center while captured — with physical human
-  verification pending; Win32 still reports explicit `Unsupported` (see the
-  [input contract](input-contract.md)).
+  pointer measurably pinned to the content center while captured — followed the same day by
+  physical human verification of both paths at committed `3075d0e` (relative look, Escape
+  restore, focus-loss release, teardown while captured); Win32 still reports explicit
+  `Unsupported` (see the [input contract](input-contract.md)).
 
 Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
 `mulciber-platform` and drive both full native probes. The extracted path passed the automated
@@ -222,8 +225,10 @@ Windows 11 / Intel UHD 620. The Wayland and X11 slices share one evdev key table
 xkb keymap through libxkbcommon for modifier masks and synthesizes pump-paced key repeat, while
 X11 uses detectable auto-repeat, core modifier masks, and live queries on modifier transitions.
 The X11 path passed an automated XTEST-driven pipeline run (keys, drag, wheel, capture, both close
-paths) through XWayland on 2026-07-20; physical human evidence on both Linux paths is pending, so
-no stable cross-platform input support is claimed. See the
+paths) through XWayland on 2026-07-20, and physical human runs of `mulciber-input-cube` and the
+game slice passed the same day on both Linux paths at committed `3075d0e` with validation enabled;
+modifier-transition, trackpad-unit, repeat-cadence, non-KDE-compositor, and native Xorg coverage
+remain open, so no stable cross-platform input support is claimed. See the
 [experimental input contract](input-contract.md).
 
 Two-pass postprocess: dedicated target/pipeline handles and one fixed two-pass queue operation
@@ -254,9 +259,10 @@ held/pressed/released input snapshots with focus-loss clearing, a configurable f
 accumulator with bounded hitch catch-up, clamped variable deltas, dropped-time diagnostics, and
 render interpolation; the runtime does not own collision, camera, scene, or the platform/GPU event
 loop. Rendering suspension freezes runtime time, preserves interpolation, releases held input, and
-physically passed minimize/restore on macOS. Native pacing, process/OS suspension,
-fullscreen/display transitions, device recovery, Linux input, and the full lifecycle comparison
-remain pending, so Gate 5 is not complete. See the [runtime contract](runtime-contract.md) and
+physically passed minimize/restore on macOS and, on 2026-07-20, on both Linux paths through the
+physically played Forge Run sessions. Native pacing, process/OS suspension, fullscreen/display
+transitions, device recovery, and the full lifecycle comparison remain pending, so Gate 5 is not
+complete. See the [runtime contract](runtime-contract.md) and
 [game dogfood contract](game-slice.md).
 
 The same Forge Run workload has pinned `wgpu`/`winit` and direct AppKit/Metal peers. The direct peer
@@ -344,4 +350,5 @@ device recovery.
   [consumer evidence](consumer-evidence.md) records a high-refresh one-shot-input workaround and
   render-rate-decoupled pointer look as concrete inputs to this evaluation.
 - [ ] Add supported Linux input and runtime evidence, then perform the full Gate 5 lifecycle
-  comparison.
+  comparison (first physical KDE-tier input and Forge Run runtime evidence recorded 2026-07-20;
+  the remaining Linux coverage in the input contract and the comparison itself remain open).

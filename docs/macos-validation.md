@@ -1,5 +1,40 @@
 # macOS AppKit/Metal validation runbook
 
+## Frame-transient geometry (streaming HUD) checkpoint
+
+On 2026-07-21, on the working tree committed as `fe277f2` and `effbdef`, the
+frame-transient geometry slice (see the [material contract](material-contract.md) and the
+[decision ledger](api-slice-decisions.md)) ran for the first time on the Apple M2 / macOS
+15.7.7 machine. `mulciber-shader` natively generated the new bindingless overlay module's
+artifacts — `hud.metal.shaderbin` (SHA-256
+`01be66786ae4d49372373e14daf14670b873155f789db1a6ef6ed93b380c26fe`) and, with the
+repository-pinned SPIRV-Tools, `hud.vulkan.shaderbin` (SHA-256
+`453be3ab5026ea20b7578889a07d11eb99c7d46c0e3af38bf5e6b5210edf4c0b`); the module uses no new
+interface kinds. The structural preflight (fmt, workspace check, clippy `-D warnings`, all 26
+workspace test suites, `git diff --check`) passed natively — clippy required the repository's
+established line-count allow on the Metal session constructor and the central material-scene
+validation, both grown by the geometry region — and the Vulkan backend's peer implementation
+additionally passed `cargo check` and clippy `-D warnings` for the `x86_64-pc-windows-msvc`
+target from this host.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 64 Metal cases — including the
+six new cases: transient records presented validation-clean with 16- and 32-bit indices
+alongside uploaded-mesh records, plus stride-mismatched vertex bytes, empty indices, an
+out-of-range index, and a supply two bytes over the 4 MiB limit all rejected by their exact
+messages — with exit zero and no diagnostic beyond the validation-enabled banner.
+
+`mulciber-material-scene`, extended with a depth-off premultiplied-translucent HUD energy
+gauge whose backplate, fill bar, and per-tenth divider ticks are rebuilt in clip space every
+frame and submitted as `GeometrySource::Transient` bytes, ran under `MTL_DEBUG_LAYER=1`,
+selected Metal and four samples, rendered roughly eleven seconds of frames, and closed through
+an agent-scripted titlebar close, exiting zero with no validation output beyond the banner.
+Agent-captured screenshots minutes apart showed the gauge at clearly different fill widths and
+divider-tick counts over the unchanged cascaded scene, confirming per-frame-rebuilt geometry
+rather than a static overlay. This is agent-driven automated execution and screenshot
+evidence, not an operator visual pass; resize and broader lifecycle behavior under the new
+path, and all physical Vulkan evidence for it (validation layers, visuals, lifecycle), remain
+outstanding on the Linux/Windows machines.
+
 ## Cascaded shadow maps and render scale checkpoint
 
 On 2026-07-20/21, on the working tree committed as `34b8b13` and `687539e`, the cascaded

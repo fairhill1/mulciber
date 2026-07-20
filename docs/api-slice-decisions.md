@@ -208,6 +208,24 @@ dynamic offsets order by binding number alongside the uniform's, Metal as one bu
 the WGSL slot per record. Compute, read-write storage, and general buffer vocabulary stay
 closed until a slice forces them. Recorded in the [material contract](material-contract.md).
 
+## Frame-transient geometry
+
+Decided as an inline per-record geometry supply through the existing frame-transient region
+model, forced by HUD-style overlays whose geometry is authored anew every frame: creating and
+destroying `Mesh` resources per frame churns native allocation, while an updatable mesh handle
+would either fight frames in flight or open the persistent-buffer vocabulary nothing else has
+forced. `MaterialRecord.geometry` is a `GeometrySource` — `Mesh` wrapping the uploaded handle
+unchanged, `Transient` carrying raw vertex bytes laid out per the pipeline's declared vertex
+layout plus 16- or 32-bit `MeshIndices`. Validation mirrors mesh upload (non-zero stride
+multiple, non-empty in-range indices), and one record's combined vertex and index bytes are
+capped at `TRANSIENT_GEOMETRY_SIZE_LIMIT` (4 MiB) so the shared region stays bounded exactly
+as the storage cap keeps its region bounded. Both backends pack vertex bytes then index bytes
+per transient record at 256-byte-aligned offsets into a third shared frame-transient buffer,
+grown and rewritten under the same rules as the uniform and storage regions, and draw it
+directly while uploaded meshes keep their existing draw path. Shadow records keep uploaded
+meshes — no slice has forced transient casters — and the fixed textured and instanced recipes
+are untouched. Recorded in the [material contract](material-contract.md).
+
 ## Resource ownership and reclamation
 
 Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning

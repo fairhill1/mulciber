@@ -96,6 +96,19 @@ depth bias, and per-fragment cascade selection all stay in application code and 
 crate sees only the layered map, the per-cascade record lists, and bytes. `ShadowMapArray`
 joins the explicit-destroy and drop-reclamation paths.
 
+The transient-geometry extension lets a material record supply its geometry as frame-rebuilt
+bytes instead of an uploaded mesh. `MaterialRecord.geometry` is a `GeometrySource`: `Mesh`
+wraps the uploaded handle exactly as before, while `Transient` carries a `TransientGeometry` —
+raw vertex bytes laid out per the pipeline's declared vertex layout plus 16- or 32-bit
+`MeshIndices` — that the session copies into a frame-transient geometry region at submission,
+the same region model uniforms and storage bytes already follow. Validation mirrors mesh
+upload: the vertex bytes must be a non-zero multiple of the declared stride, the indices
+non-empty and in range, and one record's combined vertex and index bytes are capped at
+`TRANSIENT_GEOMETRY_SIZE_LIMIT` (4 MiB), keeping the shared region bounded the way the storage
+cap does. The slot exists for per-frame-authored geometry — HUD text and gauges, debug lines —
+which would otherwise churn mesh creation and destruction every frame; no persistent updatable
+buffer handle enters the vocabulary, and shadow records keep uploaded meshes.
+
 ## Native behavior
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
@@ -134,13 +147,23 @@ both bind the whole array plus the fixed-recipe comparison sampler for scene sam
 Shadow-record uniform and storage slots pack after the material records' in cascade order
 across every layer.
 
+Transient geometry flows through a third shared frame-transient buffer: per transient record,
+vertex bytes then index bytes packed in record order at 256-byte-aligned offsets, grown by
+powers of two and rewritten each submission like the uniform and storage regions, with
+encoding recomputing the same offsets by walking the records. Metal binds the region at the
+record's vertex offset on the reserved vertex-buffer index and issues a direct indexed draw,
+while uploaded meshes keep their indirect-draw path; Vulkan binds the region as both vertex
+and index buffer at the record's offsets and issues a direct indexed draw through the same
+scene pass.
+
 This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
 depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
 color render-to-texture beyond the postprocess recipe, load/store policy, compute, read-write
 or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
 equations beyond the fixed mode set, instance-rate custom layouts, bind-group abstractions,
 new texture formats, packed vertex formats, native mip generation, per-cascade map
-resolutions, engine-side cascade selection or blending, or textured cutout shadow casters.
+resolutions, engine-side cascade selection or blending, textured cutout shadow casters, or
+persistent updatable mesh handles beyond the frame-transient geometry supply.
 
 ## Evidence
 
@@ -176,6 +199,17 @@ close, with agent-captured screenshots showing seam-free moving shadows across t
 boundaries. The Vulkan peer implementation passed check and clippy for the Windows target from
 the same host; its physical validation-layer, visual, and lifecycle evidence remains
 outstanding, per the [macOS runbook](macos-validation.md).
+
+On 2026-07-21, on the working tree committed as `fe277f2` and `effbdef`, the
+transient-geometry extension ran on the same M2 tier: `mulciber-shader` generated both `hud`
+artifacts natively (the module uses no new interface kinds), all 64 Metal conformance cases
+(including the six transient-geometry cases) passed under Metal API Validation, and the
+material-scene example — its per-frame-rebuilt HUD gauge drawn last through the frame-transient
+geometry region — ran validation-clean (Metal, four samples) through a scripted titlebar close,
+with agent-captured screenshots minutes apart showing the gauge's fill width and divider-tick
+count changing between frames. The Vulkan peer implementation passed check and clippy for the
+Windows target from the same host; its physical validation-layer, visual, and lifecycle
+evidence remains outstanding, per the [macOS runbook](macos-validation.md).
 
 Still later on 2026-07-20, at `97c5a13`, the read-only storage slot ran on the same M2 tier:
 `mulciber-shader` generated the new `skinned` and `skinned-shadow` Metal artifacts natively,

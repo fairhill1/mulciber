@@ -379,9 +379,9 @@ the frame token was consumed, which stranded the acquired image's semaphore and 
 token consumption and the rerun was clean. All forty-six cases (forty-five plus this driver's
 Vulkan-only superseded-generation branch) passed on both native Wayland and X11 through
 XWayland, exit zero, no validation output, and the shadowed material scene ran roughly ten
-seconds on each path to KWin-scripted closes, exit zero, validation-clean. Shadow coverage is
-asserted by execution and validation cleanliness; the operator has not yet visually confirmed
-the moving shadows. The Metal implementation compiles under the cross-host
+seconds on each path to KWin-scripted closes, exit zero, validation-clean. The operator
+visually confirmed the moving crystal shadows on the lava floor on the native Wayland
+session. The Metal implementation compiles under the cross-host
 `aarch64-apple-darwin` type check; the regenerated `lava` and new `shadow` Metal artifacts
 await the next M2 session, which must run `mulciber-shader` natively before the example or
 probe will build there.

@@ -371,9 +371,11 @@ device recovery.
   in the [Linux runbook](linux-validation.md); the first policy half is extracted as
   `mulciber-runtime::FramePacer` — display-interval frame deltas from the observed cadence with an
   observable wall-clock fallback, measured on the Wayland/KWin tier to reduce simulation-delta
-  error against presented intervals from ±7 ms to a 35 µs p95 — while frame-start scheduling and
-  the pre-registered comparison measurements remain outstanding per the
-  [Gate 4 pacing plan](gate4-pacing-plan.md)).
+  error against presented intervals from ±7 ms to a 35 µs p95 — and since runtime 0.4.0 `Runtime`
+  owns that pacer so `begin_frame` is paced whenever presentation feedback is drained into
+  `record_presented`, after a consumer integration that skipped the standalone pacer silently
+  reintroduced wall-clock judder; frame-start scheduling and the pre-registered comparison
+  measurements remain outstanding per the [Gate 4 pacing plan](gate4-pacing-plan.md)).
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.
 - [ ] Evaluate timestamped or per-tick input staging against a deterministic replay/rollback

@@ -192,6 +192,15 @@ impl FramePacer {
         self.diagnostics.record_untimed_presented();
     }
 
+    /// Re-anchors schedule gap measurement at `now`, discarding the time since the previous
+    /// [`Self::schedule`] call.
+    ///
+    /// Call when frame production resumes after a pause so the paused interval does not enter the
+    /// next frame delta as elapsed time.
+    pub const fn resume(&mut self, now: Instant) {
+        self.last_schedule_at = Some(now);
+    }
+
     /// Summarizes everything the underlying diagnostics recorded so far.
     #[must_use]
     pub fn report(&self) -> PacingReport {
@@ -246,6 +255,14 @@ pub struct FrameSchedule {
 }
 
 impl FrameSchedule {
+    /// A zero-delta unpaced schedule for frames that advance no time, such as while suspended.
+    pub(crate) const fn idle() -> Self {
+        Self {
+            frame_delta: Duration::ZERO,
+            paced: false,
+        }
+    }
+
     /// Returns how much time this frame advances relative to the previous schedule.
     #[must_use]
     pub const fn frame_delta(self) -> Duration {

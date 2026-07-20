@@ -13,7 +13,7 @@ use mulciber::{
     SceneOutput, SceneSubmission, ShaderArtifact, Texture, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
-use mulciber_runtime::{PacingDiagnostics, Runtime, RuntimeConfig};
+use mulciber_runtime::{Runtime, RuntimeConfig};
 use scene::{
     CUBE_INDICES, CUBE_VERTICES, PYRAMID_INDICES, PYRAMID_VERTICES, checkerboard, transforms,
 };
@@ -145,13 +145,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut resources = Resources::new(&graphics)?;
     let mut game = Game::default();
     let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
-    let mut pacing = PacingDiagnostics::new();
     let mut feedback_unsupported = false;
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
             runtime.handle_window_event(event);
             let WindowEvent::RedrawRequested(metrics) = event else {
+                return Ok(());
+            };
+            match graphics.surface.take_present_feedback()? {
+                PresentFeedback::Reported(frames) => {
+                    for presented in frames {
+                        match presented.presented_at() {
+                            Some(presented_at) => runtime.record_presented(presented_at),
+                            None => runtime.record_untimed_presented(),
+                        }
+                    }
+                }
+                PresentFeedback::Unsupported => feedback_unsupported = true,
+                _ => {}
+            }
+
+            let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else {
                 return Ok(());
             };
             let runtime_frame = runtime.begin_frame(Instant::now());
@@ -161,10 +176,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 game.fixed_update(runtime_frame.input(), plan.fixed_step().as_secs_f32());
             }
             game.variable_update(plan.frame_delta().as_secs_f32());
-
-            let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else {
-                return Ok(());
-            };
             resources.render(
                 &graphics.device,
                 &mut graphics.queue,
@@ -172,18 +183,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &game,
                 plan.interpolation(),
             )?;
-            match graphics.surface.take_present_feedback()? {
-                PresentFeedback::Reported(frames) => {
-                    for presented in frames {
-                        match presented.presented_at() {
-                            Some(presented_at) => pacing.record_presented(presented_at),
-                            None => pacing.record_untimed_presented(),
-                        }
-                    }
-                }
-                PresentFeedback::Unsupported => feedback_unsupported = true,
-                _ => {}
-            }
             Ok(())
         })?;
         if status == PumpStatus::Exit {
@@ -194,9 +193,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     graphics.shutdown()?;
     if feedback_unsupported {
         println!("presentation feedback: unsupported on this backend");
-    } else {
-        println!("presentation pacing: {}", pacing.report());
     }
+    println!("presentation pacing: {}", runtime.pacing_report());
     Ok(())
 }
 

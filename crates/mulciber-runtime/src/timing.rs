@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const DEFAULT_MAX_FRAME_DELTA: Duration = Duration::from_millis(250);
 const DEFAULT_MAX_FIXED_STEPS: u32 = 8;
@@ -164,36 +164,24 @@ impl FramePlan {
 #[derive(Debug)]
 pub(crate) struct FrameClock {
     config: RuntimeConfig,
-    previous: Instant,
     accumulator: Duration,
     suspended: bool,
 }
 
 impl FrameClock {
-    pub(crate) const fn new(config: RuntimeConfig, started_at: Instant) -> Self {
+    pub(crate) const fn new(config: RuntimeConfig) -> Self {
         Self {
             config,
-            previous: started_at,
             accumulator: Duration::ZERO,
             suspended: false,
         }
-    }
-
-    pub(crate) fn advance(&mut self, now: Instant) -> FramePlan {
-        if self.suspended {
-            return self.idle_plan();
-        }
-        let elapsed = now.saturating_duration_since(self.previous);
-        self.previous = now;
-        self.advance_by(elapsed)
     }
 
     pub(crate) const fn suspend(&mut self) {
         self.suspended = true;
     }
 
-    pub(crate) const fn resume(&mut self, now: Instant) {
-        self.previous = now;
+    pub(crate) const fn resume(&mut self) {
         self.suspended = false;
     }
 
@@ -201,7 +189,7 @@ impl FrameClock {
         self.suspended
     }
 
-    fn idle_plan(&self) -> FramePlan {
+    pub(crate) fn idle_plan(&self) -> FramePlan {
         FramePlan {
             frame_delta: Duration::ZERO,
             fixed_step: self.config.fixed_step,
@@ -211,7 +199,7 @@ impl FrameClock {
         }
     }
 
-    fn advance_by(&mut self, elapsed: Duration) -> FramePlan {
+    pub(crate) fn advance_by(&mut self, elapsed: Duration) -> FramePlan {
         let frame_delta = elapsed.min(self.config.max_frame_delta);
         let mut dropped_time = elapsed.saturating_sub(frame_delta);
         self.accumulator += frame_delta;
@@ -258,7 +246,7 @@ fn duration_ratio(numerator: Duration, denominator: Duration) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::{FrameClock, RuntimeConfig, RuntimeConfigError};
 
@@ -286,31 +274,29 @@ mod tests {
 
     #[test]
     fn accumulates_fixed_steps_and_render_interpolation() {
-        let start = Instant::now();
         let config = RuntimeConfig::fixed_hz(10).unwrap();
-        let mut clock = FrameClock::new(config, start);
+        let mut clock = FrameClock::new(config);
 
-        let first = clock.advance(start + Duration::from_millis(40));
+        let first = clock.advance_by(Duration::from_millis(40));
         assert_eq!(first.fixed_steps(), 0);
         assert!((first.interpolation() - 0.4).abs() < f64::EPSILON);
 
-        let second = clock.advance(start + Duration::from_millis(125));
+        let second = clock.advance_by(Duration::from_millis(85));
         assert_eq!(second.fixed_steps(), 1);
         assert!((second.interpolation() - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]
     fn clamps_long_frames_and_discards_excess_catch_up_steps() {
-        let start = Instant::now();
         let config = RuntimeConfig::fixed_hz(100)
             .unwrap()
             .with_max_frame_delta(Duration::from_millis(100))
             .unwrap()
             .with_max_fixed_steps(3)
             .unwrap();
-        let mut clock = FrameClock::new(config, start);
+        let mut clock = FrameClock::new(config);
 
-        let plan = clock.advance(start + Duration::from_millis(250));
+        let plan = clock.advance_by(Duration::from_millis(250));
         assert_eq!(plan.frame_delta(), Duration::from_millis(100));
         assert_eq!(plan.fixed_steps(), 3);
         assert_eq!(plan.dropped_time(), Duration::from_millis(220));
@@ -318,22 +304,21 @@ mod tests {
     }
 
     #[test]
-    fn suspension_freezes_time_and_preserves_interpolation() {
-        let start = Instant::now();
+    fn the_idle_plan_freezes_time_and_preserves_interpolation() {
         let config = RuntimeConfig::fixed_hz(10).unwrap();
-        let mut clock = FrameClock::new(config, start);
-        let before = clock.advance(start + Duration::from_millis(40));
+        let mut clock = FrameClock::new(config);
+        let before = clock.advance_by(Duration::from_millis(40));
         assert!((before.interpolation() - 0.4).abs() < f64::EPSILON);
 
         clock.suspend();
-        let suspended = clock.advance(start + Duration::from_mins(1));
+        assert!(clock.suspended());
+        let suspended = clock.idle_plan();
         assert_eq!(suspended.frame_delta(), Duration::ZERO);
         assert_eq!(suspended.fixed_steps(), 0);
         assert!((suspended.interpolation() - 0.4).abs() < f64::EPSILON);
 
-        let resumed_at = start + Duration::from_mins(2);
-        clock.resume(resumed_at);
-        let resumed = clock.advance(resumed_at + Duration::from_millis(60));
+        clock.resume();
+        let resumed = clock.advance_by(Duration::from_millis(60));
         assert_eq!(resumed.fixed_steps(), 1);
         assert!(resumed.interpolation().abs() < f64::EPSILON);
         assert_eq!(resumed.dropped_time(), Duration::ZERO);

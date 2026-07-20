@@ -141,3 +141,12 @@ mip-chain and eight shadow cases) passed under Metal API Validation, and the sha
 material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
 close. Visual confirmation of the Metal crystal shadows remains an operator claim; the Linux
 operator confirmation covers the native Wayland session only.
+
+Still later on 2026-07-20, at `97c5a13`, the read-only storage slot ran on the same M2 tier:
+`mulciber-shader` generated the new `skinned` and `skinned-shadow` Metal artifacts natively,
+another Metal-only clippy line-count failure (on `prepare_material_scene`, which grew the
+storage-binding path) took the same established allow, all 52 Metal conformance cases
+(including the seven storage cases) passed under Metal API Validation, and the skinned
+material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
+close. Skinning on Metal is asserted by execution and validation cleanliness; the swaying kelp
+strand and its moving shadow await operator visual confirmation on both backends.

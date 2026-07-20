@@ -868,6 +868,7 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn prepare_material_scene(
         &mut self,
         records: &[MaterialRecord<'_>],

@@ -1,5 +1,32 @@
 # macOS AppKit/Metal validation runbook
 
+## Read-only storage (skinning) checkpoint
+
+On 2026-07-20, at committed revision `97c5a13`, the read-only storage slot (see the
+[material contract](material-contract.md)) ran for the first time on the Apple M2 / macOS
+15.7.7 machine. `mulciber-shader` natively generated the two new Metal artifacts:
+`skinned.metal.shaderbin` (SHA-256
+`e52e19656dc2f2a9ec39d275e2a65391682feed16e8a9fe322a1941f7a514dbf`) and
+`skinned-shadow.metal.shaderbin` (SHA-256
+`2367b5485de08ff33ca63b0e7df5739e9ca9c0e3025f0315dc2373f48de9738c`). The structural preflight
+again caught a Metal-only clippy line-count failure invisible to the Linux cross-host type
+check — `prepare_material_scene` in the Metal backend grew past 100 lines with the
+storage-binding path — and passed after the repository's established
+`#[allow(clippy::too_many_lines)]` treatment.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 52 Metal cases — including the
+seven storage cases: a second storage slot, an oversized declaration, and a recorded-size
+mismatch rejected at creation, material and shadow record byte-length mismatches rejected at
+submission, the skinned presentation flowing one palette through both the material and shadow
+paths, and skinned resource destruction — with exit zero and no diagnostic beyond the
+validation-enabled banner (52 versus the Linux runbook's 53; the superseded-generation case is
+Vulkan-only). The skinned `mulciber-material-scene` — now including the six-bone kelp strand
+skinned in both its material vertex stage and its depth-only shadow caster — ran under
+`MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly ten seconds of frames,
+and closed through an agent-scripted titlebar close, exiting zero with no validation output
+beyond the banner. This is agent-driven automated execution evidence; the visual appearance of
+the swaying strand and its shadow on Metal is not claimed.
+
 ## Mip-chain and shadow checkpoint
 
 On 2026-07-20, at committed revision `3ba9d47`, the mip-chain and shadow slices (see the

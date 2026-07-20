@@ -2240,6 +2240,7 @@ fn create_material_pipeline(
 
 /// Builds a depth-only pipeline: the module's vertex entry point rasterized into a shadow map's
 /// depth attachment with no fragment stage or color target, at one sample.
+#[allow(clippy::too_many_lines)]
 fn create_shadow_pipeline(
     device: Object,
     bytes: &[u8],

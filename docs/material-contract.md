@@ -112,3 +112,12 @@ conformance cases passed under Metal API Validation, and `mulciber-material-scen
 validation-clean (Metal, four samples) through a scripted titlebar close. This is automated
 execution evidence; visual confirmation of the material scene remains an operator claim.
 Details are in the [macOS runbook](macos-validation.md).
+
+Later on 2026-07-20, at `3ba9d47`, the mip-chain and shadow slices ran on the same M2 tier:
+`mulciber-shader` regenerated the changed `lava` and new `shadow` Metal artifacts natively, a
+Metal-only clippy failure on the new shadow-pipeline creation function was fixed with the
+established long-native-creation allow, all 45 Metal conformance cases (including the three
+mip-chain and eight shadow cases) passed under Metal API Validation, and the shadowed
+material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
+close. Visual confirmation of the Metal crystal shadows remains an operator claim; the Linux
+operator confirmation covers the native Wayland session only.

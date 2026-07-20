@@ -1,5 +1,32 @@
 # macOS AppKit/Metal validation runbook
 
+## Mip-chain and shadow checkpoint
+
+On 2026-07-20, at committed revision `3ba9d47`, the mip-chain and shadow slices (see the
+[material contract](material-contract.md)) ran for the first time on the Apple M2 / macOS
+15.7.7 machine. `mulciber-shader` natively regenerated the changed `lava` artifact (SHA-256
+`eb04118992c09804262298fd4239582e00474adcd2cf2de1bb33ecd725b6ccda`) and generated the new
+`shadow` artifact (SHA-256
+`1f526388657e7d9b852fc79b5f8f42a7a32958932b9680570c78bb902d85315c`). The structural preflight
+initially failed on a Metal-only clippy lint the Linux session's cross-host type check could
+not see — the new `create_shadow_pipeline` in the Metal backend exceeded the 100-line limit —
+and passed after applying the repository's established `#[allow(clippy::too_many_lines)]`
+convention for long native-creation functions.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 45 Metal cases — including the
+partial-mip-chain and mip-level-byte rejections and the mip-chained presentation, plus the
+eight shadow cases: zero-extent map, non-uniform shadow binding, missing/undeclared/unrendered
+map supply, and shadow uniform length rejections all by name, the shadowed material
+presentation, and shadow resource destruction — with exit zero and no diagnostic beyond the
+validation-enabled banner (45 versus the Linux runbook's 46; the superseded-generation case is
+Vulkan-only). The shadowed `mulciber-material-scene` — three crystals rendering depth into the
+1024 shadow map each frame, the lava floor sampling it through `textureSampleCompare` — then
+ran under `MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly ten seconds of
+frames, and closed through an agent-scripted titlebar close, exiting zero with no validation
+output beyond the banner. This is agent-driven automated execution evidence; the visual
+appearance of the Metal crystal shadows, resize, and broader lifecycle behavior are not
+claimed.
+
 ## Custom-material vocabulary checkpoint
 
 On 2026-07-20, at committed revision `8b7e5c3`, the custom-material checkpoint (see the

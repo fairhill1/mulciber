@@ -304,9 +304,15 @@ delta-versus-presented-interval error of median 0 µs and p95 35 µs, against a 
 13.4 ms for half the frames in an intermediate revision that slept toward absolute grid instants
 extrapolated from feedback timestamps (drain-latency bias plus roughly two frames of feedback lag
 paired zero-delta and double-delta frames); absolute frame-start scheduling is therefore
-deliberately excluded from this policy revision. Automated single-machine, single-display
-Wayland/KWin/NVIDIA evidence only; frame-start alignment, spin reduction, and the pre-registered
-comparison measurements stay open per the [Gate 4 pacing plan](gate4-pacing-plan.md).
+deliberately excluded from this policy revision. After runtime 0.4.0 folded the pacer into
+`Runtime` — prompted by a consumer integration that adopted the fixed-step clock but skipped the
+standalone pacer, silently reintroducing the wall-clock judder — the same scenario re-ran through
+the folded path (`record_presented` into `begin_frame`, no app-side pacing code): 1,662 joined
+frames, error median 0 µs and p95 37 µs, presented intervals 13.01–13.65 ms across the resize,
+with only the pre-estimation startup frames on the observable wall-clock fallback. Automated
+single-machine, single-display Wayland/KWin/NVIDIA evidence only; frame-start alignment, spin
+reduction, and the pre-registered comparison measurements stay open per the
+[Gate 4 pacing plan](gate4-pacing-plan.md).
 
 ### Custom-material vocabulary evidence
 

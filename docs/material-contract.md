@@ -79,6 +79,23 @@ must supply a map exactly when its pipeline declares the slot, and sampling a ma
 pass has rendered — this frame or earlier — is rejected by name before the frame is consumed.
 `ShadowMap` and `ShadowPipeline` join the explicit-destroy and drop-reclamation paths.
 
+The cascaded extension generalizes both ends of that recipe while keeping cascade policy
+application-owned. `Device::create_shadow_map_array` creates a square layered depth target
+(one through eight layers, one cascade per layer), and `SceneSubmission.shadow` becomes a
+`ShadowPrepass`: `Single` wraps the existing one-map `ShadowPass`, while `Cascaded` carries a
+`CascadedShadowPass` — the layered map plus one depth-only record list per layer, in layer
+order, with the list count validated against the map's layer count. Each cascade renders with
+its own record list because every cascade carries its own light matrix in its record uniforms
+and the application may cull casters per cascade; a cascade with no records still clears its
+layer, leaving that cascade fully lit. Material pipelines may declare a `DepthTextureArray`
+slot (a `texture_depth_2d_array`, recorded as its own interface kind by `mulciber-shader`)
+instead of the plain `DepthTexture` slot — at most one depth-texture slot of either kind — and
+records supply the matching resource through `ShadowSource::Map`/`ShadowSource::Array`, with
+kind mismatches rejected by name. Split distances, per-cascade light matrices, texel snapping,
+depth bias, and per-fragment cascade selection all stay in application code and shaders; the
+crate sees only the layered map, the per-cascade record lists, and bytes. `ShadowMapArray`
+joins the explicit-destroy and drop-reclamation paths.
+
 ## Native behavior
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
@@ -110,12 +127,20 @@ only, store-to-texture — ordered before the scene encoder on the same command 
 binds the map and comparison sampler at their WGSL slots. Shadow pipelines run the vertex
 entry alone: no fragment function, no color attachments, one sample, depth test-write.
 
+The cascaded pre-pass encodes the same fixed depth-only recipe once per layer: Metal targets
+one array slice per encoder through the depth attachment's slice selection, Vulkan renders
+into per-layer views of the layered image and samples through a separate 2D-array view, and
+both bind the whole array plus the fixed-recipe comparison sampler for scene sampling.
+Shadow-record uniform and storage slots pack after the material records' in cascade order
+across every layer.
+
 This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
-depth-only recipe, not an application-ordered graph — nor color render-to-texture, load/store
-policy, compute, read-write or runtime-sized storage, persistent application-owned buffer
-handles, arbitrary blend equations beyond the fixed mode set, instance-rate custom layouts,
-bind-group abstractions, new texture formats, packed vertex formats, native mip generation,
-multiple shadow passes per submission, or textured cutout shadow casters.
+depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
+color render-to-texture beyond the postprocess recipe, load/store policy, compute, read-write
+or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
+equations beyond the fixed mode set, instance-rate custom layouts, bind-group abstractions,
+new texture formats, packed vertex formats, native mip generation, per-cascade map
+resolutions, engine-side cascade selection or blending, or textured cutout shadow casters.
 
 ## Evidence
 
@@ -141,6 +166,16 @@ mip-chain and eight shadow cases) passed under Metal API Validation, and the sha
 material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
 close. Visual confirmation of the Metal crystal shadows remains an operator claim; the Linux
 operator confirmation covers the native Wayland session only.
+
+On 2026-07-20/21, on the working tree committed as `34b8b13` and `687539e`, the cascaded
+extension ran on the same M2 tier: `mulciber-shader` regenerated both `lava` artifacts for the
+new depth-texture-array interface kind, all 58 Metal conformance cases (including the six new
+cascade and render-scale cases) passed under Metal API Validation, and the three-cascade
+material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
+close, with agent-captured screenshots showing seam-free moving shadows across the cascade
+boundaries. The Vulkan peer implementation passed check and clippy for the Windows target from
+the same host; its physical validation-layer, visual, and lifecycle evidence remains
+outstanding, per the [macOS runbook](macos-validation.md).
 
 Still later on 2026-07-20, at `97c5a13`, the read-only storage slot ran on the same M2 tier:
 `mulciber-shader` generated the new `skinned` and `skinned-shadow` Metal artifacts natively,

@@ -203,7 +203,15 @@ fallback, and acquired-frame abandonment/recovery controls.
   shadow pre-pass whose map material pipelines sample through declared depth-texture and
   fixed-recipe comparison-sampler slots, per the same ledger; and material and shadow
   pipelines declare one read-only storage slot supplied as per-record bytes, opened for
-  skeletal animation's bone palettes and recorded in the same ledger.
+  skeletal animation's bone palettes and recorded in the same ledger. The shadow pre-pass
+  additionally composes as a cascaded prepass: a square layered shadow map array (one cascade
+  per layer), per-cascade depth-only record lists validated against the layer count, and a
+  declared depth-texture-array slot sampled per record through `ShadowSource`, with cascade
+  policy (splits, light matrices, texel snapping, bias, selection) deliberately
+  application-owned per the [material contract](material-contract.md). Postprocess targets
+  additionally accept a validated render scale (25 through 200 percent) that decouples the
+  offscreen scene extent from the presentable extent, with the existing fullscreen pass
+  resampling through its linear sampler.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
   dependency-tree, size, and clean-build measurements are recorded in the

@@ -156,9 +156,36 @@ Sampling a map no pass has rendered is rejected by name before the frame token i
 the rejection cannot strand an acquired image. `mulciber-shader` records `texture_depth_2d`
 and `sampler_comparison` bindings as their own interface kinds inside the unchanged `MULSHDR2`
 container: existing artifacts stay valid, and shadow modules require the paired crate.
-Arbitrary pass graphs, color render-to-texture, multiple shadow passes per submission, and
-textured cutout shadow casters stay closed until a slice forces them. Recorded in the
+Arbitrary pass graphs, color render-to-texture beyond the postprocess recipe, and textured
+cutout shadow casters stay closed until a slice forces them. Recorded in the
 [material contract](material-contract.md).
+
+Amended 2026-07-21 for cascaded shadow maps, keeping cascade policy application-owned per the
+engine's app-owns-the-bytes stance: `Device::create_shadow_map_array` creates a square layered
+`D32` target (one through eight layers, one cascade per layer, same extent cap);
+`SceneSubmission.shadow` became `ShadowPrepass` — `Single` wrapping the existing `ShadowPass`
+unchanged, `Cascaded` carrying the layered map plus one record list per layer in layer order,
+list count validated against the layer count, an empty list still clearing its layer. Records
+carry their cascade's light matrix in their existing uniform bytes, so the engine never sees a
+split scheme, fitted matrix, or bias policy. Material pipelines may declare a
+`DepthTextureArray` slot instead of `DepthTexture` (at most one depth-texture slot of either
+kind), fed per record through `ShadowSource::Map`/`ShadowSource::Array` with kind mismatches
+rejected by name; `mulciber-shader` records `texture_depth_2d_array` as interface kind six in
+the unchanged container. Per-cascade resolutions, engine-side caster culling, and engine-side
+cascade selection or blending stay deliberately closed.
+
+## Render scale
+
+Decided as a property of postprocess targets rather than a per-frame toggle, reusing the
+existing two-pass recipe as the upsample path. `RenderScale` validates a percent (25 through
+200, `NATIVE` at 100); `Device::create_scaled_postprocess_targets` sizes the offscreen scene
+color, depth, and multisample storage to the scaled extent (computed centrally, flooring each
+axis at one texel) while presentation and target/frame generation matching stay at the surface
+extent, and the fixed fullscreen pass resamples through its existing linear sampler. Changing
+scale means creating replacement targets, exactly like reacting to a surface reconfiguration.
+Scales above native supersample. Sharpening or reconstruction filters beyond linear resampling
+and scaling of the direct (non-postprocessed) output stay open until a slice forces them.
+Recorded in the [postprocess contract](postprocess-contract.md).
 
 ## Read-only storage and skinned records
 

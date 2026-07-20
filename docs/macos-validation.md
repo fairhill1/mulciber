@@ -1,5 +1,41 @@
 # macOS AppKit/Metal validation runbook
 
+## Cascaded shadow maps and render scale checkpoint
+
+On 2026-07-20/21, on the working tree committed as `34b8b13` and `687539e`, the cascaded
+shadow-map and render-scale slices (see the [material contract](material-contract.md) and
+[postprocess contract](postprocess-contract.md)) ran for the first time on the Apple M2 /
+macOS 15.7.7 machine. `mulciber-shader` natively regenerated the changed `lava` artifacts for
+the new `texture_depth_2d_array` interface kind — `lava.metal.shaderbin` (SHA-256
+`8e941138aadf56bd9573456633542e635fa374e10a84908fa9f14ce0679da8bf`) and, with the
+repository-pinned SPIRV-Tools, `lava.vulkan.shaderbin` (SHA-256
+`73e44b97cf98034dc31fb05e280be1ed60aabba5b6a07fc6b810a9fc94d87771`). The structural preflight
+(fmt, workspace check, clippy `-D warnings`, workspace tests, `git diff --check`) passed
+natively, and the Vulkan backend's peer implementation additionally passed `cargo check` and
+clippy `-D warnings` for the `x86_64-pc-windows-msvc` target from this host.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 58 Metal cases — including the
+six new cases: zero-layer and over-limit shadow-map-array creation, a single-map source on an
+array-declaring pipeline, a cascade record-list count mismatch, and out-of-range render scales
+all rejected by name, plus scaled postprocess-target creation and destruction — with exit zero
+and no diagnostic beyond the validation-enabled banner. The reworked shadowed-presentation
+case renders a two-layer cascaded prepass whose array the floor material samples, while the
+skinned case keeps the single-map `ShadowPrepass::Single` path exercised.
+
+The cascaded `mulciber-material-scene` — every caster rendering once per cascade into the
+three-layer 1024 array under per-cascade fitted, texel-snapped light matrices, the lava floor
+selecting its cascade per fragment and sampling through `textureSampleCompareLevel` — ran
+under `MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly ten seconds of
+frames, and closed through an agent-scripted titlebar close, exiting zero with no validation
+output beyond the banner. Agent-captured screenshots showed the connected crystal and kelp
+shadows moving on the floor with no visible seams where the cascade boundaries cross it. The
+half-scale `mulciber-postprocess-cube` ran the same way, printing the 50-percent selection,
+and its screenshot showed the characteristic linear upsample of a half-resolution scene inside
+a native-resolution window. This is agent-driven automated execution and screenshot evidence,
+not an operator visual pass; resize and broader lifecycle behavior under the new paths, and
+all physical Vulkan evidence (validation layers, visuals, both new paths), remain outstanding
+on the Linux/Windows machines.
+
 ## Read-only storage (skinning) checkpoint
 
 On 2026-07-20, at committed revision `97c5a13`, the read-only storage slot (see the

@@ -22,6 +22,18 @@ and the application recreates postprocess targets when an acquired frame reports
 information. Backends reclaim superseded target storage under the same completion rules as the
 existing direct-to-surface targets.
 
+`Device::create_scaled_postprocess_targets` additionally accepts a `RenderScale` — a validated
+percent of the presentable extent, 25 through 200, `NATIVE` at 100 — that sizes all three
+offscreen storages to the scaled extent (computed centrally, flooring each axis at one texel)
+while presentation and generation matching stay at the surface extent. The scene pass renders at
+the scaled extent — Metal implicitly through attachment size, Vulkan through a matching render
+area, viewport, and scissor — and the fixed fullscreen pass resamples to native resolution
+through its existing linear sampler, so sub-native scales trade scene-pass fill cost for
+sharpness and scales above native supersample. The scale is a property of the created targets:
+changing it means creating replacement targets, exactly like reacting to a surface
+reconfiguration. `PostprocessTargets::render_scale` reports it, and the plain constructor is the
+native-scale special case.
+
 `Device::create_postprocess_pipeline` loads `post_vertex` and `post_fragment` from the same offline
 artifact as the scene pipeline. The post pipeline is always single-sampled and samples resolved
 scene color through the shader's texture and sampler bindings.

@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
-    PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor,
-    WindowEvent, WindowMetrics, WindowRevision,
+    PlatformError, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
+    WindowMetrics, WindowRevision,
 };
 
 type Handle = *mut c_void;
@@ -27,8 +27,15 @@ type Atom = u16;
 
 const CS_OWNDC: u32 = 0x0020;
 const CW_USEDEFAULT: c_int = i32::MIN;
+const HID_USAGE_GENERIC_MOUSE: u16 = 0x02;
+const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
+const HTCLIENT: u16 = 0x0001;
 const IDC_ARROW: *const u16 = 32_512_usize as *const u16;
+const MOUSE_MOVE_ABSOLUTE: u16 = 0x0001;
 const PM_REMOVE: u32 = 0x0001;
+const RID_INPUT: u32 = 0x1000_0003;
+const RIDEV_REMOVE: u32 = 0x0000_0001;
+const RIM_TYPEMOUSE: u32 = 0;
 const SW_SHOW: c_int = 5;
 const VK_CAPITAL: usize = 0x14;
 const VK_CONTROL: usize = 0x11;
@@ -43,6 +50,7 @@ const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
 const WM_ENTERSIZEMOVE: u32 = 0x0231;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
+const WM_INPUT: u32 = 0x00FF;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
 const WM_KILLFOCUS: u32 = 0x0008;
@@ -53,11 +61,13 @@ const WM_MBUTTONUP: u32 = 0x0208;
 const WM_MOUSEHWHEEL: u32 = 0x020E;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_MOUSEWHEEL: u32 = 0x020A;
+const WM_MOVE: u32 = 0x0003;
 const WM_NCCREATE: u32 = 0x0081;
 const WM_NCDESTROY: u32 = 0x0082;
 const WM_QUIT: u32 = 0x0012;
 const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_RBUTTONUP: u32 = 0x0205;
+const WM_SETCURSOR: u32 = 0x0020;
 const WM_SETFOCUS: u32 = 0x0007;
 const WM_SIZE: u32 = 0x0005;
 const WM_SYSCHAR: u32 = 0x0106;
@@ -116,6 +126,45 @@ struct Rect {
     bottom: i32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawInputDevice {
+    usage_page: u16,
+    usage: u16,
+    flags: u32,
+    target: Hwnd,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawInputHeader {
+    kind: u32,
+    size: u32,
+    device: Handle,
+    w_param: Wparam,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawMouse {
+    flags: u16,
+    reserved: u16,
+    button_flags: u16,
+    button_data: u16,
+    raw_buttons: u32,
+    last_x: i32,
+    last_y: i32,
+    extra_information: u32,
+}
+
+/// The mouse-shaped prefix of Win32's variable-length `RAWINPUT` payload.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct RawInputMouse {
+    header: RawInputHeader,
+    mouse: RawMouse,
+}
+
 type WindowProcedure = Option<unsafe extern "system" fn(Hwnd, u32, Wparam, Lparam) -> Lresult>;
 
 #[repr(C)]
@@ -159,6 +208,8 @@ unsafe extern "system" {
 #[link(name = "user32")]
 unsafe extern "system" {
     fn AdjustWindowRectEx(rect: *mut Rect, style: u32, menu: i32, extended_style: u32) -> i32;
+    fn ClientToScreen(window: Hwnd, point: *mut Point) -> i32;
+    fn ClipCursor(rect: *const Rect) -> i32;
     fn CreateWindowExW(
         extended_style: u32,
         class_name: *const u16,
@@ -179,15 +230,25 @@ unsafe extern "system" {
     fn GetCapture() -> Hwnd;
     fn GetClientRect(window: Hwnd, rect: *mut Rect) -> i32;
     fn GetKeyState(virtual_key: c_int) -> i16;
+    fn GetRawInputData(
+        input: Handle,
+        command: u32,
+        data: *mut c_void,
+        size: *mut u32,
+        header_size: u32,
+    ) -> u32;
     fn GetWindowLongPtrW(window: Hwnd, index: c_int) -> isize;
     fn IsWindow(window: Hwnd) -> i32;
     fn KillTimer(window: Hwnd, event: usize) -> i32;
     fn LoadCursorW(instance: Hinstance, cursor_name: *const u16) -> Hcursor;
     fn PeekMessageW(message: *mut Msg, window: Hwnd, min: u32, max: u32, remove: u32) -> i32;
     fn RegisterClassExW(class: *const WindowClassExW) -> Atom;
+    fn RegisterRawInputDevices(devices: *const RawInputDevice, count: u32, size: u32) -> i32;
     fn ReleaseCapture() -> i32;
     fn ScreenToClient(window: Hwnd, point: *mut Point) -> i32;
     fn SetCapture(window: Hwnd) -> Hwnd;
+    fn SetCursor(cursor: Hcursor) -> Hcursor;
+    fn SetCursorPos(x: c_int, y: c_int) -> i32;
     fn ShowWindow(window: Hwnd, command: c_int) -> i32;
     fn SetTimer(window: Hwnd, event: usize, milliseconds: u32, callback: *const c_void) -> usize;
     fn SetWindowLongPtrW(window: Hwnd, index: c_int, value: isize) -> isize;
@@ -366,6 +427,9 @@ struct WindowState {
     last_modifiers: Cell<Modifiers>,
     captured_pointer_buttons: Cell<u16>,
     last_pointer_position: Cell<LogicalPosition>,
+    capture_requested: Cell<bool>,
+    capture_engaged: Cell<bool>,
+    last_raw_absolute: Cell<Option<(i32, i32)>>,
     close_requested: Cell<bool>,
     close_reported: Cell<bool>,
 }
@@ -387,6 +451,9 @@ impl WindowState {
             last_modifiers: Cell::new(Modifiers::default()),
             captured_pointer_buttons: Cell::new(0),
             last_pointer_position: Cell::new(LogicalPosition::default()),
+            capture_requested: Cell::new(false),
+            capture_engaged: Cell::new(false),
+            last_raw_absolute: Cell::new(None),
             close_requested: Cell::new(false),
             close_reported: Cell::new(false),
         }
@@ -523,27 +590,46 @@ impl Window {
 
     /// Requests how this window interacts with the system pointer.
     ///
+    /// [`CursorMode::Captured`] hides the cursor through the window's `WM_SETCURSOR` handling,
+    /// confines it to the client area with `ClipCursor`, keeps it recentered, and reports
+    /// raw-input motion as [`InputEvent::PointerDelta`] instead of absolute positions. Capture
+    /// engages while the window is focused, releases on focus loss, and is best-effort reapplied
+    /// on focus gain; requesting it on an unfocused window stores the intent for the next gain.
+    ///
     /// # Errors
     ///
-    /// Pointer capture is not yet implemented on the Win32 backend, so requesting
-    /// [`CursorMode::Captured`] reports [`PlatformErrorKind::Unsupported`]; requesting the
-    /// already-active [`CursorMode::Normal`] succeeds so portable release paths stay uniform.
-    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    /// Returns a converted platform error when raw-input registration or cursor confinement
+    /// fails while engaging capture on a focused window.
     pub fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
         match mode {
-            CursorMode::Normal => Ok(()),
-            CursorMode::Captured => Err(PlatformError::with_kind(
-                PlatformErrorKind::Unsupported,
-                "pointer capture is not yet implemented on the Win32 backend",
-            )),
+            CursorMode::Captured => {
+                if self.state.capture_requested.get() {
+                    return Ok(());
+                }
+                if self.state.focused.get() {
+                    // SAFETY: The window handle is live on its creating thread.
+                    unsafe { engage_pointer_capture(self.handle.as_ptr(), &self.state)? };
+                }
+                self.state.capture_requested.set(true);
+                Ok(())
+            }
+            CursorMode::Normal => {
+                self.state.capture_requested.set(false);
+                // SAFETY: Clip and raw-input registration belong to this thread's live window.
+                unsafe { release_pointer_capture(&self.state) };
+                Ok(())
+            }
         }
     }
 
-    /// Returns the requested cursor mode, which stays [`CursorMode::Normal`] on this backend.
+    /// Returns the requested cursor mode, independent of whether focus currently suspends it.
     #[must_use]
-    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
     pub fn cursor_mode(&self) -> CursorMode {
-        CursorMode::Normal
+        if self.state.capture_requested.get() {
+            CursorMode::Captured
+        } else {
+            CursorMode::Normal
+        }
     }
 
     fn is_open(&self) -> bool {
@@ -600,8 +686,11 @@ impl Drop for WindowLease {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        // SAFETY: These resources were created by this value and are released once.
+        // SAFETY: These resources were created by this value and are released once. The cursor
+        // clip and raw-input registration are process-global, so they are released even when an
+        // external client already destroyed the native window.
         unsafe {
+            release_pointer_capture(&self.state);
             if IsWindow(self.handle.as_ptr()) != 0 {
                 DestroyWindow(self.handle.as_ptr());
             }
@@ -664,10 +753,19 @@ unsafe extern "system" fn window_procedure(
         WM_SIZE => {
             // SAFETY: Size notifications are synchronous on this thread, and callback registration
             // remains live throughout the nested Win32 sizing loop.
-            if let Some(state) = unsafe { state_for_window(window) }
-                && state.in_size_move.get()
-            {
-                unsafe { dispatch_window_events(window, state) };
+            if let Some(state) = unsafe { state_for_window(window) } {
+                // SAFETY: The clip rectangle tracks this live window's moved client bounds.
+                unsafe { reclip_captured_cursor(window, state) };
+                if state.in_size_move.get() {
+                    unsafe { dispatch_window_events(window, state) };
+                }
+            }
+            0
+        }
+        WM_MOVE => {
+            if let Some(state) = unsafe { state_for_window(window) } {
+                // SAFETY: The clip rectangle tracks this live window's moved client bounds.
+                unsafe { reclip_captured_cursor(window, state) };
             }
             0
         }
@@ -750,20 +848,47 @@ unsafe fn handle_input_message(
         WM_CHAR | WM_SYSCHAR => Some(0),
         WM_MOUSEMOVE => {
             if let Some(state) = state {
-                let position = pointer_position(l_param);
-                state.last_pointer_position.set(position);
-                // SAFETY: Pointer messages are synchronous while pump registration is live.
-                unsafe {
-                    dispatch_input_event(
-                        state,
-                        InputEvent::PointerMoved {
-                            position,
-                            modifiers: win32_modifiers(),
-                        },
-                    );
+                if state.capture_engaged.get() {
+                    // Deltas come from WM_INPUT; absolute motion only recenters the pinned cursor.
+                    // SAFETY: The warp targets this live window's client center.
+                    unsafe { recenter_captured_cursor(window, l_param) };
+                } else {
+                    let position = pointer_position(l_param);
+                    state.last_pointer_position.set(position);
+                    // SAFETY: Pointer messages are synchronous while pump registration is live.
+                    unsafe {
+                        dispatch_input_event(
+                            state,
+                            InputEvent::PointerMoved {
+                                position,
+                                modifiers: win32_modifiers(),
+                            },
+                        );
+                    }
                 }
             }
             Some(0)
+        }
+        WM_INPUT => {
+            if let Some(state) = state
+                && state.capture_engaged.get()
+            {
+                // SAFETY: The raw-input handle in l_param is valid for this synchronous message.
+                unsafe { dispatch_raw_pointer_delta(state, l_param) };
+            }
+            // SAFETY: Raw-input messages require default processing for system cleanup.
+            Some(unsafe { DefWindowProcW(window, message, w_param, l_param) })
+        }
+        WM_SETCURSOR => {
+            if let Some(state) = state
+                && state.capture_engaged.get()
+                && low_word(l_param.cast_unsigned()) == HTCLIENT
+            {
+                // SAFETY: A null cursor hides the pointer over the captured client area.
+                unsafe { SetCursor(ptr::null_mut()) };
+                return Some(1);
+            }
+            None
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MBUTTONDOWN
         | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
@@ -809,13 +934,222 @@ unsafe fn dispatch_focus_transition(window: Hwnd, state: &WindowState) {
     if focused {
         // SAFETY: This is the window thread, so the thread-local key state is authoritative.
         unsafe { dispatch_modifiers_if_changed(state, win32_modifiers()) };
+        if state.capture_requested.get() && !state.capture_engaged.get() {
+            // Reapplying a stored capture intent is best-effort; a failure leaves the intent
+            // pending for the next focus gain.
+            // SAFETY: The window handle is live on its creating thread.
+            let _ = unsafe { engage_pointer_capture(window, state) };
+        }
     } else {
         state.captured_pointer_buttons.set(0);
         state.last_modifiers.set(Modifiers::default());
+        // SAFETY: The clip and raw-input registration belong to this thread's window; the stored
+        // capture intent survives for reapplication on the next focus gain.
+        unsafe { release_pointer_capture(state) };
         // SAFETY: Capture, if present, belongs to this window on the current thread.
         if unsafe { GetCapture() } == window {
             unsafe { ReleaseCapture() };
         }
+    }
+}
+
+/// Registers this window for raw mouse input, confines the cursor to the client area, and pins
+/// it to the center. The cursor itself is hidden by the window's `WM_SETCURSOR` handling while
+/// capture is engaged, so no global show-counter state is disturbed.
+unsafe fn engage_pointer_capture(window: Hwnd, state: &WindowState) -> Result<(), PlatformError> {
+    // SAFETY: The window handle is live and the bounds query writes only local values.
+    let bounds = unsafe { client_bounds_on_screen(window)? };
+    let device = RawInputDevice {
+        usage_page: HID_USAGE_PAGE_GENERIC,
+        usage: HID_USAGE_GENERIC_MOUSE,
+        flags: 0,
+        target: window,
+    };
+    // SAFETY: The device array is one live element of the declared size.
+    if unsafe { RegisterRawInputDevices(&raw const device, 1, raw_input_device_size()) } == 0 {
+        return Err(last_error("RegisterRawInputDevices"));
+    }
+    // SAFETY: The rectangle is live for the call; a failure undoes the raw-input registration.
+    if unsafe { ClipCursor(&raw const bounds) } == 0 {
+        let error = last_error("ClipCursor");
+        // SAFETY: Removal targets the registration made above.
+        unsafe { unregister_raw_mouse() };
+        return Err(error);
+    }
+    // SAFETY: Centering is best-effort; the clip above already bounds the cursor.
+    unsafe {
+        SetCursorPos(
+            i32::midpoint(bounds.left, bounds.right),
+            i32::midpoint(bounds.top, bounds.bottom),
+        )
+    };
+    state.last_raw_absolute.set(None);
+    state.capture_engaged.set(true);
+    Ok(())
+}
+
+/// Releases the clip and raw-input registration if capture is engaged. The stored capture
+/// intent is untouched, so callers decide between suspension and full release.
+unsafe fn release_pointer_capture(state: &WindowState) {
+    if !state.capture_engaged.replace(false) {
+        return;
+    }
+    // SAFETY: A null rectangle removes this process's cursor confinement; removal targets the
+    // engage-time raw-input registration.
+    unsafe {
+        ClipCursor(ptr::null());
+        unregister_raw_mouse();
+    }
+}
+
+unsafe fn unregister_raw_mouse() {
+    let device = RawInputDevice {
+        usage_page: HID_USAGE_PAGE_GENERIC,
+        usage: HID_USAGE_GENERIC_MOUSE,
+        flags: RIDEV_REMOVE,
+        target: ptr::null_mut(),
+    };
+    // SAFETY: The device array is one live element of the declared size; removal requires a null
+    // target window.
+    unsafe { RegisterRawInputDevices(&raw const device, 1, raw_input_device_size()) };
+}
+
+fn raw_input_device_size() -> u32 {
+    u32::try_from(mem::size_of::<RawInputDevice>()).expect("RAWINPUTDEVICE size fits u32")
+}
+
+/// Re-derives the clip rectangle after the window moves or resizes while capture is engaged.
+unsafe fn reclip_captured_cursor(window: Hwnd, state: &WindowState) {
+    if !state.capture_engaged.get() {
+        return;
+    }
+    // SAFETY: The window is live; a failed bounds query leaves the previous clip in place.
+    if let Ok(bounds) = unsafe { client_bounds_on_screen(window) } {
+        // SAFETY: The rectangle is live for the call.
+        unsafe { ClipCursor(&raw const bounds) };
+    }
+}
+
+/// Warps the hidden cursor back to the client center so absolute motion cannot reach the clip
+/// edge; the warp's own echo motion lands exactly on the center and is filtered here.
+unsafe fn recenter_captured_cursor(window: Hwnd, l_param: Lparam) {
+    let mut client = Rect::default();
+    // SAFETY: The window is live and the rectangle is writable.
+    if unsafe { GetClientRect(window, &raw mut client) } == 0 {
+        return;
+    }
+    let mut center = Point {
+        x: (client.right - client.left) / 2,
+        y: (client.bottom - client.top) / 2,
+    };
+    let position = pointer_position(l_param);
+    if position == LogicalPosition::new(f64::from(center.x), f64::from(center.y)) {
+        return;
+    }
+    // SAFETY: The point converts against this live window; the warp itself is best-effort.
+    unsafe {
+        if ClientToScreen(window, &raw mut center) != 0 {
+            SetCursorPos(center.x, center.y);
+        }
+    }
+}
+
+unsafe fn client_bounds_on_screen(window: Hwnd) -> Result<Rect, PlatformError> {
+    let mut client = Rect::default();
+    // SAFETY: The window is live and the rectangle is writable.
+    if unsafe { GetClientRect(window, &raw mut client) } == 0 {
+        return Err(last_error("GetClientRect"));
+    }
+    if client.right <= client.left || client.bottom <= client.top {
+        return Err(PlatformError::new(
+            "pointer capture requires a non-empty client area",
+        ));
+    }
+    let mut top_left = Point {
+        x: client.left,
+        y: client.top,
+    };
+    let mut bottom_right = Point {
+        x: client.right,
+        y: client.bottom,
+    };
+    // SAFETY: Both points are writable and convert against this live window.
+    if unsafe { ClientToScreen(window, &raw mut top_left) } == 0
+        || unsafe { ClientToScreen(window, &raw mut bottom_right) } == 0
+    {
+        return Err(last_error("ClientToScreen"));
+    }
+    Ok(Rect {
+        left: top_left.x,
+        top: top_left.y,
+        right: bottom_right.x,
+        bottom: bottom_right.y,
+    })
+}
+
+/// Reads one raw mouse packet and reports its motion as a pointer delta.
+unsafe fn dispatch_raw_pointer_delta(state: &WindowState, l_param: Lparam) {
+    let mut data = RawInputMouse::default();
+    let mut size = u32::try_from(mem::size_of::<RawInputMouse>()).expect("RAWINPUT size fits u32");
+    let header_size =
+        u32::try_from(mem::size_of::<RawInputHeader>()).expect("RAWINPUTHEADER size fits u32");
+    // SAFETY: The buffer is writable at the declared size and the handle came from this message.
+    let copied = unsafe {
+        GetRawInputData(
+            l_param as Handle,
+            RID_INPUT,
+            (&raw mut data).cast(),
+            &raw mut size,
+            header_size,
+        )
+    };
+    if copied == u32::MAX || data.header.kind != RIM_TYPEMOUSE {
+        return;
+    }
+    let (delta, absolute) = raw_mouse_delta(
+        data.mouse.flags,
+        data.mouse.last_x,
+        data.mouse.last_y,
+        state.last_raw_absolute.get(),
+    );
+    state.last_raw_absolute.set(absolute);
+    if let Some((delta_x, delta_y)) = delta {
+        // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+        unsafe {
+            dispatch_input_event(
+                state,
+                InputEvent::PointerDelta {
+                    delta_x,
+                    delta_y,
+                    modifiers: win32_modifiers(),
+                },
+            );
+        }
+    }
+}
+
+/// A raw-motion delta to report plus the absolute sample to retain for differencing.
+type RawMouseMotion = (Option<(f64, f64)>, Option<(i32, i32)>);
+
+/// Converts one raw mouse sample into a motion delta plus the absolute sample to retain.
+///
+/// Relative devices report deltas directly. Absolute devices (remote desktop, some tablets)
+/// are differenced against the previous sample; the first sample only establishes the baseline.
+fn raw_mouse_delta(
+    flags: u16,
+    x: i32,
+    y: i32,
+    previous_absolute: Option<(i32, i32)>,
+) -> RawMouseMotion {
+    if flags & MOUSE_MOVE_ABSOLUTE == 0 {
+        let delta = (x != 0 || y != 0).then(|| (f64::from(x), f64::from(y)));
+        (delta, None)
+    } else {
+        let delta = previous_absolute.and_then(|(previous_x, previous_y)| {
+            let (delta_x, delta_y) = (x - previous_x, y - previous_y);
+            (delta_x != 0 || delta_y != 0).then(|| (f64::from(delta_x), f64::from(delta_y)))
+        });
+        (delta, Some((x, y)))
     }
 }
 
@@ -1317,8 +1651,8 @@ pub mod integration {
 #[cfg(test)]
 mod tests {
     use super::{
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_XBUTTONDOWN, WindowSlot, metrics_transition,
-        pointer_button, pointer_position, win32_key_code,
+        MOUSE_MOVE_ABSOLUTE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_XBUTTONDOWN, WindowSlot,
+        metrics_transition, pointer_button, pointer_position, raw_mouse_delta, win32_key_code,
     };
     use crate::{
         ButtonState, KeyCode, LogicalPosition, PhysicalExtent, PointerButton, WindowEvent,
@@ -1372,6 +1706,28 @@ mod tests {
         assert_eq!(
             pointer_position(isize::try_from(packed).expect("packed coordinates fit LPARAM")),
             LogicalPosition::new(-11.0, -7.0)
+        );
+    }
+
+    #[test]
+    fn relative_raw_motion_reports_deltas_and_keeps_no_absolute_baseline() {
+        assert_eq!(raw_mouse_delta(0, 3, -2, None), (Some((3.0, -2.0)), None));
+        assert_eq!(raw_mouse_delta(0, 0, 0, Some((5, 5))), (None, None));
+    }
+
+    #[test]
+    fn absolute_raw_motion_differences_against_the_previous_sample() {
+        assert_eq!(
+            raw_mouse_delta(MOUSE_MOVE_ABSOLUTE, 100, 40, None),
+            (None, Some((100, 40)))
+        );
+        assert_eq!(
+            raw_mouse_delta(MOUSE_MOVE_ABSOLUTE, 103, 38, Some((100, 40))),
+            (Some((3.0, -2.0)), Some((103, 38)))
+        );
+        assert_eq!(
+            raw_mouse_delta(MOUSE_MOVE_ABSOLUTE, 103, 38, Some((103, 38))),
+            (None, Some((103, 38)))
         );
     }
 

@@ -232,8 +232,10 @@ fallback, and acquired-frame abandonment/recovery controls.
   automated runs on the KDE tier on 2026-07-20 — including an XTEST-driven X11 run with the
   pointer measurably pinned to the content center while captured — followed the same day by
   physical human verification of both paths at committed `3075d0e` (relative look, Escape
-  restore, focus-loss release, teardown while captured); Win32 still reports explicit
-  `Unsupported` (see the [input contract](input-contract.md)).
+  restore, focus-loss release, teardown while captured); the Win32 implementation (raw-input
+  `WM_INPUT` deltas, `ClipCursor` confinement, `WM_SETCURSOR` hiding, focus release/reapply)
+  landed 2026-07-20 cross-checked from Linux but has never executed on Windows (see the
+  [input contract](input-contract.md)).
 
 Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
 `mulciber-platform` and drive both full native probes. The extracted path passed the automated

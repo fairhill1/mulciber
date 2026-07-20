@@ -237,6 +237,18 @@ thread-message dispatch, client metrics, nested live-resize redraw callbacks, an
 surface handles into the platform crate. Both Vulkan probes consume that implementation and
 cross-compile and lint cleanly for `x86_64-pc-windows-msvc` from Linux.
 
+On 2026-07-20 the Win32 pointer-capture implementation landed in `mulciber-platform` 0.4.2:
+raw-input `WM_INPUT` deltas with absolute-mode differencing, `ClipCursor` confinement re-derived
+on move and resize, `WM_SETCURSOR` hiding, client-center pinning with warp-echo filtering,
+focus-loss release with best-effort refocus reapply, and unconditional teardown release of the
+process-global clip. It cross-compiles and lints cleanly for `x86_64-pc-windows-msvc` from Linux
+and has never executed on Windows. The next Windows session must run `mulciber-input-cube` and
+physically exercise: capture engage with a hidden, pinned cursor and relative look; Escape
+restore; Alt-Tab release and refocus reapply; window close while captured with the cursor and
+clip verifiably restored; and, where a remote-desktop session is available, the absolute-mode
+delta scaling, which is implemented as raw sample differencing and unverified. Record the
+results here and in the input contract before claiming any Win32 capture support.
+
 The extracted path was physically validated on 2026-07-17 at revision `044ae86` on Windows 11 / RTX
 3060 Ti. The preferred automated matrix passed with Vulkan loader/validation 1.4.350, including the
 finite and automated-resize runs, native and forced acquired-frame abandonment recovery, the

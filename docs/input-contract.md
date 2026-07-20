@@ -71,8 +71,14 @@ restores it through `wp_cursor_shape_manager_v1`; when the compositor lacks any 
 protocols, the capture request reports `Unsupported` naming the missing global. The X11
 implementation grabs the pointer confined to the window with a fully transparent pixmap cursor and
 reports warp-to-center deltas, filtering the warp's own echo motion; the grab is released on focus
-loss and best-effort reapplied on focus gain. Win32 currently reports `Unsupported`; its
-implementation follows when that tier can be physically exercised.
+loss and best-effort reapplied on focus gain. The Win32 implementation registers the window for
+raw mouse input and reports `WM_INPUT` motion as deltas (absolute-mode samples, as remote
+desktop delivers, are differenced against the previous sample), confines the hidden cursor to
+the screen-space client rectangle with `ClipCursor` re-derived on move and resize, hides it
+through `WM_SETCURSOR` over the captured client area, and keeps it pinned to the client center
+with warp-echo filtering, releasing on focus loss and best-effort reapplying on focus gain like
+the X11 peer. It cross-compiles and lints cleanly for `x86_64-pc-windows-msvc` from Linux and is
+otherwise completely unexercised: no Windows machine has executed this code.
 
 `mulciber-input-cube` dogfoods the contract (C toggles capture into relative cube look, Escape
 releases), and `comparisons/wgpu-input-cube` implements the equivalent behavior the surveyed way:
@@ -86,8 +92,8 @@ XTEST-driven X11 run whose pointer stayed pinned at the measured content center 
 motion and moved freely after Escape — in the [Linux runbook](linux-validation.md). Later that day
 the operator physically verified capture on both Linux paths at committed `3075d0e`: relative look
 with a hidden, escape-proof pointer, Escape restoring the cursor, Alt-Tab releasing the capture
-cleanly, and Wayland window teardown from the captured state. The Win32 implementation remains
-outstanding.
+cleanly, and Wayland window teardown from the captured state. The Win32 implementation has no
+execution evidence of any kind; its first Windows session must treat it as untested code.
 
 ## AppKit implementation checkpoint
 
@@ -119,6 +125,15 @@ capture until every pressed button is released; capture loss synthesizes the mis
 the public event stream. Wheel messages convert their screen-relative coordinates to the client
 space and retain coarse wheel-step units. Focus changes are retained even when they occur between
 pump callbacks, and focus loss clears internal pointer capture.
+
+Pointer capture landed 2026-07-20 and is implemented but unexercised: `CursorMode::Captured`
+registers raw mouse input targeted at the window, clips the cursor to the screen-space client
+rectangle, hides it via `WM_SETCURSOR`, recenters it against absolute `WM_MOUSEMOVE` positions
+with warp-echo filtering, and emits `PointerDelta` from `WM_INPUT` motion. Focus loss releases
+the clip and raw-input registration while preserving the stored intent; window teardown releases
+the process-global clip unconditionally, even after external native destruction. The raw-delta
+differencing (relative and absolute modes) is covered by unit tests that have compiled for the
+msvc target but never run on Windows. No part of this path has executed on a Windows machine.
 
 ## Wayland implementation checkpoint
 
@@ -183,7 +198,10 @@ Before stabilizing names or snapshot behavior:
 2. complete the remaining Wayland and X11 physical coverage (modifier transitions, trackpad
    versus wheel units, repeats against the configured cadence) on the KDE tier, then repeat the
    slices on a non-KDE compositor and native Xorg;
-3. implement Win32 pointer capture so the capture contract has all four backends;
+3. physically exercise the implemented Win32 pointer capture (engage, relative look, Escape
+   release, focus-loss release with refocus reapply, teardown while captured, and the
+   absolute-mode delta path that remote desktop exercises) so the capture contract has evidence
+   on all four backends;
 4. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
    application ergonomics with the equivalent `wgpu-input-cube`, direct native stacks, and SDL3;
    and

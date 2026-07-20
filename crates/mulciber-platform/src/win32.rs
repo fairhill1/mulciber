@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
     PlatformError, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
-    WindowMetrics, WindowRevision,
+    WindowMetrics, WindowMode, WindowRevision,
 };
 
 type Handle = *mut c_void;
@@ -88,6 +88,13 @@ const WS_MINIMIZEBOX: u32 = 0x0002_0000;
 const WS_OVERLAPPED: u32 = 0;
 const WS_SYSMENU: u32 = 0x0008_0000;
 const WS_THICKFRAME: u32 = 0x0004_0000;
+const GWL_STYLE: c_int = -16;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_NOOWNERZORDER: u32 = 0x0200;
+const MONITOR_DEFAULT_TO_NEAREST: u32 = 2;
+/// The decoration bits removed for borderless fullscreen and restored on exit.
+const WINDOW_DECORATION_STYLE: u32 =
+    WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 
 const WINDOW_STYLE: u32 = WS_OVERLAPPED
     | WS_CAPTION
@@ -125,6 +132,18 @@ struct Rect {
     right: i32,
     bottom: i32,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct MonitorInfo {
+    size: u32,
+    monitor: Rect,
+    work: Rect,
+    flags: u32,
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const MONITOR_INFO_SIZE: u32 = mem::size_of::<MonitorInfo>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -252,6 +271,18 @@ unsafe extern "system" {
     fn ShowWindow(window: Hwnd, command: c_int) -> i32;
     fn SetTimer(window: Hwnd, event: usize, milliseconds: u32, callback: *const c_void) -> usize;
     fn SetWindowLongPtrW(window: Hwnd, index: c_int, value: isize) -> isize;
+    fn GetWindowRect(window: Hwnd, rect: *mut Rect) -> i32;
+    fn SetWindowPos(
+        window: Hwnd,
+        insert_after: Hwnd,
+        x: c_int,
+        y: c_int,
+        width: c_int,
+        height: c_int,
+        flags: u32,
+    ) -> i32;
+    fn MonitorFromWindow(window: Hwnd, flags: u32) -> Handle;
+    fn GetMonitorInfoW(monitor: Handle, info: *mut MonitorInfo) -> i32;
     fn TranslateMessage(message: *const Msg) -> i32;
     fn UnregisterClassW(class_name: *const u16, instance: Hinstance) -> i32;
 }
@@ -432,6 +463,8 @@ struct WindowState {
     last_raw_absolute: Cell<Option<(i32, i32)>>,
     close_requested: Cell<bool>,
     close_reported: Cell<bool>,
+    fullscreen_requested: Cell<bool>,
+    saved_window_rect: Cell<Option<Rect>>,
 }
 
 impl WindowState {
@@ -456,6 +489,8 @@ impl WindowState {
             last_raw_absolute: Cell::new(None),
             close_requested: Cell::new(false),
             close_reported: Cell::new(false),
+            fullscreen_requested: Cell::new(false),
+            saved_window_rect: Cell::new(None),
         }
     }
 }
@@ -629,6 +664,105 @@ impl Window {
             CursorMode::Captured
         } else {
             CursorMode::Normal
+        }
+    }
+
+    /// Requests whether this window occupies its current display or shares the desktop.
+    ///
+    /// Fullscreen is the borderless path: the windowed placement is saved, the decoration style
+    /// bits are removed, and the window is sized to its current monitor; leaving fullscreen
+    /// restores both. Win32 applies the transition synchronously within this call, and the
+    /// resulting client-extent change reaches the application through the ordinary metrics
+    /// events.
+    ///
+    /// # Errors
+    ///
+    /// Returns a native failure when reading the window placement, resolving the monitor, or
+    /// repositioning the window fails; the requested mode is left unchanged on failure.
+    pub fn set_window_mode(&self, mode: WindowMode) -> Result<(), PlatformError> {
+        let fullscreen = mode == WindowMode::Fullscreen;
+        if self.state.fullscreen_requested.get() == fullscreen {
+            return Ok(());
+        }
+        if fullscreen {
+            let mut saved = Rect::default();
+            // SAFETY: The window handle is live on its creating thread and the rect is writable.
+            if unsafe { GetWindowRect(self.handle.as_ptr(), &raw mut saved) } == 0 {
+                return Err(last_error("GetWindowRect"));
+            }
+            // SAFETY: The window handle is live; the nearest-monitor default always resolves.
+            let monitor =
+                unsafe { MonitorFromWindow(self.handle.as_ptr(), MONITOR_DEFAULT_TO_NEAREST) };
+            let mut info = MonitorInfo {
+                size: MONITOR_INFO_SIZE,
+                ..MonitorInfo::default()
+            };
+            // SAFETY: The monitor handle came from MonitorFromWindow and the info struct declares
+            // its own size.
+            if unsafe { GetMonitorInfoW(monitor, &raw mut info) } == 0 {
+                return Err(last_error("GetMonitorInfoW"));
+            }
+            // SAFETY: The window handle is live; style and position updates are ordinary window
+            // management on the creating thread, and SWP_FRAMECHANGED applies the new style.
+            unsafe {
+                let style = GetWindowLongPtrW(self.handle.as_ptr(), GWL_STYLE);
+                let borderless = style & !isize::try_from(WINDOW_DECORATION_STYLE).unwrap_or(0);
+                SetWindowLongPtrW(self.handle.as_ptr(), GWL_STYLE, borderless);
+                if SetWindowPos(
+                    self.handle.as_ptr(),
+                    ptr::null_mut(),
+                    info.monitor.left,
+                    info.monitor.top,
+                    info.monitor.right - info.monitor.left,
+                    info.monitor.bottom - info.monitor.top,
+                    SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+                ) == 0
+                {
+                    SetWindowLongPtrW(self.handle.as_ptr(), GWL_STYLE, style);
+                    return Err(last_error("SetWindowPos"));
+                }
+            }
+            self.state.saved_window_rect.set(Some(saved));
+        } else {
+            let saved = self.state.saved_window_rect.replace(None);
+            // SAFETY: The window handle is live; restoring the decorated style and the saved
+            // placement reverses the fullscreen transition above.
+            unsafe {
+                let style = GetWindowLongPtrW(self.handle.as_ptr(), GWL_STYLE);
+                let decorated = style | isize::try_from(WINDOW_DECORATION_STYLE).unwrap_or(0);
+                SetWindowLongPtrW(self.handle.as_ptr(), GWL_STYLE, decorated);
+                let placement = saved.unwrap_or(Rect {
+                    left: 0,
+                    top: 0,
+                    right: 1280,
+                    bottom: 720,
+                });
+                if SetWindowPos(
+                    self.handle.as_ptr(),
+                    ptr::null_mut(),
+                    placement.left,
+                    placement.top,
+                    placement.right - placement.left,
+                    placement.bottom - placement.top,
+                    SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+                ) == 0
+                {
+                    return Err(last_error("SetWindowPos"));
+                }
+            }
+        }
+        self.state.fullscreen_requested.set(fullscreen);
+        Ok(())
+    }
+
+    /// Returns the requested window mode; Win32 owns the borderless transition synchronously, so
+    /// requested and applied state cannot diverge.
+    #[must_use]
+    pub fn window_mode(&self) -> WindowMode {
+        if self.state.fullscreen_requested.get() {
+            WindowMode::Fullscreen
+        } else {
+            WindowMode::Windowed
         }
     }
 

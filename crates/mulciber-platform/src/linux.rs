@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use crate::{
     CursorMode, PhysicalExtent, PlatformError, PlatformErrorKind, PumpStatus, WindowDescriptor,
-    WindowEvent, WindowMetrics, WindowRevision,
+    WindowEvent, WindowMetrics, WindowMode, WindowRevision,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,6 +243,37 @@ impl Window {
         match &self.native {
             NativeWindow::Wayland(native) => native.cursor_mode(),
             NativeWindow::X11(native) => native.cursor_mode(),
+        }
+    }
+
+    /// Requests whether this window occupies its current display or shares the desktop.
+    ///
+    /// On Wayland the platform sends `xdg_toplevel.set_fullscreen`/`unset_fullscreen` and lets
+    /// the compositor pick the output; on X11 it sends the EWMH `_NET_WM_STATE` fullscreen
+    /// client message to the root window. Both display servers answer asynchronously — the
+    /// resulting extent change arrives through the ordinary metrics events, and the confirmed
+    /// state updates [`Self::window_mode`].
+    ///
+    /// # Errors
+    ///
+    /// Requesting [`WindowMode::Fullscreen`] reports [`PlatformErrorKind::Unsupported`] when the
+    /// X11 window manager does not advertise `_NET_WM_STATE_FULLSCREEN`, and a native failure
+    /// when the display server refuses the request; requesting [`WindowMode::Windowed`] succeeds
+    /// so portable release paths stay uniform.
+    pub fn set_window_mode(&self, mode: WindowMode) -> Result<(), PlatformError> {
+        match &self.native {
+            NativeWindow::Wayland(native) => native.set_window_mode(mode),
+            NativeWindow::X11(native) => native.set_window_mode(mode),
+        }
+    }
+
+    /// Returns the requested window mode, following display-server-confirmed transitions so a
+    /// toggle stays correct when the compositor enters or leaves fullscreen on its own.
+    #[must_use]
+    pub fn window_mode(&self) -> WindowMode {
+        match &self.native {
+            NativeWindow::Wayland(native) => native.window_mode(),
+            NativeWindow::X11(native) => native.window_mode(),
         }
     }
 

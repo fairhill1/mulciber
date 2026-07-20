@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use super::keymap;
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PlatformError,
-    PlatformErrorKind, PointerButton, ScrollDelta,
+    PlatformErrorKind, PointerButton, ScrollDelta, WindowMode,
 };
 
 #[repr(C)]
@@ -18,6 +18,14 @@ struct WlDisplay {
 #[repr(C)]
 struct WlSurface {
     _unused: [u8; 0],
+}
+
+/// The libwayland `wl_array` layout used by `xdg_toplevel.configure` to carry its state set.
+#[repr(C)]
+struct WlArray {
+    size: usize,
+    alloc: usize,
+    data: *mut c_void,
 }
 
 const WL_DISPLAY_GET_REGISTRY: u32 = 1;
@@ -34,6 +42,9 @@ const XDG_SURFACE_ACK_CONFIGURE: u32 = 4;
 const XDG_TOPLEVEL_DESTROY: u32 = 0;
 const XDG_TOPLEVEL_SET_TITLE: u32 = 2;
 const XDG_TOPLEVEL_SET_APP_ID: u32 = 3;
+const XDG_TOPLEVEL_SET_FULLSCREEN: u32 = 11;
+const XDG_TOPLEVEL_UNSET_FULLSCREEN: u32 = 12;
+const XDG_TOPLEVEL_STATE_FULLSCREEN: u32 = 2;
 const ZXDG_DECORATION_MANAGER_DESTROY: u32 = 0;
 const ZXDG_DECORATION_MANAGER_GET_TOPLEVEL_DECORATION: u32 = 1;
 const ZXDG_TOPLEVEL_DECORATION_DESTROY: u32 = 0;
@@ -754,6 +765,9 @@ struct WindowState {
     pending_height: Cell<u32>,
     pending_serial: Cell<u32>,
     configured: Cell<bool>,
+    pending_fullscreen: Cell<bool>,
+    fullscreen_confirmed: Cell<bool>,
+    fullscreen_requested: Cell<bool>,
     closed: Cell<bool>,
     decoration_mode: Cell<u32>,
     input: RefCell<VecDeque<InputEvent>>,
@@ -848,6 +862,9 @@ impl Window {
                 pending_height: Cell::new(height),
                 pending_serial: Cell::new(0),
                 configured: Cell::new(false),
+                pending_fullscreen: Cell::new(false),
+                fullscreen_confirmed: Cell::new(false),
+                fullscreen_requested: Cell::new(false),
                 closed: Cell::new(false),
                 decoration_mode: Cell::new(0),
                 input: RefCell::new(VecDeque::new()),
@@ -1226,6 +1243,11 @@ impl Window {
         }
         self.state.width.set(self.state.pending_width.get());
         self.state.height.set(self.state.pending_height.get());
+        crate::follow_confirmed_fullscreen(
+            &self.state.fullscreen_confirmed,
+            &self.state.fullscreen_requested,
+            self.state.pending_fullscreen.get(),
+        );
         self.state.configured.set(true);
     }
 
@@ -1342,6 +1364,56 @@ impl Window {
                 Ok(())
             }
         }
+    }
+
+    pub(super) fn window_mode(&self) -> WindowMode {
+        if self.state.fullscreen_requested.get() {
+            WindowMode::Fullscreen
+        } else {
+            WindowMode::Windowed
+        }
+    }
+
+    /// Requests fullscreen on the compositor-chosen output through `xdg_toplevel`; the compositor
+    /// answers with a configure whose state set confirms or ends fullscreen.
+    pub(super) fn set_window_mode(&self, mode: WindowMode) -> Result<(), PlatformError> {
+        let fullscreen = mode == WindowMode::Fullscreen;
+        if self.state.fullscreen_requested.replace(fullscreen) == fullscreen {
+            return Ok(());
+        }
+        let (opcode, operation) = if fullscreen {
+            (XDG_TOPLEVEL_SET_FULLSCREEN, "xdg_toplevel.set_fullscreen")
+        } else {
+            (XDG_TOPLEVEL_UNSET_FULLSCREEN, "xdg_toplevel.unset_fullscreen")
+        };
+        // SAFETY: The toplevel proxy is live; set_fullscreen's nullable output argument lets the
+        // compositor choose the window's current output, and unset_fullscreen takes no arguments.
+        unsafe {
+            if fullscreen {
+                wl_proxy_marshal_flags(
+                    self.toplevel,
+                    opcode,
+                    ptr::null(),
+                    wl_proxy_get_version(self.toplevel),
+                    0,
+                    ptr::null_mut::<c_void>(),
+                );
+            } else {
+                wl_proxy_marshal_flags(
+                    self.toplevel,
+                    opcode,
+                    ptr::null(),
+                    wl_proxy_get_version(self.toplevel),
+                    0,
+                );
+            }
+            // The request must reach the compositor without waiting for the next pump; a failed
+            // flush means the connection itself is unusable.
+            if wl_display_flush(self.display) < 0 {
+                return Err(self.display_error(operation));
+            }
+        }
+        Ok(())
     }
 
     /// Locks the pointer to the surface and switches motion delivery to relative deltas.
@@ -1661,7 +1733,7 @@ unsafe extern "C" fn xdg_toplevel_configure(
     _toplevel: *mut c_void,
     width: i32,
     height: i32,
-    _states: *mut c_void,
+    states: *mut c_void,
 ) {
     if data.is_null() {
         return;
@@ -1680,6 +1752,20 @@ unsafe extern "C" fn xdg_toplevel_configure(
             .filter(|height| *height != 0)
             .unwrap_or_else(|| state.height.get()),
     );
+    // Each configure carries the complete state set, so an absent fullscreen entry means the
+    // compositor considers the toplevel windowed.
+    let mut fullscreen = false;
+    if let Some(states) = ptr::NonNull::new(states.cast::<WlArray>()) {
+        // SAFETY: libwayland passes a live wl_array of u32 states for the callback's duration.
+        let states = unsafe { states.as_ref() };
+        if !states.data.is_null() {
+            // SAFETY: The array's data holds size/4 contiguous u32 protocol states.
+            let entries =
+                unsafe { std::slice::from_raw_parts(states.data.cast::<u32>(), states.size / 4) };
+            fullscreen = entries.contains(&XDG_TOPLEVEL_STATE_FULLSCREEN);
+        }
+    }
+    state.pending_fullscreen.set(fullscreen);
 }
 
 unsafe extern "C" fn xdg_toplevel_close(data: *mut c_void, _toplevel: *mut c_void) {

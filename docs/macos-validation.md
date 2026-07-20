@@ -748,6 +748,14 @@ exit code zero and no validation output. Record apparent resize lag, pacing anom
 artifacts even when the run otherwise passes. Note that the probe has no Quit menu item; titlebar
 close is the supported shutdown path.
 
+The `Window::set_window_mode` fullscreen intent (`toggleFullScreen:` with the fullscreen-primary
+collection behavior, style-mask confirmation) is implemented but has no physical macOS evidence
+yet. `mulciber-input-cube` exercises it with F11: verify F11 enters and leaves the fullscreen
+Space through the native animation with correct metrics on both sides, that the green-button and
+Mission Control transitions drag the reported mode so the next F11 does not double-toggle, that
+capture survives both transitions, and that presented-time feedback remains coherent across the
+Space switch.
+
 ## Success criteria
 
 - Every command exits with code zero without panic or Objective-C exception.

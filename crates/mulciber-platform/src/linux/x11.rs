@@ -5,8 +5,8 @@ use std::ptr;
 
 use super::keymap;
 use crate::{
-    ButtonState, CursorMode, InputEvent, LogicalPosition, Modifiers, PlatformError, PointerButton,
-    ScrollDelta,
+    ButtonState, CursorMode, InputEvent, LogicalPosition, Modifiers, PlatformError,
+    PlatformErrorKind, PointerButton, ScrollDelta, WindowMode,
 };
 
 #[repr(C)]
@@ -27,7 +27,10 @@ const BUTTON_PRESS_MASK: c_long = 0x0000_0004;
 const BUTTON_RELEASE_MASK: c_long = 0x0000_0008;
 const POINTER_MOTION_MASK: c_long = 0x0000_0040;
 const STRUCTURE_NOTIFY_MASK: c_long = 0x0002_0000;
+const SUBSTRUCTURE_NOTIFY_MASK: c_long = 0x0008_0000;
+const SUBSTRUCTURE_REDIRECT_MASK: c_long = 0x0010_0000;
 const FOCUS_CHANGE_MASK: c_long = 0x0020_0000;
+const PROPERTY_CHANGE_MASK: c_long = 0x0040_0000;
 const KEY_PRESS: c_int = 2;
 const KEY_RELEASE: c_int = 3;
 const BUTTON_PRESS: c_int = 4;
@@ -38,9 +41,15 @@ const FOCUS_OUT: c_int = 10;
 const DESTROY_NOTIFY: c_int = 17;
 const MAP_NOTIFY: c_int = 19;
 const CONFIGURE_NOTIFY: c_int = 22;
+const PROPERTY_NOTIFY: c_int = 28;
 const CLIENT_MESSAGE: c_int = 33;
 const XEVENT_PADDING_WORDS: usize = 24;
+const XA_ATOM: Atom = 4;
 const XA_CARDINAL: Atom = 6;
+const NET_WM_STATE_REMOVE: c_long = 0;
+const NET_WM_STATE_ADD: c_long = 1;
+/// `_NET_WM_STATE` source indication for a normal application request.
+const NET_WM_STATE_SOURCE_APPLICATION: c_long = 1;
 const PROP_MODE_REPLACE: c_int = 0;
 const NOTIFY_NORMAL: c_int = 0;
 const NOTIFY_WHILE_GRABBED: c_int = 3;
@@ -157,6 +166,28 @@ unsafe extern "C" {
     ) -> c_ulong;
     fn XFreePixmap(display: *mut Display, pixmap: c_ulong) -> c_int;
     fn XFreeCursor(display: *mut Display, cursor: c_ulong) -> c_int;
+    fn XSendEvent(
+        display: *mut Display,
+        window: XWindow,
+        propagate: c_int,
+        event_mask: c_long,
+        event: *mut XEvent,
+    ) -> Status;
+    fn XGetWindowProperty(
+        display: *mut Display,
+        window: XWindow,
+        property: Atom,
+        long_offset: c_long,
+        long_length: c_long,
+        delete: c_int,
+        requested_type: Atom,
+        actual_type: *mut Atom,
+        actual_format: *mut c_int,
+        item_count: *mut c_ulong,
+        bytes_after: *mut c_ulong,
+        data: *mut *mut u8,
+    ) -> c_int;
+    fn XFree(data: *mut c_void) -> c_int;
 }
 
 #[repr(C)]
@@ -298,6 +329,19 @@ struct XFocusChangeEvent {
     detail: c_int,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XPropertyEvent {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut Display,
+    window: XWindow,
+    atom: Atom,
+    time: c_ulong,
+    state: c_int,
+}
+
 /// The generic Xlib event union, sized by its libX11 padding member.
 #[repr(C)]
 union XEvent {
@@ -308,6 +352,7 @@ union XEvent {
     focus_change: XFocusChangeEvent,
     configure: XConfigureEvent,
     client_message: XClientMessageEvent,
+    property: XPropertyEvent,
     padding: [c_long; XEVENT_PADDING_WORDS],
 }
 
@@ -324,6 +369,8 @@ struct WindowState {
     pressed_keys: [Cell<u64>; 4],
     capture_requested: Cell<bool>,
     capture_engaged: Cell<bool>,
+    fullscreen_requested: Cell<bool>,
+    fullscreen_confirmed: Cell<bool>,
 }
 
 impl WindowState {
@@ -361,9 +408,13 @@ impl WindowState {
 pub(super) struct Window {
     display: *mut Display,
     handle: XWindow,
+    root: XWindow,
     wm_protocols: Atom,
     wm_delete: Atom,
     wm_sync_request: Atom,
+    net_wm_state: Atom,
+    net_wm_state_fullscreen: Atom,
+    fullscreen_supported: bool,
     sync_counter: c_ulong,
     invisible_cursor: Cell<c_ulong>,
     state: WindowState,
@@ -405,9 +456,13 @@ impl Window {
         let mut window = Self {
             display,
             handle,
+            root,
             wm_protocols: 0,
             wm_delete: 0,
             wm_sync_request: 0,
+            net_wm_state: 0,
+            net_wm_state_fullscreen: 0,
+            fullscreen_supported: false,
             sync_counter: 0,
             invisible_cursor: Cell::new(0),
             state: WindowState {
@@ -423,6 +478,8 @@ impl Window {
                 pressed_keys: [const { Cell::new(0) }; 4],
                 capture_requested: Cell::new(false),
                 capture_engaged: Cell::new(false),
+                fullscreen_requested: Cell::new(false),
+                fullscreen_confirmed: Cell::new(false),
             },
         };
         // SAFETY: The display/window are live, the title is NUL-terminated, and the event mask
@@ -456,12 +513,14 @@ impl Window {
                     | BUTTON_PRESS_MASK
                     | BUTTON_RELEASE_MASK
                     | POINTER_MOTION_MASK
-                    | FOCUS_CHANGE_MASK,
+                    | FOCUS_CHANGE_MASK
+                    | PROPERTY_CHANGE_MASK,
             );
             let mut detectable_supported = 0;
             XkbSetDetectableAutoRepeat(window.display, TRUE, &raw mut detectable_supported);
         }
         window.register_wm_protocols()?;
+        window.register_ewmh_fullscreen();
         if visible {
             // SAFETY: The display/window are live; mapping requests WM management of the window.
             unsafe {
@@ -541,6 +600,74 @@ impl Window {
                 1,
             );
         }
+    }
+
+    /// Interns the EWMH fullscreen atoms and records whether the window manager advertises
+    /// `_NET_WM_STATE_FULLSCREEN` in the root window's `_NET_SUPPORTED`, so an unsupported
+    /// fullscreen request reports honestly instead of being silently ignored.
+    fn register_ewmh_fullscreen(&mut self) {
+        // SAFETY: The display is live and both atom names are NUL-terminated.
+        unsafe {
+            self.net_wm_state = XInternAtom(self.display, c"_NET_WM_STATE".as_ptr(), FALSE);
+            self.net_wm_state_fullscreen =
+                XInternAtom(self.display, c"_NET_WM_STATE_FULLSCREEN".as_ptr(), FALSE);
+        }
+        if self.net_wm_state == 0 || self.net_wm_state_fullscreen == 0 {
+            return;
+        }
+        // SAFETY: The display is live and _NET_SUPPORTED names a root window atom list.
+        let supported = unsafe { XInternAtom(self.display, c"_NET_SUPPORTED".as_ptr(), FALSE) };
+        if supported == 0 {
+            return;
+        }
+        self.fullscreen_supported = self
+            .read_atom_property(self.root, supported)
+            .contains(&self.net_wm_state_fullscreen);
+    }
+
+    /// Reads an `ATOM[]` property, returning an empty list when the property is absent or malformed.
+    fn read_atom_property(&self, window: XWindow, property: Atom) -> Vec<Atom> {
+        let mut actual_type: Atom = 0;
+        let mut actual_format: c_int = 0;
+        let mut item_count: c_ulong = 0;
+        let mut bytes_after: c_ulong = 0;
+        let mut data: *mut u8 = ptr::null_mut();
+        // SAFETY: The display and window are live and every output pointer is writable; 1024
+        // 32-bit items covers every real _NET_SUPPORTED and _NET_WM_STATE list.
+        let status = unsafe {
+            XGetWindowProperty(
+                self.display,
+                window,
+                property,
+                0,
+                1024,
+                FALSE,
+                XA_ATOM,
+                &raw mut actual_type,
+                &raw mut actual_format,
+                &raw mut item_count,
+                &raw mut bytes_after,
+                &raw mut data,
+            )
+        };
+        if status != 0 || data.is_null() {
+            return Vec::new();
+        }
+        let count = usize::try_from(item_count).unwrap_or(0);
+        let atoms = if actual_type == XA_ATOM && actual_format == 32 && count > 0 {
+            // Xlib returns 32-bit-format items widened to native c_ulong in a malloc-allocated
+            // buffer, so the pointer is aligned for Atom despite the u8 declaration.
+            #[allow(clippy::cast_ptr_alignment)]
+            // SAFETY: The buffer holds `count` contiguous c_ulong values owned by this caller.
+            unsafe {
+                std::slice::from_raw_parts(data.cast::<Atom>(), count).to_vec()
+            }
+        } else {
+            Vec::new()
+        };
+        // SAFETY: XGetWindowProperty allocated the buffer and ownership passed to this caller.
+        unsafe { XFree(data.cast()) };
+        atoms
     }
 
     /// Blocks until the mapped window's first `MapNotify`, applying any configure sent before it,
@@ -625,6 +752,21 @@ impl Window {
                             lo: u32::try_from(message.data[2] & 0xffff_ffff).unwrap_or(0),
                         }));
                     }
+                }
+                false
+            }
+            PROPERTY_NOTIFY => {
+                // SAFETY: The discriminant identifies the property member as initialized.
+                let property = unsafe { event.property };
+                if property.atom == self.net_wm_state && self.net_wm_state != 0 {
+                    let fullscreen = self
+                        .read_atom_property(self.handle, self.net_wm_state)
+                        .contains(&self.net_wm_state_fullscreen);
+                    crate::follow_confirmed_fullscreen(
+                        &self.state.fullscreen_confirmed,
+                        &self.state.fullscreen_requested,
+                        fullscreen,
+                    );
                 }
                 false
             }
@@ -802,6 +944,77 @@ impl Window {
                 Ok(())
             }
         }
+    }
+
+    pub(super) fn window_mode(&self) -> WindowMode {
+        if self.state.fullscreen_requested.get() {
+            WindowMode::Fullscreen
+        } else {
+            WindowMode::Windowed
+        }
+    }
+
+    /// Requests the EWMH fullscreen state change from the window manager; the confirmed state
+    /// arrives back as a `_NET_WM_STATE` `PropertyNotify`.
+    pub(super) fn set_window_mode(&self, mode: WindowMode) -> Result<(), PlatformError> {
+        let fullscreen = mode == WindowMode::Fullscreen;
+        if fullscreen && !self.fullscreen_supported {
+            return Err(PlatformError::with_kind(
+                PlatformErrorKind::Unsupported,
+                "fullscreen is unavailable: the window manager does not advertise _NET_WM_STATE_FULLSCREEN",
+            ));
+        }
+        if self.state.fullscreen_requested.replace(fullscreen) == fullscreen {
+            return Ok(());
+        }
+        if !fullscreen && !self.fullscreen_supported {
+            // Requesting Windowed always succeeds so portable release paths stay uniform.
+            return Ok(());
+        }
+        // Zero the whole union first so Xlib's wire serialization never reads undefined padding.
+        let mut event = XEvent {
+            padding: [0; XEVENT_PADDING_WORDS],
+        };
+        event.client_message = XClientMessageEvent {
+            kind: CLIENT_MESSAGE,
+            serial: 0,
+            send_event: TRUE,
+            display: self.display,
+            window: self.handle,
+            message_type: self.net_wm_state,
+            format: 32,
+            data: [
+                if fullscreen {
+                    NET_WM_STATE_ADD
+                } else {
+                    NET_WM_STATE_REMOVE
+                },
+                c_long::try_from(self.net_wm_state_fullscreen).unwrap_or(0),
+                0,
+                NET_WM_STATE_SOURCE_APPLICATION,
+                0,
+            ],
+        };
+        // SAFETY: The display and root window are live; EWMH state changes are requested by
+        // sending the client message to the root window with the substructure masks.
+        let status = unsafe {
+            XSendEvent(
+                self.display,
+                self.root,
+                FALSE,
+                SUBSTRUCTURE_REDIRECT_MASK | SUBSTRUCTURE_NOTIFY_MASK,
+                &raw mut event,
+            )
+        };
+        if status == 0 {
+            self.state.fullscreen_requested.set(!fullscreen);
+            return Err(PlatformError::new(
+                "XSendEvent refused the _NET_WM_STATE fullscreen request",
+            ));
+        }
+        // SAFETY: The display connection is live and the request must reach the server promptly.
+        unsafe { XFlush(self.display) };
+        Ok(())
     }
 
     /// Grabs the pointer confined to the window with an invisible cursor and centers it.

@@ -748,6 +748,51 @@ process-exiting default handlers instead of recoverable returns; record any such
 These checks do not substitute for native Xorg, display-change, input, multi-display, or broader
 compositor/hardware coverage.
 
+## Fullscreen intent pass
+
+The `Window::set_window_mode` fullscreen intent is implemented on Wayland (`xdg_toplevel`
+fullscreen requests, configure-state confirmation) and X11 (EWMH `_NET_WM_STATE` client message,
+`PropertyNotify` confirmation). `mulciber-input-cube` exercises it with F11. On each native
+path, physically verify:
+
+1. F11 enters fullscreen: decorations disappear, the surface fills the display, and the extent
+   change arrives as ordinary metrics/resize handling with no stale frames.
+2. F11 again restores the windowed placement.
+3. F11 while pointer-captured: capture, relative look, and the hidden cursor survive both
+   transitions.
+4. A compositor-initiated exit (KWin's window menu or shortcut) drags the reported mode so the
+   next F11 re-enters fullscreen instead of double-toggling.
+5. Minimize/restore from fullscreen suspends and resumes rendering as in the windowed pass.
+6. Presented-cadence pacing diagnostics before and after the transition, since fullscreen is
+   where compositors switch to direct scanout.
+
+### 2026-07-20 automated checkpoint (KDE Plasma Wayland session, uncommitted tree)
+
+A remotely driven, tool-automated pass — not an operator-eye visual pass — established on the
+X11 path (XWayland, `xdotool` XTEST/`XSendEvent` injection, `xprop` confirmation): F11 entered
+fullscreen (960x540 at 800,443 → 2560x1440 at 0,0, `_NET_WM_STATE_FULLSCREEN` set, one
+mid-session screenshot visually confirming the undecorated fullscreen surface); F11 restored the
+exact windowed placement and cleared the state; capture composed with fullscreen in both
+directions, with the pointer pinned at each mode's client center (2560x1440 → 1280,720; windowed
+→ 1280,713) and Escape releasing cleanly; an externally initiated EWMH fullscreen (another
+client's `_NET_WM_STATE` add) was followed by the reported mode, and the next F11 exited instead
+of double-toggling — the confirmed-transition drag observed working; the close-requested path
+exited with code zero.
+
+On the native Wayland path (no key-injection tool available), KWin-script compositor-side
+transitions established both directions of configure handling: `fullScreen=true size=2560x1440`
+and back to `fullScreen=false size=960x568` per KWin's own state readback, with the process
+rendering throughout (~74% CPU) and exiting zero through the close-requested path. The native
+Wayland `set_fullscreen` *request* path (F11 → `xdg_toplevel` marshal) and the reported-mode
+drag on Wayland ran only in unit tests, not against a live compositor.
+
+Still pending physical evidence: operator-eye stale-frame/artifact inspection during the
+transitions, minimize/restore from fullscreen, pacing diagnostics across the transition, the
+Wayland-native request path above, and the game-slice/consumer F11 flow. One harness caveat for
+future remote runs: `spectacle -b -n` served a byte-identical cached frame for every capture
+after the first in a freshly unlocked session — corroborate with `xprop`/KWin state readback and
+process CPU, not screenshots alone.
+
 ## Success criteria
 
 For each native path:

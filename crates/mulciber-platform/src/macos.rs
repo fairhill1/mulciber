@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
     PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor,
-    WindowEvent, WindowMetrics, WindowRevision,
+    WindowEvent, WindowMetrics, WindowMode, WindowRevision,
 };
 
 type Object = *mut c_void;
@@ -17,6 +17,10 @@ type Selector = *mut c_void;
 
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
 const ASSOCIATION_ASSIGN: usize = 0;
+/// `NSWindowCollectionBehaviorFullScreenPrimary`: the window may own a fullscreen Space.
+const COLLECTION_BEHAVIOR_FULL_SCREEN_PRIMARY: usize = 1 << 7;
+/// `NSWindowStyleMaskFullScreen`: set on the window's style mask while it occupies a Space.
+const STYLE_MASK_FULL_SCREEN: usize = 1 << 14;
 const UTF8_STRING_ENCODING: usize = 4;
 const EVENT_LEFT_MOUSE_DOWN: usize = 1;
 const EVENT_LEFT_MOUSE_UP: usize = 2;
@@ -197,6 +201,11 @@ impl Application {
             void(view.as_ptr(), c"release");
             void_bool(view.as_ptr(), c"setWantsLayer:", true);
             void_bool(window.as_ptr(), c"setAcceptsMouseMovedEvents:", true);
+            void_usize(
+                window.as_ptr(),
+                c"setCollectionBehavior:",
+                COLLECTION_BEHAVIOR_FULL_SCREEN_PRIMARY,
+            );
             if !bool_object(window.as_ptr(), c"makeFirstResponder:", view.as_ptr()) {
                 return Err(PlatformError::new(
                     "could not make the Mulciber content view AppKit's first responder",
@@ -234,6 +243,8 @@ impl Application {
                 captured_pointer_buttons: Cell::new(0),
                 cursor_mode: Cell::new(CursorMode::Normal),
                 capture_applied: Cell::new(false),
+                fullscreen_requested: Cell::new(false),
+                fullscreen_confirmed: Cell::new(false),
                 delegate,
                 _window_lease: window_lease,
                 _main_thread: PhantomData,
@@ -349,6 +360,8 @@ pub struct Window {
     captured_pointer_buttons: Cell<u32>,
     cursor_mode: Cell<CursorMode>,
     capture_applied: Cell<bool>,
+    fullscreen_requested: Cell<bool>,
+    fullscreen_confirmed: Cell<bool>,
     delegate: NonNull<c_void>,
     _window_lease: WindowLease,
     _main_thread: PhantomData<Rc<()>>,
@@ -396,6 +409,58 @@ impl Window {
     #[must_use]
     pub fn cursor_mode(&self) -> CursorMode {
         self.cursor_mode.get()
+    }
+
+    /// Requests whether this window occupies its display as a fullscreen Space or shares the
+    /// desktop.
+    ///
+    /// The transition drives `AppKit`'s native `toggleFullScreen:` animation asynchronously; the
+    /// resulting extent change arrives through the ordinary metrics events, and the confirmed
+    /// state updates [`Self::window_mode`].
+    ///
+    /// # Errors
+    ///
+    /// This request currently cannot fail; it returns a result so the game-facing contract stays
+    /// uniform with the platforms whose display servers can refuse fullscreen.
+    pub fn set_window_mode(&self, mode: WindowMode) -> Result<(), PlatformError> {
+        self.sync_confirmed_fullscreen();
+        let fullscreen = mode == WindowMode::Fullscreen;
+        if self.fullscreen_requested.replace(fullscreen) == fullscreen {
+            return Ok(());
+        }
+        // SAFETY: The window is alive on AppKit's main thread; toggleFullScreen: accepts a nil
+        // sender and animates the transition the collection behavior opted into.
+        unsafe {
+            void_object(self.raw.as_ptr(), c"toggleFullScreen:", core::ptr::null_mut());
+        }
+        Ok(())
+    }
+
+    /// Returns the requested window mode, following `AppKit`-confirmed transitions so a toggle
+    /// stays correct when the user enters or leaves the fullscreen Space through the window
+    /// controls or Mission Control.
+    #[must_use]
+    pub fn window_mode(&self) -> WindowMode {
+        self.sync_confirmed_fullscreen();
+        if self.fullscreen_requested.get() {
+            WindowMode::Fullscreen
+        } else {
+            WindowMode::Windowed
+        }
+    }
+
+    /// Drags the requested mode along confirmed fullscreen transitions read from the style mask,
+    /// so externally driven transitions update the reported mode without cancelling a request
+    /// whose animation has not begun.
+    fn sync_confirmed_fullscreen(&self) {
+        // SAFETY: The window is alive on AppKit's main thread and styleMask is a plain getter.
+        let confirmed =
+            unsafe { usize_value(self.raw.as_ptr(), c"styleMask") } & STYLE_MASK_FULL_SCREEN != 0;
+        crate::follow_confirmed_fullscreen(
+            &self.fullscreen_confirmed,
+            &self.fullscreen_requested,
+            confirmed,
+        );
     }
 
     fn apply_pointer_capture(&self) -> Result<(), PlatformError> {
@@ -1121,6 +1186,12 @@ unsafe fn void(receiver: Object, name: &CStr) {
 
 unsafe fn void_object(receiver: Object, name: &CStr, value: Object) {
     let function: unsafe extern "C" fn(Object, Selector, Object) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), value) };
+}
+
+unsafe fn void_usize(receiver: Object, name: &CStr, value: usize) {
+    let function: unsafe extern "C" fn(Object, Selector, usize) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), value) };
 }

@@ -402,6 +402,39 @@ pub enum CursorMode {
     Captured,
 }
 
+/// Whether a window shares the desktop as a movable window or occupies its current display.
+///
+/// Fullscreen is an application intent implemented as each platform's borderless or native
+/// fullscreen path on the window's current display; no exclusive display mode is requested. The
+/// window system confirms each transition and can enter or leave fullscreen on its own (user
+/// shortcuts, compositor policy), so the reported mode follows confirmed transitions instead of
+/// restating the last request; a toggle keyed off the reported mode stays correct either way.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowMode {
+    /// The window is movable and shares the desktop with other windows.
+    #[default]
+    Windowed,
+    /// The window occupies its display without decorations.
+    Fullscreen,
+}
+
+/// Follows a platform-confirmed fullscreen transition.
+///
+/// Only a change in confirmed state drags the requested mode, so a stale windowed report that
+/// races a fullscreen request still in flight cannot cancel the intent, while transitions the
+/// window system starts on its own (user shortcuts, compositor policy) update the reported mode.
+// Win32 owns its borderless transition synchronously, so only the asynchronous backends use this.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+pub(crate) fn follow_confirmed_fullscreen(
+    confirmed: &core::cell::Cell<bool>,
+    requested: &core::cell::Cell<bool>,
+    now: bool,
+) {
+    if confirmed.replace(now) != now {
+        requested.set(now);
+    }
+}
+
 /// A scroll delta preserving whether the platform supplied precise or coarse units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(missing_docs)]
@@ -614,10 +647,34 @@ impl std::error::Error for PlatformError {}
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::{
         LogicalSize, PhysicalExtent, PlatformError, PlatformErrorKind, WindowDescriptor,
-        WindowRevision,
+        WindowRevision, follow_confirmed_fullscreen,
     };
+
+    #[test]
+    fn confirmed_fullscreen_transitions_drag_the_requested_mode() {
+        let confirmed = Cell::new(false);
+        let requested = Cell::new(true);
+
+        // A stale windowed report while the request is in flight must not cancel the intent.
+        follow_confirmed_fullscreen(&confirmed, &requested, false);
+        assert!(requested.get());
+
+        // The compositor confirming fullscreen keeps the intent aligned.
+        follow_confirmed_fullscreen(&confirmed, &requested, true);
+        assert!(requested.get());
+
+        // A window-system-initiated exit drags the requested mode back to windowed.
+        follow_confirmed_fullscreen(&confirmed, &requested, false);
+        assert!(!requested.get());
+
+        // A window-system-initiated entry drags the requested mode to fullscreen.
+        follow_confirmed_fullscreen(&confirmed, &requested, true);
+        assert!(requested.get());
+    }
 
     #[test]
     fn platform_errors_preserve_kind_and_message() {

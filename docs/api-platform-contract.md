@@ -118,6 +118,32 @@ drops. Backends without an implementation report `Unsupported` for capture while
 `Normal` release path, so portable shutdown code stays uniform. The event and per-backend details
 live in the [input contract](input-contract.md).
 
+### Fullscreen as intent
+
+`Window::set_window_mode` records an application intent (`Windowed` or `Fullscreen`) and the
+platform owns the native policy: `xdg_toplevel.set_fullscreen`/`unset_fullscreen` with a
+compositor-chosen output on Wayland, the EWMH `_NET_WM_STATE` client message on X11 (gated on the
+window manager advertising `_NET_WM_STATE_FULLSCREEN` in `_NET_SUPPORTED`), a saved-placement
+borderless style transition on Win32, and the native `toggleFullScreen:` Space on AppKit. No
+exclusive display mode is requested anywhere. The resulting extent change arrives through the
+ordinary metrics events, so consumers need no fullscreen-specific rendering path.
+
+`Window::window_mode` reports the requested mode while following window-system-confirmed
+transitions: a confirmed transition (Wayland configure states, X11 `_NET_WM_STATE` property
+change, the AppKit style mask) drags the reported mode, so a toggle keyed off the report stays
+correct when the window system enters or leaves fullscreen on its own, while a stale windowed
+report racing an in-flight request cannot cancel the intent. X11 reports `Unsupported` for
+fullscreen without EWMH support while accepting the `Windowed` release path, so portable paths
+stay uniform.
+
+As of 2026-07-20 the X11 path has a tool-automated checkpoint (F11 both directions, capture
+composition, externally initiated fullscreen followed by the drag, clean shutdown) and the
+Wayland path a compositor-side-only checkpoint (configure handling both directions; the native
+request path is unit-tested only) — see the [Linux runbook](linux-validation.md). AppKit has no
+physical evidence, and the Win32 implementation has never executed on Windows. Operator-eye
+transition inspection, minimize/restore from fullscreen, and present-feedback cadence across
+the transition remain required evidence on every tier.
+
 ### Borrowed native integration
 
 `Window::surface_target` returns an opaque value borrowed for the window lifetime. It transfers no

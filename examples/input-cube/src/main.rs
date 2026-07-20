@@ -13,7 +13,7 @@ use mulciber::{
 use mulciber_platform::{
     Application, ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, LogicalSize,
     PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, Window,
-    WindowDescriptor, WindowEvent,
+    WindowDescriptor, WindowEvent, WindowMode,
 };
 
 use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, interactive_transform};
@@ -121,7 +121,7 @@ impl Interaction {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn Error>> {
     let mut application = Application::new()?;
     let window = application.create_window(&WindowDescriptor::new(
@@ -145,6 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "input: W/A/S/D or arrows rotate, primary-button drag orbits, scroll zooms, Space toggles spin, R resets"
     );
     println!("input: C captures the pointer for relative look, Escape releases it");
+    println!("input: F11 toggles fullscreen");
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
     let texture = graphics
@@ -175,6 +176,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                             state: ButtonState::Pressed,
                             ..
                         } => window.set_cursor_mode(CursorMode::Normal)?,
+                        InputEvent::Keyboard {
+                            key: KeyCode::F11,
+                            state: ButtonState::Pressed,
+                            repeat: false,
+                            ..
+                        } => toggle_window_mode(&window)?,
                         _ => {}
                     }
                     interaction.handle(input);
@@ -220,6 +227,26 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     graphics.shutdown()?;
     Ok(())
+}
+
+/// Toggles from the reported mode, which follows window-system-confirmed transitions, so F11
+/// stays correct after the compositor enters or leaves fullscreen on its own.
+fn toggle_window_mode(window: &Window) -> Result<(), PlatformError> {
+    let target = match window.window_mode() {
+        WindowMode::Windowed => WindowMode::Fullscreen,
+        WindowMode::Fullscreen => WindowMode::Windowed,
+    };
+    match window.set_window_mode(target) {
+        Ok(()) => {
+            println!("window mode: {target:?} requested");
+            Ok(())
+        }
+        Err(error) if error.kind() == PlatformErrorKind::Unsupported => {
+            println!("fullscreen: unsupported on this window manager");
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn toggle_cursor_mode(window: &Window) -> Result<(), PlatformError> {

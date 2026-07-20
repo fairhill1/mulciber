@@ -174,6 +174,29 @@ Still unexercised: modifier-key transitions, precise trackpad scroll units (a co
 used), key-repeat cadence measured against the configured rate, the X11 win transition, display
 changes, multi-display, non-KDE compositors, native Xorg, and other hardware/driver tiers.
 
+### Presentation-feedback availability survey (Gate 4)
+
+On 2026-07-20, the KDE Plasma 6.7.3 Wayland session and Nvidia RTX 3060 Ti tier described above
+(vulkaninfo `driverVersion` 610.43.3.0, device API 1.4.341) were surveyed for the native
+presentation-feedback mechanisms named in the [Gate 4 pacing plan](gate4-pacing-plan.md). This
+records advertised availability only; no feedback path has been exercised on this tier.
+
+- The Nvidia device extension list includes `VK_KHR_present_id` and `VK_KHR_present_wait`
+  (revision 1, plus their `VK_KHR_present_id2`/`VK_KHR_present_wait2` successors),
+  `VK_KHR_incremental_present` (revision 2), and `VK_EXT_present_timing` (revision 3) — the last
+  reporting actual presentation timestamps, the closest Vulkan analog to Metal's presented
+  handlers. `VK_GOOGLE_display_timing` is absent. vulkaninfo reports the single Nvidia adapter and
+  no other ICD.
+- KWin advertises `wp_presentation` version 2 with a `CLOCK_MONOTONIC` presentation clock
+  (`wayland-info`), so compositor-side presentation-time feedback exists independently of the
+  Vulkan extensions.
+- XWayland lists the X11 `Present` extension, the XPresent path the plan names.
+
+In contrast to the surveyed Windows Intel UHD 620 tier, which exposes none of these, every
+candidate feedback source the pacing plan names is advertised on this tier. Which of them actually
+delivers accurate identified presentation times through the Wayland and XWayland WSI paths is
+behavior evidence for the plan's probe-first step; advertisement is not exercised-path evidence.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

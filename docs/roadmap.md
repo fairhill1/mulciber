@@ -68,7 +68,11 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   vsync-quantized load-spike degradation and a per-frame CSV path; the Windows Intel UHD 620 tier
   is surveyed and exposes none of `VK_KHR_present_id`/`present_wait`, `VK_GOOGLE_display_timing`,
   or `VK_KHR_incremental_present`, making the estimation fallback the only path on that recorded
-  tier; the Nvidia tier and the Wayland presentation-time survey remain outstanding).
+  tier; the Linux Nvidia tier is surveyed as of 2026-07-20 and advertises `VK_KHR_present_id`,
+  `VK_KHR_present_wait`, `VK_KHR_incremental_present`, `VK_EXT_present_timing`, `wp_presentation`
+  version 2, and the XPresent extension — every candidate source, availability only
+  ([Linux runbook](linux-validation.md)); the Windows Nvidia survey and exercised Vulkan feedback
+  behavior remain outstanding).
 
 Every probe must handle resize, zero-sized/minimized surfaces, VSync, acquire failure, and clean
 shutdown with API validation enabled.

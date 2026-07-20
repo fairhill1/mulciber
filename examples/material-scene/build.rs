@@ -7,7 +7,7 @@ fn main() {
 
     let target_os = std::env::var_os("CARGO_CFG_TARGET_OS").expect("Cargo sets target OS");
     let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
-    let modules = ["crystal", "lava"];
+    let modules = ["crystal", "lava", "shadow"];
     let flavor = if target_os == OsStr::new("macos") {
         if std::env::var_os("MULCIBER_METAL_TYPECHECK_ONLY").as_deref() == Some(OsStr::new("1")) {
             for module in modules {

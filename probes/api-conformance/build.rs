@@ -6,15 +6,17 @@ fn main() {
     use std::path::Path;
 
     let target_os = std::env::var_os("CARGO_CFG_TARGET_OS").expect("Cargo sets target OS");
-    let (cube_artifact, instanced_artifact, material_artifact) = if target_os == OsStr::new("macos")
-    {
+    let names = [
+        "cube.shaderbin",
+        "instanced.shaderbin",
+        "material.shaderbin",
+        "lava.shaderbin",
+        "shadow.shaderbin",
+    ];
+    let flavor = if target_os == OsStr::new("macos") {
         if std::env::var_os("MULCIBER_METAL_TYPECHECK_ONLY").as_deref() == Some(OsStr::new("1")) {
             let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
-            for name in [
-                "cube.shaderbin",
-                "instanced.shaderbin",
-                "material.shaderbin",
-            ] {
+            for name in names {
                 fs::write(Path::new(&output).join(name), [])
                     .expect("create cross-host shader placeholder");
             }
@@ -23,34 +25,22 @@ fn main() {
             );
             return;
         }
-        (
-            "../../examples/postprocess-cube/artifacts/postprocess.metal.shaderbin",
-            "../../examples/instanced-scene/artifacts/instanced.metal.shaderbin",
-            "../../examples/material-scene/artifacts/crystal.metal.shaderbin",
-        )
+        "metal"
     } else if target_os == OsStr::new("windows") || target_os == OsStr::new("linux") {
-        (
-            "../../examples/postprocess-cube/artifacts/postprocess.vulkan.shaderbin",
-            "../../examples/instanced-scene/artifacts/instanced.vulkan.shaderbin",
-            "../../examples/material-scene/artifacts/crystal.vulkan.shaderbin",
-        )
+        "vulkan"
     } else {
         panic!("the conformance probe supports macOS, Windows, and Linux targets");
     };
-    println!("cargo::rerun-if-changed={cube_artifact}");
-    println!("cargo::rerun-if-changed={instanced_artifact}");
-    println!("cargo::rerun-if-changed={material_artifact}");
+    let artifacts = [
+        format!("../../examples/postprocess-cube/artifacts/postprocess.{flavor}.shaderbin"),
+        format!("../../examples/instanced-scene/artifacts/instanced.{flavor}.shaderbin"),
+        format!("../../examples/material-scene/artifacts/crystal.{flavor}.shaderbin"),
+        format!("../../examples/material-scene/artifacts/lava.{flavor}.shaderbin"),
+        format!("../../examples/material-scene/artifacts/shadow.{flavor}.shaderbin"),
+    ];
     let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
-    fs::copy(cube_artifact, Path::new(&output).join("cube.shaderbin"))
-        .expect("copy cached cube shader artifact");
-    fs::copy(
-        instanced_artifact,
-        Path::new(&output).join("instanced.shaderbin"),
-    )
-    .expect("copy cached instanced shader artifact");
-    fs::copy(
-        material_artifact,
-        Path::new(&output).join("material.shaderbin"),
-    )
-    .expect("copy cached material shader artifact");
+    for (artifact, name) in artifacts.iter().zip(names) {
+        println!("cargo::rerun-if-changed={artifact}");
+        fs::copy(artifact, Path::new(&output).join(name)).expect("copy cached shader artifact");
+    }
 }

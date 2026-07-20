@@ -115,6 +115,7 @@ impl Resources {
                     pipeline: &self.postprocess_pipeline,
                     targets: &self.targets,
                 },
+                shadow: None,
                 clear: CLEAR,
             },
         )?;

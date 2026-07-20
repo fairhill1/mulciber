@@ -24,6 +24,8 @@ const BINDING_UNIFORM: u8 = 0;
 const BINDING_SAMPLED_TEXTURE: u8 = 1;
 const BINDING_SAMPLER: u8 = 2;
 const BINDING_STORAGE: u8 = 3;
+const BINDING_DEPTH_TEXTURE: u8 = 4;
+const BINDING_COMPARISON_SAMPLER: u8 = 5;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,7 +169,22 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
                         },
                 },
             ) => (BINDING_SAMPLED_TEXTURE, 0),
-            (AddressSpace::Handle, TypeInner::Sampler { .. }) => (BINDING_SAMPLER, 0),
+            (
+                AddressSpace::Handle,
+                TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: false,
+                    class: naga::ImageClass::Depth { multi: false },
+                },
+            ) => (BINDING_DEPTH_TEXTURE, 0),
+            (AddressSpace::Handle, TypeInner::Sampler { comparison }) => (
+                if *comparison {
+                    BINDING_COMPARISON_SAMPLER
+                } else {
+                    BINDING_SAMPLER
+                },
+                0,
+            ),
             _ => {
                 return Err(fail(format!(
                     "WGSL binding {}:{} has no proven interface mapping",

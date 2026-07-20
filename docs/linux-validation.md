@@ -365,6 +365,27 @@ selection is asserted by execution and validation cleanliness, not visually
 verified; the Metal path compiles under the cross-host `aarch64-apple-darwin` type check and
 awaits the next M2 session.
 
+Finally on 2026-07-20, the shadow recipe opened (shadow maps, depth-only shadow pipelines,
+depth-texture and comparison-sampler material slots, and the optional per-submission shadow
+pass recorded in the [decision ledger](api-slice-decisions.md)). The material-scene example
+grew a third WGSL module: three crystals render depth into a 1024-map through a shared
+shadow pipeline each frame, and the lava floor samples it through `textureSampleCompare`
+with application-owned bias. The conformance probe grew eight cases — out-of-range extents,
+non-uniform shadow declarations, missing/undeclared/unrendered map supply, and shadow uniform
+mismatch rejected by name, plus a shadowed presentation and explicit destruction of both new
+resource kinds. An earlier revision rejected unrendered-map sampling inside the backend after
+the frame token was consumed, which stranded the acquired image's semaphore and surfaced as a
+`vkAcquireNextImageKHR` validation error on the next acquisition; the check moved ahead of
+token consumption and the rerun was clean. All forty-six cases (forty-five plus this driver's
+Vulkan-only superseded-generation branch) passed on both native Wayland and X11 through
+XWayland, exit zero, no validation output, and the shadowed material scene ran roughly ten
+seconds on each path to KWin-scripted closes, exit zero, validation-clean. Shadow coverage is
+asserted by execution and validation cleanliness; the operator has not yet visually confirmed
+the moving shadows. The Metal implementation compiles under the cross-host
+`aarch64-apple-darwin` type check; the regenerated `lava` and new `shadow` Metal artifacts
+await the next M2 session, which must run `mulciber-shader` natively before the example or
+probe will build there.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

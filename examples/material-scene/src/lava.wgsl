@@ -1,5 +1,6 @@
 struct LavaParams {
     model_view_projection: mat4x4<f32>,
+    light_from_model: mat4x4<f32>,
     // x: seconds, yzw: unused.
     flow: vec4<f32>,
 }
@@ -7,6 +8,8 @@ struct LavaParams {
 @group(0) @binding(0) var<uniform> params: LavaParams;
 @group(0) @binding(1) var lava_texture: texture_2d<f32>;
 @group(0) @binding(2) var lava_sampler: sampler;
+@group(0) @binding(3) var shadow_map: texture_depth_2d;
+@group(0) @binding(4) var shadow_sampler: sampler_comparison;
 
 struct LavaVertex {
     @location(0) position: vec3<f32>,
@@ -16,6 +19,7 @@ struct LavaVertex {
 struct LavaRaster {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) light_position: vec3<f32>,
 }
 
 @vertex
@@ -23,6 +27,7 @@ fn lava_vertex(input: LavaVertex) -> LavaRaster {
     var output: LavaRaster;
     output.clip_position = params.model_view_projection * vec4<f32>(input.position, 1.0);
     output.uv = input.uv;
+    output.light_position = (params.light_from_model * vec4<f32>(input.position, 1.0)).xyz;
     return output;
 }
 
@@ -34,5 +39,14 @@ fn lava_fragment(input: LavaRaster) -> @location(0) vec4<f32> {
     let near = textureSample(lava_texture, lava_sampler, flowing);
     let far = textureSample(lava_texture, lava_sampler, flowing * 0.53 + vec2<f32>(0.31, 0.17));
     let churn = 0.5 + 0.5 * sin(seconds * 0.8 + (input.uv.x - input.uv.y) * 4.0);
-    return vec4<f32>(mix(near.rgb, far.rgb, churn * 0.45), 1.0);
+    let shadow_uv = input.light_position.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    // The depth bias is application policy, applied to the comparison reference here.
+    let lit = textureSampleCompare(
+        shadow_map,
+        shadow_sampler,
+        shadow_uv,
+        input.light_position.z - 0.002,
+    );
+    let color = mix(near.rgb, far.rgb, churn * 0.45) * mix(0.35, 1.0, lit);
+    return vec4<f32>(color, 1.0);
 }

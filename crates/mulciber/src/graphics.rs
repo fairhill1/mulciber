@@ -389,6 +389,8 @@ impl Device<'_> {
             uniform: declaration.uniform,
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
+            depth_texture_binding: declaration.depth_texture,
+            comparison_sampler_binding: declaration.comparison_sampler,
             blend: descriptor.blend,
             depth: descriptor.depth,
         };
@@ -398,6 +400,77 @@ impl Device<'_> {
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
             texture_count: declaration.texture_bindings.len(),
+            samples_shadow: declaration.depth_texture.is_some(),
+        })
+    }
+
+    /// Creates a square sampleable depth target for shadow passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, an extent above [`SHADOW_MAP_SIZE_LIMIT`], or native
+    /// image allocation failure.
+    pub fn create_shadow_map(&self, size: u32) -> Result<ShadowMap, GraphicsError> {
+        if size == 0 || size > SHADOW_MAP_SIZE_LIMIT {
+            return Err(GraphicsError::invalid_request(format!(
+                "shadow map extent {size} is outside the supported 1 through \
+                 {SHADOW_MAP_SIZE_LIMIT}"
+            )));
+        }
+        let id = session_mut(&self.shared)?.create_shadow_map(size)?;
+        Ok(ShadowMap {
+            lease: self.lease(id, ResourceKind::ShadowMap),
+            size,
+        })
+    }
+
+    /// Creates a depth-only pipeline from an application-authored shader module for shadow
+    /// passes.
+    ///
+    /// The pipeline runs the named vertex entry point with no fragment stage into a
+    /// [`ShadowMap`]'s depth target, testing and writing depth. Shadow pipelines support at
+    /// most one uniform binding; the module must record no other bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid layout, a missing vertex entry point, a declaration that
+    /// does not match the artifact's recorded interface, a non-uniform binding, or native shader
+    /// loading and pipeline creation failure.
+    pub fn create_shadow_pipeline(
+        &self,
+        descriptor: ShadowPipelineDescriptor<'_>,
+    ) -> Result<ShadowPipeline, GraphicsError> {
+        let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+        let interface = descriptor.shader.parse_interface();
+        let vertex_entry = find_entry_point(
+            &interface,
+            descriptor.vertex_entry,
+            shader::INTERFACE_STAGE_VERTEX,
+            "vertex",
+        )?;
+        let consumed = validate_layout_covers_entry(&layout, vertex_entry)?;
+        let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
+        if !declaration.texture_bindings.is_empty()
+            || !declaration.sampler_bindings.is_empty()
+            || declaration.depth_texture.is_some()
+            || declaration.comparison_sampler.is_some()
+        {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "shadow pipelines support only uniform bindings",
+            ));
+        }
+        let config = ShadowPipelineConfig {
+            vertex_entry: descriptor.vertex_entry,
+            stride: layout.stride,
+            attributes: &consumed,
+            uniform: declaration.uniform,
+        };
+        let id = session_mut(&self.shared)?.create_shadow_pipeline(descriptor.shader, &config)?;
+        Ok(ShadowPipeline {
+            lease: self.lease(id, ResourceKind::ShadowPipeline),
+            layout,
+            uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
         })
     }
 
@@ -503,6 +576,27 @@ impl Device<'_> {
         self.destroy_lease(&mut pipeline.lease, ResourceKind::MaterialPipeline)
     }
 
+    /// Destroys a shadow map after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_shadow_map(&self, mut map: ShadowMap) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut map.lease, ResourceKind::ShadowMap)
+    }
+
+    /// Destroys a shadow pipeline after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_shadow_pipeline(
+        &self,
+        mut pipeline: ShadowPipeline,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut pipeline.lease, ResourceKind::ShadowPipeline)
+    }
+
     /// Destroys generation-dependent render targets after their last submitted GPU use completes.
     ///
     /// # Errors
@@ -566,6 +660,12 @@ impl Queue<'_> {
         frame: Frame<'_>,
         submission: SceneSubmission<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
+        if submission.shadow.is_some() && !matches!(submission.content, SceneContent::Material(_)) {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "the shadow pass composes with material scene content only",
+            ));
+        }
         match (submission.content, submission.output) {
             (SceneContent::Textured(draws), SceneOutput::Direct(targets)) => self
                 .draw_textured_scene_and_present(
@@ -604,13 +704,19 @@ impl Queue<'_> {
                 targets,
                 submission.clear,
             ),
-            (SceneContent::Material(records), SceneOutput::Direct(targets)) => {
-                self.draw_material_scene_and_present(frame, records, targets, submission.clear)
-            }
+            (SceneContent::Material(records), SceneOutput::Direct(targets)) => self
+                .draw_material_scene_and_present(
+                    frame,
+                    records,
+                    submission.shadow,
+                    targets,
+                    submission.clear,
+                ),
             (SceneContent::Material(records), SceneOutput::Postprocessed { pipeline, targets }) => {
                 self.draw_material_scene_postprocessed_and_present(
                     frame,
                     records,
+                    submission.shadow,
                     pipeline,
                     targets,
                     submission.clear,
@@ -797,16 +903,20 @@ impl Queue<'_> {
         )
     }
 
-    /// Draws a non-empty sequence of application-authored material records in one depth-tested
-    /// render pass, presents the frame, and consumes it.
+    /// Draws an optional depth-only shadow pass followed by a non-empty sequence of
+    /// application-authored material records in one depth-tested render pass, presents the
+    /// frame, and consumes it.
     fn draw_material_scene_and_present(
         &mut self,
         mut frame: Frame<'_>,
         records: &[MaterialRecord<'_>],
+        shadow: Option<ShadowPass<'_>>,
         targets: &RenderTargets,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
+        session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
         let token = frame
             .token
             .take()
@@ -814,22 +924,27 @@ impl Queue<'_> {
         session_mut(&self.shared)?.draw_material_scene_and_present(
             token,
             records,
+            shadow.as_ref(),
             targets.lease.id,
             clear,
         )
     }
 
-    /// Draws a non-empty sequence of application-authored material records into resolved scene
-    /// color, runs one fullscreen post-processing pass, presents the frame, and consumes it.
+    /// Draws an optional depth-only shadow pass, then a non-empty sequence of
+    /// application-authored material records into resolved scene color, runs one fullscreen
+    /// post-processing pass, presents the frame, and consumes it.
     fn draw_material_scene_postprocessed_and_present(
         &mut self,
         mut frame: Frame<'_>,
         records: &[MaterialRecord<'_>],
+        shadow: Option<ShadowPass<'_>>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
+        session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
         if postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "postprocess pipeline belongs to a different graphics session than the queue",
@@ -842,10 +957,61 @@ impl Queue<'_> {
         session_mut(&self.shared)?.draw_material_scene_postprocessed_and_present(
             token,
             records,
+            shadow.as_ref(),
             postprocess_pipeline.lease.id,
             targets.lease.id,
             clear,
         )
+    }
+
+    /// Validates a shadow pass's handles, record shape, and uniform/layout agreement.
+    fn validate_shadow_pass(
+        &self,
+        frame_session: u64,
+        shadow: Option<&ShadowPass<'_>>,
+    ) -> Result<(), GraphicsError> {
+        let Some(shadow) = shadow else {
+            return Ok(());
+        };
+        if shadow.records.is_empty() {
+            return Err(GraphicsError::invalid_request(
+                "shadow pass must contain at least one record",
+            ));
+        }
+        for (label, session) in shadow
+            .records
+            .iter()
+            .flat_map(|record| {
+                [
+                    ("shadow pipeline", record.pipeline.lease.session),
+                    ("mesh", record.mesh.lease.session),
+                ]
+            })
+            .chain([("shadow map", shadow.map.lease.session)])
+        {
+            if session != self.shared.id || session != frame_session {
+                return Err(GraphicsError::invalid_request(format!(
+                    "{label} belongs to a different graphics session than the queue and frame"
+                )));
+            }
+        }
+        for record in shadow.records {
+            let expected =
+                usize::try_from(record.pipeline.uniform_size).expect("u32 size fits usize");
+            if record.uniform.len() != expected {
+                return Err(GraphicsError::invalid_request(format!(
+                    "shadow record supplies {} uniform bytes but its pipeline declares {expected}",
+                    record.uniform.len()
+                )));
+            }
+            if record.mesh.layout != record.pipeline.layout {
+                return Err(GraphicsError::invalid_request(
+                    "shadow record's mesh vertex layout does not match its pipeline's declared \
+                     layout",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn validate_material_scene(
@@ -872,6 +1038,12 @@ impl Queue<'_> {
                     .textures
                     .iter()
                     .map(|texture| ("texture", texture.lease.session)),
+            )
+            .chain(
+                record
+                    .shadow_map
+                    .iter()
+                    .map(|map| ("shadow map", map.lease.session)),
             );
             for (label, session) in handles {
                 if session != self.shared.id || session != frame_session {
@@ -879,6 +1051,17 @@ impl Queue<'_> {
                         "{label} belongs to a different graphics session than the queue and frame"
                     )));
                 }
+            }
+            if record.shadow_map.is_some() != record.pipeline.samples_shadow {
+                return Err(GraphicsError::invalid_request(
+                    if record.shadow_map.is_some() {
+                        "material record supplies a shadow map but its pipeline declares no \
+                     depth-texture slot"
+                    } else {
+                        "material record supplies no shadow map but its pipeline declares a \
+                     depth-texture slot"
+                    },
+                ));
             }
             if record.textures.len() != record.pipeline.texture_count {
                 return Err(GraphicsError::invalid_request(format!(
@@ -1411,6 +1594,9 @@ pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
 /// including Metal's sixteen sampler-state slots.
 pub const MATERIAL_SLOT_LIMIT: u32 = 15;
 
+/// Largest supported shadow map extent along either axis.
+pub const SHADOW_MAP_SIZE_LIMIT: u32 = 8192;
+
 /// Minification and magnification filtering for one material sampler slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SamplerFilter {
@@ -1493,6 +1679,23 @@ pub enum MaterialBinding {
         /// Texture-coordinate addressing on both axes.
         address: SamplerAddress,
     },
+    /// One sampled `texture_depth_2d` supplied per draw record from a [`ShadowMap`].
+    ///
+    /// At most one depth-texture slot may be declared per material pipeline.
+    DepthTexture {
+        /// WGSL binding number.
+        binding: u32,
+    },
+    /// A pipeline-owned `sampler_comparison` with fixed shadow-recipe state: linear filtering,
+    /// clamp-to-edge addressing, and a less-or-equal comparison, so
+    /// `textureSampleCompare(map, sampler, uv, reference)` returns one where the reference depth
+    /// is at most the stored depth. Depth bias stays application-owned in the authored shader.
+    ///
+    /// At most one comparison-sampler slot may be declared per material pipeline.
+    ComparisonSampler {
+        /// WGSL binding number.
+        binding: u32,
+    },
 }
 
 /// Everything needed to create one application-authored material pipeline.
@@ -1522,12 +1725,83 @@ pub struct MaterialPipeline {
     /// Zero when no uniform slot is declared.
     uniform_size: u32,
     texture_count: usize,
+    /// Whether the pipeline declares a depth-texture slot fed from a shadow map per record.
+    samples_shadow: bool,
 }
 
 impl MaterialPipeline {
     pub(crate) const fn id(&self) -> ResourceId {
         self.lease.id
     }
+}
+
+/// A square sampleable depth target rendered by a scene submission's shadow pass.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ShadowMap {
+    lease: ResourceLease,
+    size: u32,
+}
+
+impl ShadowMap {
+    /// Extent of the map along both axes.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
+/// Everything needed to create one application-authored depth-only shadow pipeline.
+#[derive(Clone, Copy)]
+pub struct ShadowPipelineDescriptor<'inputs> {
+    /// Offline-compiled shader module containing the vertex entry point.
+    pub shader: ShaderArtifact<'inputs>,
+    /// Vertex entry point name; the pipeline runs no fragment stage.
+    pub vertex_entry: &'inputs str,
+    /// Per-vertex input layout; must match the vertex entry point's recorded inputs.
+    pub vertex_layout: VertexLayout<'inputs>,
+    /// Declared resource slots; shadow pipelines support at most one uniform slot, and the
+    /// module must record no other bindings.
+    pub bindings: &'inputs [MaterialBinding],
+}
+
+/// Application-authored depth-only pipeline drawn by a shadow pass.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ShadowPipeline {
+    lease: ResourceLease,
+    layout: OwnedVertexLayout,
+    /// Zero when no uniform slot is declared.
+    uniform_size: u32,
+}
+
+impl ShadowPipeline {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
+/// One depth-only draw inside a shadow pass.
+#[derive(Clone, Copy)]
+pub struct ShadowRecord<'resources> {
+    /// Shadow pipeline whose declared layout matches the mesh.
+    pub pipeline: &'resources ShadowPipeline,
+    /// Geometry to render into the shadow map.
+    pub mesh: &'resources Mesh,
+    /// Uniform data matching the pipeline's declared uniform size (typically the light's
+    /// view-projection times the record's model transform); empty when no uniform is declared.
+    pub uniform: &'resources [u8],
+}
+
+/// One depth-only pre-pass rendered into a shadow map before the scene pass samples it.
+#[derive(Clone, Copy)]
+pub struct ShadowPass<'resources> {
+    /// Destination map, cleared to the far plane before the first record.
+    pub map: &'resources ShadowMap,
+    /// Non-empty depth-only records encoded in slice order.
+    pub records: &'resources [ShadowRecord<'resources>],
 }
 
 /// Validated creation inputs handed to the native backends.
@@ -1542,8 +1816,21 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) texture_bindings: &'inputs [u32],
     /// Declared sampler slots with their filter and address modes.
     pub(crate) sampler_bindings: &'inputs [SamplerSlot],
+    /// Declared depth-texture slot fed from a shadow map per record.
+    pub(crate) depth_texture_binding: Option<u32>,
+    /// Declared fixed-recipe comparison-sampler slot.
+    pub(crate) comparison_sampler_binding: Option<u32>,
     pub(crate) blend: BlendMode,
     pub(crate) depth: DepthMode,
+}
+
+/// Validated shadow pipeline creation inputs handed to the native backends.
+pub(crate) struct ShadowPipelineConfig<'inputs> {
+    pub(crate) vertex_entry: &'inputs str,
+    pub(crate) stride: u32,
+    pub(crate) attributes: &'inputs [VertexAttribute],
+    /// Declared uniform slot as (binding, size).
+    pub(crate) uniform: Option<(u32, u32)>,
 }
 
 /// Extent- and generation-dependent color/depth targets.
@@ -1678,6 +1965,9 @@ pub struct MaterialRecord<'resources> {
     pub mesh: &'resources Mesh,
     /// Textures for the pipeline's declared texture slots in ascending binding order.
     pub textures: &'resources [&'resources Texture],
+    /// The map feeding the pipeline's depth-texture slot; required exactly when the pipeline
+    /// declares one, and it must have been rendered by a shadow pass (this frame or earlier).
+    pub shadow_map: Option<&'resources ShadowMap>,
     /// Uniform data matching the pipeline's declared uniform size; empty when the pipeline
     /// declares no uniform slot. The application owns WGSL memory-layout correctness.
     pub uniform: &'resources [u8],
@@ -1722,6 +2012,9 @@ pub struct SceneSubmission<'resources> {
     pub content: SceneContent<'resources>,
     /// Direct or postprocessed destination for the scene pass.
     pub output: SceneOutput<'resources>,
+    /// Optional depth-only pre-pass rendered into a shadow map before the scene pass; composes
+    /// with material content only.
+    pub shadow: Option<ShadowPass<'resources>>,
     /// Linear color used to clear the scene before its first draw or batch.
     pub clear: ClearColor,
 }
@@ -1947,10 +2240,46 @@ fn validate_layout_against_entry(
     Ok(())
 }
 
+/// Requires every recorded vertex input to have a matching declared attribute — extra declared
+/// attributes are legal and simply not consumed by the depth-only stage — and returns the
+/// consumed subset for native vertex-input construction.
+fn validate_layout_covers_entry(
+    layout: &OwnedVertexLayout,
+    entry: &shader::InterfaceEntryPoint,
+) -> Result<Vec<VertexAttribute>, GraphicsError> {
+    let mut consumed = Vec::with_capacity(entry.inputs.len());
+    for input in &entry.inputs {
+        let Some(attribute) = layout
+            .attributes
+            .iter()
+            .find(|attribute| attribute.location == input.location)
+        else {
+            return Err(GraphicsError::invalid_request(format!(
+                "entry point `{}` consumes location {} that the vertex layout does not declare",
+                entry.name, input.location
+            )));
+        };
+        if input.format != attribute.format.interface_code() {
+            let recorded = VertexFormat::from_interface_code(input.format)
+                .map_or("an unsupported format", VertexFormat::wgsl_name);
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout declares location {} as {} but the shader artifact records {}",
+                attribute.location,
+                attribute.format.wgsl_name(),
+                recorded
+            )));
+        }
+        consumed.push(*attribute);
+    }
+    Ok(consumed)
+}
+
 struct BindingDeclaration {
     uniform: Option<(u32, u32)>,
     texture_bindings: Vec<u32>,
     sampler_bindings: Vec<SamplerSlot>,
+    depth_texture: Option<u32>,
+    comparison_sampler: Option<u32>,
 }
 
 const fn interface_binding_label(kind: u8) -> &'static str {
@@ -1959,6 +2288,8 @@ const fn interface_binding_label(kind: u8) -> &'static str {
         shader::INTERFACE_BINDING_SAMPLED_TEXTURE => "a sampled texture",
         shader::INTERFACE_BINDING_SAMPLER => "a sampler",
         shader::INTERFACE_BINDING_STORAGE => "a storage buffer",
+        shader::INTERFACE_BINDING_DEPTH_TEXTURE => "a depth texture",
+        shader::INTERFACE_BINDING_COMPARISON_SAMPLER => "a comparison sampler",
         _ => "an unsupported resource",
     }
 }
@@ -1996,6 +2327,8 @@ fn validate_bindings_against_interface(
         uniform: None,
         texture_bindings: Vec::new(),
         sampler_bindings: Vec::new(),
+        depth_texture: None,
+        comparison_sampler: None,
     };
     let mut declared: Vec<(u32, u8, u32)> = Vec::with_capacity(bindings.len());
     for binding in bindings {
@@ -2034,6 +2367,26 @@ fn validate_bindings_against_interface(
                     address,
                 });
                 (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
+            }
+            MaterialBinding::DepthTexture { binding } => {
+                if declaration.depth_texture.is_some() {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        "material pipelines support at most one depth-texture slot",
+                    ));
+                }
+                declaration.depth_texture = Some(binding);
+                (binding, shader::INTERFACE_BINDING_DEPTH_TEXTURE, 0)
+            }
+            MaterialBinding::ComparisonSampler { binding } => {
+                if declaration.comparison_sampler.is_some() {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        "material pipelines support at most one comparison-sampler slot",
+                    ));
+                }
+                declaration.comparison_sampler = Some(binding);
+                (binding, shader::INTERFACE_BINDING_COMPARISON_SAMPLER, 0)
             }
         };
         if slot > MATERIAL_SLOT_LIMIT {

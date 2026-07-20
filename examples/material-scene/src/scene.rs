@@ -2,7 +2,7 @@
 //! scene. Vertex and uniform data are packed by the application; the crate only sees bytes
 //! against declared layouts.
 
-use glam::{Mat4, Vec3, camera::rh::proj::directx};
+use glam::{Mat4, Vec3, camera::rh::proj::directx, camera::rh::view::look_at_mat4};
 use mulciber::{VertexAttribute, VertexFormat, VertexLayout};
 
 /// Crystal vertices carry position, normal, texture coordinate, and a per-vertex glow weight the
@@ -202,12 +202,24 @@ fn view_projection(aspect: f32) -> Mat4 {
     projection * view
 }
 
+/// A fixed directional light looking down at the scene center, with an orthographic volume
+/// covering the floor. Its NDC z spans zero through one, matching the shadow map's depth range.
+fn light_view_projection() -> Mat4 {
+    let view = look_at_mat4(Vec3::new(4.0, 7.0, 3.0), Vec3::ZERO, Vec3::Y);
+    let projection = directx::orthographic(-10.0, 10.0, -10.0, 10.0, 0.1, 25.0);
+    projection * view
+}
+
+fn crystal_model(seconds: f32, phase: f32, offset: Vec3) -> Mat4 {
+    Mat4::from_translation(offset)
+        * Mat4::from_rotation_y(seconds * 0.6 + phase)
+        * Mat4::from_rotation_x(seconds * 0.35 + phase * 0.5)
+}
+
 /// Packs `CrystalParams`: model-view-projection, model, then seconds and pulse strength. The
 /// application owns this WGSL memory layout.
 pub(crate) fn crystal_uniform(seconds: f32, aspect: f32, phase: f32, offset: Vec3) -> Vec<u8> {
-    let model = Mat4::from_translation(offset)
-        * Mat4::from_rotation_y(seconds * 0.6 + phase)
-        * Mat4::from_rotation_x(seconds * 0.35 + phase * 0.5);
+    let model = crystal_model(seconds, phase, offset);
     let mut bytes = Vec::with_capacity(144);
     push_f32s(
         &mut bytes,
@@ -218,10 +230,22 @@ pub(crate) fn crystal_uniform(seconds: f32, aspect: f32, phase: f32, offset: Vec
     bytes
 }
 
-/// Packs `LavaParams`: model-view-projection, then seconds.
+/// Packs `ShadowParams` for one crystal: the light's view-projection times its model transform.
+pub(crate) fn crystal_shadow_uniform(seconds: f32, phase: f32, offset: Vec3) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    push_f32s(
+        &mut bytes,
+        &(light_view_projection() * crystal_model(seconds, phase, offset)).to_cols_array(),
+    );
+    bytes
+}
+
+/// Packs `LavaParams`: model-view-projection, the light transform (the floor's model is the
+/// identity), then seconds.
 pub(crate) fn lava_uniform(seconds: f32, aspect: f32) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(80);
+    let mut bytes = Vec::with_capacity(144);
     push_f32s(&mut bytes, &view_projection(aspect).to_cols_array());
+    push_f32s(&mut bytes, &light_view_projection().to_cols_array());
     push_f32s(&mut bytes, &[seconds, 0.0, 0.0, 0.0]);
     bytes
 }

@@ -111,6 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         pipeline: &postprocess_pipeline,
                         targets: &targets,
                     },
+                    shadow: None,
                     clear: CLEAR,
                 },
             )?;

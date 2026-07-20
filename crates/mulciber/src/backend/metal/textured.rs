@@ -10,12 +10,12 @@ use std::ffi::CString;
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
-    mip_extent,
+    ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
-    PresentFeedback, SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch,
+    PresentFeedback, SampleCount, ShaderArtifact, ShadowPass, SurfaceInfo, TexturedInstanceBatch,
     TexturedSceneDraw, Vertex, VertexFormat,
 };
 
@@ -53,6 +53,7 @@ const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
 const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
+const COMPARE_FUNCTION_LESS_EQUAL: usize = 3;
 const COMPARE_FUNCTION_ALWAYS: usize = 7;
 const BLEND_FACTOR_ONE: usize = 1;
 const BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA: usize = 5;
@@ -108,6 +109,23 @@ struct MaterialPipelineResource {
     uniform: Option<(u32, u32)>,
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
+    /// Declared depth-texture slot fed from a shadow map per record.
+    depth_texture_binding: Option<u32>,
+    /// Pipeline-owned fixed-recipe comparison sampler as (binding, sampler).
+    comparison_sampler: Option<(u32, Object)>,
+}
+
+struct ShadowMapResource {
+    texture: Object,
+    /// Whether any shadow pass has rendered into this map; sampling before that is rejected.
+    rendered: bool,
+}
+
+struct ShadowPipelineResource {
+    pipeline: Object,
+    depth_state: Object,
+    /// Declared uniform slot as (binding, size).
+    uniform: Option<(u32, u32)>,
 }
 
 struct TargetResource {
@@ -160,6 +178,8 @@ pub(crate) struct TexturedSession<'window> {
     pipelines: Arena<PipelineResource>,
     instanced_pipelines: Arena<PipelineResource>,
     material_pipelines: Arena<MaterialPipelineResource>,
+    shadow_maps: Arena<ShadowMapResource>,
+    shadow_pipelines: Arena<ShadowPipelineResource>,
     postprocess_pipelines: Arena<PostprocessPipelineResource>,
     targets: Arena<TargetResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
@@ -221,6 +241,8 @@ impl<'window> TexturedSession<'window> {
                 pipelines: Arena::new("textured pipeline"),
                 instanced_pipelines: Arena::new("instanced textured pipeline"),
                 material_pipelines: Arena::new("material pipeline"),
+                shadow_maps: Arena::new("shadow map"),
+                shadow_pipelines: Arena::new("shadow pipeline"),
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
                 targets: Arena::new("render targets"),
                 postprocess_targets: Arena::new("postprocess targets"),
@@ -456,6 +478,35 @@ impl<'window> TexturedSession<'window> {
         )?)
     }
 
+    pub(crate) fn create_shadow_map(&mut self, size: u32) -> Result<ResourceId, GraphicsError> {
+        let extent = usize::try_from(size)
+            .map_err(|_| GraphicsError::new("shadow map extent exceeds usize"))?;
+        let texture = create_target_texture(
+            self.surface.device,
+            PIXEL_FORMAT_DEPTH32_FLOAT,
+            extent,
+            extent,
+            1,
+            TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
+        )?;
+        self.shadow_maps.insert(ShadowMapResource {
+            texture,
+            rendered: false,
+        })
+    }
+
+    pub(crate) fn create_shadow_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+        config: &ShadowPipelineConfig<'_>,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.shadow_pipelines.insert(create_shadow_pipeline(
+            self.surface.device,
+            shader.payload(),
+            config,
+        )?)
+    }
+
     /// Releases the session's references to render targets from superseded surface generations.
     ///
     /// Draws reject targets that do not match the acquired generation, and committed command
@@ -615,7 +666,7 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_scene(draws)?;
-        self.encode_present(token, PreparedScene::Draws(draws), target, clear)
+        self.encode_present(token, PreparedScene::Draws(draws), None, target, clear)
     }
 
     pub(crate) fn draw_scene_postprocessed_and_present(
@@ -642,6 +693,7 @@ impl<'window> TexturedSession<'window> {
         self.encode_postprocessed_present(
             token,
             PreparedScene::Draws(draws),
+            None,
             postprocess_pipeline,
             target,
             clear,
@@ -667,7 +719,7 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_instanced_scene(batches)?;
-        self.encode_present(token, PreparedScene::Instances, target, clear)
+        self.encode_present(token, PreparedScene::Instances, None, target, clear)
     }
 
     pub(crate) fn draw_instanced_scene_postprocessed_and_present(
@@ -694,16 +746,40 @@ impl<'window> TexturedSession<'window> {
         self.encode_postprocessed_present(
             token,
             PreparedScene::Instances,
+            None,
             postprocess_pipeline,
             target,
             clear,
         )
     }
 
+    /// Rejects sampling a shadow map that neither an earlier frame nor this submission's shadow
+    /// pass has rendered. This runs before the frame token is consumed so the rejection cannot
+    /// strand an acquired drawable.
+    pub(crate) fn validate_shadow_sampling(
+        &self,
+        records: &[MaterialRecord<'_>],
+        shadow: Option<&ShadowPass<'_>>,
+    ) -> Result<(), GraphicsError> {
+        let pending = shadow.map(|shadow| shadow.map.id());
+        for record in records {
+            if let Some(map) = record.shadow_map {
+                let index = self.shadow_maps.index_of(map.id())?;
+                if !self.shadow_maps[index].rendered && pending != Some(map.id()) {
+                    return Err(GraphicsError::invalid_request(
+                        "material record samples a shadow map that no shadow pass has rendered",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn draw_material_scene_and_present(
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
+        shadow: Option<&ShadowPass<'_>>,
         targets: ResourceId,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -718,14 +794,21 @@ impl<'window> TexturedSession<'window> {
                 "render targets were reclaimed by a newer surface generation",
             ));
         }
-        self.prepare_material_scene(records)?;
-        self.encode_present(token, PreparedScene::Materials(records), target, clear)
+        self.prepare_material_scene(records, shadow)?;
+        self.encode_present(
+            token,
+            PreparedScene::Materials(records),
+            shadow,
+            target,
+            clear,
+        )
     }
 
     pub(crate) fn draw_material_scene_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
+        shadow: Option<&ShadowPass<'_>>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         clear: ClearColor,
@@ -742,10 +825,11 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets were reclaimed by a newer surface generation",
             ));
         }
-        self.prepare_material_scene(records)?;
+        self.prepare_material_scene(records, shadow)?;
         self.encode_postprocessed_present(
             token,
             PreparedScene::Materials(records),
+            shadow,
             postprocess_pipeline,
             target,
             clear,
@@ -755,17 +839,32 @@ impl<'window> TexturedSession<'window> {
     fn prepare_material_scene(
         &mut self,
         records: &[MaterialRecord<'_>],
+        shadow: Option<&ShadowPass<'_>>,
     ) -> Result<(), GraphicsError> {
+        if let Some(shadow) = shadow {
+            self.shadow_maps.get(shadow.map.id())?;
+            for record in shadow.records {
+                self.meshes.get(record.mesh.id())?;
+                self.shadow_pipelines.get(record.pipeline.id())?;
+            }
+        }
         for record in records {
             self.meshes.get(record.mesh.id())?;
             self.material_pipelines.get(record.pipeline.id())?;
             for texture in record.textures {
                 self.textures.get(texture.id())?;
             }
+            if let Some(map) = record.shadow_map {
+                self.shadow_maps.get(map.id())?;
+            }
         }
-        if records.len() > self.uniform_capacity {
-            let capacity = records
-                .len()
+        let shadow_records = shadow.map_or(0, |shadow| shadow.records.len());
+        let uniform_slots = records
+            .len()
+            .checked_add(shadow_records)
+            .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
+        if uniform_slots > self.uniform_capacity {
+            let capacity = uniform_slots
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
             let bytes = capacity
@@ -793,13 +892,90 @@ impl<'window> TexturedSession<'window> {
                     "Metal uniform buffer has no CPU address",
                 ));
             }
-            for (index, record) in records.iter().enumerate() {
+            let uniforms = records.iter().map(|record| record.uniform).chain(
+                shadow
+                    .into_iter()
+                    .flat_map(|shadow| shadow.records.iter().map(|record| record.uniform)),
+            );
+            for (index, uniform) in uniforms.enumerate() {
                 ptr::copy_nonoverlapping(
-                    record.uniform.as_ptr(),
+                    uniform.as_ptr(),
                     contents.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
-                    record.uniform.len(),
+                    uniform.len(),
                 );
             }
+        }
+        if let Some(shadow) = shadow {
+            let index = self.shadow_maps.index_of(shadow.map.id())?;
+            self.shadow_maps[index].rendered = true;
+        }
+        Ok(())
+    }
+
+    /// Encodes the depth-only shadow pass as its own encoder on the frame's command buffer,
+    /// ordered before the scene encoder that samples the map.
+    unsafe fn encode_shadow_pass(
+        &self,
+        command: Object,
+        shadow: &ShadowPass<'_>,
+        uniform_base: usize,
+    ) -> Result<(), GraphicsError> {
+        unsafe {
+            let map = &self.shadow_maps[self.shadow_maps.index_of(shadow.map.id())?];
+            let pass = required(
+                objc::object(
+                    objc::class(c"MTLRenderPassDescriptor"),
+                    c"renderPassDescriptor",
+                ),
+                "Metal shadow render-pass descriptor",
+            )?;
+            let depth = required(
+                objc::object(pass, c"depthAttachment"),
+                "shadow depth attachment",
+            )?;
+            objc::void_object(depth, c"setTexture:", map.texture);
+            objc::void_usize(depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
+            objc::void_usize(depth, c"setStoreAction:", STORE_ACTION_STORE);
+            objc::void_f64(depth, c"setClearDepth:", 1.0);
+            let encoder = required(
+                objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
+                "Metal shadow render encoder",
+            )?;
+            for (index, record) in shadow.records.iter().enumerate() {
+                let pipeline =
+                    &self.shadow_pipelines[self.shadow_pipelines.index_of(record.pipeline.id())?];
+                let mesh = &self.meshes[self.meshes.index_of(record.mesh.id())?];
+                objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
+                objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
+                if let Some((binding, _)) = pipeline.uniform {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.uniform,
+                        (uniform_base + index) * DRAW_UNIFORM_STRIDE,
+                        slot,
+                    );
+                }
+                objc::void_object_two_usizes(
+                    encoder,
+                    c"setVertexBuffer:offset:atIndex:",
+                    mesh.vertices,
+                    0,
+                    MATERIAL_VERTEX_BUFFER_INDEX,
+                );
+                objc::void_two_usizes_object_usize_object_usize(
+                    encoder,
+                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                    PRIMITIVE_TYPE_TRIANGLE,
+                    mesh.index_type,
+                    mesh.indices,
+                    0,
+                    mesh.indirect,
+                    0,
+                );
+            }
+            objc::void(encoder, c"endEncoding");
         }
         Ok(())
     }
@@ -967,6 +1143,10 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::MaterialPipeline => {
                 release_material_pipeline(self.material_pipelines.remove(request.id)?);
             }
+            ResourceKind::ShadowMap => release_shadow_map(self.shadow_maps.remove(request.id)?),
+            ResourceKind::ShadowPipeline => {
+                release_shadow_pipeline(self.shadow_pipelines.remove(request.id)?);
+            }
             ResourceKind::RenderTargets => release_target(self.targets.remove(request.id)?),
             ResourceKind::PostprocessTargets => {
                 release_postprocess_target(self.postprocess_targets.remove(request.id)?);
@@ -998,6 +1178,14 @@ impl<'window> TexturedSession<'window> {
                 .material_pipelines
                 .remove_if_live(request.id)
                 .map(release_material_pipeline),
+            ResourceKind::ShadowMap => self
+                .shadow_maps
+                .remove_if_live(request.id)
+                .map(release_shadow_map),
+            ResourceKind::ShadowPipeline => self
+                .shadow_pipelines
+                .remove_if_live(request.id)
+                .map(release_shadow_pipeline),
             ResourceKind::RenderTargets => {
                 self.targets.remove_if_live(request.id).map(release_target)
             }
@@ -1021,6 +1209,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         mut token: TexturedFrameToken,
         scene: PreparedScene<'_>,
+        shadow: Option<&ShadowPass<'_>>,
         target: usize,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -1073,6 +1262,9 @@ impl<'window> TexturedSession<'window> {
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal cube command buffer",
             )?;
+            if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
+                self.encode_shadow_pass(command, shadow, records.len())?;
+            }
             let encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal cube render encoder",
@@ -1090,6 +1282,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         mut token: TexturedFrameToken,
         scene: PreparedScene<'_>,
+        shadow: Option<&ShadowPass<'_>>,
         postprocess_pipeline: usize,
         target: usize,
         clear: ClearColor,
@@ -1182,6 +1375,9 @@ impl<'window> TexturedSession<'window> {
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal postprocess command buffer",
             )?;
+            if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
+                self.encode_shadow_pass(command, shadow, records.len())?;
+            }
             let scene_encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
                 "Metal scene render encoder",
@@ -1343,6 +1539,40 @@ impl<'window> TexturedSession<'window> {
                                 slot,
                             );
                         }
+                        if let (Some(map), Some(binding)) =
+                            (record.shadow_map, pipeline.depth_texture_binding)
+                        {
+                            let resource =
+                                &self.shadow_maps[self.shadow_maps.index_of(map.id())?];
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_usize(
+                                encoder,
+                                c"setVertexTexture:atIndex:",
+                                resource.texture,
+                                slot,
+                            );
+                            objc::void_object_usize(
+                                encoder,
+                                c"setFragmentTexture:atIndex:",
+                                resource.texture,
+                                slot,
+                            );
+                        }
+                        if let Some((binding, sampler)) = pipeline.comparison_sampler {
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_usize(
+                                encoder,
+                                c"setVertexSamplerState:atIndex:",
+                                sampler,
+                                slot,
+                            );
+                            objc::void_object_usize(
+                                encoder,
+                                c"setFragmentSamplerState:atIndex:",
+                                sampler,
+                                slot,
+                            );
+                        }
                         objc::void_two_usizes_object_usize_object_usize(
                             encoder,
                             c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
@@ -1418,6 +1648,12 @@ impl<'window> TexturedSession<'window> {
         for pipeline in self.material_pipelines.take_all() {
             release_material_pipeline(pipeline);
         }
+        for pipeline in self.shadow_pipelines.take_all() {
+            release_shadow_pipeline(pipeline);
+        }
+        for map in self.shadow_maps.take_all() {
+            release_shadow_map(map);
+        }
         for texture in self.textures.take_all() {
             release_texture(texture);
         }
@@ -1447,6 +1683,8 @@ impl<'window> TexturedSession<'window> {
         self.pipelines = Arena::new("textured pipeline");
         self.instanced_pipelines = Arena::new("instanced textured pipeline");
         self.material_pipelines = Arena::new("material pipeline");
+        self.shadow_maps = Arena::new("shadow map");
+        self.shadow_pipelines = Arena::new("shadow pipeline");
         self.postprocess_pipelines = Arena::new("postprocess pipeline");
         self.textures = Arena::new("texture");
         self.targets = Arena::new("render targets");
@@ -1506,11 +1744,39 @@ fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_material_pipeline(pipeline: MaterialPipelineResource) {
     unsafe {
-        for &(_, sampler) in &pipeline.samplers {
+        for &(_, sampler) in pipeline
+            .samplers
+            .iter()
+            .chain(pipeline.comparison_sampler.iter())
+        {
             objc::void(sampler, c"release");
         }
         objc::void(pipeline.depth_state, c"release");
         objc::void(pipeline.pipeline, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_shadow_map(map: ShadowMapResource) {
+    let ShadowMapResource {
+        texture,
+        rendered: _,
+    } = map;
+    unsafe {
+        objc::void(texture, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_shadow_pipeline(pipeline: ShadowPipelineResource) {
+    let ShadowPipelineResource {
+        pipeline,
+        depth_state,
+        uniform: _,
+    } = pipeline;
+    unsafe {
+        objc::void(depth_state, c"release");
+        objc::void(pipeline, c"release");
     }
 }
 
@@ -1922,6 +2188,41 @@ fn create_material_pipeline(
             objc::void(sampler_descriptor, c"release");
             samplers.push((slot.binding, sampler));
         }
+        let comparison_sampler = if let Some(binding) = config.comparison_sampler_binding {
+            let sampler_descriptor = required(
+                objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
+                "Metal comparison sampler descriptor",
+            )?;
+            objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
+            objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                SAMPLER_ADDRESS_CLAMP_TO_EDGE,
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                SAMPLER_ADDRESS_CLAMP_TO_EDGE,
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setCompareFunction:",
+                COMPARE_FUNCTION_LESS_EQUAL,
+            );
+            let sampler = required(
+                objc::object_object(
+                    device,
+                    c"newSamplerStateWithDescriptor:",
+                    sampler_descriptor,
+                ),
+                "Metal comparison sampler",
+            )?;
+            objc::void(sampler_descriptor, c"release");
+            Some((binding, sampler))
+        } else {
+            None
+        };
         for object in [depth_descriptor, descriptor, fragment, vertex, library] {
             objc::void(object, c"release");
         }
@@ -1931,6 +2232,150 @@ fn create_material_pipeline(
             samplers,
             uniform: config.uniform,
             texture_bindings: config.texture_bindings.to_vec(),
+            depth_texture_binding: config.depth_texture_binding,
+            comparison_sampler,
+        })
+    }
+}
+
+/// Builds a depth-only pipeline: the module's vertex entry point rasterized into a shadow map's
+/// depth attachment with no fragment stage or color target, at one sample.
+fn create_shadow_pipeline(
+    device: Object,
+    bytes: &[u8],
+    config: &ShadowPipelineConfig<'_>,
+) -> Result<ShadowPipelineResource, GraphicsError> {
+    let vertex_name = CString::new(config.vertex_entry)
+        .map_err(|_| GraphicsError::new("shadow vertex entry point name contains a NUL byte"))?;
+    unsafe {
+        let data = required(
+            dispatch_data_create(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ),
+            "Metal shadow library data",
+        )?;
+        let mut library_error = ptr::null_mut();
+        let library = objc::object_object_out(
+            device,
+            c"newLibraryWithData:error:",
+            data,
+            &raw mut library_error,
+        );
+        if library.is_null() {
+            return Err(GraphicsError::new(format!(
+                "loading shadow metallib failed: {}",
+                objc::description(library_error)
+            )));
+        }
+        let vertex = required(
+            objc::object_object(
+                library,
+                c"newFunctionWithName:",
+                objc::ns_string(&vertex_name),
+            ),
+            "Metal shadow vertex function",
+        )?;
+        let descriptor = required(
+            objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
+            "Metal shadow pipeline descriptor",
+        )?;
+        objc::void_object(descriptor, c"setVertexFunction:", vertex);
+        objc::void_usize(descriptor, c"setSampleCount:", 1);
+        objc::void_usize(
+            descriptor,
+            c"setDepthAttachmentPixelFormat:",
+            PIXEL_FORMAT_DEPTH32_FLOAT,
+        );
+
+        let vertex_descriptor = required(
+            objc::object(objc::class(c"MTLVertexDescriptor"), c"vertexDescriptor"),
+            "Metal shadow vertex descriptor",
+        )?;
+        let attributes = required(
+            objc::object(vertex_descriptor, c"attributes"),
+            "shadow vertex attributes",
+        )?;
+        for input in config.attributes {
+            let attribute = required(
+                objc::object_usize(
+                    attributes,
+                    c"objectAtIndexedSubscript:",
+                    usize::try_from(input.location).expect("validated location fits usize"),
+                ),
+                "Metal shadow vertex attribute",
+            )?;
+            objc::void_usize(
+                attribute,
+                c"setFormat:",
+                material_vertex_format(input.format),
+            );
+            objc::void_usize(
+                attribute,
+                c"setOffset:",
+                usize::try_from(input.offset).expect("validated offset fits usize"),
+            );
+            objc::void_usize(attribute, c"setBufferIndex:", MATERIAL_VERTEX_BUFFER_INDEX);
+        }
+        let layouts = required(
+            objc::object(vertex_descriptor, c"layouts"),
+            "shadow vertex layouts",
+        )?;
+        let layout = required(
+            objc::object_usize(
+                layouts,
+                c"objectAtIndexedSubscript:",
+                MATERIAL_VERTEX_BUFFER_INDEX,
+            ),
+            "shadow vertex layout",
+        )?;
+        objc::void_usize(
+            layout,
+            c"setStride:",
+            usize::try_from(config.stride).expect("validated stride fits usize"),
+        );
+        objc::void_object(descriptor, c"setVertexDescriptor:", vertex_descriptor);
+
+        let mut pipeline_error = ptr::null_mut();
+        let pipeline = objc::object_object_out(
+            device,
+            c"newRenderPipelineStateWithDescriptor:error:",
+            descriptor,
+            &raw mut pipeline_error,
+        );
+        if pipeline.is_null() {
+            return Err(GraphicsError::new(format!(
+                "creating Metal shadow pipeline failed: {}",
+                objc::description(pipeline_error)
+            )));
+        }
+        let depth_descriptor = required(
+            objc::object(objc::class(c"MTLDepthStencilDescriptor"), c"new"),
+            "Metal shadow depth descriptor",
+        )?;
+        objc::void_usize(
+            depth_descriptor,
+            c"setDepthCompareFunction:",
+            COMPARE_FUNCTION_LESS,
+        );
+        objc::void_bool(depth_descriptor, c"setDepthWriteEnabled:", true);
+        let depth_state = required(
+            objc::object_object(
+                device,
+                c"newDepthStencilStateWithDescriptor:",
+                depth_descriptor,
+            ),
+            "Metal shadow depth state",
+        )?;
+        for object in [depth_descriptor, descriptor, vertex, library] {
+            objc::void(object, c"release");
+        }
+        Ok(ShadowPipelineResource {
+            pipeline,
+            depth_state,
+            uniform: config.uniform,
         })
     }
 }

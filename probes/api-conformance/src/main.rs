@@ -13,8 +13,8 @@ use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GraphicsErrorKind,
     MaterialBinding, MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessedScene,
     SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
-    ShaderArtifact, TexturedDraw, TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
-    VertexAttribute, VertexFormat, VertexLayout,
+    ShaderArtifact, ShadowPass, ShadowRecord, TexturedDraw, TexturedInstanceBatch, TexturedScene,
+    TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -23,6 +23,8 @@ use mulciber_platform::{
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cube.shaderbin"));
 const INSTANCED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/instanced.shaderbin"));
 const MATERIAL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/material.shaderbin"));
+const LAVA_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lava.shaderbin"));
+const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.shaderbin"));
 
 /// The crystal module's recorded vertex interface: position, normal, texture coordinate, and a
 /// per-vertex glow weight.
@@ -66,6 +68,40 @@ const MATERIAL_BINDINGS: [MaterialBinding; 4] = [
         filter: SamplerFilter::Linear,
         address: SamplerAddress::Repeat,
     },
+];
+
+/// The lava module's recorded vertex interface: position and texture coordinate.
+const LAVA_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 20,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x2,
+            offset: 12,
+        },
+    ],
+};
+
+/// The lava module's recorded binding interface, including the shadow map's depth-texture and
+/// fixed-recipe comparison-sampler slots.
+const LAVA_BINDINGS: [MaterialBinding; 5] = [
+    MaterialBinding::Uniform {
+        binding: 0,
+        size: 144,
+    },
+    MaterialBinding::Texture { binding: 1 },
+    MaterialBinding::Sampler {
+        binding: 2,
+        filter: SamplerFilter::Linear,
+        address: SamplerAddress::Repeat,
+    },
+    MaterialBinding::DepthTexture { binding: 3 },
+    MaterialBinding::ComparisonSampler { binding: 4 },
 ];
 
 const IDENTITY: [[f32; 4]; 4] = [
@@ -154,6 +190,10 @@ struct Cases<'window> {
     material_pipeline: Option<mulciber::MaterialPipeline>,
     foreign_material_pipeline: Option<mulciber::MaterialPipeline>,
     material_mesh: Option<Mesh>,
+    shadow_map: Option<mulciber::ShadowMap>,
+    shadow_pipeline: Option<mulciber::ShadowPipeline>,
+    shadowed_pipeline: Option<mulciber::MaterialPipeline>,
+    floor_mesh: Option<Mesh>,
 }
 
 impl<'window> Cases<'window> {
@@ -176,6 +216,10 @@ impl<'window> Cases<'window> {
             material_pipeline: None,
             foreign_material_pipeline: None,
             material_mesh: None,
+            shadow_map: None,
+            shadow_pipeline: None,
+            shadowed_pipeline: None,
+            floor_mesh: None,
         })
     }
 
@@ -513,6 +557,7 @@ impl<'window> Cases<'window> {
                     SceneSubmission {
                         content: SceneContent::Instanced(&batches),
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: None,
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -551,6 +596,7 @@ impl<'window> Cases<'window> {
                                 .as_ref()
                                 .expect("postprocess targets exist"),
                         },
+                        shadow: None,
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -729,6 +775,7 @@ impl<'window> Cases<'window> {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     textures: &textures,
+                    shadow_map: None,
                     uniform: &short_uniform,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -742,6 +789,7 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
+                                shadow: None,
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -765,6 +813,7 @@ impl<'window> Cases<'window> {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     textures: &textures,
+                    shadow_map: None,
                     uniform: &uniform,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -778,6 +827,7 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
+                                shadow: None,
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -802,6 +852,7 @@ impl<'window> Cases<'window> {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                     mesh: self.mesh.as_ref().expect("fixed-layout mesh exists"),
                     textures: &textures,
+                    shadow_map: None,
                     uniform: &uniform,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -815,6 +866,7 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
+                                shadow: None,
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -894,24 +946,28 @@ impl<'window> Cases<'window> {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
+                        shadow_map: None,
                         uniform: &uniform,
                     },
                     MaterialRecord {
                         pipeline: &nearest_pipeline,
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
+                        shadow_map: None,
                         uniform: &uniform,
                     },
                     MaterialRecord {
                         pipeline: &cutout_pipeline,
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
+                        shadow_map: None,
                         uniform: &uniform,
                     },
                     MaterialRecord {
                         pipeline: &translucent_pipeline,
                         mesh: self.material_mesh.as_ref().expect("material mesh"),
                         textures: &textures,
+                        shadow_map: None,
                         uniform: &uniform,
                     },
                 ];
@@ -921,6 +977,7 @@ impl<'window> Cases<'window> {
                     SceneSubmission {
                         content: SceneContent::Material(&records),
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: None,
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1000,6 +1057,7 @@ impl<'window> Cases<'window> {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     textures: &textures,
+                    shadow_map: None,
                     uniform: &uniform,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1017,6 +1075,7 @@ impl<'window> Cases<'window> {
                                 .as_ref()
                                 .expect("postprocess targets exist"),
                         },
+                        shadow: None,
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1051,9 +1110,322 @@ impl<'window> Cases<'window> {
                 self.step = 16;
                 Ok(false)
             }
+            // Shadow vocabulary creation: an out-of-range extent and a shadow declaration with
+            // non-uniform bindings are rejected by name, then the shadow map, the depth-only
+            // pipeline (consuming only the position attribute of the crystal layout), the
+            // shadow-sampling lava pipeline, and their meshes are created for the cases below.
+            16 => {
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                expect_error(
+                    graphics.device.create_shadow_map(0).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "outside the supported",
+                    "zero-extent shadow map rejected",
+                )?;
+                expect_error(
+                    graphics
+                        .device
+                        .create_shadow_pipeline(mulciber::ShadowPipelineDescriptor {
+                            shader: ShaderArtifact::new(LAVA_SHADER)?,
+                            vertex_entry: "lava_vertex",
+                            vertex_layout: LAVA_LAYOUT,
+                            bindings: &LAVA_BINDINGS,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::Unsupported,
+                    "only uniform bindings",
+                    "non-uniform shadow binding rejected",
+                )?;
+                self.shadow_map = Some(graphics.device.create_shadow_map(512)?);
+                self.shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
+                    mulciber::ShadowPipelineDescriptor {
+                        shader: ShaderArtifact::new(SHADOW_SHADER)?,
+                        vertex_entry: "shadow_vertex",
+                        vertex_layout: MATERIAL_LAYOUT,
+                        bindings: &[MaterialBinding::Uniform {
+                            binding: 0,
+                            size: 64,
+                        }],
+                    },
+                )?);
+                self.shadowed_pipeline = Some(graphics.device.create_material_pipeline(
+                    mulciber::MaterialPipelineDescriptor {
+                        shader: ShaderArtifact::new(LAVA_SHADER)?,
+                        vertex_entry: "lava_vertex",
+                        fragment_entry: "lava_fragment",
+                        vertex_layout: LAVA_LAYOUT,
+                        bindings: &LAVA_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
+                    },
+                )?);
+                self.floor_mesh = Some(graphics.device.create_mesh_with_layout(
+                    LAVA_LAYOUT,
+                    &floor_vertices(),
+                    MeshIndices::U16(&[0, 1, 2, 0, 2, 3]),
+                )?);
+                self.material_pipeline = Some(graphics.device.create_material_pipeline(
+                    mulciber::MaterialPipelineDescriptor {
+                        shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                        vertex_entry: "crystal_vertex",
+                        fragment_entry: "crystal_fragment",
+                        vertex_layout: MATERIAL_LAYOUT,
+                        bindings: &MATERIAL_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
+                    },
+                )?);
+                self.material_mesh = Some(graphics.device.create_mesh_with_layout(
+                    MATERIAL_LAYOUT,
+                    &material_triangle_vertices(),
+                    MeshIndices::U32(&[0, 1, 2]),
+                )?);
+                self.pass("zero-extent shadow map rejected");
+                self.pass("non-uniform shadow binding rejected");
+                self.step = 17;
+                Ok(false)
+            }
+            // A record on a shadow-sampling pipeline must supply the map.
+            17 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let lava_textures = [texture];
+                let uniform = [0_u8; 144];
+                let records = [MaterialRecord {
+                    pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
+                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    textures: &lava_textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "declares a depth-texture slot",
+                    "missing shadow map supply rejected",
+                )?;
+                self.pass("missing shadow map supply rejected");
+                self.step = 18;
+                Ok(false)
+            }
+            // A record may not supply a map its pipeline never declared a slot for.
+            18 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    textures: &textures,
+                    shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                    uniform: &uniform,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "declares no depth-texture slot",
+                    "undeclared shadow map supply rejected",
+                )?;
+                self.pass("undeclared shadow map supply rejected");
+                self.step = 19;
+                Ok(false)
+            }
+            // Sampling a map no shadow pass has rendered is rejected rather than reading
+            // undefined depth.
+            19 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let lava_textures = [texture];
+                let uniform = [0_u8; 144];
+                let records = [MaterialRecord {
+                    pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
+                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    textures: &lava_textures,
+                    shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                    uniform: &uniform,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "no shadow pass has rendered",
+                    "unrendered shadow map sampling rejected",
+                )?;
+                self.pass("unrendered shadow map sampling rejected");
+                self.step = 20;
+                Ok(false)
+            }
+            // A shadow record's uniform bytes must match its pipeline's declared size.
+            20 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                }];
+                let short_uniform = [0_u8; 32];
+                let shadow_records = [ShadowRecord {
+                    pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    uniform: &short_uniform,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: Some(ShadowPass {
+                                    map: self.shadow_map.as_ref().expect("shadow map"),
+                                    records: &shadow_records,
+                                }),
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "uniform bytes",
+                    "shadow uniform length mismatch rejected",
+                )?;
+                self.pass("shadow uniform length mismatch rejected");
+                self.step = 21;
+                Ok(false)
+            }
+            // The depth-only pass renders the crystal-layout mesh into the map, the floor record
+            // samples it through the comparison sampler in the same frame, and every shadow
+            // resource kind then destroys explicitly.
+            21 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let lava_textures = [texture];
+                let lava_uniform = [0_u8; 144];
+                let crystal_textures = [texture, texture];
+                let crystal_uniform = material_uniform();
+                let records = [
+                    MaterialRecord {
+                        pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
+                        mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                        textures: &lava_textures,
+                        shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                        uniform: &lava_uniform,
+                    },
+                    MaterialRecord {
+                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        mesh: self.material_mesh.as_ref().expect("material mesh"),
+                        textures: &crystal_textures,
+                        shadow_map: None,
+                        uniform: &crystal_uniform,
+                    },
+                ];
+                let shadow_uniform = matrix_bytes(IDENTITY);
+                let shadow_records = [ShadowRecord {
+                    pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    uniform: &shadow_uniform,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: Some(ShadowPass {
+                            map: self.shadow_map.as_ref().expect("shadow map"),
+                            records: &shadow_records,
+                        }),
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("shadowed material presentation");
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics
+                    .device
+                    .destroy_shadow_map(self.shadow_map.take().expect("shadow map"))?;
+                graphics.device.destroy_shadow_pipeline(
+                    self.shadow_pipeline.take().expect("shadow pipeline"),
+                )?;
+                graphics.device.destroy_material_pipeline(
+                    self.shadowed_pipeline.take().expect("shadowed pipeline"),
+                )?;
+                graphics
+                    .device
+                    .destroy_mesh(self.floor_mesh.take().expect("floor mesh"))?;
+                graphics.device.destroy_material_pipeline(
+                    self.material_pipeline.take().expect("material pipeline"),
+                )?;
+                graphics
+                    .device
+                    .destroy_mesh(self.material_mesh.take().expect("material mesh"))?;
+                self.pass("shadow resource destruction");
+                self.step = 22;
+                Ok(false)
+            }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            16 => {
+            22 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -1094,11 +1466,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 17;
+                self.step = 23;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            17 => {
+            23 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1121,11 +1493,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 18;
+                self.step = 24;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            18 => {
+            24 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1139,6 +1511,7 @@ impl<'window> Cases<'window> {
                         .expect("session A material pipeline kept"),
                     mesh: self.mesh.as_ref().expect("session B mesh exists"),
                     textures: &textures,
+                    shadow_map: None,
                     uniform: &uniform,
                 }];
                 let graphics = self.graphics.as_mut().expect("session B is open");
@@ -1152,6 +1525,7 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
+                                shadow: None,
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1161,7 +1535,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 19;
+                self.step = 25;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -1255,6 +1629,34 @@ fn scene_draws<'resources>(
 }
 
 /// One triangle packed against the crystal layout: position, normal, texture coordinate, glow.
+/// A quad in the lava layout: position and texture coordinate at stride 20.
+fn floor_vertices() -> Vec<u8> {
+    let vertices: [[f32; 5]; 4] = [
+        [-1.0, -0.5, 1.0, 0.0, 1.0],
+        [1.0, -0.5, 1.0, 1.0, 1.0],
+        [1.0, -0.5, -1.0, 1.0, 0.0],
+        [-1.0, -0.5, -1.0, 0.0, 0.0],
+    ];
+    let mut bytes = Vec::with_capacity(4 * 20);
+    for vertex in vertices {
+        for value in vertex {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
+/// One column-major matrix as `ShadowParams` bytes.
+fn matrix_bytes(matrix: [[f32; 4]; 4]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    for column in matrix {
+        for value in column {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
 fn material_triangle_vertices() -> Vec<u8> {
     let vertices: [[f32; 9]; 3] = [
         [-0.5, -0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0],

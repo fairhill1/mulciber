@@ -17,12 +17,14 @@ and sampler slots, all identified by their WGSL group-0 binding numbers and capp
 
 `mulciber-shader` records the module's interface — per entry point its stage, name, and
 vertex-input locations with formats, plus the module's bindings with kinds and uniform WGSL
-byte sizes — in the artifact container (`MULSHDR2`). Pipeline creation validates the
-application's declaration against that record and rejects a mismatch as an invalid request
-naming the offending attribute, slot, or entry point; interface constructs outside the
-vocabulary (non-zero groups, storage buffers) are rejected as unsupported. The container bump
-is deliberately breaking: the tool and crate ship together and no artifact stability was
-promised.
+byte sizes — in the artifact container (`MULSHDR2`). `texture_depth_2d` and
+`sampler_comparison` bindings record as their own kinds inside the same container: existing
+artifacts stay valid, while artifacts using the new kinds require the paired crate. Pipeline
+creation validates the application's declaration against that record and rejects a mismatch as
+an invalid request naming the offending attribute, slot, or entry point; interface constructs
+outside the vocabulary (non-zero groups, storage buffers) are rejected as unsupported. The
+container bump was deliberately breaking: the tool and crate ship together and no artifact
+stability was promised.
 
 `Device::create_mesh_with_layout` uploads raw vertex bytes against a declared layout with
 16- or 32-bit indices (`MeshIndices`), lifting the fixed path's `u16` bound for chunked or
@@ -53,6 +55,19 @@ application-owned through record order.
 `MaterialPipeline` joins the existing explicit-destroy and drop-reclamation paths, and
 mixed-session diagnostics name the new handle kind.
 
+The shadow recipe adds two resources and one submission axis. `Device::create_shadow_map`
+creates a square sampleable depth target; `Device::create_shadow_pipeline` builds a depth-only
+pipeline from a vertex entry point with at most one uniform binding, consuming any subset of
+its declared vertex layout. `SceneSubmission` optionally carries one `ShadowPass` — the map
+plus depth-only `ShadowRecord`s — rendered before the scene pass, and material pipelines may
+declare one `DepthTexture` slot (supplied per record from a shadow map) plus one
+`ComparisonSampler` slot whose native state is fixed: linear filtering, clamp-to-edge, and a
+less-or-equal comparison, so `textureSampleCompare` returns one where the reference depth is
+at most the stored depth. Depth bias is application policy in the authored shader. A record
+must supply a map exactly when its pipeline declares the slot, and sampling a map no shadow
+pass has rendered — this frame or earlier — is rejected by name before the frame is consumed.
+`ShadowMap` and `ShadowPipeline` join the explicit-destroy and drop-reclamation paths.
+
 ## Native behavior
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
@@ -67,16 +82,27 @@ depth modes into native creation-time state: Vulkan through the pipeline's color
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
 
-This checkpoint does not add application-composed passes, render-to-texture, load/store
+The shadow pass shares the frame's per-draw uniform region, with shadow-record slots packed
+after the material records'. Vulkan encodes it as a depth-only dynamic-rendering pass at the
+map's extent before the scene pass, transitioning the map from its prior state into depth
+writing and out to fragment-sampled reading, and binds the map's view plus the pipeline-owned
+comparison sampler through the material descriptor set (cached per sampled-identity tuple,
+shadow map included). Metal encodes it as its own render command encoder — depth attachment
+only, store-to-texture — ordered before the scene encoder on the same command buffer, and
+binds the map and comparison sampler at their WGSL slots. Shadow pipelines run the vertex
+entry alone: no fragment function, no color attachments, one sample, depth test-write.
+
+This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
+depth-only recipe, not an application-ordered graph — nor color render-to-texture, load/store
 policy, compute or storage buffers, arbitrary blend equations beyond the fixed mode set,
-instance-rate custom layouts, bind-group abstractions, new texture formats, or native mip
-generation. Pass composition is expected to be the next forcing slice.
+instance-rate custom layouts, bind-group abstractions, new texture formats, native mip
+generation, multiple shadow passes per submission, or textured cutout shadow casters.
 
 ## Evidence
 
 Automated Linux evidence — the material-scene slice on native Wayland, under a KWin resize
-storm, and on X11 through XWayland, plus thirty-seven conformance cases including the material,
-index-width, sampler-mode, blend/depth-mode, and mip-chain cases on both paths, all
+storm, and on X11 through XWayland, plus forty-five conformance cases including the material,
+index-width, sampler-mode, blend/depth-mode, mip-chain, and shadow cases on both paths, all
 validation-clean — is recorded in the [Linux runbook](linux-validation.md).
 
 On 2026-07-20, at `8b7e5c3`, the Metal implementation ran physically on the Apple M2 tier:

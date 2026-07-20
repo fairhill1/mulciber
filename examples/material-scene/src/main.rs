@@ -1,8 +1,9 @@
 //! Renders application-authored materials through Mulciber's target-selected native backend.
 //!
-//! This is the forcing slice for the custom-material vocabulary: two WGSL modules the crate has
+//! This is the forcing slice for the custom-material vocabulary: three WGSL modules the crate has
 //! never seen, two different application-declared vertex layouts, application-packed uniform
-//! bytes updated every frame, and a material sampling two textures.
+//! bytes updated every frame, a material sampling two textures, and a depth-only shadow pass
+//! whose map the floor material samples through a comparison sampler.
 
 mod scene;
 
@@ -14,11 +15,13 @@ use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, MaterialBinding,
     MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics, SampleCount,
     SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact,
+    ShadowPass, ShadowPipelineDescriptor, ShadowRecord,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
 const CRYSTAL_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/crystal.shaderbin"));
 const LAVA_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lava.shaderbin"));
+const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.015, 0.02, 0.045);
 
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
@@ -97,7 +100,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[
                 MaterialBinding::Uniform {
                     binding: 0,
-                    size: 80,
+                    size: 144,
                 },
                 MaterialBinding::Texture { binding: 1 },
                 MaterialBinding::Sampler {
@@ -105,10 +108,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                     filter: SamplerFilter::Linear,
                     address: SamplerAddress::Repeat,
                 },
+                MaterialBinding::DepthTexture { binding: 3 },
+                MaterialBinding::ComparisonSampler { binding: 4 },
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
         })?;
+    let shadow_pipeline = graphics
+        .device
+        .create_shadow_pipeline(ShadowPipelineDescriptor {
+            shader: ShaderArtifact::new(SHADOW_SHADER)?,
+            vertex_entry: "shadow_vertex",
+            vertex_layout: scene::CRYSTAL_LAYOUT,
+            bindings: &[MaterialBinding::Uniform {
+                binding: 0,
+                size: 64,
+            }],
+        })?;
+    let shadow_map = graphics.device.create_shadow_map(1024)?;
     let mut targets = graphics
         .device
         .create_render_targets(graphics.surface.info()?)?;
@@ -140,6 +157,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                         })
                         .collect();
                     let lava_uniform = scene::lava_uniform(seconds, aspect);
+                    let shadow_uniforms: Vec<Vec<u8>> = crystal_offsets
+                        .iter()
+                        .enumerate()
+                        .map(|(index, &offset)| {
+                            scene::crystal_shadow_uniform(seconds, index as f32 * 2.1, offset)
+                        })
+                        .collect();
+                    let shadow_records: Vec<ShadowRecord<'_>> = shadow_uniforms
+                        .iter()
+                        .map(|uniform| ShadowRecord {
+                            pipeline: &shadow_pipeline,
+                            mesh: &crystal_mesh,
+                            uniform,
+                        })
+                        .collect();
                     let crystal_textures = [&crystal_base, &crystal_glow];
                     let lava_textures = [&lava];
                     let mut records = Vec::with_capacity(crystal_uniforms.len() + 1);
@@ -147,6 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         pipeline: &lava_pipeline,
                         mesh: &floor_mesh,
                         textures: &lava_textures,
+                        shadow_map: Some(&shadow_map),
                         uniform: &lava_uniform,
                     });
                     for uniform in &crystal_uniforms {
@@ -154,6 +187,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             pipeline: &crystal_pipeline,
                             mesh: &crystal_mesh,
                             textures: &crystal_textures,
+                            shadow_map: None,
                             uniform,
                         });
                     }
@@ -162,6 +196,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         SceneSubmission {
                             content: SceneContent::Material(&records),
                             output: SceneOutput::Direct(&targets),
+                            shadow: Some(ShadowPass {
+                                map: &shadow_map,
+                                records: &shadow_records,
+                            }),
                             clear: CLEAR,
                         },
                     )?;

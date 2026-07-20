@@ -138,6 +138,28 @@ so no separate mip-filter axis opens; single-level textures sample exactly as be
 fixed-recipe texture and postprocess samplers keep their recorded single-level behavior.
 Recorded in the [material contract](material-contract.md).
 
+## Shadow pass and depth sampling
+
+Decided as one fixed depth-only pre-pass recipe, not general pass composition.
+`Device::create_shadow_map` creates a square sampleable `D32` depth target (extent capped at
+8192, filtered-depth support checked at creation); `Device::create_shadow_pipeline` builds a
+depth-only pipeline from an application vertex entry point — no fragment stage, one sample, at
+most one uniform binding, consuming any subset of the declared vertex layout so one shadow
+module serves every caster layout. A `SceneSubmission` optionally carries one `ShadowPass` (a
+map plus depth-only records) that both backends encode before the material scene pass: Vulkan
+as an additional dynamic-rendering pass with explicit depth-attachment-to-sampled-read
+transitions, Metal as an ordered encoder on the frame's command buffer. Material pipelines
+declare at most one `DepthTexture` slot, fed per record from a shadow map, and at most one
+`ComparisonSampler` slot with fixed recipe state — linear filtering, clamp-to-edge addressing,
+less-or-equal comparison — while depth bias stays application-owned in the authored WGSL.
+Sampling a map no pass has rendered is rejected by name before the frame token is consumed so
+the rejection cannot strand an acquired image. `mulciber-shader` records `texture_depth_2d`
+and `sampler_comparison` bindings as their own interface kinds inside the unchanged `MULSHDR2`
+container: existing artifacts stay valid, and shadow modules require the paired crate.
+Arbitrary pass graphs, color render-to-texture, multiple shadow passes per submission, and
+textured cutout shadow casters stay closed until a slice forces them. Recorded in the
+[material contract](material-contract.md).
+
 ## Resource ownership and reclamation
 
 Decided for the slice. Mesh, texture, pipeline, and generation-dependent target handles are owning

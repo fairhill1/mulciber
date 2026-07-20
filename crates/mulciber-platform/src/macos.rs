@@ -243,6 +243,7 @@ impl Application {
                 captured_pointer_buttons: Cell::new(0),
                 cursor_mode: Cell::new(CursorMode::Normal),
                 capture_applied: Cell::new(false),
+                pending_warp_delta: Cell::new((0.0, 0.0)),
                 fullscreen_requested: Cell::new(false),
                 fullscreen_confirmed: Cell::new(false),
                 delegate,
@@ -360,6 +361,10 @@ pub struct Window {
     captured_pointer_buttons: Cell<u32>,
     cursor_mode: Cell<CursorMode>,
     capture_applied: Cell<bool>,
+    // The window server folds a cursor warp into the deltas of the next mouse
+    // event instead of delivering it separately, so each warp accumulates its
+    // vector here and the next motion event subtracts it.
+    pending_warp_delta: Cell<(f64, f64)>,
     fullscreen_requested: Cell<bool>,
     fullscreen_confirmed: Cell<bool>,
     delegate: NonNull<c_void>,
@@ -532,6 +537,7 @@ impl Window {
                 return Ok(());
             }
             let primary_height = rect_value(primary, c"frame").size.height;
+            let location = point_value(class(c"NSEvent")?, c"mouseLocation");
             let warped = CGWarpMouseCursorPosition(Point {
                 x: screen_rect.origin.x,
                 y: primary_height - screen_rect.origin.y,
@@ -541,6 +547,13 @@ impl Window {
                     "could not move the cursor into the captured window",
                 ));
             }
+            // Both distances are top-left oriented like the event deltas the
+            // warp will contaminate; `mouseLocation` is bottom-left oriented.
+            let (pending_x, pending_y) = self.pending_warp_delta.get();
+            self.pending_warp_delta.set((
+                pending_x + screen_rect.origin.x - location.x,
+                pending_y + location.y - screen_rect.origin.y,
+            ));
             Ok(())
         }
     }
@@ -589,12 +602,14 @@ impl Window {
                 | EVENT_LEFT_MOUSE_DRAGGED
                 | EVENT_RIGHT_MOUSE_DRAGGED
                 | EVENT_OTHER_MOUSE_DRAGGED => {
+                    let (warp_x, warp_y) = self.pending_warp_delta.replace((0.0, 0.0));
                     if self.capture_applied.get() {
                         // The pinned cursor makes absolute positions meaningless; AppKit's
-                        // event deltas are already top-left oriented.
+                        // event deltas are already top-left oriented. The first deltas
+                        // after a capture carry the warp vector, which is not motion.
                         return Some(InputEvent::PointerDelta {
-                            delta_x: f64_value(event, c"deltaX"),
-                            delta_y: f64_value(event, c"deltaY"),
+                            delta_x: f64_value(event, c"deltaX") - warp_x,
+                            delta_y: f64_value(event, c"deltaY") - warp_y,
                             modifiers,
                         });
                     }

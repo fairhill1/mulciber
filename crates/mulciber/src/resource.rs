@@ -20,6 +20,7 @@ pub(crate) enum ResourceKind {
     TexturedPipeline,
     InstancedTexturedPipeline,
     PostprocessPipeline,
+    MaterialPipeline,
     RenderTargets,
     PostprocessTargets,
 }
@@ -33,6 +34,7 @@ impl ResourceKind {
             Self::TexturedPipeline => "textured pipeline",
             Self::InstancedTexturedPipeline => "instanced textured pipeline",
             Self::PostprocessPipeline => "postprocess pipeline",
+            Self::MaterialPipeline => "material pipeline",
             Self::RenderTargets => "render targets",
             Self::PostprocessTargets => "postprocess targets",
         }

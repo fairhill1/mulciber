@@ -176,15 +176,19 @@ fallback, and acquired-frame abandonment/recovery controls.
   presentation types into `mulciber` with Metal and Vulkan implementations.
 - [ ] Generalize the deliberately narrow scene-submission vocabulary into owned buffer, binding,
   command/pass-composition, and synchronization facilities only as representative game slices force
-  those concepts.
+  those concepts. The first forcing slice landed: the [material slice plan](material-slice-plan.md)
+  and [custom-material contract](material-contract.md) open application-authored shaders, vertex
+  layouts, slot-explicit bindings, and per-record uniform bytes inside the fixed frame shape, with
+  automated Linux evidence in the [Linux runbook](linux-validation.md); pass composition,
+  persistent buffers, and compute/storage remain closed until their own forcing slices.
 - [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
   Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;
   keep device/queue/command topology private until the representative slice forces it.
 - [x] Build the same textured depth-tested resize-aware example through both backends without
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
-  resource-reclamation, multi-draw, instancing, and shutdown conformance tests:
-  `probes/api-conformance` currently asserts eighteen Metal cases across those categories (plus the
+  resource-reclamation, multi-draw, instancing, material-declaration, and shutdown conformance
+  tests: `probes/api-conformance` currently asserts thirty cases across those categories (plus the
   Vulkan-only superseded-generation branch when applicable) and exits nonzero on divergence;
   per-platform runs are recorded in the validation ledgers as they are exercised.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend

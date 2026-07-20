@@ -10,11 +10,20 @@ use std::process::Command;
 
 use naga::back::msl::{BindSamplerTarget, BindTarget, EntryPointResources};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
-use naga::{AddressSpace, ResourceBinding, TypeInner};
+use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, Type, TypeInner};
 
-const MAGIC: &[u8; 8] = b"MULSHDR1";
+const MAGIC: &[u8; 8] = b"MULSHDR2";
 const VULKAN_KIND: u32 = 1;
 const METAL_KIND: u32 = 2;
+
+const STAGE_VERTEX: u8 = 0;
+const STAGE_FRAGMENT: u8 = 1;
+const STAGE_COMPUTE: u8 = 2;
+
+const BINDING_UNIFORM: u8 = 0;
+const BINDING_SAMPLED_TEXTURE: u8 = 1;
+const BINDING_SAMPLER: u8 = 2;
+const BINDING_STORAGE: u8 = 3;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,16 +96,176 @@ pub fn compile_wgsl(
         ));
     }
 
+    let interface = shader_interface(&module)?;
     match target {
-        ShaderTarget::Vulkan => compile_vulkan(&module, &info, artifact.as_ref()),
-        ShaderTarget::Metal => compile_metal(&module, &info, artifact.as_ref()),
+        ShaderTarget::Vulkan => compile_vulkan(&module, &info, artifact.as_ref(), &interface),
+        ShaderTarget::Metal => compile_metal(&module, &info, artifact.as_ref(), &interface),
     }
+}
+
+/// Encodes the module's pipeline-facing interface: per entry point its stage, name, and
+/// vertex-stage input locations with formats, then the module's resource bindings with their
+/// kinds and, for uniform data, the WGSL byte size. `mulciber` validates application pipeline
+/// declarations against this section, so an interface construct without a proven mapping is a
+/// compile error rather than a silently unnamed slot.
+fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> {
+    let mut bytes = Vec::new();
+    push_count(&mut bytes, module.entry_points.len(), "entry points")?;
+    for entry in &module.entry_points {
+        let stage = match entry.stage {
+            naga::ShaderStage::Vertex => STAGE_VERTEX,
+            naga::ShaderStage::Fragment => STAGE_FRAGMENT,
+            naga::ShaderStage::Compute => STAGE_COMPUTE,
+            _ => {
+                return Err(fail(format!(
+                    "entry point {} has no proven interface stage",
+                    entry.name
+                )));
+            }
+        };
+        bytes.push(stage);
+        push_count(&mut bytes, entry.name.len(), "entry-point name")?;
+        bytes.extend_from_slice(entry.name.as_bytes());
+        let mut inputs = Vec::new();
+        if stage == STAGE_VERTEX {
+            for argument in &entry.function.arguments {
+                push_vertex_inputs(
+                    module,
+                    argument.ty,
+                    argument.binding.as_ref(),
+                    &entry.name,
+                    &mut inputs,
+                )?;
+            }
+            inputs.sort_unstable();
+        }
+        push_count(&mut bytes, inputs.len(), "vertex inputs")?;
+        for (location, format) in inputs {
+            bytes.extend_from_slice(&location.to_le_bytes());
+            bytes.push(format);
+        }
+    }
+
+    let mut bindings = Vec::new();
+    for (_, variable) in module.global_variables.iter() {
+        let Some(binding) = &variable.binding else {
+            continue;
+        };
+        let inner = &module.types[variable.ty].inner;
+        let (kind, size) = match (&variable.space, inner) {
+            (AddressSpace::Uniform, _) => (BINDING_UNIFORM, inner.size(module.to_ctx())),
+            (AddressSpace::Storage { .. }, _) => (BINDING_STORAGE, 0),
+            (
+                AddressSpace::Handle,
+                TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: false,
+                    class:
+                        naga::ImageClass::Sampled {
+                            kind: ScalarKind::Float,
+                            multi: false,
+                        },
+                },
+            ) => (BINDING_SAMPLED_TEXTURE, 0),
+            (AddressSpace::Handle, TypeInner::Sampler { .. }) => (BINDING_SAMPLER, 0),
+            _ => {
+                return Err(fail(format!(
+                    "WGSL binding {}:{} has no proven interface mapping",
+                    binding.group, binding.binding
+                )));
+            }
+        };
+        bindings.push((binding.group, binding.binding, kind, size));
+    }
+    bindings.sort_unstable();
+    push_count(&mut bytes, bindings.len(), "resource bindings")?;
+    for (group, binding, kind, size) in bindings {
+        bytes.extend_from_slice(&group.to_le_bytes());
+        bytes.extend_from_slice(&binding.to_le_bytes());
+        bytes.push(kind);
+        bytes.extend_from_slice(&size.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn push_vertex_inputs(
+    module: &naga::Module,
+    ty: Handle<Type>,
+    binding: Option<&Binding>,
+    entry_name: &str,
+    inputs: &mut Vec<(u32, u8)>,
+) -> Result<(), ShaderBuildError> {
+    let inner = &module.types[ty].inner;
+    match binding {
+        Some(Binding::BuiltIn(_)) => Ok(()),
+        Some(Binding::Location { location, .. }) => {
+            let format = vertex_input_format(inner).ok_or_else(|| {
+                fail(format!(
+                    "vertex input location {location} of {entry_name} has no proven vertex format"
+                ))
+            })?;
+            inputs.push((*location, format));
+            Ok(())
+        }
+        None => {
+            let TypeInner::Struct { members, .. } = inner else {
+                return Err(fail(format!(
+                    "unbound non-struct vertex input in {entry_name}"
+                )));
+            };
+            for member in members {
+                push_vertex_inputs(
+                    module,
+                    member.ty,
+                    member.binding.as_ref(),
+                    entry_name,
+                    inputs,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Maps 32-bit scalar and vector inputs to interface format codes 0 through 11: float, unsigned,
+/// and signed families, each as scalar through four components.
+fn vertex_input_format(inner: &TypeInner) -> Option<u8> {
+    fn family(scalar: Scalar) -> Option<u8> {
+        match (scalar.kind, scalar.width) {
+            (ScalarKind::Float, 4) => Some(0),
+            (ScalarKind::Uint, 4) => Some(4),
+            (ScalarKind::Sint, 4) => Some(8),
+            _ => None,
+        }
+    }
+    match inner {
+        TypeInner::Scalar(scalar) => family(*scalar),
+        TypeInner::Vector { size, scalar } => {
+            let columns = match size {
+                naga::VectorSize::Bi => 1,
+                naga::VectorSize::Tri => 2,
+                naga::VectorSize::Quad => 3,
+            };
+            family(*scalar).map(|base| base + columns)
+        }
+        _ => None,
+    }
+}
+
+fn push_count(bytes: &mut Vec<u8>, count: usize, what: &str) -> Result<(), ShaderBuildError> {
+    bytes.extend_from_slice(
+        &u32::try_from(count)
+            .map_err(|_| fail(format!("{what} exceed u32")))?
+            .to_le_bytes(),
+    );
+    Ok(())
 }
 
 fn compile_vulkan(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
     artifact: &Path,
+    interface: &[u8],
 ) -> Result<(), ShaderBuildError> {
     if let Some(parent) = artifact.parent() {
         fs::create_dir_all(parent)
@@ -128,13 +297,14 @@ fn compile_vulkan(
     let cleanup = fs::remove_file(&validation_path);
     validation?;
     cleanup.map_err(|error| fail(format!("remove validation SPIR-V: {error}")))?;
-    write_artifact(artifact, VULKAN_KIND, &payload)
+    write_artifact(artifact, VULKAN_KIND, &payload, interface)
 }
 
 fn compile_metal(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
     artifact: &Path,
+    interface: &[u8],
 ) -> Result<(), ShaderBuildError> {
     let resources = metal_resources(module)?;
     let entry_resources = EntryPointResources {
@@ -191,7 +361,7 @@ fn compile_metal(
     )?;
     let library =
         fs::read(&library_path).map_err(|error| fail(format!("read metallib: {error}")))?;
-    write_artifact(artifact, METAL_KIND, &library)
+    write_artifact(artifact, METAL_KIND, &library, interface)
 }
 
 fn metal_resources(
@@ -233,12 +403,17 @@ fn metal_resources(
     Ok(resources)
 }
 
-fn write_artifact(path: &Path, kind: u32, payload: &[u8]) -> Result<(), ShaderBuildError> {
+fn write_artifact(
+    path: &Path,
+    kind: u32,
+    payload: &[u8],
+    interface: &[u8],
+) -> Result<(), ShaderBuildError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| fail(format!("create shader output: {error}")))?;
     }
-    let mut bytes = Vec::with_capacity(16 + payload.len());
+    let mut bytes = Vec::with_capacity(20 + payload.len() + interface.len());
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&kind.to_le_bytes());
     bytes.extend_from_slice(
@@ -246,7 +421,13 @@ fn write_artifact(path: &Path, kind: u32, payload: &[u8]) -> Result<(), ShaderBu
             .map_err(|_| fail("shader payload exceeds u32"))?
             .to_le_bytes(),
     );
+    bytes.extend_from_slice(
+        &u32::try_from(interface.len())
+            .map_err(|_| fail("shader interface exceeds u32"))?
+            .to_le_bytes(),
+    );
     bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(interface);
     fs::write(path, bytes).map_err(|error| fail(format!("write {}: {error}", path.display())))
 }
 
@@ -272,7 +453,7 @@ fn fail(message: impl Into<String>) -> ShaderBuildError {
 mod tests {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
 
-    use super::{ShaderTarget, metal_resources};
+    use super::{ShaderTarget, metal_resources, shader_interface};
 
     #[test]
     fn parses_target_names() {
@@ -300,5 +481,39 @@ mod tests {
         .expect("cube shader emits SPIR-V");
         assert_eq!(words.first().copied(), Some(0x0723_0203));
         assert_eq!(metal_resources(&module).expect("Metal mapping").len(), 3);
+    }
+
+    #[test]
+    fn cube_shader_interface_records_entries_and_bindings() {
+        let source = include_str!("../../../examples/cube/src/cube.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
+        let interface = shader_interface(&module).expect("cube interface");
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&2_u32.to_le_bytes());
+        // cube_vertex: position vec3<f32> at 0, color vec3<f32> at 1, uv vec2<f32> at 2.
+        expected.push(0);
+        expected.extend_from_slice(&11_u32.to_le_bytes());
+        expected.extend_from_slice(b"cube_vertex");
+        expected.extend_from_slice(&3_u32.to_le_bytes());
+        for (location, format) in [(0_u32, 2_u8), (1, 2), (2, 1)] {
+            expected.extend_from_slice(&location.to_le_bytes());
+            expected.push(format);
+        }
+        // cube_fragment records no vertex-stage inputs.
+        expected.push(1);
+        expected.extend_from_slice(&13_u32.to_le_bytes());
+        expected.extend_from_slice(b"cube_fragment");
+        expected.extend_from_slice(&0_u32.to_le_bytes());
+        // One 64-byte uniform, one sampled texture, one sampler in group 0.
+        expected.extend_from_slice(&3_u32.to_le_bytes());
+        for (binding, kind, size) in [(0_u32, 0_u8, 64_u32), (1, 1, 0), (2, 2, 0)] {
+            expected.extend_from_slice(&0_u32.to_le_bytes());
+            expected.extend_from_slice(&binding.to_le_bytes());
+            expected.push(kind);
+            expected.extend_from_slice(&size.to_le_bytes());
+        }
+
+        assert_eq!(interface, expected);
     }
 }

@@ -5,11 +5,15 @@ use std::vec::Vec;
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
+use std::ffi::CString;
+
 use super::{ClearSurface, MetalFrameToken, objc, required};
+use crate::graphics::MaterialPipelineConfig;
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, PresentFeedback,
-    SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
+    PresentFeedback, SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch,
+    TexturedSceneDraw, Vertex, VertexFormat,
 };
 
 use objc::{Object, Origin3, Region3, Size3};
@@ -17,9 +21,21 @@ use objc::{Object, Origin3, Region3, Size3};
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
 const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
+const VERTEX_FORMAT_FLOAT: usize = 28;
 const VERTEX_FORMAT_FLOAT2: usize = 29;
 const VERTEX_FORMAT_FLOAT3: usize = 30;
 const VERTEX_FORMAT_FLOAT4: usize = 31;
+const VERTEX_FORMAT_INT: usize = 32;
+const VERTEX_FORMAT_INT2: usize = 33;
+const VERTEX_FORMAT_INT3: usize = 34;
+const VERTEX_FORMAT_INT4: usize = 35;
+const VERTEX_FORMAT_UINT: usize = 36;
+const VERTEX_FORMAT_UINT2: usize = 37;
+const VERTEX_FORMAT_UINT3: usize = 38;
+const VERTEX_FORMAT_UINT4: usize = 39;
+/// Buffer index feeding material vertex data. Declared material binding slots are capped at
+/// [`crate::MATERIAL_SLOT_LIMIT`], so this index cannot collide with a WGSL buffer binding.
+const MATERIAL_VERTEX_BUFFER_INDEX: usize = 30;
 const VERTEX_STEP_FUNCTION_PER_INSTANCE: usize = 2;
 const LOAD_ACTION_CLEAR: usize = 2;
 const STORE_ACTION_STORE: usize = 1;
@@ -71,6 +87,18 @@ struct PostprocessPipelineResource {
     sampler: Object,
 }
 
+struct MaterialPipelineResource {
+    pipeline: Object,
+    depth_state: Object,
+    /// Crate-owned linear repeat sampler; null when no sampler slots are declared.
+    sampler: Object,
+    /// Declared uniform slot as (binding, size).
+    uniform: Option<(u32, u32)>,
+    /// Declared texture binding numbers in ascending order.
+    texture_bindings: Vec<u32>,
+    sampler_bindings: Vec<u32>,
+}
+
 struct TargetResource {
     info: SurfaceInfo,
     multisample_color: Object,
@@ -97,6 +125,7 @@ struct ResolvedInstanceBatch {
 enum PreparedScene<'resources> {
     Draws(&'resources [TexturedSceneDraw<'resources>]),
     Instances,
+    Materials(&'resources [MaterialRecord<'resources>]),
 }
 
 pub(crate) struct TexturedFrameToken(MetalFrameToken);
@@ -119,6 +148,7 @@ pub(crate) struct TexturedSession<'window> {
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
     instanced_pipelines: Arena<PipelineResource>,
+    material_pipelines: Arena<MaterialPipelineResource>,
     postprocess_pipelines: Arena<PostprocessPipelineResource>,
     targets: Arena<TargetResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
@@ -179,6 +209,7 @@ impl<'window> TexturedSession<'window> {
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
                 instanced_pipelines: Arena::new("instanced textured pipeline"),
+                material_pipelines: Arena::new("material pipeline"),
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
                 targets: Arena::new("render targets"),
                 postprocess_targets: Arena::new("postprocess targets"),
@@ -213,6 +244,17 @@ impl<'window> TexturedSession<'window> {
         vertices: &[Vertex],
         indices: &[u16],
     ) -> Result<ResourceId, GraphicsError> {
+        let bytes = unsafe {
+            core::slice::from_raw_parts(vertices.as_ptr().cast(), mem::size_of_val(vertices))
+        };
+        self.create_mesh_from_bytes(bytes, indices)
+    }
+
+    pub(crate) fn create_mesh_from_bytes(
+        &mut self,
+        vertices: &[u8],
+        indices: &[u16],
+    ) -> Result<ResourceId, GraphicsError> {
         let draw = IndexedIndirectArguments {
             index_count: u32::try_from(indices.len())
                 .map_err(|_| GraphicsError::new("mesh index count exceeds u32"))?,
@@ -227,7 +269,7 @@ impl<'window> TexturedSession<'window> {
                     self.surface.device,
                     c"newBufferWithBytes:length:options:",
                     vertices.as_ptr().cast(),
-                    mem::size_of_val(vertices),
+                    vertices.len(),
                     0,
                 ),
                 "Metal cube vertex buffer",
@@ -369,6 +411,19 @@ impl<'window> TexturedSession<'window> {
                 self.surface.device,
                 shader.payload(),
             )?)
+    }
+
+    pub(crate) fn create_material_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+        config: &MaterialPipelineConfig<'_>,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.material_pipelines.insert(create_material_pipeline(
+            self.surface.device,
+            shader.payload(),
+            config,
+            self.sample_count,
+        )?)
     }
 
     /// Releases the session's references to render targets from superseded surface generations.
@@ -615,6 +670,110 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
+    pub(crate) fn draw_material_scene_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        records: &[MaterialRecord<'_>],
+        targets: ResourceId,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let target = self.targets.index_of(targets)?;
+        if self.targets[target].info != token.info() {
+            return Err(GraphicsError::new(
+                "render targets do not match acquired Metal generation",
+            ));
+        }
+        if self.targets[target].depth.is_null() {
+            return Err(GraphicsError::new(
+                "render targets were reclaimed by a newer surface generation",
+            ));
+        }
+        self.prepare_material_scene(records)?;
+        self.encode_present(token, PreparedScene::Materials(records), target, clear)
+    }
+
+    pub(crate) fn draw_material_scene_postprocessed_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        records: &[MaterialRecord<'_>],
+        postprocess_pipeline: ResourceId,
+        targets: ResourceId,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
+        let target = self.postprocess_targets.index_of(targets)?;
+        if self.postprocess_targets[target].info != token.info() {
+            return Err(GraphicsError::new(
+                "postprocess targets do not match acquired Metal generation",
+            ));
+        }
+        if self.postprocess_targets[target].scene_color.is_null() {
+            return Err(GraphicsError::new(
+                "postprocess targets were reclaimed by a newer surface generation",
+            ));
+        }
+        self.prepare_material_scene(records)?;
+        self.encode_postprocessed_present(
+            token,
+            PreparedScene::Materials(records),
+            postprocess_pipeline,
+            target,
+            clear,
+        )
+    }
+
+    fn prepare_material_scene(
+        &mut self,
+        records: &[MaterialRecord<'_>],
+    ) -> Result<(), GraphicsError> {
+        for record in records {
+            self.meshes.get(record.mesh.id())?;
+            self.material_pipelines.get(record.pipeline.id())?;
+            for texture in record.textures {
+                self.textures.get(texture.id())?;
+            }
+        }
+        if records.len() > self.uniform_capacity {
+            let capacity = records
+                .len()
+                .checked_next_power_of_two()
+                .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
+            let bytes = capacity
+                .checked_mul(DRAW_UNIFORM_STRIDE)
+                .ok_or_else(|| GraphicsError::new("Metal material uniform storage is too large"))?;
+            let replacement = unsafe {
+                required(
+                    objc::object_two_usizes(
+                        self.surface.device,
+                        c"newBufferWithLength:options:",
+                        bytes,
+                        0,
+                    ),
+                    "Metal material uniform buffer",
+                )?
+            };
+            unsafe { objc::void(self.uniform, c"release") };
+            self.uniform = replacement;
+            self.uniform_capacity = capacity;
+        }
+        unsafe {
+            let contents = objc::pointer_value(self.uniform, c"contents");
+            if contents.is_null() {
+                return Err(GraphicsError::new(
+                    "Metal uniform buffer has no CPU address",
+                ));
+            }
+            for (index, record) in records.iter().enumerate() {
+                ptr::copy_nonoverlapping(
+                    record.uniform.as_ptr(),
+                    contents.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                    record.uniform.len(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_scene(&mut self, draws: &[TexturedSceneDraw<'_>]) -> Result<(), GraphicsError> {
         for draw in draws {
             self.meshes.get(draw.mesh.id())?;
@@ -775,6 +934,9 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::PostprocessPipeline => {
                 release_postprocess_pipeline(self.postprocess_pipelines.remove(request.id)?);
             }
+            ResourceKind::MaterialPipeline => {
+                release_material_pipeline(self.material_pipelines.remove(request.id)?);
+            }
             ResourceKind::RenderTargets => release_target(self.targets.remove(request.id)?),
             ResourceKind::PostprocessTargets => {
                 release_postprocess_target(self.postprocess_targets.remove(request.id)?);
@@ -802,6 +964,10 @@ impl<'window> TexturedSession<'window> {
                 .postprocess_pipelines
                 .remove_if_live(request.id)
                 .map(release_postprocess_pipeline),
+            ResourceKind::MaterialPipeline => self
+                .material_pipelines
+                .remove_if_live(request.id)
+                .map(release_material_pipeline),
             ResourceKind::RenderTargets => {
                 self.targets.remove_if_live(request.id).map(release_target)
             }
@@ -1029,6 +1195,7 @@ impl<'window> TexturedSession<'window> {
         Ok(FrameDisposition::Presented(token.info().generation()))
     }
 
+    #[allow(clippy::too_many_lines)]
     unsafe fn encode_prepared_scene(
         &self,
         encoder: Object,
@@ -1070,6 +1237,82 @@ impl<'window> TexturedSession<'window> {
                             texture.sampler,
                             2,
                         );
+                        objc::void_two_usizes_object_usize_object_usize(
+                            encoder,
+                            c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                            PRIMITIVE_TYPE_TRIANGLE,
+                            INDEX_TYPE_UINT16,
+                            mesh.indices,
+                            0,
+                            mesh.indirect,
+                            0,
+                        );
+                    }
+                }
+                PreparedScene::Materials(records) => {
+                    for (index, record) in records.iter().enumerate() {
+                        let pipeline = &self.material_pipelines
+                            [self.material_pipelines.index_of(record.pipeline.id())?];
+                        let mesh = &self.meshes[self.meshes.index_of(record.mesh.id())?];
+                        objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
+                        objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
+                        if let Some((binding, _)) = pipeline.uniform {
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_two_usizes(
+                                encoder,
+                                c"setVertexBuffer:offset:atIndex:",
+                                self.uniform,
+                                index * DRAW_UNIFORM_STRIDE,
+                                slot,
+                            );
+                            objc::void_object_two_usizes(
+                                encoder,
+                                c"setFragmentBuffer:offset:atIndex:",
+                                self.uniform,
+                                index * DRAW_UNIFORM_STRIDE,
+                                slot,
+                            );
+                        }
+                        objc::void_object_two_usizes(
+                            encoder,
+                            c"setVertexBuffer:offset:atIndex:",
+                            mesh.vertices,
+                            0,
+                            MATERIAL_VERTEX_BUFFER_INDEX,
+                        );
+                        for (texture, &binding) in
+                            record.textures.iter().zip(&pipeline.texture_bindings)
+                        {
+                            let resource = &self.textures[self.textures.index_of(texture.id())?];
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_usize(
+                                encoder,
+                                c"setVertexTexture:atIndex:",
+                                resource.texture,
+                                slot,
+                            );
+                            objc::void_object_usize(
+                                encoder,
+                                c"setFragmentTexture:atIndex:",
+                                resource.texture,
+                                slot,
+                            );
+                        }
+                        for &binding in &pipeline.sampler_bindings {
+                            let slot = usize::try_from(binding).expect("validated slot fits usize");
+                            objc::void_object_usize(
+                                encoder,
+                                c"setVertexSamplerState:atIndex:",
+                                pipeline.sampler,
+                                slot,
+                            );
+                            objc::void_object_usize(
+                                encoder,
+                                c"setFragmentSamplerState:atIndex:",
+                                pipeline.sampler,
+                                slot,
+                            );
+                        }
                         objc::void_two_usizes_object_usize_object_usize(
                             encoder,
                             c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
@@ -1142,6 +1385,9 @@ impl<'window> TexturedSession<'window> {
         for pipeline in self.instanced_pipelines.take_all() {
             release_pipeline(pipeline);
         }
+        for pipeline in self.material_pipelines.take_all() {
+            release_material_pipeline(pipeline);
+        }
         for texture in self.textures.take_all() {
             release_texture(texture);
         }
@@ -1170,6 +1416,7 @@ impl<'window> TexturedSession<'window> {
         // so that path does not retain their backing storage.
         self.pipelines = Arena::new("textured pipeline");
         self.instanced_pipelines = Arena::new("instanced textured pipeline");
+        self.material_pipelines = Arena::new("material pipeline");
         self.postprocess_pipelines = Arena::new("postprocess pipeline");
         self.textures = Arena::new("texture");
         self.targets = Arena::new("render targets");
@@ -1222,6 +1469,17 @@ fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
     unsafe {
         objc::void(sampler, c"release");
         objc::void(pipeline, c"release");
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn release_material_pipeline(pipeline: MaterialPipelineResource) {
+    unsafe {
+        if !pipeline.sampler.is_null() {
+            objc::void(pipeline.sampler, c"release");
+        }
+        objc::void(pipeline.depth_state, c"release");
+        objc::void(pipeline.pipeline, c"release");
     }
 }
 
@@ -1401,6 +1659,219 @@ fn configure_scene_pipeline_descriptor(
         )?;
         objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
         configure_vertex_descriptor(descriptor, instanced)
+    }
+}
+
+const fn material_vertex_format(format: VertexFormat) -> usize {
+    match format {
+        VertexFormat::Float32 => VERTEX_FORMAT_FLOAT,
+        VertexFormat::Float32x2 => VERTEX_FORMAT_FLOAT2,
+        VertexFormat::Float32x3 => VERTEX_FORMAT_FLOAT3,
+        VertexFormat::Float32x4 => VERTEX_FORMAT_FLOAT4,
+        VertexFormat::Uint32 => VERTEX_FORMAT_UINT,
+        VertexFormat::Uint32x2 => VERTEX_FORMAT_UINT2,
+        VertexFormat::Uint32x3 => VERTEX_FORMAT_UINT3,
+        VertexFormat::Uint32x4 => VERTEX_FORMAT_UINT4,
+        VertexFormat::Sint32 => VERTEX_FORMAT_INT,
+        VertexFormat::Sint32x2 => VERTEX_FORMAT_INT2,
+        VertexFormat::Sint32x3 => VERTEX_FORMAT_INT3,
+        VertexFormat::Sint32x4 => VERTEX_FORMAT_INT4,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_material_pipeline(
+    device: Object,
+    bytes: &[u8],
+    config: &MaterialPipelineConfig<'_>,
+    sample_count: usize,
+) -> Result<MaterialPipelineResource, GraphicsError> {
+    let vertex_name = CString::new(config.vertex_entry)
+        .map_err(|_| GraphicsError::new("material vertex entry point name contains a NUL byte"))?;
+    let fragment_name = CString::new(config.fragment_entry).map_err(|_| {
+        GraphicsError::new("material fragment entry point name contains a NUL byte")
+    })?;
+    unsafe {
+        let data = required(
+            dispatch_data_create(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            ),
+            "Metal material library data",
+        )?;
+        let mut library_error = ptr::null_mut();
+        let library = objc::object_object_out(
+            device,
+            c"newLibraryWithData:error:",
+            data,
+            &raw mut library_error,
+        );
+        if library.is_null() {
+            return Err(GraphicsError::new(format!(
+                "loading material metallib failed: {}",
+                objc::description(library_error)
+            )));
+        }
+        let vertex = required(
+            objc::object_object(
+                library,
+                c"newFunctionWithName:",
+                objc::ns_string(&vertex_name),
+            ),
+            "Metal material vertex function",
+        )?;
+        let fragment = required(
+            objc::object_object(
+                library,
+                c"newFunctionWithName:",
+                objc::ns_string(&fragment_name),
+            ),
+            "Metal material fragment function",
+        )?;
+        let descriptor = required(
+            objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
+            "Metal material pipeline descriptor",
+        )?;
+        objc::void_object(descriptor, c"setVertexFunction:", vertex);
+        objc::void_object(descriptor, c"setFragmentFunction:", fragment);
+        objc::void_usize(descriptor, c"setSampleCount:", sample_count);
+        objc::void_usize(
+            descriptor,
+            c"setDepthAttachmentPixelFormat:",
+            PIXEL_FORMAT_DEPTH32_FLOAT,
+        );
+        let colors = required(
+            objc::object(descriptor, c"colorAttachments"),
+            "material pipeline colors",
+        )?;
+        let color = required(
+            objc::object_usize(colors, c"objectAtIndexedSubscript:", 0),
+            "material pipeline color zero",
+        )?;
+        objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
+
+        let vertex_descriptor = required(
+            objc::object(objc::class(c"MTLVertexDescriptor"), c"vertexDescriptor"),
+            "Metal material vertex descriptor",
+        )?;
+        let attributes = required(
+            objc::object(vertex_descriptor, c"attributes"),
+            "material vertex attributes",
+        )?;
+        for input in config.attributes {
+            let attribute = required(
+                objc::object_usize(
+                    attributes,
+                    c"objectAtIndexedSubscript:",
+                    usize::try_from(input.location).expect("validated location fits usize"),
+                ),
+                "Metal material vertex attribute",
+            )?;
+            objc::void_usize(
+                attribute,
+                c"setFormat:",
+                material_vertex_format(input.format),
+            );
+            objc::void_usize(
+                attribute,
+                c"setOffset:",
+                usize::try_from(input.offset).expect("validated offset fits usize"),
+            );
+            objc::void_usize(attribute, c"setBufferIndex:", MATERIAL_VERTEX_BUFFER_INDEX);
+        }
+        let layouts = required(
+            objc::object(vertex_descriptor, c"layouts"),
+            "material vertex layouts",
+        )?;
+        let layout = required(
+            objc::object_usize(
+                layouts,
+                c"objectAtIndexedSubscript:",
+                MATERIAL_VERTEX_BUFFER_INDEX,
+            ),
+            "material vertex layout",
+        )?;
+        objc::void_usize(
+            layout,
+            c"setStride:",
+            usize::try_from(config.stride).expect("validated stride fits usize"),
+        );
+        objc::void_object(descriptor, c"setVertexDescriptor:", vertex_descriptor);
+
+        let mut pipeline_error = ptr::null_mut();
+        let pipeline = objc::object_object_out(
+            device,
+            c"newRenderPipelineStateWithDescriptor:error:",
+            descriptor,
+            &raw mut pipeline_error,
+        );
+        if pipeline.is_null() {
+            return Err(GraphicsError::new(format!(
+                "creating Metal material pipeline failed: {}",
+                objc::description(pipeline_error)
+            )));
+        }
+        let depth_descriptor = required(
+            objc::object(objc::class(c"MTLDepthStencilDescriptor"), c"new"),
+            "Metal material depth descriptor",
+        )?;
+        objc::void_usize(
+            depth_descriptor,
+            c"setDepthCompareFunction:",
+            COMPARE_FUNCTION_LESS,
+        );
+        objc::void_bool(depth_descriptor, c"setDepthWriteEnabled:", true);
+        let depth_state = required(
+            objc::object_object(
+                device,
+                c"newDepthStencilStateWithDescriptor:",
+                depth_descriptor,
+            ),
+            "Metal material depth state",
+        )?;
+        let sampler = if config.sampler_bindings.is_empty() {
+            ptr::null_mut()
+        } else {
+            let sampler_descriptor = required(
+                objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
+                "Metal material sampler descriptor",
+            )?;
+            objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
+            objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                SAMPLER_ADDRESS_REPEAT,
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                SAMPLER_ADDRESS_REPEAT,
+            );
+            let sampler = required(
+                objc::object_object(
+                    device,
+                    c"newSamplerStateWithDescriptor:",
+                    sampler_descriptor,
+                ),
+                "Metal material sampler",
+            )?;
+            objc::void(sampler_descriptor, c"release");
+            sampler
+        };
+        for object in [depth_descriptor, descriptor, fragment, vertex, library] {
+            objc::void(object, c"release");
+        }
+        Ok(MaterialPipelineResource {
+            pipeline,
+            depth_state,
+            sampler,
+            uniform: config.uniform,
+            texture_bindings: config.texture_bindings.to_vec(),
+            sampler_bindings: config.sampler_bindings.to_vec(),
+        })
     }
 }
 

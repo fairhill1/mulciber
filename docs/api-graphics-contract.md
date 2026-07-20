@@ -140,7 +140,10 @@ device, resource, encoder, or pipeline types have been added.
 - Whether context, selection, and device opening are separate public values or one constructor flow.
 - Rich native diagnostic payloads and physical device-loss/out-of-memory recovery evidence; the
   provisional recovery-oriented error categories are now extracted.
-- Upload, resource-use, command-encoding, binding, and shader-artifact vocabulary.
+- Command-encoding and pass-composition vocabulary. Application-authored shaders, vertex
+  layouts, bindings, and uniform bytes are now decided for the material slice in the
+  [custom-material contract](material-contract.md); pass composition awaits its own forcing
+  slice.
 - Safe native capability reach and interoperation.
 
 The clear checkpoint now has validation-enabled finite and physical smoke evidence on Metal plus the

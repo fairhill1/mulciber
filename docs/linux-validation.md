@@ -288,6 +288,34 @@ These are automated static-window and scripted-resize runs; no new physical inte
 are made. Pacing policy and the remaining platform surveys stay open per the
 [Gate 4 pacing plan](gate4-pacing-plan.md).
 
+### Custom-material vocabulary evidence
+
+On 2026-07-20, the custom-material checkpoint (see the
+[material slice plan](material-slice-plan.md) and [material contract](material-contract.md))
+was validated on the same machine and session. `mulciber-material-scene` — two
+application-authored WGSL modules, two application-declared vertex layouts (position/normal/
+uv/glow at stride 36 and position/uv at stride 20), per-frame application-packed uniform bytes
+of 144 and 80 bytes, and a material sampling two textures — ran with the validation layer
+enforced at shutdown, all exiting zero with no validation output:
+
+- Native Wayland, roughly nine seconds of frames, closed by a KWin script: Vulkan backend, four
+  samples.
+- A KWin-scripted resize storm driving 200 geometry changes at 50 ms intervals, then closing the
+  window: continuous swapchain and render-target replacement with material content and
+  material descriptor pools, clean exit.
+- X11 through XWayland (`WAYLAND_DISPLAY` unset), roughly nine seconds of frames, KWin-scripted
+  close.
+
+`mulciber-api-conformance` grew twelve material cases — five creation-time
+declaration-versus-artifact rejections naming the offending slot, location, entry point, or
+stride; three draw-time record rejections (uniform byte length, texture count, mesh/pipeline
+layout mismatch); direct and postprocessed material presentations; explicit destruction plus
+drop reclamation of the new pipeline kind; and a mixed-session rejection naming the material
+pipeline handle — and passed all thirty-one cases on both native Wayland and X11 through
+XWayland, exit zero, no validation output. These are automated runs; the visual appearance of
+the material scene and the Metal implementation await operator confirmation and the next M2
+session respectively.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

@@ -9,8 +9,10 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use crate::backend;
 use crate::resource::{DestroyRequest, DropQueue, ResourceId, ResourceKind, ResourceLease};
+use crate::shader;
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, ShaderArtifact, SurfaceInfo,
+    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, ShaderArtifact,
+    SurfaceInfo,
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -188,6 +190,52 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?.create_mesh(vertices, indices)?;
         Ok(Mesh {
             lease: self.lease(id, ResourceKind::Mesh),
+            layout: VertexLayout::VERTEX.to_owned_layout(),
+        })
+    }
+
+    /// Uploads indexed geometry from raw vertex bytes against a declared layout.
+    ///
+    /// The layout is retained with the mesh: a material draw whose mesh and pipeline layouts
+    /// differ is rejected at submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid layout, vertex bytes that are empty or not a multiple of
+    /// the stride, empty indices, an out-of-range index, or native allocation/upload failure.
+    pub fn create_mesh_with_layout(
+        &self,
+        layout: VertexLayout<'_>,
+        vertices: &[u8],
+        indices: &[u16],
+    ) -> Result<Mesh, GraphicsError> {
+        let owned = validate_vertex_layout(layout)?;
+        let stride = usize::try_from(layout.stride).map_err(|_| {
+            GraphicsError::invalid_request("vertex layout stride exceeds this target")
+        })?;
+        if vertices.is_empty() || !vertices.len().is_multiple_of(stride) {
+            return Err(GraphicsError::invalid_request(
+                "mesh vertex bytes must be a non-zero multiple of the layout stride",
+            ));
+        }
+        let vertex_count = vertices.len() / stride;
+        if indices.is_empty() {
+            return Err(GraphicsError::invalid_request(
+                "mesh vertices and indices must be non-empty",
+            ));
+        }
+        if indices
+            .iter()
+            .any(|&index| usize::from(index) >= vertex_count)
+        {
+            return Err(GraphicsError::invalid_request(
+                "mesh contains an out-of-range index",
+            ));
+        }
+        let id = session_mut(&self.shared)?.create_mesh_from_bytes(vertices, indices)?;
+        Ok(Mesh {
+            lease: self.lease(id, ResourceKind::Mesh),
+            layout: owned,
         })
     }
 
@@ -274,6 +322,56 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?.create_postprocess_pipeline(shader)?;
         Ok(PostprocessPipeline {
             lease: self.lease(id, ResourceKind::PostprocessPipeline),
+        })
+    }
+
+    /// Creates a depth-tested pipeline from an application-authored shader module, vertex layout,
+    /// and binding declaration.
+    ///
+    /// The declaration is validated against the interface `mulciber-shader` recorded in the
+    /// artifact; a mismatch names the offending attribute or slot. The pipeline uses the
+    /// session's selected sample count, opaque color output, and the standard depth test.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid layout, a missing entry point, a declaration that does not
+    /// match the artifact's recorded interface, an interface construct outside the current
+    /// material vocabulary, or native shader loading and pipeline creation failure.
+    pub fn create_material_pipeline(
+        &self,
+        descriptor: MaterialPipelineDescriptor<'_>,
+    ) -> Result<MaterialPipeline, GraphicsError> {
+        let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+        let interface = descriptor.shader.parse_interface();
+        let vertex_entry = find_entry_point(
+            &interface,
+            descriptor.vertex_entry,
+            shader::INTERFACE_STAGE_VERTEX,
+            "vertex",
+        )?;
+        find_entry_point(
+            &interface,
+            descriptor.fragment_entry,
+            shader::INTERFACE_STAGE_FRAGMENT,
+            "fragment",
+        )?;
+        validate_layout_against_entry(&layout, vertex_entry)?;
+        let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
+        let config = MaterialPipelineConfig {
+            vertex_entry: descriptor.vertex_entry,
+            fragment_entry: descriptor.fragment_entry,
+            stride: layout.stride,
+            attributes: &layout.attributes,
+            uniform: declaration.uniform,
+            texture_bindings: &declaration.texture_bindings,
+            sampler_bindings: &declaration.sampler_bindings,
+        };
+        let id = session_mut(&self.shared)?.create_material_pipeline(descriptor.shader, &config)?;
+        Ok(MaterialPipeline {
+            lease: self.lease(id, ResourceKind::MaterialPipeline),
+            layout,
+            uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
+            texture_count: declaration.texture_bindings.len(),
         })
     }
 
@@ -365,6 +463,18 @@ impl Device<'_> {
         mut pipeline: PostprocessPipeline,
     ) -> Result<(), GraphicsError> {
         self.destroy_lease(&mut pipeline.lease, ResourceKind::PostprocessPipeline)
+    }
+
+    /// Destroys a material pipeline after its last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_material_pipeline(
+        &self,
+        mut pipeline: MaterialPipeline,
+    ) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut pipeline.lease, ResourceKind::MaterialPipeline)
     }
 
     /// Destroys generation-dependent render targets after their last submitted GPU use completes.
@@ -468,6 +578,18 @@ impl Queue<'_> {
                 targets,
                 submission.clear,
             ),
+            (SceneContent::Material(records), SceneOutput::Direct(targets)) => {
+                self.draw_material_scene_and_present(frame, records, targets, submission.clear)
+            }
+            (SceneContent::Material(records), SceneOutput::Postprocessed { pipeline, targets }) => {
+                self.draw_material_scene_postprocessed_and_present(
+                    frame,
+                    records,
+                    pipeline,
+                    targets,
+                    submission.clear,
+                )
+            }
         }
     }
 
@@ -647,6 +769,116 @@ impl Queue<'_> {
             targets.lease.id,
             clear,
         )
+    }
+
+    /// Draws a non-empty sequence of application-authored material records in one depth-tested
+    /// render pass, presents the frame, and consumes it.
+    fn draw_material_scene_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        records: &[MaterialRecord<'_>],
+        targets: &RenderTargets,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        let token = frame
+            .token
+            .take()
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
+        session_mut(&self.shared)?.draw_material_scene_and_present(
+            token,
+            records,
+            targets.lease.id,
+            clear,
+        )
+    }
+
+    /// Draws a non-empty sequence of application-authored material records into resolved scene
+    /// color, runs one fullscreen post-processing pass, presents the frame, and consumes it.
+    fn draw_material_scene_postprocessed_and_present(
+        &mut self,
+        mut frame: Frame<'_>,
+        records: &[MaterialRecord<'_>],
+        postprocess_pipeline: &PostprocessPipeline,
+        targets: &PostprocessTargets,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        if postprocess_pipeline.lease.session != self.shared.id {
+            return Err(GraphicsError::invalid_request(
+                "postprocess pipeline belongs to a different graphics session than the queue",
+            ));
+        }
+        let token = frame
+            .token
+            .take()
+            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
+        session_mut(&self.shared)?.draw_material_scene_postprocessed_and_present(
+            token,
+            records,
+            postprocess_pipeline.lease.id,
+            targets.lease.id,
+            clear,
+        )
+    }
+
+    fn validate_material_scene(
+        &self,
+        frame_session: u64,
+        frame_info: SurfaceInfo,
+        records: &[MaterialRecord<'_>],
+        targets: &impl SceneTargets,
+    ) -> Result<(), GraphicsError> {
+        if records.is_empty() {
+            return Err(GraphicsError::invalid_request(
+                "material scene must contain at least one record",
+            ));
+        }
+        self.validate_targets(frame_session, frame_info, targets)?;
+        for record in records {
+            let handles = [
+                ("material pipeline", record.pipeline.lease.session),
+                ("mesh", record.mesh.lease.session),
+            ]
+            .into_iter()
+            .chain(
+                record
+                    .textures
+                    .iter()
+                    .map(|texture| ("texture", texture.lease.session)),
+            );
+            for (label, session) in handles {
+                if session != self.shared.id || session != frame_session {
+                    return Err(GraphicsError::invalid_request(format!(
+                        "{label} belongs to a different graphics session than the queue and frame"
+                    )));
+                }
+            }
+            if record.textures.len() != record.pipeline.texture_count {
+                return Err(GraphicsError::invalid_request(format!(
+                    "material record supplies {} textures but its pipeline declares {} texture \
+                     slots",
+                    record.textures.len(),
+                    record.pipeline.texture_count
+                )));
+            }
+            let expected =
+                usize::try_from(record.pipeline.uniform_size).expect("u32 size fits usize");
+            if record.uniform.len() != expected {
+                return Err(GraphicsError::invalid_request(format!(
+                    "material record supplies {} uniform bytes but its pipeline declares {}",
+                    record.uniform.len(),
+                    expected
+                )));
+            }
+            if record.mesh.layout != record.pipeline.layout {
+                return Err(GraphicsError::invalid_request(
+                    "material record's mesh vertex layout does not match its pipeline's declared \
+                     layout",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Rejects scene targets from another session as an invalid request, and same-session targets
@@ -878,10 +1110,179 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
+/// Data format of one vertex attribute: 32-bit float, unsigned, and signed families as scalars
+/// through four components, matching what `mulciber-shader` records for vertex-stage inputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum VertexFormat {
+    /// One 32-bit float (`f32`).
+    Float32,
+    /// Two 32-bit floats (`vec2<f32>`).
+    Float32x2,
+    /// Three 32-bit floats (`vec3<f32>`).
+    Float32x3,
+    /// Four 32-bit floats (`vec4<f32>`).
+    Float32x4,
+    /// One unsigned 32-bit integer (`u32`).
+    Uint32,
+    /// Two unsigned 32-bit integers (`vec2<u32>`).
+    Uint32x2,
+    /// Three unsigned 32-bit integers (`vec3<u32>`).
+    Uint32x3,
+    /// Four unsigned 32-bit integers (`vec4<u32>`).
+    Uint32x4,
+    /// One signed 32-bit integer (`i32`).
+    Sint32,
+    /// Two signed 32-bit integers (`vec2<i32>`).
+    Sint32x2,
+    /// Three signed 32-bit integers (`vec3<i32>`).
+    Sint32x3,
+    /// Four signed 32-bit integers (`vec4<i32>`).
+    Sint32x4,
+}
+
+impl VertexFormat {
+    /// Tightly packed byte size of one attribute value.
+    #[must_use]
+    pub const fn byte_len(self) -> u32 {
+        4 * (self.components() as u32)
+    }
+
+    const fn components(self) -> u8 {
+        match self {
+            Self::Float32 | Self::Uint32 | Self::Sint32 => 1,
+            Self::Float32x2 | Self::Uint32x2 | Self::Sint32x2 => 2,
+            Self::Float32x3 | Self::Uint32x3 | Self::Sint32x3 => 3,
+            Self::Float32x4 | Self::Uint32x4 | Self::Sint32x4 => 4,
+        }
+    }
+
+    /// The `mulciber-shader` interface format code this format satisfies.
+    pub(crate) const fn interface_code(self) -> u8 {
+        match self {
+            Self::Float32 => 0,
+            Self::Float32x2 => 1,
+            Self::Float32x3 => 2,
+            Self::Float32x4 => 3,
+            Self::Uint32 => 4,
+            Self::Uint32x2 => 5,
+            Self::Uint32x3 => 6,
+            Self::Uint32x4 => 7,
+            Self::Sint32 => 8,
+            Self::Sint32x2 => 9,
+            Self::Sint32x3 => 10,
+            Self::Sint32x4 => 11,
+        }
+    }
+
+    /// WGSL spelling used in diagnostics.
+    pub(crate) const fn wgsl_name(self) -> &'static str {
+        match self {
+            Self::Float32 => "f32",
+            Self::Float32x2 => "vec2<f32>",
+            Self::Float32x3 => "vec3<f32>",
+            Self::Float32x4 => "vec4<f32>",
+            Self::Uint32 => "u32",
+            Self::Uint32x2 => "vec2<u32>",
+            Self::Uint32x3 => "vec3<u32>",
+            Self::Uint32x4 => "vec4<u32>",
+            Self::Sint32 => "i32",
+            Self::Sint32x2 => "vec2<i32>",
+            Self::Sint32x3 => "vec3<i32>",
+            Self::Sint32x4 => "vec4<i32>",
+        }
+    }
+
+    pub(crate) const fn from_interface_code(code: u8) -> Option<Self> {
+        Some(match code {
+            0 => Self::Float32,
+            1 => Self::Float32x2,
+            2 => Self::Float32x3,
+            3 => Self::Float32x4,
+            4 => Self::Uint32,
+            5 => Self::Uint32x2,
+            6 => Self::Uint32x3,
+            7 => Self::Uint32x4,
+            8 => Self::Sint32,
+            9 => Self::Sint32x2,
+            10 => Self::Sint32x3,
+            11 => Self::Sint32x4,
+            _ => return None,
+        })
+    }
+}
+
+/// One attribute inside an application-described vertex layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VertexAttribute {
+    /// Shader input location this attribute feeds.
+    pub location: u32,
+    /// Data format at `offset`.
+    pub format: VertexFormat,
+    /// Byte offset from the start of one vertex.
+    pub offset: u32,
+}
+
+/// An application-described per-vertex data layout.
+///
+/// The layout is declared once at material pipeline creation and once per mesh uploaded from raw
+/// vertex bytes; a draw whose mesh and pipeline layouts differ is rejected. Meshes uploaded
+/// through the fixed [`Vertex`] path carry [`VertexLayout::VERTEX`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VertexLayout<'attributes> {
+    /// Byte distance between consecutive vertices.
+    pub stride: u32,
+    /// Attributes consumed from each vertex.
+    pub attributes: &'attributes [VertexAttribute],
+}
+
+impl VertexLayout<'_> {
+    /// The fixed layout of [`Vertex`]: position, color, and texture coordinate at locations 0
+    /// through 2.
+    pub const VERTEX: VertexLayout<'static> = VertexLayout {
+        stride: 32,
+        attributes: &[
+            VertexAttribute {
+                location: 0,
+                format: VertexFormat::Float32x3,
+                offset: 0,
+            },
+            VertexAttribute {
+                location: 1,
+                format: VertexFormat::Float32x3,
+                offset: 12,
+            },
+            VertexAttribute {
+                location: 2,
+                format: VertexFormat::Float32x2,
+                offset: 24,
+            },
+        ],
+    };
+
+    fn to_owned_layout(self) -> OwnedVertexLayout {
+        let mut attributes: Vec<VertexAttribute> = self.attributes.to_vec();
+        attributes.sort_unstable_by_key(|attribute| attribute.location);
+        OwnedVertexLayout {
+            stride: self.stride,
+            attributes,
+        }
+    }
+}
+
+/// A location-sorted owned copy of a declared vertex layout, kept on meshes and material
+/// pipelines so submission can check their compatibility.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OwnedVertexLayout {
+    pub(crate) stride: u32,
+    pub(crate) attributes: Vec<VertexAttribute>,
+}
+
 /// Uploaded indexed geometry.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Mesh {
     lease: ResourceLease,
+    layout: OwnedVertexLayout,
 }
 
 impl Mesh {
@@ -930,6 +1331,90 @@ impl TexturedPipeline {
 #[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessPipeline {
     lease: ResourceLease,
+}
+
+/// Largest supported material uniform declaration in bytes.
+///
+/// Material uniform data flows through the session's per-draw uniform region, whose stride caps
+/// one declaration at this size.
+pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
+
+/// Largest supported material binding slot and vertex attribute location.
+///
+/// The range 0 through 15 fits inside every native binding namespace both backends guarantee,
+/// including Metal's sixteen sampler-state slots.
+pub const MATERIAL_SLOT_LIMIT: u32 = 15;
+
+/// One resource slot declared by a material pipeline, identified by its WGSL binding number in
+/// group 0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum MaterialBinding {
+    /// Application-defined uniform data supplied as bytes with each draw record.
+    ///
+    /// At most one uniform slot may be declared, `size` must match the WGSL struct size recorded
+    /// in the shader artifact, and it may not exceed [`MATERIAL_UNIFORM_SIZE_LIMIT`].
+    Uniform {
+        /// WGSL binding number.
+        binding: u32,
+        /// Byte length of the uniform data supplied with each record.
+        size: u32,
+    },
+    /// One sampled 2D color texture supplied with each draw record.
+    Texture {
+        /// WGSL binding number.
+        binding: u32,
+    },
+    /// A crate-owned linear repeat sampler.
+    Sampler {
+        /// WGSL binding number.
+        binding: u32,
+    },
+}
+
+/// Everything needed to create one application-authored material pipeline.
+#[derive(Clone, Copy)]
+pub struct MaterialPipelineDescriptor<'inputs> {
+    /// Offline-compiled shader module containing both entry points.
+    pub shader: ShaderArtifact<'inputs>,
+    /// Vertex entry point name.
+    pub vertex_entry: &'inputs str,
+    /// Fragment entry point name.
+    pub fragment_entry: &'inputs str,
+    /// Per-vertex input layout; must match the vertex entry point's recorded inputs.
+    pub vertex_layout: VertexLayout<'inputs>,
+    /// Declared resource slots; must match the module's recorded bindings.
+    pub bindings: &'inputs [MaterialBinding],
+}
+
+/// Depth-tested application-authored material pipeline.
+#[derive(Debug, Eq, PartialEq)]
+pub struct MaterialPipeline {
+    lease: ResourceLease,
+    layout: OwnedVertexLayout,
+    /// Zero when no uniform slot is declared.
+    uniform_size: u32,
+    texture_count: usize,
+}
+
+impl MaterialPipeline {
+    pub(crate) const fn id(&self) -> ResourceId {
+        self.lease.id
+    }
+}
+
+/// Validated creation inputs handed to the native backends.
+pub(crate) struct MaterialPipelineConfig<'inputs> {
+    pub(crate) vertex_entry: &'inputs str,
+    pub(crate) fragment_entry: &'inputs str,
+    pub(crate) stride: u32,
+    pub(crate) attributes: &'inputs [VertexAttribute],
+    /// Declared uniform slot as (binding, size).
+    pub(crate) uniform: Option<(u32, u32)>,
+    /// Declared texture binding numbers in ascending order.
+    pub(crate) texture_bindings: &'inputs [u32],
+    /// Declared sampler binding numbers.
+    pub(crate) sampler_bindings: &'inputs [u32],
 }
 
 /// Extent- and generation-dependent color/depth targets.
@@ -1055,6 +1540,20 @@ pub struct TexturedInstanceBatch<'resources> {
     pub model_view_projections: &'resources [[[f32; 4]; 4]],
 }
 
+/// One application-authored material draw inside a scene pass.
+#[derive(Clone, Copy)]
+pub struct MaterialRecord<'resources> {
+    /// Material pipeline compatible with the scene targets.
+    pub pipeline: &'resources MaterialPipeline,
+    /// Geometry whose vertex layout matches the pipeline's declared layout.
+    pub mesh: &'resources Mesh,
+    /// Textures for the pipeline's declared texture slots in ascending binding order.
+    pub textures: &'resources [&'resources Texture],
+    /// Uniform data matching the pipeline's declared uniform size; empty when the pipeline
+    /// declares no uniform slot. The application owns WGSL memory-layout correctness.
+    pub uniform: &'resources [u8],
+}
+
 /// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
 #[derive(Clone, Copy)]
 pub struct PostprocessedDraw<'resources> {
@@ -1106,6 +1605,8 @@ pub enum SceneContent<'resources> {
     Textured(&'resources [TexturedSceneDraw<'resources>]),
     /// Non-empty homogeneous instance batches encoded in slice order.
     Instanced(&'resources [TexturedInstanceBatch<'resources>]),
+    /// Non-empty application-authored material records encoded in slice order.
+    Material(&'resources [MaterialRecord<'resources>]),
 }
 
 /// Output path for one [`SceneSubmission`].
@@ -1160,6 +1661,248 @@ impl Drop for Frame<'_> {
             session.defer_abandon(token);
         }
     }
+}
+
+/// Checks stride and attribute fit, and returns the location-sorted owned layout.
+fn validate_vertex_layout(layout: VertexLayout<'_>) -> Result<OwnedVertexLayout, GraphicsError> {
+    if layout.stride == 0 {
+        return Err(GraphicsError::invalid_request(
+            "vertex layout stride must be non-zero",
+        ));
+    }
+    let owned = layout.to_owned_layout();
+    for window in owned.attributes.windows(2) {
+        if window[0].location == window[1].location {
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout declares location {} twice",
+                window[0].location
+            )));
+        }
+    }
+    for attribute in &owned.attributes {
+        if attribute.location > MATERIAL_SLOT_LIMIT {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                format!(
+                    "vertex attribute location {} exceeds the supported locations 0 through \
+                     {MATERIAL_SLOT_LIMIT}",
+                    attribute.location
+                ),
+            ));
+        }
+    }
+    for attribute in &owned.attributes {
+        let end = attribute
+            .offset
+            .checked_add(attribute.format.byte_len())
+            .filter(|&end| end <= layout.stride);
+        if end.is_none() {
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout attribute at location {} does not fit inside the {}-byte stride",
+                attribute.location, layout.stride
+            )));
+        }
+    }
+    Ok(owned)
+}
+
+fn find_entry_point<'interface>(
+    interface: &'interface shader::ShaderInterface,
+    name: &str,
+    stage: u8,
+    stage_label: &str,
+) -> Result<&'interface shader::InterfaceEntryPoint, GraphicsError> {
+    interface
+        .entry_points
+        .iter()
+        .find(|entry| entry.stage == stage && entry.name == name)
+        .ok_or_else(|| {
+            GraphicsError::invalid_request(format!(
+                "shader artifact records no {stage_label} entry point named `{name}`"
+            ))
+        })
+}
+
+/// Requires the declared attributes and the artifact's recorded vertex inputs to match exactly,
+/// naming the first offending location.
+fn validate_layout_against_entry(
+    layout: &OwnedVertexLayout,
+    entry: &shader::InterfaceEntryPoint,
+) -> Result<(), GraphicsError> {
+    for attribute in &layout.attributes {
+        let Some(input) = entry
+            .inputs
+            .iter()
+            .find(|input| input.location == attribute.location)
+        else {
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout declares location {} that entry point `{}` does not consume",
+                attribute.location, entry.name
+            )));
+        };
+        if input.format != attribute.format.interface_code() {
+            let recorded = VertexFormat::from_interface_code(input.format)
+                .map_or("an unsupported format", VertexFormat::wgsl_name);
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout declares location {} as {} but the shader artifact records {}",
+                attribute.location,
+                attribute.format.wgsl_name(),
+                recorded
+            )));
+        }
+    }
+    for input in &entry.inputs {
+        if !layout
+            .attributes
+            .iter()
+            .any(|attribute| attribute.location == input.location)
+        {
+            return Err(GraphicsError::invalid_request(format!(
+                "entry point `{}` consumes location {} that the vertex layout does not declare",
+                entry.name, input.location
+            )));
+        }
+    }
+    Ok(())
+}
+
+struct BindingDeclaration {
+    uniform: Option<(u32, u32)>,
+    texture_bindings: Vec<u32>,
+    sampler_bindings: Vec<u32>,
+}
+
+const fn interface_binding_label(kind: u8) -> &'static str {
+    match kind {
+        shader::INTERFACE_BINDING_UNIFORM => "uniform data",
+        shader::INTERFACE_BINDING_SAMPLED_TEXTURE => "a sampled texture",
+        shader::INTERFACE_BINDING_SAMPLER => "a sampler",
+        shader::INTERFACE_BINDING_STORAGE => "a storage buffer",
+        _ => "an unsupported resource",
+    }
+}
+
+/// Requires the declared slots and the artifact's recorded bindings to match exactly, naming the
+/// first offending slot, and rejects interface constructs outside the material vocabulary.
+#[allow(clippy::too_many_lines)]
+fn validate_bindings_against_interface(
+    bindings: &[MaterialBinding],
+    interface: &shader::ShaderInterface,
+) -> Result<BindingDeclaration, GraphicsError> {
+    for recorded in &interface.bindings {
+        if recorded.group != 0 {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                format!(
+                    "shader binding {}:{} is outside group 0, which the material vocabulary does not \
+                 support",
+                    recorded.group, recorded.binding
+                ),
+            ));
+        }
+        if recorded.kind == shader::INTERFACE_BINDING_STORAGE {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                format!(
+                    "shader binding {} is a storage buffer, which the material vocabulary does not \
+                 support",
+                    recorded.binding
+                ),
+            ));
+        }
+    }
+    let mut declaration = BindingDeclaration {
+        uniform: None,
+        texture_bindings: Vec::new(),
+        sampler_bindings: Vec::new(),
+    };
+    let mut declared: Vec<(u32, u8, u32)> = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        let (slot, kind, size) = match *binding {
+            MaterialBinding::Uniform { binding, size } => {
+                if declaration.uniform.is_some() {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        "material pipelines support at most one uniform slot",
+                    ));
+                }
+                if size == 0 || size > MATERIAL_UNIFORM_SIZE_LIMIT {
+                    return Err(GraphicsError::with_kind(
+                        GraphicsErrorKind::Unsupported,
+                        format!(
+                            "material uniform slot {binding} declares {size} bytes, outside the \
+                         supported 1 through {MATERIAL_UNIFORM_SIZE_LIMIT}"
+                        ),
+                    ));
+                }
+                declaration.uniform = Some((binding, size));
+                (binding, shader::INTERFACE_BINDING_UNIFORM, size)
+            }
+            MaterialBinding::Texture { binding } => {
+                declaration.texture_bindings.push(binding);
+                (binding, shader::INTERFACE_BINDING_SAMPLED_TEXTURE, 0)
+            }
+            MaterialBinding::Sampler { binding } => {
+                declaration.sampler_bindings.push(binding);
+                (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
+            }
+        };
+        if slot > MATERIAL_SLOT_LIMIT {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                format!(
+                    "material binding slot {slot} exceeds the supported slots 0 through \
+                     {MATERIAL_SLOT_LIMIT}"
+                ),
+            ));
+        }
+        if declared.iter().any(|&(previous, _, _)| previous == slot) {
+            return Err(GraphicsError::invalid_request(format!(
+                "material bindings declare slot {slot} twice"
+            )));
+        }
+        declared.push((slot, kind, size));
+    }
+    for &(slot, kind, size) in &declared {
+        let Some(recorded) = interface
+            .bindings
+            .iter()
+            .find(|recorded| recorded.binding == slot)
+        else {
+            return Err(GraphicsError::invalid_request(format!(
+                "material bindings declare slot {slot} that the shader artifact does not record"
+            )));
+        };
+        if recorded.kind != kind {
+            return Err(GraphicsError::invalid_request(format!(
+                "material bindings declare slot {slot} as {} but the shader artifact records {}",
+                interface_binding_label(kind),
+                interface_binding_label(recorded.kind)
+            )));
+        }
+        if kind == shader::INTERFACE_BINDING_UNIFORM && recorded.size != size {
+            return Err(GraphicsError::invalid_request(format!(
+                "material uniform slot {slot} declares {size} bytes but the shader artifact \
+                 records {}",
+                recorded.size
+            )));
+        }
+    }
+    for recorded in &interface.bindings {
+        if !declared
+            .iter()
+            .any(|&(slot, _, _)| slot == recorded.binding)
+        {
+            return Err(GraphicsError::invalid_request(format!(
+                "the shader artifact records binding slot {} that the material bindings do not \
+                 declare",
+                recorded.binding
+            )));
+        }
+    }
+    declaration.texture_bindings.sort_unstable();
+    declaration.sampler_bindings.sort_unstable();
+    Ok(declaration)
 }
 
 fn session_ref<'a, 'window>(

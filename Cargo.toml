@@ -11,6 +11,7 @@ members = [
     "examples/game-slice",
     "examples/input-cube",
     "examples/instanced-scene",
+    "examples/material-scene",
     "examples/postprocess-cube",
     "examples/scene",
     "examples/showcase-cube",

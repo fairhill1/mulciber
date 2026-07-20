@@ -1,14 +1,17 @@
 use core::ffi::c_void;
 use core::{mem, ptr, slice};
+use std::ffi::CString;
 use std::{format, vec::Vec};
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
+use crate::graphics::MaterialPipelineConfig;
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, PresentFeedback,
-    SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GraphicsError, MaterialRecord,
+    PresentFeedback, SampleCount, ShaderArtifact, SurfaceInfo, TexturedInstanceBatch,
+    TexturedSceneDraw, Vertex, VertexFormat,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
@@ -51,6 +54,21 @@ struct PipelineResource {
     bindings: Vec<(ResourceId, vk::VkDescriptorSet)>,
 }
 
+struct MaterialPipelineResource {
+    set_layout: vk::VkDescriptorSetLayout,
+    layout: vk::VkPipelineLayout,
+    pipeline: vk::VkPipeline,
+    descriptor_pool: vk::VkDescriptorPool,
+    sampler: vk::VkSampler,
+    /// Declared uniform slot as (binding, size).
+    uniform: Option<(u32, u32)>,
+    /// Declared texture binding numbers in ascending order.
+    texture_bindings: Vec<u32>,
+    sampler_bindings: Vec<u32>,
+    /// Descriptor sets cached per texture-identity tuple in slot order.
+    bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
+}
+
 struct TargetResource {
     info: SurfaceInfo,
     multisample_color: Option<Image>,
@@ -82,9 +100,20 @@ struct ResolvedInstanceBatch {
 }
 
 #[derive(Clone, Copy)]
+struct ResolvedMaterialDraw {
+    mesh: usize,
+    pipeline: usize,
+    descriptor: vk::VkDescriptorSet,
+    dynamic_offset: u32,
+    /// One when the pipeline declares a uniform slot, zero otherwise.
+    dynamic_offset_count: u32,
+}
+
+#[derive(Clone, Copy)]
 enum PreparedScene {
     Draws,
     Instances,
+    Materials,
 }
 
 pub(crate) struct TexturedSession<'window> {
@@ -96,10 +125,12 @@ pub(crate) struct TexturedSession<'window> {
     instance_transforms: Buffer,
     instance_capacity: usize,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
+    resolved_material_draws: Vec<ResolvedMaterialDraw>,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
     instanced_pipelines: Arena<PipelineResource>,
+    material_pipelines: Arena<MaterialPipelineResource>,
     targets: Arena<TargetResource>,
     postprocess_pipelines: Arena<PipelineResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
@@ -160,10 +191,12 @@ impl<'window> TexturedSession<'window> {
                 instance_transforms,
                 instance_capacity: 1,
                 resolved_instance_batches: Vec::new(),
+                resolved_material_draws: Vec::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
                 instanced_pipelines: Arena::new("instanced textured pipeline"),
+                material_pipelines: Arena::new("material pipeline"),
                 targets: Arena::new("render targets"),
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
                 postprocess_targets: Arena::new("postprocess targets"),
@@ -201,7 +234,14 @@ impl<'window> TexturedSession<'window> {
         vertices: &[Vertex],
         indices: &[u16],
     ) -> Result<ResourceId, GraphicsError> {
-        let vertex_bytes = bytes_of_slice(vertices);
+        self.create_mesh_from_bytes(bytes_of_slice(vertices), indices)
+    }
+
+    pub(crate) fn create_mesh_from_bytes(
+        &mut self,
+        vertex_bytes: &[u8],
+        indices: &[u16],
+    ) -> Result<ResourceId, GraphicsError> {
         let index_bytes = bytes_of_slice(indices);
         let draw = vk::VkDrawIndexedIndirectCommand {
             indexCount: u32::try_from(indices.len())
@@ -339,6 +379,16 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<ResourceId, GraphicsError> {
         let resource = create_postprocess_pipeline(&self.surface, shader.payload())?;
         self.postprocess_pipelines.insert(resource)
+    }
+
+    pub(crate) fn create_material_pipeline(
+        &mut self,
+        shader: ShaderArtifact<'_>,
+        config: &MaterialPipelineConfig<'_>,
+    ) -> Result<ResourceId, GraphicsError> {
+        let resource =
+            create_material_pipeline(&self.surface, shader.payload(), config, self.sample_count)?;
+        self.material_pipelines.insert(resource)
     }
 
     /// Destroys image storage for render targets from superseded surface generations.
@@ -619,6 +669,100 @@ impl<'window> TexturedSession<'window> {
         self.surface.submit_recorded(token.image_index)
     }
 
+    pub(crate) fn draw_material_scene_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        records: &[MaterialRecord<'_>],
+        targets: ResourceId,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let target_index = self.targets.index_of(targets)?;
+        if self.targets[target_index].info != token.info {
+            return Err(error(
+                "render targets do not match acquired Vulkan generation",
+            ));
+        }
+        self.prepare_material_scene(records)?;
+        self.record_draw(
+            token.image_index,
+            target_index,
+            PreparedScene::Materials,
+            clear,
+        )?;
+        self.surface.submit_recorded(token.image_index)
+    }
+
+    pub(crate) fn draw_material_scene_postprocessed_and_present(
+        &mut self,
+        token: TexturedFrameToken,
+        records: &[MaterialRecord<'_>],
+        postprocess_pipeline: ResourceId,
+        targets: ResourceId,
+        clear: ClearColor,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let postprocess_pipeline_index =
+            self.postprocess_pipelines.index_of(postprocess_pipeline)?;
+        let target_index = self.postprocess_targets.index_of(targets)?;
+        if self.postprocess_targets[target_index].info != token.info {
+            return Err(error(
+                "postprocess targets do not match acquired Vulkan generation",
+            ));
+        }
+        self.prepare_material_scene(records)?;
+        let postprocess_descriptor =
+            self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
+        self.record_postprocessed_draw(
+            token.image_index,
+            postprocess_pipeline_index,
+            target_index,
+            postprocess_descriptor,
+            PreparedScene::Materials,
+            clear,
+        )?;
+        self.surface.submit_recorded(token.image_index)
+    }
+
+    fn prepare_material_scene(
+        &mut self,
+        records: &[MaterialRecord<'_>],
+    ) -> Result<(), GraphicsError> {
+        let last_offset = records
+            .len()
+            .saturating_sub(1)
+            .checked_mul(DRAW_UNIFORM_STRIDE)
+            .ok_or_else(|| error("Vulkan material uniform offsets overflow"))?;
+        u32::try_from(last_offset)
+            .map_err(|_| error("Vulkan material uniform offsets exceed u32"))?;
+        self.ensure_uniform_capacity(records.len())?;
+        write_material_uniforms(&self.surface, &self.uniform, records)?;
+        self.resolved_material_draws.clear();
+        let mut texture_ids = Vec::new();
+        let mut texture_indices = Vec::new();
+        for (index, record) in records.iter().enumerate() {
+            let mesh = self.meshes.index_of(record.mesh.id())?;
+            let pipeline = self.material_pipelines.index_of(record.pipeline.id())?;
+            texture_ids.clear();
+            texture_indices.clear();
+            for texture in record.textures {
+                texture_ids.push(texture.id());
+                texture_indices.push(self.textures.index_of(texture.id())?);
+            }
+            let descriptor =
+                self.material_descriptor_set(pipeline, &texture_ids, &texture_indices)?;
+            self.resolved_material_draws.push(ResolvedMaterialDraw {
+                mesh,
+                pipeline,
+                descriptor,
+                dynamic_offset: u32::try_from(index * DRAW_UNIFORM_STRIDE)
+                    .expect("material offset was validated"),
+                dynamic_offset_count: u32::from(
+                    self.material_pipelines[pipeline].uniform.is_some(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
     fn prepare_scene(&mut self, draws: &[TexturedSceneDraw<'_>]) -> Result<(), GraphicsError> {
         let last_offset = draws
             .len()
@@ -811,6 +955,12 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::PostprocessPipeline => {
                 destroy_pipeline_device(device, self.postprocess_pipelines.remove(request.id)?);
             }
+            ResourceKind::MaterialPipeline => {
+                destroy_material_pipeline_device(
+                    device,
+                    self.material_pipelines.remove(request.id)?,
+                );
+            }
             ResourceKind::RenderTargets => {
                 destroy_target_device(device, self.targets.remove(request.id)?);
             }
@@ -845,6 +995,10 @@ impl<'window> TexturedSession<'window> {
                 .postprocess_pipelines
                 .remove_if_live(request.id)
                 .map(|resource| destroy_pipeline_device(device, resource)),
+            ResourceKind::MaterialPipeline => self
+                .material_pipelines
+                .remove_if_live(request.id)
+                .map(|resource| destroy_material_pipeline_device(device, resource)),
             ResourceKind::RenderTargets => self
                 .targets
                 .remove_if_live(request.id)
@@ -882,6 +1036,21 @@ impl<'window> TexturedSession<'window> {
             .chain(self.instanced_pipelines.iter_mut())
         {
             let replacement = create_descriptor_pool(device)?;
+            unsafe {
+                device
+                    .functions
+                    .destroy_descriptor_pool
+                    .expect("loaded function")(
+                    device.handle,
+                    pipeline.descriptor_pool,
+                    ptr::null(),
+                );
+            }
+            pipeline.descriptor_pool = replacement;
+            pipeline.bindings.clear();
+        }
+        for pipeline in self.material_pipelines.iter_mut() {
+            let replacement = create_material_descriptor_pool(device)?;
             unsafe {
                 device
                     .functions
@@ -1137,6 +1306,111 @@ impl<'window> TexturedSession<'window> {
             );
         };
         pipeline.bindings.push((texture_id, set));
+        Ok(set)
+    }
+
+    fn material_descriptor_set(
+        &mut self,
+        pipeline_index: usize,
+        texture_ids: &[ResourceId],
+        texture_indices: &[usize],
+    ) -> Result<vk::VkDescriptorSet, GraphicsError> {
+        if let Some((_, set)) = self.material_pipelines[pipeline_index]
+            .bindings
+            .iter()
+            .find(|(ids, _)| ids.as_slice() == texture_ids)
+        {
+            return Ok(*set);
+        }
+        let pipeline = &self.material_pipelines[pipeline_index];
+        let (set_layout, descriptor_pool, sampler) = (
+            pipeline.set_layout,
+            pipeline.descriptor_pool,
+            pipeline.sampler,
+        );
+        let pipeline_uniform = pipeline.uniform;
+        let texture_bindings = pipeline.texture_bindings.clone();
+        let sampler_bindings = pipeline.sampler_bindings.clone();
+        let allocate = vk::VkDescriptorSetAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool: descriptor_pool,
+            descriptorSetCount: 1,
+            pSetLayouts: &raw const set_layout,
+            ..Default::default()
+        };
+        let mut set = ptr::null_mut();
+        check(
+            unsafe {
+                self.surface
+                    .device()
+                    .functions
+                    .allocate_descriptor_sets
+                    .expect("loaded function")(
+                    self.surface.device().handle,
+                    &raw const allocate,
+                    &raw mut set,
+                )
+            },
+            "vkAllocateDescriptorSets for material record",
+        )?;
+        let buffer = vk::VkDescriptorBufferInfo {
+            buffer: self.uniform.handle,
+            offset: 0,
+            range: pipeline_uniform.map_or(1, |(_, size)| u64::from(size)),
+        };
+        let images: Vec<vk::VkDescriptorImageInfo> = texture_indices
+            .iter()
+            .map(|&index| vk::VkDescriptorImageInfo {
+                sampler: ptr::null_mut(),
+                imageView: self.textures[index].image.view,
+                imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            })
+            .collect();
+        let sampler_info = vk::VkDescriptorImageInfo {
+            sampler,
+            ..Default::default()
+        };
+        let mut writes = Vec::with_capacity(1 + images.len() + sampler_bindings.len());
+        if let Some((binding, _)) = pipeline_uniform {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                (&raw const buffer).cast(),
+            ));
+        }
+        for (image, &binding) in images.iter().zip(texture_bindings.iter()) {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                ptr::from_ref(image).cast(),
+            ));
+        }
+        for &binding in &sampler_bindings {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+                (&raw const sampler_info).cast(),
+            ));
+        }
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .update_descriptor_sets
+                .expect("loaded function")(
+                self.surface.device().handle,
+                u32::try_from(writes.len()).expect("descriptor write count fits u32"),
+                writes.as_ptr(),
+                0,
+                ptr::null(),
+            );
+        };
+        self.material_pipelines[pipeline_index]
+            .bindings
+            .push((texture_ids.to_vec(), set));
         Ok(set)
     }
 
@@ -1733,6 +2007,7 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     unsafe fn record_prepared_scene(&self, scene: PreparedScene) {
         unsafe {
             let functions = &self.surface.device().functions;
@@ -1755,6 +2030,51 @@ impl<'window> TexturedSession<'window> {
                             1,
                             &raw const draw.descriptor,
                             1,
+                            &raw const draw.dynamic_offset,
+                        );
+                        functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                            self.surface.command_buffer,
+                            0,
+                            1,
+                            &raw const mesh.vertices.handle,
+                            &raw const offset,
+                        );
+                        functions.cmd_bind_index_buffer.expect("loaded function")(
+                            self.surface.command_buffer,
+                            mesh.indices.handle,
+                            0,
+                            vk::VK_INDEX_TYPE_UINT16,
+                        );
+                        functions
+                            .cmd_draw_indexed_indirect
+                            .expect("loaded function")(
+                            self.surface.command_buffer,
+                            mesh.indirect.handle,
+                            0,
+                            1,
+                            u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                                .expect("indirect command size fits u32"),
+                        );
+                    }
+                }
+                PreparedScene::Materials => {
+                    let offset = 0_u64;
+                    for draw in &self.resolved_material_draws {
+                        let mesh = &self.meshes[draw.mesh];
+                        let pipeline = &self.material_pipelines[draw.pipeline];
+                        functions.cmd_bind_pipeline.expect("loaded function")(
+                            self.surface.command_buffer,
+                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.pipeline,
+                        );
+                        functions.cmd_bind_descriptor_sets.expect("loaded function")(
+                            self.surface.command_buffer,
+                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline.layout,
+                            0,
+                            1,
+                            &raw const draw.descriptor,
+                            draw.dynamic_offset_count,
                             &raw const draw.dynamic_offset,
                         );
                         functions.cmd_bind_vertex_buffers.expect("loaded function")(
@@ -1842,6 +2162,9 @@ impl<'window> TexturedSession<'window> {
         {
             destroy_pipeline_device(device, pipeline);
         }
+        for pipeline in self.material_pipelines.take_all() {
+            destroy_material_pipeline_device(device, pipeline);
+        }
         for texture in self.textures.take_all() {
             destroy_texture_device(device, texture);
         }
@@ -1864,6 +2187,7 @@ impl<'window> TexturedSession<'window> {
         // so that path does not retain their backing storage.
         self.pipelines = Arena::new("textured pipeline");
         self.instanced_pipelines = Arena::new("instanced textured pipeline");
+        self.material_pipelines = Arena::new("material pipeline");
         self.postprocess_pipelines = Arena::new("postprocess pipeline");
         self.textures = Arena::new("texture");
         self.targets = Arena::new("render targets");
@@ -1930,6 +2254,21 @@ fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
             );
         }
     }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPipelineResource) {
+    destroy_pipeline_device(
+        device,
+        PipelineResource {
+            set_layout: pipeline.set_layout,
+            layout: pipeline.layout,
+            pipeline: pipeline.pipeline,
+            descriptor_pool: pipeline.descriptor_pool,
+            sampler: pipeline.sampler,
+            bindings: Vec::new(),
+        },
+    );
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -2173,6 +2512,56 @@ fn write_scene_transforms(
                 ptr::from_ref(&draw.model_view_projection).cast::<u8>(),
                 mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
                 DRAW_UNIFORM_SIZE,
+            );
+        }
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
+fn write_material_uniforms(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    records: &[MaterialRecord<'_>],
+) -> Result<(), GraphicsError> {
+    let required = records
+        .len()
+        .saturating_sub(1)
+        .checked_mul(DRAW_UNIFORM_STRIDE)
+        .and_then(|offset| offset.checked_add(DRAW_UNIFORM_STRIDE))
+        .ok_or_else(|| error("material uniform write exceeds address space"))?;
+    if u64::try_from(required).map_err(|_| error("material uniform write exceeds u64"))?
+        > buffer.size
+    {
+        return Err(error("material uniform write exceeds allocation"));
+    }
+    debug_assert!(
+        records
+            .iter()
+            .all(|record| record.uniform.len() <= DRAW_UNIFORM_STRIDE),
+        "uniform sizes were validated at pipeline creation"
+    );
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for material uniforms",
+    )?;
+    unsafe {
+        for (index, record) in records.iter().enumerate() {
+            ptr::copy_nonoverlapping(
+                record.uniform.as_ptr(),
+                mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                record.uniform.len(),
             );
         }
         device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
@@ -2603,6 +2992,305 @@ fn create_descriptor_pool(device: &super::Device) -> Result<vk::VkDescriptorPool
         "textured",
         vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
     )
+}
+
+fn create_material_descriptor_pool(
+    device: &super::Device,
+) -> Result<vk::VkDescriptorPool, GraphicsError> {
+    create_pipeline_descriptor_pool(
+        device,
+        "material",
+        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+    )
+}
+
+const fn material_vertex_format(format: VertexFormat) -> vk::VkFormat {
+    match format {
+        VertexFormat::Float32 => vk::VK_FORMAT_R32_SFLOAT,
+        VertexFormat::Float32x2 => vk::VK_FORMAT_R32G32_SFLOAT,
+        VertexFormat::Float32x3 => vk::VK_FORMAT_R32G32B32_SFLOAT,
+        VertexFormat::Float32x4 => vk::VK_FORMAT_R32G32B32A32_SFLOAT,
+        VertexFormat::Uint32 => vk::VK_FORMAT_R32_UINT,
+        VertexFormat::Uint32x2 => vk::VK_FORMAT_R32G32_UINT,
+        VertexFormat::Uint32x3 => vk::VK_FORMAT_R32G32B32_UINT,
+        VertexFormat::Uint32x4 => vk::VK_FORMAT_R32G32B32A32_UINT,
+        VertexFormat::Sint32 => vk::VK_FORMAT_R32_SINT,
+        VertexFormat::Sint32x2 => vk::VK_FORMAT_R32G32_SINT,
+        VertexFormat::Sint32x3 => vk::VK_FORMAT_R32G32B32_SINT,
+        VertexFormat::Sint32x4 => vk::VK_FORMAT_R32G32B32A32_SINT,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_material_pipeline(
+    surface: &ClearSurface<'_>,
+    bytes: &[u8],
+    config: &MaterialPipelineConfig<'_>,
+    sample_count: vk::VkSampleCountFlagBits,
+) -> Result<MaterialPipelineResource, GraphicsError> {
+    let device = surface.device();
+    let stages = (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT) as u32;
+    let mut layout_bindings = Vec::new();
+    if let Some((binding, _)) = config.uniform {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            stages,
+        ));
+    }
+    for &binding in config.texture_bindings {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            stages,
+        ));
+    }
+    for &binding in config.sampler_bindings {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+            stages,
+        ));
+    }
+    let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        bindingCount: u32::try_from(layout_bindings.len())
+            .map_err(|_| error("material binding count exceeds u32"))?,
+        pBindings: layout_bindings.as_ptr(),
+        ..Default::default()
+    };
+    let mut resource = MaterialPipelineResource {
+        set_layout: ptr::null_mut(),
+        layout: ptr::null_mut(),
+        pipeline: ptr::null_mut(),
+        descriptor_pool: ptr::null_mut(),
+        sampler: ptr::null_mut(),
+        uniform: config.uniform,
+        texture_bindings: config.texture_bindings.to_vec(),
+        sampler_bindings: config.sampler_bindings.to_vec(),
+        bindings: Vec::new(),
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_descriptor_set_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const layout_info,
+                ptr::null(),
+                &raw mut resource.set_layout,
+            )
+        },
+        "vkCreateDescriptorSetLayout for material pipeline",
+    )?;
+    let pipeline_layout = vk::VkPipelineLayoutCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        setLayoutCount: 1,
+        pSetLayouts: &raw const resource.set_layout,
+        ..Default::default()
+    };
+    check(
+        unsafe {
+            device
+                .functions
+                .create_pipeline_layout
+                .expect("loaded function")(
+                device.handle,
+                &raw const pipeline_layout,
+                ptr::null(),
+                &raw mut resource.layout,
+            )
+        },
+        "vkCreatePipelineLayout for material pipeline",
+    )?;
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let module_info = vk::VkShaderModuleCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        codeSize: bytes.len(),
+        pCode: words.as_ptr(),
+        ..Default::default()
+    };
+    let mut module = ptr::null_mut();
+    check(
+        unsafe {
+            device
+                .functions
+                .create_shader_module
+                .expect("loaded function")(
+                device.handle,
+                &raw const module_info,
+                ptr::null(),
+                &raw mut module,
+            )
+        },
+        "vkCreateShaderModule for material pipeline",
+    )?;
+    let vertex_entry = CString::new(config.vertex_entry)
+        .map_err(|_| error("material vertex entry point name contains a NUL byte"))?;
+    let fragment_entry = CString::new(config.fragment_entry)
+        .map_err(|_| error("material fragment entry point name contains a NUL byte"))?;
+    let shader_stages = [
+        shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, module, &vertex_entry),
+        shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, module, &fragment_entry),
+    ];
+    let vertex_binding = vk::VkVertexInputBindingDescription {
+        binding: 0,
+        stride: config.stride,
+        inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    let attributes: Vec<vk::VkVertexInputAttributeDescription> = config
+        .attributes
+        .iter()
+        .map(|input| {
+            attribute(
+                input.location,
+                0,
+                material_vertex_format(input.format),
+                input.offset,
+            )
+        })
+        .collect();
+    let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        vertexBindingDescriptionCount: 1,
+        pVertexBindingDescriptions: &raw const vertex_binding,
+        vertexAttributeDescriptionCount: u32::try_from(attributes.len())
+            .map_err(|_| error("material attribute count exceeds u32"))?,
+        pVertexAttributeDescriptions: attributes.as_ptr(),
+        ..Default::default()
+    };
+    let assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        ..Default::default()
+    };
+    let viewport = vk::VkPipelineViewportStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount: 1,
+        scissorCount: 1,
+        ..Default::default()
+    };
+    let raster = vk::VkPipelineRasterizationStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        polygonMode: vk::VK_POLYGON_MODE_FILL,
+        cullMode: vk::VK_CULL_MODE_BACK_BIT as u32,
+        frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        lineWidth: 1.0,
+        ..Default::default()
+    };
+    let multisample = vk::VkPipelineMultisampleStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        rasterizationSamples: sample_count,
+        ..Default::default()
+    };
+    let depth = vk::VkPipelineDepthStencilStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        depthTestEnable: vk::VK_TRUE,
+        depthWriteEnable: vk::VK_TRUE,
+        depthCompareOp: vk::VK_COMPARE_OP_LESS,
+        minDepthBounds: 0.0,
+        maxDepthBounds: 1.0,
+        ..Default::default()
+    };
+    let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
+        colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
+            | vk::VK_COLOR_COMPONENT_G_BIT
+            | vk::VK_COLOR_COMPONENT_B_BIT
+            | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
+        ..Default::default()
+    };
+    let blend = vk::VkPipelineColorBlendStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        attachmentCount: 1,
+        pAttachments: &raw const blend_attachment,
+        ..Default::default()
+    };
+    let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
+    let dynamic = vk::VkPipelineDynamicStateCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        dynamicStateCount: 2,
+        pDynamicStates: dynamic_states.as_ptr(),
+        ..Default::default()
+    };
+    let color_format = surface.swapchain.format;
+    let rendering = vk::VkPipelineRenderingCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        colorAttachmentCount: 1,
+        pColorAttachmentFormats: &raw const color_format,
+        depthAttachmentFormat: DEPTH_FORMAT,
+        ..Default::default()
+    };
+    let pipeline_info = vk::VkGraphicsPipelineCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        pNext: (&raw const rendering).cast(),
+        stageCount: 2,
+        pStages: shader_stages.as_ptr(),
+        pVertexInputState: &raw const vertex_input,
+        pInputAssemblyState: &raw const assembly,
+        pViewportState: &raw const viewport,
+        pRasterizationState: &raw const raster,
+        pMultisampleState: &raw const multisample,
+        pDepthStencilState: &raw const depth,
+        pColorBlendState: &raw const blend,
+        pDynamicState: &raw const dynamic,
+        layout: resource.layout,
+        basePipelineIndex: -1,
+        ..Default::default()
+    };
+    let result = check(
+        unsafe {
+            device
+                .functions
+                .create_graphics_pipelines
+                .expect("loaded function")(
+                device.handle,
+                ptr::null_mut(),
+                1,
+                &raw const pipeline_info,
+                ptr::null(),
+                &raw mut resource.pipeline,
+            )
+        },
+        "vkCreateGraphicsPipelines for material pipeline",
+    );
+    unsafe {
+        device
+            .functions
+            .destroy_shader_module
+            .expect("loaded function")(device.handle, module, ptr::null());
+    };
+    result?;
+    if !config.sampler_bindings.is_empty() {
+        let sampler_info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: vk::VK_FILTER_LINEAR,
+            minFilter: vk::VK_FILTER_LINEAR,
+            mipmapMode: vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            addressModeU: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeV: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            addressModeW: vk::VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            maxAnisotropy: 1.0,
+            maxLod: 0.0,
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                device.functions.create_sampler.expect("loaded function")(
+                    device.handle,
+                    &raw const sampler_info,
+                    ptr::null(),
+                    &raw mut resource.sampler,
+                )
+            },
+            "vkCreateSampler for material pipeline",
+        )?;
+    }
+    resource.descriptor_pool = create_material_descriptor_pool(device)?;
+    Ok(resource)
 }
 
 #[allow(clippy::too_many_lines)]

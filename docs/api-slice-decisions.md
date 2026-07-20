@@ -90,13 +90,24 @@ composed through `Queue::render_and_present`, `SceneSubmission`, `SceneContent`,
 separating content from output prevents their cross-product from producing composition-sized method
 or variant names while leaving the earlier focused methods intact.
 
+The custom-material checkpoint opens the first application-authored corner of this vocabulary,
+forced by the slice pre-registered in the [material slice plan](material-slice-plan.md):
+material pipelines are created from an application shader artifact, named entry points, a
+declared vertex layout, and slot-explicit bindings, all validated against the interface the
+shader compiler records in the artifact; meshes upload raw vertex bytes against declared
+layouts that submission matches to pipelines; uniform data is per-record plain bytes through
+the frame-transient uniform region (no persistent buffer handle was forced, and a separate
+per-record transform field was dropped as redundant because the application's own uniform
+carries its matrices). Recorded in the [material contract](material-contract.md).
+
 No general render-pass or command-encoder vocabulary exists yet. These operations establish a real
-intermediate-resource dependency, heterogeneous ordered draws, and native instance-rate batches,
-but still do not constrain arbitrary pass ordering, load/store policy, transient allocation,
-copy/compute integration, automatic grouping, sorting, or GPU-written data enough to justify a broad
-API. Recorded in the
+intermediate-resource dependency, heterogeneous ordered draws, native instance-rate batches, and
+application-authored materials, but still do not constrain arbitrary pass ordering, load/store
+policy, transient allocation, copy/compute integration, automatic grouping, sorting, or
+GPU-written data enough to justify a broad API. Recorded in the
 [textured-cube contract](api-cube-contract.md), [two-pass postprocess contract](postprocess-contract.md),
-[multi-object scene contract](scene-contract.md), and [GPU instancing contract](instancing-contract.md).
+[multi-object scene contract](scene-contract.md), [GPU instancing contract](instancing-contract.md),
+and [custom-material contract](material-contract.md).
 
 ## Resource ownership and reclamation
 
@@ -161,7 +172,12 @@ are recorded in the platform validation ledgers ([Linux](linux-validation.md),
 Decided for the slice. Applications ship one WGSL module compiled offline by the separately
 installed `mulciber-shader` tool (pinned Naga) into target-selected SPIR-V or MSL/metallib
 artifacts; ordinary builds embed the checked-in or cached artifact and never depend on the
-compiler. This intentionally does not select the eventual authoring language; advanced capabilities
-keep independent native paths until a single-source path has equivalent evidence. Recorded in the
-[textured-cube contract](api-cube-contract.md) and the
+compiler. Since the custom-material checkpoint, the artifact container also records the module's
+compiler-derived interface (entry points, vertex inputs, bindings with uniform sizes), which
+material pipeline creation validates application declarations against; the container bump is
+deliberately breaking because the tool and crate ship together. This intentionally does not
+select the eventual authoring language; advanced capabilities keep independent native paths until
+a single-source path has equivalent evidence. Recorded in the
+[textured-cube contract](api-cube-contract.md), the
+[material contract](material-contract.md), and the
 [shader toolchain evaluation](shader-toolchain-evaluation.md).

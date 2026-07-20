@@ -10,11 +10,12 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GraphicsErrorKind,
-    MaterialBinding, MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessedScene,
-    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
-    ShaderArtifact, ShadowPass, ShadowRecord, TexturedDraw, TexturedInstanceBatch, TexturedScene,
-    TexturedSceneDraw, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
+    GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices, OpenedGraphics,
+    PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
+    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord,
+    ShadowSource, TexturedDraw, TexturedInstanceBatch, TexturedScene, TexturedSceneDraw, Vertex,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -31,6 +32,10 @@ const SKINNED_SHADOW_SHADER: &[u8] =
 
 /// Bytes in the skinned module's recorded palette: six column-major `mat4x4<f32>` bones.
 const PALETTE_SIZE: u32 = 384;
+
+/// Bytes in the lava module's recorded cascade block: three column-major `mat4x4<f32>`
+/// light-from-model matrices.
+const CASCADES_SIZE: u32 = 192;
 
 /// The crystal module's recorded vertex interface: position, normal, texture coordinate, and a
 /// per-vertex glow weight.
@@ -93,12 +98,13 @@ const LAVA_LAYOUT: VertexLayout<'static> = VertexLayout {
     ],
 };
 
-/// The lava module's recorded binding interface, including the shadow map's depth-texture and
-/// fixed-recipe comparison-sampler slots.
-const LAVA_BINDINGS: [MaterialBinding; 5] = [
+/// The lava module's recorded binding interface, including the shadow map array's
+/// depth-texture-array and fixed-recipe comparison-sampler slots plus the per-cascade
+/// light-matrix storage slot.
+const LAVA_BINDINGS: [MaterialBinding; 6] = [
     MaterialBinding::Uniform {
         binding: 0,
-        size: 144,
+        size: 80,
     },
     MaterialBinding::Texture { binding: 1 },
     MaterialBinding::Sampler {
@@ -106,8 +112,12 @@ const LAVA_BINDINGS: [MaterialBinding; 5] = [
         filter: SamplerFilter::Linear,
         address: SamplerAddress::Repeat,
     },
-    MaterialBinding::DepthTexture { binding: 3 },
+    MaterialBinding::DepthTextureArray { binding: 3 },
     MaterialBinding::ComparisonSampler { binding: 4 },
+    MaterialBinding::Storage {
+        binding: 5,
+        size: CASCADES_SIZE,
+    },
 ];
 
 /// The skinned module's recorded vertex interface: position, normal, bone indices, and weights.
@@ -237,6 +247,7 @@ struct Cases<'window> {
     foreign_material_pipeline: Option<mulciber::MaterialPipeline>,
     material_mesh: Option<Mesh>,
     shadow_map: Option<mulciber::ShadowMap>,
+    shadow_map_array: Option<mulciber::ShadowMapArray>,
     shadow_pipeline: Option<mulciber::ShadowPipeline>,
     shadowed_pipeline: Option<mulciber::MaterialPipeline>,
     floor_mesh: Option<Mesh>,
@@ -266,6 +277,7 @@ impl<'window> Cases<'window> {
             foreign_material_pipeline: None,
             material_mesh: None,
             shadow_map: None,
+            shadow_map_array: None,
             shadow_pipeline: None,
             shadowed_pipeline: None,
             floor_mesh: None,
@@ -1170,10 +1182,11 @@ impl<'window> Cases<'window> {
                 self.step = 16;
                 Ok(false)
             }
-            // Shadow vocabulary creation: an out-of-range extent and a shadow declaration with
-            // non-uniform bindings are rejected by name, then the shadow map, the depth-only
-            // pipeline (consuming only the position attribute of the crystal layout), the
-            // shadow-sampling lava pipeline, and their meshes are created for the cases below.
+            // Shadow vocabulary creation: an out-of-range extent, out-of-range array layer
+            // counts, and a shadow declaration with non-uniform bindings are rejected by name,
+            // then the shadow map, the two-layer shadow map array, the depth-only pipeline
+            // (consuming only the position attribute of the crystal layout), the
+            // array-sampling lava pipeline, and their meshes are created for the cases below.
             16 => {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 expect_error(
@@ -1181,6 +1194,18 @@ impl<'window> Cases<'window> {
                     GraphicsErrorKind::InvalidRequest,
                     "outside the supported",
                     "zero-extent shadow map rejected",
+                )?;
+                expect_error(
+                    graphics.device.create_shadow_map_array(512, 0).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "outside the supported",
+                    "zero-layer shadow map array rejected",
+                )?;
+                expect_error(
+                    graphics.device.create_shadow_map_array(512, 9).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "outside the supported",
+                    "over-limit shadow map array layers rejected",
                 )?;
                 expect_error(
                     graphics
@@ -1197,6 +1222,7 @@ impl<'window> Cases<'window> {
                     "non-uniform shadow binding rejected",
                 )?;
                 self.shadow_map = Some(graphics.device.create_shadow_map(512)?);
+                self.shadow_map_array = Some(graphics.device.create_shadow_map_array(512, 2)?);
                 self.shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
                     mulciber::ShadowPipelineDescriptor {
                         shader: ShaderArtifact::new(SHADOW_SHADER)?,
@@ -1241,25 +1267,28 @@ impl<'window> Cases<'window> {
                     MeshIndices::U32(&[0, 1, 2]),
                 )?);
                 self.pass("zero-extent shadow map rejected");
+                self.pass("zero-layer shadow map array rejected");
+                self.pass("over-limit shadow map array layers rejected");
                 self.pass("non-uniform shadow binding rejected");
                 self.step = 17;
                 Ok(false)
             }
-            // A record on a shadow-sampling pipeline must supply the map.
+            // A record on a shadow-sampling pipeline must supply the source.
             17 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
                 let lava_textures = [texture];
-                let uniform = [0_u8; 144];
+                let uniform = [0_u8; 80];
+                let cascades = lava_cascades();
                 let records = [MaterialRecord {
                     pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
                     mesh: self.floor_mesh.as_ref().expect("floor mesh"),
                     textures: &lava_textures,
                     shadow_map: None,
                     uniform: &uniform,
-                    storage: &[],
+                    storage: &cascades,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1297,7 +1326,9 @@ impl<'window> Cases<'window> {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     textures: &textures,
-                    shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                    shadow_map: Some(ShadowSource::Map(
+                        self.shadow_map.as_ref().expect("shadow map"),
+                    )),
                     uniform: &uniform,
                     storage: &[],
                 }];
@@ -1325,22 +1356,24 @@ impl<'window> Cases<'window> {
                 self.step = 19;
                 Ok(false)
             }
-            // Sampling a map no shadow pass has rendered is rejected rather than reading
-            // undefined depth.
+            // A record may not supply a single map to a pipeline declaring the array slot.
             19 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
                 let lava_textures = [texture];
-                let uniform = [0_u8; 144];
+                let uniform = [0_u8; 80];
+                let cascades = lava_cascades();
                 let records = [MaterialRecord {
                     pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
                     mesh: self.floor_mesh.as_ref().expect("floor mesh"),
                     textures: &lava_textures,
-                    shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                    shadow_map: Some(ShadowSource::Map(
+                        self.shadow_map.as_ref().expect("shadow map"),
+                    )),
                     uniform: &uniform,
-                    storage: &[],
+                    storage: &cascades,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1359,15 +1392,110 @@ impl<'window> Cases<'window> {
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
-                    "no shadow pass has rendered",
-                    "unrendered shadow map sampling rejected",
+                    "declares a depth-texture-array slot",
+                    "single-map source on array pipeline rejected",
                 )?;
-                self.pass("unrendered shadow map sampling rejected");
+                self.pass("single-map source on array pipeline rejected");
                 self.step = 20;
                 Ok(false)
             }
-            // A shadow record's uniform bytes must match its pipeline's declared size.
+            // Sampling an array no cascaded shadow pass has rendered is rejected rather than
+            // reading undefined depth.
             20 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let lava_textures = [texture];
+                let uniform = [0_u8; 80];
+                let cascades = lava_cascades();
+                let records = [MaterialRecord {
+                    pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
+                    mesh: self.floor_mesh.as_ref().expect("floor mesh"),
+                    textures: &lava_textures,
+                    shadow_map: Some(ShadowSource::Array(
+                        self.shadow_map_array.as_ref().expect("shadow map array"),
+                    )),
+                    uniform: &uniform,
+                    storage: &cascades,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "no cascaded shadow pass has rendered",
+                    "unrendered shadow map sampling rejected",
+                )?;
+                self.pass("unrendered shadow map sampling rejected");
+                self.step = 21;
+                Ok(false)
+            }
+            // A cascaded pass must supply exactly one record list per layer of its map.
+            21 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [MaterialRecord {
+                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                }];
+                let shadow_uniform = matrix_bytes(IDENTITY);
+                let shadow_records = [ShadowRecord {
+                    pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
+                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    uniform: &shadow_uniform,
+                    storage: &[],
+                }];
+                let cascades: [&[ShadowRecord]; 1] = [&shadow_records];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
+                                    map: self.shadow_map_array.as_ref().expect("shadow map array"),
+                                    cascades: &cascades,
+                                })),
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "cascade record lists",
+                    "cascade list count mismatch rejected",
+                )?;
+                self.pass("cascade list count mismatch rejected");
+                self.step = 22;
+                Ok(false)
+            }
+            // A shadow record's uniform bytes must match its pipeline's declared size.
+            22 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1400,10 +1528,10 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
-                                shadow: Some(ShadowPass {
+                                shadow: Some(ShadowPrepass::Single(ShadowPass {
                                     map: self.shadow_map.as_ref().expect("shadow map"),
                                     records: &shadow_records,
-                                }),
+                                })),
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1413,14 +1541,43 @@ impl<'window> Cases<'window> {
                     "shadow uniform length mismatch rejected",
                 )?;
                 self.pass("shadow uniform length mismatch rejected");
-                self.step = 21;
+                self.step = 23;
+                Ok(false)
+            }
+            // Render-scale vocabulary: out-of-range percentages on both sides of the supported
+            // range are rejected by name, and scaled postprocess targets create and destroy at
+            // half the presentable extent.
+            23 => {
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                expect_error(
+                    RenderScale::percent(24).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "outside the supported",
+                    "out-of-range render scale rejected",
+                )?;
+                expect_error(
+                    RenderScale::percent(201).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "outside the supported",
+                    "out-of-range render scale rejected",
+                )?;
+                let half_scale = RenderScale::percent(50)?;
+                let scaled_targets = graphics
+                    .device
+                    .create_scaled_postprocess_targets(graphics.surface.info()?, half_scale)?;
+                graphics
+                    .device
+                    .destroy_postprocess_targets(scaled_targets)?;
+                self.pass("out-of-range render scale rejected");
+                self.pass("scaled postprocess targets created and destroyed");
+                self.step = 24;
                 Ok(false)
             }
             // Storage vocabulary creation: a second storage slot, an oversized declaration, and
             // a size that disagrees with the recorded WGSL type are rejected by name, then the
             // skinned pipeline pair (the shadow variant consuming a subset of the skinned
             // layout) and a skinned triangle are created for the cases below.
-            21 => {
+            24 => {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 expect_error(
                     graphics
@@ -1531,11 +1688,11 @@ impl<'window> Cases<'window> {
                 self.pass("second storage slot rejected");
                 self.pass("oversized storage declaration rejected");
                 self.pass("storage size mismatch rejected");
-                self.step = 22;
+                self.step = 25;
                 Ok(false)
             }
             // A material record's storage bytes must match its pipeline's declared size.
-            22 => {
+            25 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1570,11 +1727,11 @@ impl<'window> Cases<'window> {
                     "material storage length mismatch rejected",
                 )?;
                 self.pass("material storage length mismatch rejected");
-                self.step = 23;
+                self.step = 26;
                 Ok(false)
             }
             // A shadow record's storage bytes must match its pipeline's declared size.
-            23 => {
+            26 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1608,10 +1765,10 @@ impl<'window> Cases<'window> {
                                 output: SceneOutput::Direct(
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
-                                shadow: Some(ShadowPass {
+                                shadow: Some(ShadowPrepass::Single(ShadowPass {
                                     map: self.shadow_map.as_ref().expect("shadow map"),
                                     records: &shadow_records,
-                                }),
+                                })),
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1621,12 +1778,12 @@ impl<'window> Cases<'window> {
                     "shadow storage length mismatch rejected",
                 )?;
                 self.pass("shadow storage length mismatch rejected");
-                self.step = 24;
+                self.step = 27;
                 Ok(false)
             }
             // The skinned record renders with its palette flowing through both the shadow and
             // the material path, then the skinned resources destroy explicitly.
-            24 => {
+            27 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1655,10 +1812,10 @@ impl<'window> Cases<'window> {
                     SceneSubmission {
                         content: SceneContent::Material(&records),
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: Some(ShadowPass {
+                        shadow: Some(ShadowPrepass::Single(ShadowPass {
                             map: self.shadow_map.as_ref().expect("shadow map"),
                             records: &shadow_records,
-                        }),
+                        })),
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1677,19 +1834,20 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.skinned_mesh.take().expect("skinned mesh"))?;
                 self.pass("skinned resource destruction");
-                self.step = 25;
+                self.step = 28;
                 Ok(false)
             }
-            // The depth-only pass renders the crystal-layout mesh into the map, the floor record
-            // samples it through the comparison sampler in the same frame, and every shadow
-            // resource kind then destroys explicitly.
-            25 => {
+            // The cascaded depth-only pass renders the crystal-layout mesh into both layers of
+            // the array, the floor record samples the array through the comparison sampler in
+            // the same frame, and every shadow resource kind then destroys explicitly.
+            28 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
                 let lava_textures = [texture];
-                let lava_uniform = [0_u8; 144];
+                let lava_uniform = [0_u8; 80];
+                let lava_storage = lava_cascades();
                 let crystal_textures = [texture, texture];
                 let crystal_uniform = material_uniform();
                 let records = [
@@ -1697,9 +1855,11 @@ impl<'window> Cases<'window> {
                         pipeline: self.shadowed_pipeline.as_ref().expect("shadowed pipeline"),
                         mesh: self.floor_mesh.as_ref().expect("floor mesh"),
                         textures: &lava_textures,
-                        shadow_map: Some(self.shadow_map.as_ref().expect("shadow map")),
+                        shadow_map: Some(ShadowSource::Array(
+                            self.shadow_map_array.as_ref().expect("shadow map array"),
+                        )),
                         uniform: &lava_uniform,
-                        storage: &[],
+                        storage: &lava_storage,
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -1717,16 +1877,17 @@ impl<'window> Cases<'window> {
                     uniform: &shadow_uniform,
                     storage: &[],
                 }];
+                let cascades: [&[ShadowRecord]; 2] = [&shadow_records, &shadow_records];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
                         content: SceneContent::Material(&records),
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: Some(ShadowPass {
-                            map: self.shadow_map.as_ref().expect("shadow map"),
-                            records: &shadow_records,
-                        }),
+                        shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
+                            map: self.shadow_map_array.as_ref().expect("shadow map array"),
+                            cascades: &cascades,
+                        })),
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1736,6 +1897,9 @@ impl<'window> Cases<'window> {
                 graphics
                     .device
                     .destroy_shadow_map(self.shadow_map.take().expect("shadow map"))?;
+                graphics.device.destroy_shadow_map_array(
+                    self.shadow_map_array.take().expect("shadow map array"),
+                )?;
                 graphics.device.destroy_shadow_pipeline(
                     self.shadow_pipeline.take().expect("shadow pipeline"),
                 )?;
@@ -1752,12 +1916,12 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.material_mesh.take().expect("material mesh"))?;
                 self.pass("shadow resource destruction");
-                self.step = 26;
+                self.step = 29;
                 Ok(false)
             }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            26 => {
+            29 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -1798,11 +1962,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 27;
+                self.step = 30;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            27 => {
+            30 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1825,11 +1989,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 28;
+                self.step = 31;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            28 => {
+            31 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1868,7 +2032,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 29;
+                self.step = 32;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -2044,6 +2208,15 @@ fn skinned_triangle_vertices() -> Vec<u8> {
 fn identity_palette() -> Vec<u8> {
     let mut bytes = Vec::with_capacity(384);
     for _ in 0..6 {
+        bytes.extend_from_slice(&matrix_bytes(IDENTITY));
+    }
+    bytes
+}
+
+/// Three identity light-from-model matrices as the lava module's `LavaCascades` bytes.
+fn lava_cascades() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(CASCADES_SIZE as usize);
+    for _ in 0..3 {
         bytes.extend_from_slice(&matrix_bytes(IDENTITY));
     }
     bytes

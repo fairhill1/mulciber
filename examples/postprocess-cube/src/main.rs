@@ -1,4 +1,5 @@
-//! Renders a textured cube offscreen and applies a fullscreen post-processing pass.
+//! Renders a textured cube offscreen at a reduced render scale and applies a fullscreen
+//! post-processing pass that resamples it to the native surface extent.
 
 mod scene;
 
@@ -6,8 +7,8 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessedDraw, SampleCount,
-    ShaderArtifact,
+    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessedDraw, RenderScale,
+    SampleCount, ShaderArtifact,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -15,6 +16,9 @@ use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, transform};
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/postprocess.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.025, 0.035, 0.055);
+/// The scene pass renders at half the presentable extent; the postprocess pass upsamples.
+/// Deliberately visible so the render-scale path has observable evidence.
+const RENDER_SCALE_PERCENT: u32 = 50;
 
 #[allow(clippy::cast_precision_loss)]
 fn main() -> Result<(), Box<dyn Error>> {
@@ -47,9 +51,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let postprocess_pipeline = graphics
         .device
         .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
+    let render_scale = RenderScale::percent(RENDER_SCALE_PERCENT)?;
+    println!("render scale: {} percent", render_scale.as_percent());
     let mut targets = graphics
         .device
-        .create_postprocess_targets(graphics.surface.info()?)?;
+        .create_scaled_postprocess_targets(graphics.surface.info()?, render_scale)?;
     let started = Instant::now();
 
     loop {
@@ -61,7 +67,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 FrameAcquire::Ready(frame) => {
                     let info = frame.surface_info();
                     if info != targets.info() {
-                        targets = graphics.device.create_postprocess_targets(info)?;
+                        targets = graphics
+                            .device
+                            .create_scaled_postprocess_targets(info, render_scale)?;
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                     graphics.queue.draw_textured_postprocessed_and_present(

@@ -2,8 +2,26 @@
 //! scene. Vertex and uniform data are packed by the application; the crate only sees bytes
 //! against declared layouts.
 
-use glam::{Mat4, Vec3, camera::rh::proj::directx, camera::rh::view::look_at_mat4};
+use glam::{Mat4, Vec3, Vec4, camera::rh::proj::directx, camera::rh::view::look_at_mat4};
 use mulciber::{VertexAttribute, VertexFormat, VertexLayout};
+
+/// Shadow cascades rendered into the layered map, ordered near to far.
+pub(crate) const CASCADE_COUNT: usize = 3;
+
+/// Extent of every cascade layer; cascade fitting quality is relative to this resolution.
+pub(crate) const SHADOW_MAP_SIZE: u32 = 1024;
+
+/// View-space depth range each cascade's light volume is fitted to. The scene's visible
+/// depth ends around the floor's far corners (~18 units from the camera), so the last band
+/// runs past that and everything beyond it stays lit.
+const CASCADE_BOUNDS: [(f32, f32); CASCADE_COUNT] = [(0.1, 6.0), (6.0, 12.0), (12.0, 40.0)];
+
+/// World-space distance the light volume extends behind each cascade slice so casters
+/// between the light and the slice still write depth.
+const CASTER_MARGIN: f32 = 12.0;
+
+/// The fixed directional light's position; its direction points at the scene center.
+const LIGHT_EYE: Vec3 = Vec3::new(4.0, 7.0, 3.0);
 
 /// Crystal vertices carry position, normal, texture coordinate, and a per-vertex glow weight the
 /// fixed vocabulary cannot express.
@@ -324,25 +342,79 @@ pub(crate) fn skinned_uniform(aspect: f32) -> Vec<u8> {
     bytes
 }
 
-/// Packs `SkinnedShadowParams`: the light's view-projection over the same palette.
-pub(crate) fn skinned_shadow_uniform() -> Vec<u8> {
+/// Packs `SkinnedShadowParams`: one cascade's light view-projection over the same palette.
+pub(crate) fn skinned_shadow_uniform(light_view_projection: Mat4) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(64);
-    push_f32s(&mut bytes, &light_view_projection().to_cols_array());
+    push_f32s(&mut bytes, &light_view_projection.to_cols_array());
     bytes
 }
 
-fn view_projection(aspect: f32) -> Mat4 {
-    let view = Mat4::from_rotation_x(0.32) * Mat4::from_translation(Vec3::new(0.0, -0.6, -7.5));
-    let projection = directx::perspective(55_f32.to_radians(), aspect, 0.1, 100.0);
-    projection * view
+fn camera_view() -> Mat4 {
+    Mat4::from_rotation_x(0.32) * Mat4::from_translation(Vec3::new(0.0, -0.6, -7.5))
 }
 
-/// A fixed directional light looking down at the scene center, with an orthographic volume
-/// covering the floor. Its NDC z spans zero through one, matching the shadow map's depth range.
-fn light_view_projection() -> Mat4 {
-    let view = look_at_mat4(Vec3::new(4.0, 7.0, 3.0), Vec3::ZERO, Vec3::Y);
-    let projection = directx::orthographic(-10.0, 10.0, -10.0, 10.0, 0.1, 25.0);
-    projection * view
+fn view_projection(aspect: f32) -> Mat4 {
+    directx::perspective(55_f32.to_radians(), aspect, 0.1, 100.0) * camera_view()
+}
+
+/// One directional-light view-projection per shadow cascade, each fitted to its view-frustum
+/// slice. Cascade policy — split distances, fitting, texel snapping — is application code;
+/// the crate only ever sees the packed matrices and the layered map.
+///
+/// Each slice's eight frustum corners are wrapped in a bounding sphere, which keeps the
+/// orthographic volume's size independent of camera rotation, and the sphere's center is
+/// snapped to shadow-texel increments on the light's image plane so shadow edges do not
+/// shimmer as the fitted volume moves. NDC z spans zero through one, matching the shadow
+/// map's depth range.
+pub(crate) fn cascade_light_view_projections(aspect: f32) -> [Mat4; CASCADE_COUNT] {
+    #[allow(clippy::cast_precision_loss)]
+    let map_extent = SHADOW_MAP_SIZE as f32;
+    let light_direction = (Vec3::ZERO - LIGHT_EYE).normalize();
+    let light_orientation = look_at_mat4(-light_direction, Vec3::ZERO, Vec3::Y);
+    CASCADE_BOUNDS.map(|(near, far)| {
+        let slice = directx::perspective(55_f32.to_radians(), aspect, near, far) * camera_view();
+        let inverse = slice.inverse();
+        let mut corners = [Vec3::ZERO; 8];
+        let mut center = Vec3::ZERO;
+        for (index, corner) in corners.iter_mut().enumerate() {
+            let ndc = Vec4::new(
+                if index & 1 == 0 { -1.0 } else { 1.0 },
+                if index & 2 == 0 { -1.0 } else { 1.0 },
+                if index & 4 == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+            let world = inverse * ndc;
+            *corner = world.truncate() / world.w;
+            center += *corner;
+        }
+        center /= 8.0;
+        let radius = corners
+            .iter()
+            .map(|corner| corner.distance(center))
+            .fold(0.0, f32::max);
+        let texel = 2.0 * radius / map_extent;
+        let on_light_plane = light_orientation.transform_point3(center);
+        let snapped = Vec3::new(
+            (on_light_plane.x / texel).floor() * texel,
+            (on_light_plane.y / texel).floor() * texel,
+            on_light_plane.z,
+        );
+        let center = light_orientation.inverse().transform_point3(snapped);
+        let view = look_at_mat4(
+            center - light_direction * (radius + CASTER_MARGIN),
+            center,
+            Vec3::Y,
+        );
+        let projection = directx::orthographic(
+            -radius,
+            radius,
+            -radius,
+            radius,
+            0.0,
+            2.0 * radius + CASTER_MARGIN,
+        );
+        projection * view
+    })
 }
 
 fn crystal_model(seconds: f32, phase: f32, offset: Vec3) -> Mat4 {
@@ -365,22 +437,36 @@ pub(crate) fn crystal_uniform(seconds: f32, aspect: f32, phase: f32, offset: Vec
     bytes
 }
 
-/// Packs `ShadowParams` for one crystal: the light's view-projection times its model transform.
-pub(crate) fn crystal_shadow_uniform(seconds: f32, phase: f32, offset: Vec3) -> Vec<u8> {
+/// Packs `ShadowParams` for one crystal in one cascade: that cascade's light view-projection
+/// times the crystal's model transform.
+pub(crate) fn crystal_shadow_uniform(
+    light_view_projection: Mat4,
+    seconds: f32,
+    phase: f32,
+    offset: Vec3,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(64);
     push_f32s(
         &mut bytes,
-        &(light_view_projection() * crystal_model(seconds, phase, offset)).to_cols_array(),
+        &(light_view_projection * crystal_model(seconds, phase, offset)).to_cols_array(),
     );
     bytes
 }
 
-/// Packs `LavaParams`: model-view-projection, the light transform (the floor's model is the
-/// identity), then seconds.
+/// Packs `LavaParams`: model-view-projection, then seconds.
 pub(crate) fn lava_uniform(seconds: f32, aspect: f32) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(144);
+    let mut bytes = Vec::with_capacity(80);
     push_f32s(&mut bytes, &view_projection(aspect).to_cols_array());
-    push_f32s(&mut bytes, &light_view_projection().to_cols_array());
     push_f32s(&mut bytes, &[seconds, 0.0, 0.0, 0.0]);
+    bytes
+}
+
+/// Packs `LavaCascades` read-only storage: one light-from-model matrix per cascade (the
+/// floor's model is the identity), near to far.
+pub(crate) fn lava_cascades(lights: &[Mat4; CASCADE_COUNT]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(CASCADE_COUNT * 64);
+    for light in lights {
+        push_f32s(&mut bytes, &light.to_cols_array());
+    }
     bytes
 }

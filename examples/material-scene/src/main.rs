@@ -2,10 +2,12 @@
 //!
 //! This is the forcing slice for the custom-material vocabulary: five WGSL modules the crate has
 //! never seen, three different application-declared vertex layouts, application-packed uniform
-//! bytes updated every frame, a material sampling two textures, a depth-only shadow pass whose
-//! map the floor material samples through a comparison sampler, and a skinned kelp strand whose
-//! bone palette flows through a read-only storage slot into both its material and its shadow
-//! caster.
+//! bytes updated every frame, a material sampling two textures, a cascaded depth-only shadow
+//! pre-pass whose layered map the floor material samples through a comparison sampler, and a
+//! skinned kelp strand whose bone palette flows through a read-only storage slot into both its
+//! material and its per-cascade shadow casters. Cascade policy — split distances, per-cascade
+//! light matrices, texel snapping, depth bias, and cascade selection — is application code; the
+//! crate only sees the layered map, per-cascade record lists, and bytes.
 
 mod scene;
 
@@ -14,10 +16,10 @@ use std::time::Instant;
 
 use glam::Vec3;
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, MaterialBinding,
-    MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics, SampleCount,
-    SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact,
-    ShadowPass, ShadowPipelineDescriptor, ShadowRecord,
+    BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
+    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics,
+    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
+    ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -29,6 +31,9 @@ const SKINNED_SHADOW_SHADER: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/skinned-shadow.shaderbin"));
 /// Bytes in the kelp strand's palette: six column-major `mat4x4<f32>` bone matrices.
 const KELP_PALETTE_SIZE: u32 = 384;
+/// Bytes in the floor's cascade block: one column-major `mat4x4<f32>` per shadow cascade.
+#[allow(clippy::cast_possible_truncation)]
+const LAVA_CASCADES_SIZE: u32 = (scene::CASCADE_COUNT * 64) as u32;
 const CLEAR: ClearColor = ClearColor::opaque(0.015, 0.02, 0.045);
 
 #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
@@ -107,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[
                 MaterialBinding::Uniform {
                     binding: 0,
-                    size: 144,
+                    size: 80,
                 },
                 MaterialBinding::Texture { binding: 1 },
                 MaterialBinding::Sampler {
@@ -115,8 +120,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     filter: SamplerFilter::Linear,
                     address: SamplerAddress::Repeat,
                 },
-                MaterialBinding::DepthTexture { binding: 3 },
+                MaterialBinding::DepthTextureArray { binding: 3 },
                 MaterialBinding::ComparisonSampler { binding: 4 },
+                MaterialBinding::Storage {
+                    binding: 5,
+                    size: LAVA_CASCADES_SIZE,
+                },
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
@@ -176,7 +185,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     },
                 ],
             })?;
-    let shadow_map = graphics.device.create_shadow_map(1024)?;
+    #[allow(clippy::cast_possible_truncation)]
+    let shadow_map = graphics
+        .device
+        .create_shadow_map_array(scene::SHADOW_MAP_SIZE, scene::CASCADE_COUNT as u32)?;
     let mut targets = graphics
         .device
         .create_render_targets(graphics.surface.info()?)?;
@@ -210,29 +222,50 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let lava_uniform = scene::lava_uniform(seconds, aspect);
                     let kelp_palette = scene::kelp_bone_palette(seconds);
                     let skinned_uniform = scene::skinned_uniform(aspect);
-                    let skinned_shadow_uniform = scene::skinned_shadow_uniform();
-                    let shadow_uniforms: Vec<Vec<u8>> = crystal_offsets
+                    let cascade_lights = scene::cascade_light_view_projections(aspect);
+                    let lava_cascades = scene::lava_cascades(&cascade_lights);
+                    // Every caster renders once per cascade under that cascade's light matrix.
+                    let cascade_uniforms: Vec<(Vec<Vec<u8>>, Vec<u8>)> = cascade_lights
                         .iter()
-                        .enumerate()
-                        .map(|(index, &offset)| {
-                            scene::crystal_shadow_uniform(seconds, index as f32 * 2.1, offset)
+                        .map(|&light| {
+                            let crystals = crystal_offsets
+                                .iter()
+                                .enumerate()
+                                .map(|(index, &offset)| {
+                                    scene::crystal_shadow_uniform(
+                                        light,
+                                        seconds,
+                                        index as f32 * 2.1,
+                                        offset,
+                                    )
+                                })
+                                .collect();
+                            (crystals, scene::skinned_shadow_uniform(light))
                         })
                         .collect();
-                    let mut shadow_records: Vec<ShadowRecord<'_>> = shadow_uniforms
+                    let cascade_records: Vec<Vec<ShadowRecord<'_>>> = cascade_uniforms
                         .iter()
-                        .map(|uniform| ShadowRecord {
-                            pipeline: &shadow_pipeline,
-                            mesh: &crystal_mesh,
-                            uniform,
-                            storage: &[],
+                        .map(|(crystal_uniforms, kelp_uniform)| {
+                            let mut records: Vec<ShadowRecord<'_>> = crystal_uniforms
+                                .iter()
+                                .map(|uniform| ShadowRecord {
+                                    pipeline: &shadow_pipeline,
+                                    mesh: &crystal_mesh,
+                                    uniform,
+                                    storage: &[],
+                                })
+                                .collect();
+                            records.push(ShadowRecord {
+                                pipeline: &skinned_shadow_pipeline,
+                                mesh: &kelp_mesh,
+                                uniform: kelp_uniform,
+                                storage: &kelp_palette,
+                            });
+                            records
                         })
                         .collect();
-                    shadow_records.push(ShadowRecord {
-                        pipeline: &skinned_shadow_pipeline,
-                        mesh: &kelp_mesh,
-                        uniform: &skinned_shadow_uniform,
-                        storage: &kelp_palette,
-                    });
+                    let cascade_lists: Vec<&[ShadowRecord<'_>]> =
+                        cascade_records.iter().map(Vec::as_slice).collect();
                     let crystal_textures = [&crystal_base, &crystal_glow];
                     let lava_textures = [&lava];
                     let mut records = Vec::with_capacity(crystal_uniforms.len() + 2);
@@ -240,9 +273,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         pipeline: &lava_pipeline,
                         mesh: &floor_mesh,
                         textures: &lava_textures,
-                        shadow_map: Some(&shadow_map),
+                        shadow_map: Some(ShadowSource::Array(&shadow_map)),
                         uniform: &lava_uniform,
-                        storage: &[],
+                        storage: &lava_cascades,
                     });
                     for uniform in &crystal_uniforms {
                         records.push(MaterialRecord {
@@ -267,10 +300,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         SceneSubmission {
                             content: SceneContent::Material(&records),
                             output: SceneOutput::Direct(&targets),
-                            shadow: Some(ShadowPass {
+                            shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
                                 map: &shadow_map,
-                                records: &shadow_records,
-                            }),
+                                cascades: &cascade_lists,
+                            })),
                             clear: CLEAR,
                         },
                     )?;

@@ -148,5 +148,7 @@ another Metal-only clippy line-count failure (on `prepare_material_scene`, which
 storage-binding path) took the same established allow, all 52 Metal conformance cases
 (including the seven storage cases) passed under Metal API Validation, and the skinned
 material-scene example ran validation-clean (Metal, four samples) through a scripted titlebar
-close. Skinning on Metal is asserted by execution and validation cleanliness; the swaying kelp
-strand and its moving shadow await operator visual confirmation on both backends.
+close. On the same date, at `cf75bb7`, the operator ran the skinned material scene and visually
+confirmed the swaying kelp strand with its shadow animating correctly on both backends;
+per-session details stay in the [macOS](macos-validation.md) and [Linux](linux-validation.md)
+runbooks.

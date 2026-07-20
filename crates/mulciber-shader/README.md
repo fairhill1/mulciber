@@ -14,8 +14,10 @@ macOS and requires Xcode's `metal` and `metallib` tools. The initial compiler de
 only Naga's validation-backed cross-backend feature intersection; unsupported advanced shaders fail
 instead of requesting a second user-authored source.
 
-Version 0.2.0 records the module's compiler-derived interface — entry points with their stages
-and vertex inputs, plus bindings with kinds and uniform byte sizes — in the artifact container,
-which `mulciber` 0.5 validates material pipeline declarations against. The container bump is
-deliberately breaking: artifacts from earlier versions are rejected at load and must be
-regenerated. The tool and the `mulciber` crate ship together; no artifact stability is promised.
+Version 0.3.0 extends the recorded interface with depth-texture and comparison-sampler binding
+kinds and with exact byte sizes for read-only, creation-fixed storage bindings; writable and
+runtime-sized storage are rejected at compile time instead of being recorded without a proven
+mapping. The container is unchanged from 0.2, so earlier artifacts remain loadable, but shaders
+using the new slot kinds must be built with this version, whose records `mulciber` 0.6 validates
+material and shadow pipeline declarations against. The tool and the `mulciber` crate ship
+together; no artifact stability is promised.

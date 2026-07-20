@@ -24,8 +24,9 @@ Vulkan-only). The skinned `mulciber-material-scene` — now including the six-bo
 skinned in both its material vertex stage and its depth-only shadow caster — ran under
 `MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly ten seconds of frames,
 and closed through an agent-scripted titlebar close, exiting zero with no validation output
-beyond the banner. This is agent-driven automated execution evidence; the visual appearance of
-the swaying strand and its shadow on Metal is not claimed.
+beyond the banner. This is agent-driven automated execution evidence. On the same date, at
+`cf75bb7`, the operator additionally ran the skinned material scene on this machine and visually
+confirmed the swaying kelp strand with its shadow animating correctly for the skinned mesh.
 
 ## Mip-chain and shadow checkpoint
 

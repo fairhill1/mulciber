@@ -401,9 +401,11 @@ skinned presentation (palette flowing through both paths) and explicit destructi
 fifty-three cases passed on both native Wayland and X11 through XWayland, exit zero, no
 validation output, and the skinned material scene ran roughly ten seconds on each path to
 KWin-scripted closes, exit zero, validation-clean. Skinning is asserted by execution and
-validation cleanliness; the operator has not yet visually confirmed the swaying strand. The
-new `skinned` and `skinned-shadow` Metal artifacts await the next M2 session alongside the
-usual native regeneration.
+validation cleanliness, and on the same date, at `cf75bb7`, the operator ran the skinned
+material scene on the KDE tier and visually confirmed the swaying strand with its shadow
+animating correctly for the skinned mesh (the windowing path of that session was not recorded).
+The `skinned` and `skinned-shadow` Metal artifacts landed natively at `cf75bb7`; see the
+[macOS runbook](macos-validation.md).
 
 ### Conformance probe evidence
 

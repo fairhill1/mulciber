@@ -12,7 +12,7 @@ use std::time::Instant;
 
 pub use input::{InputSnapshot, ScrollSample};
 use mulciber_platform::{InputEvent, WindowEvent};
-pub use pacing::{IntervalSummary, PacingDiagnostics, PacingReport};
+pub use pacing::{FramePacer, FrameSchedule, IntervalSummary, PacingDiagnostics, PacingReport};
 pub use timing::{FramePlan, RuntimeConfig, RuntimeConfigError};
 
 /// Coordinates frame-scoped input with a fixed-rate simulation clock.

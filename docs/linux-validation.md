@@ -288,6 +288,26 @@ These are automated static-window and scripted-resize runs; no new physical inte
 are made. Pacing policy and the remaining platform surveys stay open per the
 [Gate 4 pacing plan](gate4-pacing-plan.md).
 
+### Pacing policy evidence
+
+Later on 2026-07-20, an instrumented Skyrimlike walkaround (auto strafe-plus-yaw, per-frame
+schedule/feedback trace, KWin-scripted resize from 1280x720 to 2400x1272) measured the defect the
+policy targets on this machine: presented intervals stayed on the 74.97 Hz grid at both extents
+(13.02–13.66 ms, one frame per interval, ~150 per two seconds), while wall-clock gaps between
+frame builds jittered from ~3 ms to ~19 ms at the larger extent, so a wall-clock simulation delta
+animated ±7 ms of jitter onto a metronomic display. `mulciber-runtime::FramePacer` was extracted
+as the policy half of the pacing vocabulary: deltas are whole display intervals of the
+diagnostics cadence — one normally, more only when the wall gap passes one and three-quarter
+intervals — with an observable wall-clock fallback before estimation and when feedback is more
+than 250 ms stale. Re-running the same scenario through the pacer, 1,723 joined frames reported a
+delta-versus-presented-interval error of median 0 µs and p95 35 µs, against a median error of
+13.4 ms for half the frames in an intermediate revision that slept toward absolute grid instants
+extrapolated from feedback timestamps (drain-latency bias plus roughly two frames of feedback lag
+paired zero-delta and double-delta frames); absolute frame-start scheduling is therefore
+deliberately excluded from this policy revision. Automated single-machine, single-display
+Wayland/KWin/NVIDIA evidence only; frame-start alignment, spin reduction, and the pre-registered
+comparison measurements stay open per the [Gate 4 pacing plan](gate4-pacing-plan.md).
+
 ### Custom-material vocabulary evidence
 
 On 2026-07-20, the custom-material checkpoint (see the

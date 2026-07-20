@@ -368,7 +368,11 @@ device recovery.
   `mulciber-runtime::PacingDiagnostics` reports cadence estimates, interval distributions, and
   missed intervals, consumed by Forge Run and `mulciber-api-cube`, and the pinned wgpu/winit Forge
   Run peer carries the equivalent best-effort present-return estimator; extraction evidence lives
-  in the [Linux runbook](linux-validation.md), while pacing policy remains outstanding per the
+  in the [Linux runbook](linux-validation.md); the first policy half is extracted as
+  `mulciber-runtime::FramePacer` — display-interval frame deltas from the observed cadence with an
+  observable wall-clock fallback, measured on the Wayland/KWin tier to reduce simulation-delta
+  error against presented intervals from ±7 ms to a 35 µs p95 — while frame-start scheduling and
+  the pre-registered comparison measurements remain outstanding per the
   [Gate 4 pacing plan](gate4-pacing-plan.md)).
 - [ ] Establish process/OS suspension, peer Windows/Linux runtime evidence, fullscreen/display
   transitions, and device recovery.

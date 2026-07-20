@@ -431,7 +431,11 @@ impl Window {
         // SAFETY: The window is alive on AppKit's main thread; toggleFullScreen: accepts a nil
         // sender and animates the transition the collection behavior opted into.
         unsafe {
-            void_object(self.raw.as_ptr(), c"toggleFullScreen:", core::ptr::null_mut());
+            void_object(
+                self.raw.as_ptr(),
+                c"toggleFullScreen:",
+                core::ptr::null_mut(),
+            );
         }
         Ok(())
     }

@@ -1384,7 +1384,10 @@ impl Window {
         let (opcode, operation) = if fullscreen {
             (XDG_TOPLEVEL_SET_FULLSCREEN, "xdg_toplevel.set_fullscreen")
         } else {
-            (XDG_TOPLEVEL_UNSET_FULLSCREEN, "xdg_toplevel.unset_fullscreen")
+            (
+                XDG_TOPLEVEL_UNSET_FULLSCREEN,
+                "xdg_toplevel.unset_fullscreen",
+            )
         };
         // SAFETY: The toplevel proxy is live; set_fullscreen's nullable output argument lets the
         // compositor choose the window's current output, and unset_fullscreen takes no arguments.

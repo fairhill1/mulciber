@@ -201,8 +201,13 @@ fallback, and acquired-frame abandonment/recovery controls.
   fallback (see the [consumer evidence](consumer-evidence.md)). The `CursorMode` intent,
   `PointerDelta` events, and focus/drop restoration policy are extracted and consumed by
   `mulciber-input-cube`, with the AppKit implementation physically verified for relative
-  mouse-look on the Apple M2 tier; Win32, Wayland, and X11 report explicit `Unsupported` until
-  their tiers are exercised (see the [input contract](input-contract.md)).
+  mouse-look on the Apple M2 tier. The Wayland implementation (pointer constraints, relative
+  pointer, cursor-shape restore, `Unsupported` naming any missing global) and the X11
+  implementation (confined grab, invisible cursor, warp-to-center deltas) passed agent-driven
+  automated runs on the KDE tier on 2026-07-20 — including an XTEST-driven X11 run with the
+  pointer measurably pinned to the content center while captured — with physical human
+  verification pending; Win32 still reports explicit `Unsupported` (see the
+  [input contract](input-contract.md)).
 
 Platform spine: peer AppKit, Win32, Wayland, and X11 application/window/event paths live in
 `mulciber-platform` and drive both full native probes. The extracted path passed the automated
@@ -210,11 +215,16 @@ Windows matrix and physical live-resize/lifecycle validation on Windows 11 / RTX
 `044ae86`. Decisions, backing-scale policy, and remaining scale/display gaps:
 [experimental platform contract](api-platform-contract.md).
 
-Input: AppKit and Win32 translate ordered physical-key, modifier, pointer, button, scroll, and focus
-transitions through the fallible platform pump; `mulciber-input-cube` consumes them beside a
-preserved `wgpu-input-cube` peer. The showcase passed focused physical checks on Windows 11 / Intel
-UHD 620; Wayland/X11 implementations and the remaining transition evidence are pending, so no stable
-cross-platform input support is claimed. See the [experimental input contract](input-contract.md).
+Input: AppKit, Win32, Wayland, and X11 translate ordered physical-key, modifier, pointer, button,
+scroll, and focus transitions through the fallible platform pump; `mulciber-input-cube` consumes
+them beside a preserved `wgpu-input-cube` peer. The showcase passed focused physical checks on
+Windows 11 / Intel UHD 620. The Wayland and X11 slices share one evdev key table; Wayland owns its
+xkb keymap through libxkbcommon for modifier masks and synthesizes pump-paced key repeat, while
+X11 uses detectable auto-repeat, core modifier masks, and live queries on modifier transitions.
+The X11 path passed an automated XTEST-driven pipeline run (keys, drag, wheel, capture, both close
+paths) through XWayland on 2026-07-20; physical human evidence on both Linux paths is pending, so
+no stable cross-platform input support is claimed. See the
+[experimental input contract](input-contract.md).
 
 Two-pass postprocess: dedicated target/pipeline handles and one fixed two-pass queue operation
 render the scene into generation-bound resolved color and sample it in a fullscreen grade/vignette

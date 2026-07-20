@@ -90,6 +90,47 @@ This is automated, single-machine, single-display native Wayland evidence plus o
 drag-resize smoke. Extracted-slice X11, native Xorg, minimize/restore, display-change,
 multi-display, and broader hardware coverage remain unrecorded.
 
+### Linux input and pointer-capture evidence
+
+On 2026-07-20, an agent-driven session on the same native KDE Plasma / Nvidia machine exercised
+the first Wayland and X11 input implementations (uncommitted tree based on `e894fd4`), which add
+seat/keyboard/pointer translation, xkb-derived modifier masks, client-side key repeat, and the
+pointer-capture backends described in the [input contract](input-contract.md):
+
+- **X11 through XWayland, full input pipeline (automated, XTEST-driven)**:
+  `mulciber-input-cube` ran with `WAYLAND_DISPLAY` unset while `xdotool` synthesized W/A/S/D,
+  Space, and R key transitions, a primary-button drag, wheel scrolls in both directions, a `C`
+  keypress that engaged pointer capture (confirmed by the example's `cursor mode: Captured`
+  output), relative motion while captured, and an Escape release. With the window at a known
+  geometry, `xdotool getmouselocation` read exactly the content-area center after each relative
+  move while captured — direct evidence of the grab-plus-warp delta path — and moved freely again
+  after Escape. A KWin-scripted window close then exited zero.
+- **External-destroy resilience**: `xdotool windowclose` issues a raw `XDestroyWindow` from
+  another client. This initially aborted the process through Xlib's fatal `BadWindow` handler when
+  `Window::drop` re-destroyed the dead handle; `DestroyNotify` now marks the window destroyed so
+  drop skips it, and the same sequence exits zero through the ordinary close path.
+- **X11 UTF-8 titles**: the interactive run surfaced mojibake in the title bar (the em dash's
+  UTF-8 bytes read as Latin-1) because only the legacy `WM_NAME` was set through `XStoreName`;
+  the module now also sets `_NET_WM_NAME` as `UTF8_STRING`, and the title renders correctly.
+- **Native Wayland lifecycle with input listeners live**: `mulciber-input-cube` ran on the native
+  Wayland session with the seat bound at version five and keyboard/pointer listeners registered
+  (KWin delivers the xkb keymap and capabilities during construction roundtrips), rendered
+  normally, and exited zero through a KWin-scripted close.
+- **Native Wayland capture protocol (automated probe)**: a scratchpad probe drove
+  `set_cursor_mode` directly against live KWin: engage (constraint lock, relative pointer, cursor
+  hide), thirty pumped frames, an idempotent second request, release (cursor-shape restore),
+  re-engage, and drop-while-captured, all without a compositor protocol error and exiting zero.
+
+KWin advertised `zwp_pointer_constraints_v1`, `zwp_relative_pointer_manager_v1`, and
+`wp_cursor_shape_manager_v1`; compositors lacking any of the three report capture as unsupported
+and that path is untested against a real compositor. This is automated single-machine evidence:
+physical (human) keyboard/mouse interaction on Wayland and X11, key-repeat cadence observation,
+modifier and focus-transition coverage, native Xorg, and non-KDE compositors remain unrecorded.
+
+The Wayland keymap path adds `libxkbcommon` as a Linux link-time dependency beside
+`libwayland-client`/`libX11`/`libXext`, used solely to resolve modifier-mask bit positions from
+the compositor-supplied keymap; the single-backend `ldd` list recorded above predates it.
+
 ### Conformance probe evidence
 
 `mulciber-api-conformance` passed all thirteen asserted cases on the native Wayland session and

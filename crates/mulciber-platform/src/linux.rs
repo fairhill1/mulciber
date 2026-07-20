@@ -1,5 +1,6 @@
 //! Runtime-selected Linux window ownership with peer Wayland and X11 implementations.
 
+mod keymap;
 mod wayland;
 mod x11;
 
@@ -142,6 +143,17 @@ fn pump_native_events(
         return Ok(PumpStatus::Exit);
     }
 
+    // Translated input transitions are delivered in native queue order before this pump's final
+    // redraw opportunity, so state they change is visible to that render.
+    loop {
+        let event = match &window.native {
+            NativeWindow::Wayland(native) => native.next_input_event(),
+            NativeWindow::X11(native) => native.next_input_event(),
+        };
+        let Some(event) = event else { break };
+        handler(WindowEvent::Input(event));
+    }
+
     let previous = window.last_metrics.get();
     let current = window.current_window_metrics();
     if let Some(event) = metrics_transition(previous, current) {
@@ -204,27 +216,34 @@ impl Window {
 
     /// Requests how this window interacts with the system pointer.
     ///
+    /// On Wayland the platform locks the pointer through `zwp_pointer_constraints_v1`, reads
+    /// deltas from `zwp_relative_pointer_manager_v1`, and hides/restores the cursor through
+    /// `wp_cursor_shape_manager_v1`; the compositor itself suspends and re-establishes the lock
+    /// across focus changes. On X11 the platform grabs the pointer confined to the window with an
+    /// invisible cursor and reports warp-to-center deltas, releasing the grab on focus loss and
+    /// reapplying it on focus gain.
+    ///
     /// # Errors
     ///
-    /// Pointer capture is not yet implemented on the Wayland and X11 backends, so requesting
-    /// [`CursorMode::Captured`] reports [`PlatformErrorKind::Unsupported`]; requesting the
-    /// already-active [`CursorMode::Normal`] succeeds so portable release paths stay uniform.
-    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
+    /// Requesting [`CursorMode::Captured`] reports [`PlatformErrorKind::Unsupported`] when the
+    /// compositor lacks a required capture protocol, and a native failure when the display server
+    /// refuses the capture; requesting [`CursorMode::Normal`] succeeds so portable release paths
+    /// stay uniform.
     pub fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
-        match mode {
-            CursorMode::Normal => Ok(()),
-            CursorMode::Captured => Err(PlatformError::with_kind(
-                PlatformErrorKind::Unsupported,
-                "pointer capture is not yet implemented on the Wayland and X11 backends",
-            )),
+        match &self.native {
+            NativeWindow::Wayland(native) => native.set_cursor_mode(mode),
+            NativeWindow::X11(native) => native.set_cursor_mode(mode),
         }
     }
 
-    /// Returns the requested cursor mode, which stays [`CursorMode::Normal`] on this backend.
+    /// Returns the requested cursor mode, which survives focus changes until changed or the
+    /// window drops.
     #[must_use]
-    #[allow(clippy::unused_self)] // Keeps the portable window-method call shape shared with AppKit.
     pub fn cursor_mode(&self) -> CursorMode {
-        CursorMode::Normal
+        match &self.native {
+            NativeWindow::Wayland(native) => native.cursor_mode(),
+            NativeWindow::X11(native) => native.cursor_mode(),
+        }
     }
 
     fn current_window_metrics(&self) -> Option<WindowMetrics> {

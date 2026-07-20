@@ -1,8 +1,8 @@
 # Experimental input-transition contract
 
 This document records the first native input evidence added to `mulciber-platform`. The contract is
-an unstable AppKit/Win32 experiment, not a stable cross-platform support claim and not the
-input-snapshot API planned for `mulciber-runtime`.
+an unstable experiment across the AppKit, Win32, Wayland, and X11 backends, not a stable
+cross-platform support claim and not the input-snapshot API planned for `mulciber-runtime`.
 
 ## Scope
 
@@ -63,8 +63,16 @@ error rather than pretending.
 
 Backend status: the AppKit implementation pins the cursor by warping it to the content-view center,
 detaching cursor movement with `CGAssociateMouseAndMouseCursorPosition`, and hiding it with
-`NSCursor`, reporting `NSEvent` deltas during capture. Win32, Wayland, and X11 currently report
-`Unsupported`; their implementations follow when those tiers can be physically exercised.
+`NSCursor`, reporting `NSEvent` deltas during capture. The Wayland implementation locks the pointer
+through `zwp_pointer_constraints_v1` with the persistent lifetime (the compositor itself suspends
+and re-establishes the lock across focus changes), reads deltas from
+`zwp_relative_pointer_manager_v1`, hides the cursor with a null `wl_pointer.set_cursor`, and
+restores it through `wp_cursor_shape_manager_v1`; when the compositor lacks any of the three
+protocols, the capture request reports `Unsupported` naming the missing global. The X11
+implementation grabs the pointer confined to the window with a fully transparent pixmap cursor and
+reports warp-to-center deltas, filtering the warp's own echo motion; the grab is released on focus
+loss and best-effort reapplied on focus gain. Win32 currently reports `Unsupported`; its
+implementation follows when that tier can be physically exercised.
 
 `mulciber-input-cube` dogfoods the contract (C toggles capture into relative cube look, Escape
 releases), and `comparisons/wgpu-input-cube` implements the equivalent behavior the surveyed way:
@@ -72,8 +80,11 @@ the `CursorGrabMode::Locked` then `Confined` fallback, manual visibility and foc
 bookkeeping, and `DeviceEvent::MouseMotion` deltas. On 2026-07-19 an agent-driven AppKit smoke run
 exercised capture, Escape release, recapture, and close-while-captured with no native errors and a
 restored cursor, and the operator then physically verified relative mouse-look capture on the
-Apple M2 tier; both records live in the [macOS runbook](macos-validation.md). Win32, Wayland, and
-X11 capture behavior remains unimplemented and unexercised.
+Apple M2 tier; both records live in the [macOS runbook](macos-validation.md). On 2026-07-20 an
+agent-driven session recorded automated Wayland and X11 capture evidence — including an
+XTEST-driven X11 run whose pointer stayed pinned at the measured content center through relative
+motion and moved freely after Escape — in the [Linux runbook](linux-validation.md); physical
+(human) capture verification on both Linux paths and the Win32 implementation remain outstanding.
 
 ## AppKit implementation checkpoint
 
@@ -106,6 +117,41 @@ the public event stream. Wheel messages convert their screen-relative coordinate
 space and retain coarse wheel-step units. Focus changes are retained even when they occur between
 pump callbacks, and focus loss clears internal pointer capture.
 
+## Wayland implementation checkpoint
+
+The Wayland backend binds `wl_seat` capped at protocol version five and owns peer `wl_keyboard`
+and `wl_pointer` proxies that follow the seat's capability announcements. Key identity comes from
+the evdev codes the keyboard delivers, through a translation table shared with the X11 backend.
+The keymap the compositor sends is mapped privately and parsed with libxkbcommon — the platform's
+canonical xkb parser and the contract's "explicit keymap ownership" — solely to resolve which mask
+bits carry Shift, Lock, Control, Mod1, and Mod4; aggregate modifier state then follows the
+compositor's `modifiers` events rather than being inferred from key transitions.
+
+Wayland leaves key repeat to the client. The backend synthesizes at most one repeat transition per
+pump for the most recently held key, self-paced against the seat's `repeat_info` rate and delay;
+game pumps run at display rate, above every sane repeat rate, so no burst catch-up path exists.
+Pointer frames batch axis events: finger and continuous sources report precise logical deltas,
+wheel sources report coarse steps from discrete counts (falling back to the conventional
+fifteen-units-per-detent division), and the vertical axis is flipped so wheel-forward stays
+positive across backends. Keyboard enter/leave is the focus signal; leave clears repeat state and
+modifier state. Translated events queue during native dispatch and drain through the shared Linux
+pump in queue order before the final redraw opportunity.
+
+## X11 implementation checkpoint
+
+The X11 backend extends the existing event selection with key, button, motion, and focus-change
+masks, translating keycodes through the same evdev table after removing the fixed offset of
+eight. Modifier state uses the core Shift/Lock/Control masks plus the universal Mod1-as-Alt and
+Mod4-as-Super convention from event state masks, with a live `XQueryPointer` query on modifier-key
+transitions because an X event's state field predates its own transition. Detectable auto-repeat
+is requested through Xkb so held-key repeats arrive as consecutive presses and are flagged from an
+internal pressed-key set; servers without it degrade to visible release/press pairs rather than
+misreported repeats. Core scroll buttons four through seven become coarse scroll steps on press,
+extended buttons eight and nine map to the same `Other(3)`/`Other(4)` identities as Win32, and
+grab-mode focus excursions (window-manager keyboard grabs) are filtered from focus transitions.
+Titles are additionally published as UTF-8 `_NET_WM_NAME`, and a window destroyed by the server is
+never destroyed again during drop, which Xlib would treat as fatal.
+
 ## Evidence and next pressure tests
 
 Unit tests cover the AppKit physical-key table, modifier translation, extra pointer-button identity,
@@ -117,12 +163,21 @@ produced no default OS beep, and the process exited zero. That focused pass did 
 modifier transitions, outside-window release, focus loss/reacquisition, minimize/restore,
 maximize/restore, or multi-display behavior.
 
+Unit tests additionally cover the shared evdev translation table, xkb modifier-index mask
+computation, Wayland axis-frame precise/coarse folding, X11 core-mask translation, and both
+backends' button identities. The 2026-07-20 agent-driven Linux runs recorded in the
+[Linux runbook](linux-validation.md) exercised the full X11 pipeline through XTEST (keys, drag,
+wheel, capture, warp-pinned deltas, release, both close paths) and the Wayland capture protocol
+against live KWin; they did not exercise physical human input, key-repeat cadence, or modifier
+transitions on either path.
+
 Before stabilizing names or snapshot behavior:
 
 1. complete the remaining Win32 pressure tests listed above;
-2. implement Wayland keyboard/pointer support with explicit keymap ownership and compositor protocol
-   behavior rather than assuming AppKit key identities or pointer capture;
-3. implement and exercise the X11 peer, preserving its different focus and event-selection rules;
+2. physically exercise the Wayland and X11 slices (typed transitions, repeats against the
+   configured cadence, modifier and focus transitions, trackpad versus wheel units, capture feel)
+   on the KDE tier, then on a non-KDE compositor and native Xorg;
+3. implement Win32 pointer capture so the capture contract has all four backends;
 4. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
    application ergonomics with the equivalent `wgpu-input-cube`, direct native stacks, and SDL3;
    and

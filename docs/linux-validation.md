@@ -290,22 +290,24 @@ are made. Pacing policy and the remaining platform surveys stay open per the
 
 ### Extracted GPU timing and bounded-reclamation checkpoint
 
-On 2026-07-21, an uncommitted tree on the same native KDE Plasma Wayland / Nvidia tier extracted
+On 2026-07-21, the corrected 0.12.1 release tree on the same native KDE Plasma Wayland / Nvidia tier extracted
 the probe-proven GPU duration path into `mulciber`. `mulciber-api-cube --frames 30` selected Vulkan
-4x plus region timing, presented 30 frames, drained 29 completed GPU samples with a 0.024 ms maximum
+4x plus region timing, presented 30 frames, drained 29 completed GPU samples with a 0.023 ms maximum
 whole-frame duration, and exited zero with no validation warning/error output. Presentation feedback
-reported 26 timed frames, 13.339 ms estimated cadence, 13.330–13.351 ms recent intervals, and zero
+reported 26 timed frames, 13.338 ms estimated cadence, 13.293–13.384 ms recent intervals, and zero
 missed intervals. This is automated timing/dataflow evidence, not visual-correctness or broader
 hardware evidence; the extracted Metal path still awaits physical validation.
 
 The same tree moved lazy resource drops out of `session_mut`: resource creation no longer performs
 reclamation, and each surface-acquisition boundary reclaims at most eight handles after Vulkan frame
 completion. A focused unit test queued 41 mesh identities and observed 8, then 8, then remainder
-batches in FIFO order, including failed-batch front restoration. `mulciber-api-conformance` then
-passed all 71 cases on native Wayland with validation enabled, including drop-driven churn,
-replacement rendering, explicit destruction, and both fallible shutdowns. These checks establish
-lifetime correctness and the count bound; they do not reproduce the game's original 37–41-terrain-
-mesh hitch trace, so the before/after frame-time improvement remains to be measured in that workload.
+batches in FIFO order, including failed-batch front restoration. After restoring the published
+0.11.0 arbitrary material-instancing and alpha-cutout-shadow API lineage,
+`mulciber-api-conformance` passed all 78 cases on native Wayland with validation enabled, including
+instanced cutout-shadow presentation, drop-driven churn, replacement rendering, explicit
+destruction, and both fallible shutdowns. These checks establish lifetime correctness and the count
+bound; they do not reproduce the game's original 37–41-terrain-mesh hitch trace, so the before/after
+frame-time improvement remains to be measured in that workload.
 
 ### Pacing policy evidence
 

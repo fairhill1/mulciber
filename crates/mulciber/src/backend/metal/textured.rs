@@ -75,6 +75,10 @@ const DRAW_UNIFORM_STRIDE: usize = 256;
 /// uniform stride and every Metal buffer-offset requirement.
 const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
+/// Vertex buffer index carrying instance-rate attributes for material and shadow records,
+/// beside the per-vertex data at [`MATERIAL_VERTEX_BUFFER_INDEX`] and clear of the material
+/// binding slots 0 through 15.
+const MATERIAL_INSTANCE_BUFFER_INDEX: usize = 29;
 
 #[link(name = "System")]
 unsafe extern "C" {
@@ -129,6 +133,8 @@ struct MaterialPipelineResource {
     depth_texture_array_binding: Option<u32>,
     /// Pipeline-owned fixed-recipe comparison sampler as (binding, sampler).
     comparison_sampler: Option<(u32, Object)>,
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    instance_stride: usize,
 }
 
 struct ShadowMapResource {
@@ -151,6 +157,15 @@ struct ShadowPipelineResource {
     uniform: Option<(u32, u32)>,
     /// Declared read-only storage slot as (binding, size).
     storage: Option<(u32, u32)>,
+    /// Whether the pipeline runs a declared fragment stage; buffer bindings mirror to the
+    /// fragment stage when set.
+    fragment: bool,
+    /// Declared texture binding numbers in ascending order.
+    texture_bindings: Vec<u32>,
+    /// One pipeline-owned sampler state per declared slot as (binding, sampler).
+    samplers: Vec<(u32, Object)>,
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    instance_stride: usize,
 }
 
 struct TargetResource {
@@ -216,6 +231,10 @@ pub(crate) struct TexturedSession<'window> {
     transient_capacity: usize,
     instance_transforms: Object,
     instance_capacity: usize,
+    /// Frame-transient instance-rate attribute region for material and shadow records, in
+    /// bytes.
+    record_instances: Object,
+    record_instance_capacity: usize,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
@@ -314,6 +333,28 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
+        let record_instances = match unsafe {
+            required(
+                objc::object_two_usizes(
+                    surface.device,
+                    c"newBufferWithLength:options:",
+                    STORAGE_OFFSET_ALIGNMENT,
+                    0,
+                ),
+                "Metal record instance buffer",
+            )
+        } {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                unsafe {
+                    objc::void(instance_transforms, c"release");
+                    objc::void(transient_geometry, c"release");
+                    objc::void(storage, c"release");
+                    objc::void(uniform, c"release");
+                };
+                return Err(failure);
+            }
+        };
         Ok((
             Self {
                 surface,
@@ -326,6 +367,8 @@ impl<'window> TexturedSession<'window> {
                 transient_capacity: STORAGE_OFFSET_ALIGNMENT,
                 instance_transforms,
                 instance_capacity: 1,
+                record_instances,
+                record_instance_capacity: STORAGE_OFFSET_ALIGNMENT,
                 resolved_instance_batches: Vec::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
@@ -1057,6 +1100,9 @@ impl<'window> TexturedSession<'window> {
             for record in shadow.records() {
                 self.meshes.get(record.mesh.id())?;
                 self.shadow_pipelines.get(record.pipeline.id())?;
+                for texture in record.textures {
+                    self.textures.get(texture.id())?;
+                }
             }
         }
         for record in records.iter().chain(overlay) {
@@ -1193,6 +1239,7 @@ impl<'window> TexturedSession<'window> {
             }
         }
         self.stage_transient_geometry(records, overlay)?;
+        self.stage_record_instances(records, overlay, shadow)?;
         match shadow {
             Some(ShadowPrepass::Single(pass)) => {
                 let index = self.shadow_maps.index_of(pass.map.id())?;
@@ -1297,6 +1344,75 @@ impl<'window> TexturedSession<'window> {
         Ok(())
     }
 
+    /// Copies every record's instance supply into the frame's shared instance region: scene
+    /// records, then overlay records, then shadow records in record order at aligned offsets,
+    /// so encoding recomputes the same offsets.
+    fn stage_record_instances(
+        &mut self,
+        records: &[MaterialRecord<'_>],
+        overlay: &[MaterialRecord<'_>],
+        shadow: Option<&ShadowPrepass<'_>>,
+    ) -> Result<(), GraphicsError> {
+        let supplies = || {
+            records
+                .iter()
+                .chain(overlay)
+                .map(|record| record.instances)
+                .chain(
+                    shadow
+                        .into_iter()
+                        .flat_map(|shadow| shadow.records().map(|record| record.instances)),
+                )
+        };
+        let instance_bytes = supplies().try_fold(0_usize, |total, instances| {
+            instances
+                .len()
+                .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+                .and_then(|aligned| total.checked_add(aligned))
+                .ok_or_else(|| GraphicsError::new("Metal record instance offsets overflow"))
+        })?;
+        if instance_bytes > self.record_instance_capacity {
+            let capacity = instance_bytes
+                .checked_next_power_of_two()
+                .ok_or_else(|| GraphicsError::new("Metal record instance capacity overflow"))?;
+            let replacement = unsafe {
+                required(
+                    objc::object_two_usizes(
+                        self.surface.device,
+                        c"newBufferWithLength:options:",
+                        capacity,
+                        0,
+                    ),
+                    "Metal record instance buffer",
+                )?
+            };
+            unsafe { objc::void(self.record_instances, c"release") };
+            self.record_instances = replacement;
+            self.record_instance_capacity = capacity;
+        }
+        if supplies().all(<[u8]>::is_empty) {
+            return Ok(());
+        }
+        unsafe {
+            let contents = objc::pointer_value(self.record_instances, c"contents");
+            if contents.is_null() {
+                return Err(GraphicsError::new(
+                    "Metal record instance buffer has no CPU address",
+                ));
+            }
+            let mut offset = 0_usize;
+            for instances in supplies() {
+                ptr::copy_nonoverlapping(
+                    instances.as_ptr(),
+                    contents.cast::<u8>().add(offset),
+                    instances.len(),
+                );
+                offset += instances.len().next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+            }
+        }
+        Ok(())
+    }
+
     /// Encodes the depth-only shadow work — one encoder for a single map, or one encoder per
     /// cascade layer — on the frame's command buffer, ordered before the scene encoder that
     /// samples the result.
@@ -1306,9 +1422,11 @@ impl<'window> TexturedSession<'window> {
         shadow: &ShadowPrepass<'_>,
         uniform_base: usize,
         storage_base: usize,
+        instance_base: usize,
     ) -> Result<(), GraphicsError> {
         let mut uniform_index = uniform_base;
         let mut storage_offset = storage_base;
+        let mut instance_offset = instance_base;
         match shadow {
             ShadowPrepass::Single(pass) => {
                 let map = &self.shadow_maps[self.shadow_maps.index_of(pass.map.id())?];
@@ -1320,6 +1438,7 @@ impl<'window> TexturedSession<'window> {
                         pass.records,
                         &mut uniform_index,
                         &mut storage_offset,
+                        &mut instance_offset,
                     )
                 }
             }
@@ -1335,6 +1454,7 @@ impl<'window> TexturedSession<'window> {
                             records,
                             &mut uniform_index,
                             &mut storage_offset,
+                            &mut instance_offset,
                         )?;
                     }
                 }
@@ -1345,6 +1465,7 @@ impl<'window> TexturedSession<'window> {
 
     /// Encodes one depth-only pass into a shadow target — the whole map, or one array layer —
     /// clearing it to the far plane before its records.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     unsafe fn encode_shadow_layer(
         &self,
         command: Object,
@@ -1353,6 +1474,7 @@ impl<'window> TexturedSession<'window> {
         records: &[ShadowRecord<'_>],
         uniform_index: &mut usize,
         storage_offset: &mut usize,
+        instance_offset: &mut usize,
     ) -> Result<(), GraphicsError> {
         unsafe {
             let pass = required(
@@ -1392,6 +1514,15 @@ impl<'window> TexturedSession<'window> {
                         *uniform_index * DRAW_UNIFORM_STRIDE,
                         slot,
                     );
+                    if pipeline.fragment {
+                        objc::void_object_two_usizes(
+                            encoder,
+                            c"setFragmentBuffer:offset:atIndex:",
+                            self.uniform,
+                            *uniform_index * DRAW_UNIFORM_STRIDE,
+                            slot,
+                        );
+                    }
                 }
                 if let Some((binding, _)) = pipeline.storage {
                     let slot = usize::try_from(binding).expect("validated slot fits usize");
@@ -1400,6 +1531,34 @@ impl<'window> TexturedSession<'window> {
                         c"setVertexBuffer:offset:atIndex:",
                         self.storage,
                         *storage_offset,
+                        slot,
+                    );
+                    if pipeline.fragment {
+                        objc::void_object_two_usizes(
+                            encoder,
+                            c"setFragmentBuffer:offset:atIndex:",
+                            self.storage,
+                            *storage_offset,
+                            slot,
+                        );
+                    }
+                }
+                for (texture, &binding) in record.textures.iter().zip(&pipeline.texture_bindings) {
+                    let resource = &self.textures[self.textures.index_of(texture.id())?];
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(
+                        encoder,
+                        c"setFragmentTexture:atIndex:",
+                        resource.texture,
+                        slot,
+                    );
+                }
+                for &(binding, sampler) in &pipeline.samplers {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(
+                        encoder,
+                        c"setFragmentSamplerState:atIndex:",
+                        sampler,
                         slot,
                     );
                 }
@@ -1415,16 +1574,42 @@ impl<'window> TexturedSession<'window> {
                     0,
                     MATERIAL_VERTEX_BUFFER_INDEX,
                 );
-                objc::void_two_usizes_object_usize_object_usize(
-                    encoder,
-                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                    PRIMITIVE_TYPE_TRIANGLE,
-                    mesh.index_type,
-                    mesh.indices,
-                    0,
-                    mesh.indirect,
-                    0,
-                );
+                if let Some(instance_count) =
+                    record.instances.len().checked_div(pipeline.instance_stride)
+                {
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.record_instances,
+                        *instance_offset,
+                        MATERIAL_INSTANCE_BUFFER_INDEX,
+                    );
+                    objc::void_three_usizes_object_two_usizes(
+                        encoder,
+                        c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
+                        PRIMITIVE_TYPE_TRIANGLE,
+                        usize::try_from(mesh.index_count).expect("u32 index count fits usize"),
+                        mesh.index_type,
+                        mesh.indices,
+                        0,
+                        instance_count,
+                    );
+                } else {
+                    objc::void_two_usizes_object_usize_object_usize(
+                        encoder,
+                        c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                        PRIMITIVE_TYPE_TRIANGLE,
+                        mesh.index_type,
+                        mesh.indices,
+                        0,
+                        mesh.indirect,
+                        0,
+                    );
+                }
+                *instance_offset += record
+                    .instances
+                    .len()
+                    .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
             }
             objc::void(encoder, c"endEncoding");
         }
@@ -1727,6 +1912,7 @@ impl<'window> TexturedSession<'window> {
                     shadow,
                     records.len(),
                     material_storage_len(records),
+                    material_instances_len(records),
                 )?;
             }
             let encoder = required(
@@ -1847,6 +2033,7 @@ impl<'window> TexturedSession<'window> {
                     shadow,
                     records.len() + overlay.len(),
                     material_storage_len(records) + material_storage_len(overlay),
+                    material_instances_len(records) + material_instances_len(overlay),
                 )?;
             }
             let scene_encoder = required(
@@ -1892,6 +2079,7 @@ impl<'window> TexturedSession<'window> {
                     records.len(),
                     material_storage_len(records),
                     transient_geometry_len(records),
+                    material_instances_len(records),
                     true,
                 )?;
             }
@@ -1957,7 +2145,7 @@ impl<'window> TexturedSession<'window> {
                     }
                 }
                 PreparedScene::Materials(records) => {
-                    self.encode_material_records(encoder, records, 0, 0, 0, false)?;
+                    self.encode_material_records(encoder, records, 0, 0, 0, 0, false)?;
                 }
                 PreparedScene::Instances => {
                     for batch in &self.resolved_instance_batches {
@@ -2024,11 +2212,13 @@ impl<'window> TexturedSession<'window> {
         uniform_base: usize,
         storage_base: usize,
         transient_base: usize,
+        instance_base: usize,
         overlay: bool,
     ) -> Result<(), GraphicsError> {
         unsafe {
             let mut storage_offset = storage_base;
             let mut transient_offset = transient_base;
+            let mut instance_offset = instance_base;
             for (index, record) in records.iter().enumerate() {
                 let pipeline = &self.material_pipelines
                     [self.material_pipelines.index_of(record.pipeline.id())?];
@@ -2200,19 +2390,51 @@ impl<'window> TexturedSession<'window> {
                         slot,
                     );
                 }
+                let instance_count = if let Some(count) =
+                    record.instances.len().checked_div(pipeline.instance_stride)
+                {
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.record_instances,
+                        instance_offset,
+                        MATERIAL_INSTANCE_BUFFER_INDEX,
+                    );
+                    count
+                } else {
+                    1
+                };
+                instance_offset += record
+                    .instances
+                    .len()
+                    .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
                 match geometry {
                     ResolvedGeometry::Mesh(mesh) => {
                         let mesh = &self.meshes[mesh];
-                        objc::void_two_usizes_object_usize_object_usize(
-                            encoder,
-                            c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                            PRIMITIVE_TYPE_TRIANGLE,
-                            mesh.index_type,
-                            mesh.indices,
-                            0,
-                            mesh.indirect,
-                            0,
-                        );
+                        if pipeline.instance_stride > 0 {
+                            objc::void_three_usizes_object_two_usizes(
+                                encoder,
+                                c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
+                                PRIMITIVE_TYPE_TRIANGLE,
+                                usize::try_from(mesh.index_count)
+                                    .expect("u32 index count fits usize"),
+                                mesh.index_type,
+                                mesh.indices,
+                                0,
+                                instance_count,
+                            );
+                        } else {
+                            objc::void_two_usizes_object_usize_object_usize(
+                                encoder,
+                                c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                                PRIMITIVE_TYPE_TRIANGLE,
+                                mesh.index_type,
+                                mesh.indices,
+                                0,
+                                mesh.indirect,
+                                0,
+                            );
+                        }
                     }
                     ResolvedGeometry::Transient {
                         index_offset,
@@ -2228,7 +2450,7 @@ impl<'window> TexturedSession<'window> {
                             index_type,
                             self.transient_geometry,
                             index_offset,
-                            1,
+                            instance_count,
                         );
                     }
                 }
@@ -2287,6 +2509,10 @@ impl<'window> TexturedSession<'window> {
             if !self.instance_transforms.is_null() {
                 objc::void(self.instance_transforms, c"release");
                 self.instance_transforms = ptr::null_mut();
+            }
+            if !self.record_instances.is_null() {
+                objc::void(self.record_instances, c"release");
+                self.record_instances = ptr::null_mut();
             }
         }
 
@@ -2402,8 +2628,15 @@ fn release_shadow_pipeline(pipeline: ShadowPipelineResource) {
         depth_state,
         uniform: _,
         storage: _,
+        fragment: _,
+        texture_bindings: _,
+        samplers,
+        instance_stride: _,
     } = pipeline;
     unsafe {
+        for (_, sampler) in samplers {
+            objc::void(sampler, c"release");
+        }
         objc::void(depth_state, c"release");
         objc::void(pipeline, c"release");
     }
@@ -2745,6 +2978,51 @@ fn create_material_pipeline(
             c"setStride:",
             usize::try_from(config.stride).expect("validated stride fits usize"),
         );
+        if config.instance_stride > 0 {
+            for input in config.instance_attributes {
+                let attribute = required(
+                    objc::object_usize(
+                        attributes,
+                        c"objectAtIndexedSubscript:",
+                        usize::try_from(input.location).expect("validated location fits usize"),
+                    ),
+                    "Metal material instance attribute",
+                )?;
+                objc::void_usize(
+                    attribute,
+                    c"setFormat:",
+                    material_vertex_format(input.format),
+                );
+                objc::void_usize(
+                    attribute,
+                    c"setOffset:",
+                    usize::try_from(input.offset).expect("validated offset fits usize"),
+                );
+                objc::void_usize(
+                    attribute,
+                    c"setBufferIndex:",
+                    MATERIAL_INSTANCE_BUFFER_INDEX,
+                );
+            }
+            let instance_layout = required(
+                objc::object_usize(
+                    layouts,
+                    c"objectAtIndexedSubscript:",
+                    MATERIAL_INSTANCE_BUFFER_INDEX,
+                ),
+                "material instance layout",
+            )?;
+            objc::void_usize(
+                instance_layout,
+                c"setStride:",
+                usize::try_from(config.instance_stride).expect("validated stride fits usize"),
+            );
+            objc::void_usize(
+                instance_layout,
+                c"setStepFunction:",
+                VERTEX_STEP_FUNCTION_PER_INSTANCE,
+            );
+        }
         objc::void_object(descriptor, c"setVertexDescriptor:", vertex_descriptor);
 
         let mut pipeline_error = ptr::null_mut();
@@ -2893,6 +3171,8 @@ fn create_material_pipeline(
             depth_texture_binding: config.depth_texture_binding,
             depth_texture_array_binding: config.depth_texture_array_binding,
             comparison_sampler,
+            instance_stride: usize::try_from(config.instance_stride)
+                .expect("validated stride fits usize"),
         })
     }
 }
@@ -2905,6 +3185,21 @@ fn material_storage_len(records: &[MaterialRecord<'_>]) -> usize {
         .map(|record| {
             record
                 .storage
+                .len()
+                .next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+        })
+        .sum()
+}
+
+/// Aligned bytes the records' instance supplies occupy in the frame's shared instance region;
+/// overlay and shadow supplies pack after them. Sizes were bounds-checked when the scene was
+/// prepared.
+fn material_instances_len(records: &[MaterialRecord<'_>]) -> usize {
+    records
+        .iter()
+        .map(|record| {
+            record
+                .instances
                 .len()
                 .next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
         })
@@ -2974,11 +3269,29 @@ fn create_shadow_pipeline(
             ),
             "Metal shadow vertex function",
         )?;
+        let fragment = if let Some(entry) = config.fragment_entry {
+            let fragment_name = CString::new(entry).map_err(|_| {
+                GraphicsError::new("shadow fragment entry point name contains a NUL byte")
+            })?;
+            required(
+                objc::object_object(
+                    library,
+                    c"newFunctionWithName:",
+                    objc::ns_string(&fragment_name),
+                ),
+                "Metal shadow fragment function",
+            )?
+        } else {
+            ptr::null_mut()
+        };
         let descriptor = required(
             objc::object(objc::class(c"MTLRenderPipelineDescriptor"), c"new"),
             "Metal shadow pipeline descriptor",
         )?;
         objc::void_object(descriptor, c"setVertexFunction:", vertex);
+        if !fragment.is_null() {
+            objc::void_object(descriptor, c"setFragmentFunction:", fragment);
+        }
         objc::void_usize(descriptor, c"setSampleCount:", 1);
         objc::void_usize(
             descriptor,
@@ -3032,6 +3345,51 @@ fn create_shadow_pipeline(
             c"setStride:",
             usize::try_from(config.stride).expect("validated stride fits usize"),
         );
+        if config.instance_stride > 0 {
+            for input in config.instance_attributes {
+                let attribute = required(
+                    objc::object_usize(
+                        attributes,
+                        c"objectAtIndexedSubscript:",
+                        usize::try_from(input.location).expect("validated location fits usize"),
+                    ),
+                    "Metal shadow instance attribute",
+                )?;
+                objc::void_usize(
+                    attribute,
+                    c"setFormat:",
+                    material_vertex_format(input.format),
+                );
+                objc::void_usize(
+                    attribute,
+                    c"setOffset:",
+                    usize::try_from(input.offset).expect("validated offset fits usize"),
+                );
+                objc::void_usize(
+                    attribute,
+                    c"setBufferIndex:",
+                    MATERIAL_INSTANCE_BUFFER_INDEX,
+                );
+            }
+            let instance_layout = required(
+                objc::object_usize(
+                    layouts,
+                    c"objectAtIndexedSubscript:",
+                    MATERIAL_INSTANCE_BUFFER_INDEX,
+                ),
+                "shadow instance layout",
+            )?;
+            objc::void_usize(
+                instance_layout,
+                c"setStride:",
+                usize::try_from(config.instance_stride).expect("validated stride fits usize"),
+            );
+            objc::void_usize(
+                instance_layout,
+                c"setStepFunction:",
+                VERTEX_STEP_FUNCTION_PER_INSTANCE,
+            );
+        }
         objc::void_object(descriptor, c"setVertexDescriptor:", vertex_descriptor);
 
         let mut pipeline_error = ptr::null_mut();
@@ -3065,14 +3423,55 @@ fn create_shadow_pipeline(
             ),
             "Metal shadow depth state",
         )?;
-        for object in [depth_descriptor, descriptor, vertex, library] {
-            objc::void(object, c"release");
+        let mut samplers = Vec::with_capacity(config.sampler_bindings.len());
+        for slot in config.sampler_bindings {
+            let filter = match slot.filter {
+                SamplerFilter::Nearest => SAMPLER_FILTER_NEAREST,
+                SamplerFilter::Linear => SAMPLER_FILTER_LINEAR,
+            };
+            let mip_filter = match slot.filter {
+                SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
+                SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
+            };
+            let address = match slot.address {
+                SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
+                SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
+            };
+            let sampler_descriptor = required(
+                objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
+                "Metal shadow sampler descriptor",
+            )?;
+            objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
+            objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
+            objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
+            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
+            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
+            let sampler = required(
+                objc::object_object(
+                    device,
+                    c"newSamplerStateWithDescriptor:",
+                    sampler_descriptor,
+                ),
+                "Metal shadow sampler",
+            )?;
+            objc::void(sampler_descriptor, c"release");
+            samplers.push((slot.binding, sampler));
+        }
+        for object in [depth_descriptor, descriptor, fragment, vertex, library] {
+            if !object.is_null() {
+                objc::void(object, c"release");
+            }
         }
         Ok(ShadowPipelineResource {
             pipeline,
             depth_state,
             uniform: config.uniform,
             storage: config.storage,
+            fragment: config.fragment_entry.is_some(),
+            texture_bindings: config.texture_bindings.to_vec(),
+            samplers,
+            instance_stride: usize::try_from(config.instance_stride)
+                .expect("validated stride fits usize"),
         })
     }
 }

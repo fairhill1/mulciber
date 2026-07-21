@@ -14,6 +14,8 @@ fn main() {
         "shadow.shaderbin",
         "skinned.shaderbin",
         "skinned-shadow.shaderbin",
+        "sprout.shaderbin",
+        "sprout-shadow.shaderbin",
     ];
     let flavor = if target_os == OsStr::new("macos") {
         if std::env::var_os("MULCIBER_METAL_TYPECHECK_ONLY").as_deref() == Some(OsStr::new("1")) {
@@ -41,6 +43,8 @@ fn main() {
         format!("../../examples/material-scene/artifacts/shadow.{flavor}.shaderbin"),
         format!("../../examples/material-scene/artifacts/skinned.{flavor}.shaderbin"),
         format!("../../examples/material-scene/artifacts/skinned-shadow.{flavor}.shaderbin"),
+        format!("../../examples/material-scene/artifacts/sprout.{flavor}.shaderbin"),
+        format!("../../examples/material-scene/artifacts/sprout-shadow.{flavor}.shaderbin"),
     ];
     let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
     for (artifact, name) in artifacts.iter().zip(names) {

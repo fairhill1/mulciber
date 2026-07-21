@@ -102,6 +102,19 @@ depth bias, and per-fragment cascade selection all stay in application code and 
 crate sees only the layered map, the per-cascade record lists, and bytes. `ShadowMapArray`
 joins the explicit-destroy and drop-reclamation paths.
 
+A material or shadow pipeline may declare a second, instance-rate `VertexLayout`
+(`instance_layout`) whose located attributes cover the entry's remaining vertex inputs, and the
+matching record supplies a tightly packed instance buffer (`MaterialRecord.instances` /
+`ShadowRecord.instances`) whose byte length must be a whole multiple of the layout stride,
+capped at `INSTANCE_SUPPLY_SIZE_LIMIT`; the pipeline then issues one instanced draw per record,
+so scattered geometry (per-instance transforms carried as four `vec4` columns, say) renders
+through a single record that composes with the shadow pre-pass and overlay passes. Metal binds
+the instance region on a reserved buffer index and steps it per instance through the vertex
+descriptor; Vulkan adds a second `RATE_INSTANCE` vertex binding. A shadow pipeline may also
+declare an optional fragment entry (`fragment_entry`) plus texture and sampler slots, so a
+foliage caster alpha-tests against its base-color texture and `discard`s below coverage instead
+of casting a solid silhouette; depth-texture and comparison-sampler slots stay material-only.
+
 The transient-geometry extension lets a material record supply its geometry as frame-rebuilt
 bytes instead of an uploaded mesh. `MaterialRecord.geometry` is a `GeometrySource`: `Mesh`
 wraps the uploaded handle exactly as before, while `Transient` carries a `TransientGeometry` —
@@ -166,10 +179,10 @@ This checkpoint does not add general pass composition — the shadow pre-pass is
 depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
 color render-to-texture beyond the postprocess recipe, load/store policy, compute, read-write
 or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
-equations beyond the fixed mode set, instance-rate custom layouts, bind-group abstractions,
-new texture formats, packed vertex formats, native mip generation, per-cascade map
-resolutions, engine-side cascade selection or blending, textured cutout shadow casters, or
-persistent updatable mesh handles beyond the frame-transient geometry supply.
+equations beyond the fixed mode set, bind-group abstractions, new texture formats, packed
+vertex formats, native mip generation, per-cascade map resolutions, engine-side cascade
+selection or blending, or persistent updatable mesh handles beyond the frame-transient
+geometry supply.
 
 ## Evidence
 

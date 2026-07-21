@@ -115,6 +115,8 @@ struct MaterialPipelineResource {
     /// Descriptor sets cached per sampled-identity tuple (textures, then the shadow map or
     /// array).
     bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    instance_stride: u32,
 }
 
 struct ShadowMapResource {
@@ -148,8 +150,15 @@ struct ShadowPipelineResource {
     uniform: Option<(u32, u32)>,
     /// Declared read-only storage slot as (binding, size).
     storage: Option<(u32, u32)>,
-    /// Buffer-only descriptor set cached until a pool reset.
-    descriptor: Option<vk::VkDescriptorSet>,
+    /// Declared texture binding numbers in ascending order.
+    texture_bindings: Vec<u32>,
+    /// One pipeline-owned sampler per declared slot as (binding, sampler).
+    samplers: Vec<(u32, vk::VkSampler)>,
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    instance_stride: u32,
+    /// Descriptor sets cached per sampled-texture tuple until a pool reset; the buffer-only
+    /// form caches under the empty tuple.
+    bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
 }
 
 struct TargetResource {
@@ -207,6 +216,9 @@ struct ResolvedMaterialDraw {
     dynamic_offsets: [u32; 2],
     /// One dynamic offset per declared uniform and storage slot.
     dynamic_offset_count: u32,
+    /// Instance-region byte offset and instance count for an instance-layout pipeline; absent
+    /// for the single-instance form.
+    instances: Option<(u64, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +231,9 @@ struct ResolvedShadowDraw {
     dynamic_offsets: [u32; 2],
     /// One dynamic offset per declared uniform and storage slot.
     dynamic_offset_count: u32,
+    /// Instance-region byte offset and instance count for an instance-layout pipeline; absent
+    /// for the single-instance form.
+    instances: Option<(u64, u32)>,
 }
 
 /// Destination of the prepared frame's depth-only pre-pass.
@@ -260,6 +275,10 @@ pub(crate) struct TexturedSession<'window> {
     resolved_draws: Vec<ResolvedDraw>,
     instance_transforms: Buffer,
     instance_capacity: usize,
+    /// Frame-transient instance-rate attribute region for material and shadow records, in
+    /// bytes.
+    record_instances: Buffer,
+    record_instance_capacity: usize,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
     resolved_material_draws: Vec<ResolvedMaterialDraw>,
     /// Overlay records resolved by the last material preparation, recorded into the
@@ -299,6 +318,7 @@ impl TexturedFrameToken {
 }
 
 impl<'window> TexturedSession<'window> {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn new(
         target: SurfaceTarget<'window>,
         metrics: WindowMetrics,
@@ -357,6 +377,21 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
+        let record_instances = match create_buffer(
+            &surface,
+            STORAGE_OFFSET_ALIGNMENT,
+            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
+            &[],
+        ) {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                destroy_buffer(&surface, instance_transforms);
+                destroy_buffer(&surface, transient_geometry);
+                destroy_buffer(&surface, storage);
+                destroy_buffer(&surface, uniform);
+                return Err(failure);
+            }
+        };
         Ok((
             Self {
                 surface,
@@ -376,6 +411,8 @@ impl<'window> TexturedSession<'window> {
                 resolved_draws: Vec::new(),
                 instance_transforms,
                 instance_capacity: 1,
+                record_instances,
+                record_instance_capacity: STORAGE_OFFSET_ALIGNMENT,
                 resolved_instance_batches: Vec::new(),
                 resolved_material_draws: Vec::new(),
                 resolved_overlay_draws: Vec::new(),
@@ -1145,6 +1182,16 @@ impl<'window> TexturedSession<'window> {
             &storage_offsets,
         )?;
         self.stage_transient_geometry(records, overlay)?;
+        let (instance_offsets, instance_bytes) = record_instance_offsets(records, overlay, shadow)?;
+        self.ensure_record_instance_capacity(instance_bytes)?;
+        write_record_instances(
+            &self.surface,
+            &self.record_instances,
+            records,
+            overlay,
+            shadow,
+            &instance_offsets,
+        )?;
         self.resolved_shadow_draws.clear();
         self.resolved_shadow_cascades.clear();
         self.pending_shadow_target = None;
@@ -1160,10 +1207,22 @@ impl<'window> TexturedSession<'window> {
                     PendingShadowTarget::Array(array_index)
                 }
             };
+            let mut shadow_sampled_ids = Vec::new();
+            let mut shadow_texture_indices = Vec::new();
             for (index, record) in shadow.records().enumerate() {
                 let mesh = self.meshes.index_of(record.mesh.id())?;
                 let pipeline = self.shadow_pipelines.index_of(record.pipeline.id())?;
-                let descriptor = self.shadow_descriptor_set(pipeline)?;
+                shadow_sampled_ids.clear();
+                shadow_texture_indices.clear();
+                for texture in record.textures {
+                    shadow_sampled_ids.push(texture.id());
+                    shadow_texture_indices.push(self.textures.index_of(texture.id())?);
+                }
+                let descriptor = self.shadow_descriptor_set(
+                    pipeline,
+                    &shadow_sampled_ids,
+                    &shadow_texture_indices,
+                )?;
                 let slot = records.len() + overlay.len() + index;
                 let uniform_offset =
                     u32::try_from(slot * DRAW_UNIFORM_STRIDE).expect("shadow offset was validated");
@@ -1173,12 +1232,18 @@ impl<'window> TexturedSession<'window> {
                     uniform_offset,
                     storage_offsets[slot],
                 );
+                let instances = resolved_instances(
+                    self.shadow_pipelines[pipeline].instance_stride,
+                    record.instances,
+                    instance_offsets[slot],
+                )?;
                 self.resolved_shadow_draws.push(ResolvedShadowDraw {
                     mesh,
                     pipeline,
                     descriptor,
                     dynamic_offsets,
                     dynamic_offset_count,
+                    instances,
                 });
             }
             self.pending_shadow_target = Some(target);
@@ -1263,12 +1328,18 @@ impl<'window> TexturedSession<'window> {
                 uniform_offset,
                 storage_offsets[index],
             );
+            let instances = resolved_instances(
+                self.material_pipelines[pipeline].instance_stride,
+                record.instances,
+                instance_offsets[index],
+            )?;
             let resolved = ResolvedMaterialDraw {
                 geometry,
                 pipeline,
                 descriptor,
                 dynamic_offsets,
                 dynamic_offset_count,
+                instances,
             };
             if index < records.len() {
                 self.resolved_material_draws.push(resolved);
@@ -1340,6 +1411,26 @@ impl<'window> TexturedSession<'window> {
         write_transient_geometry(&self.surface, &self.transient_geometry, records, overlay)
     }
 
+    fn ensure_record_instance_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
+        if required <= self.record_instance_capacity {
+            return Ok(());
+        }
+        let capacity = required
+            .checked_next_power_of_two()
+            .ok_or_else(|| error("Vulkan record instance capacity overflow"))?;
+        self.surface.wait_for_frame()?;
+        let replacement = create_buffer(
+            &self.surface,
+            capacity,
+            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
+            &[],
+        )?;
+        let previous = mem::replace(&mut self.record_instances, replacement);
+        destroy_buffer(&self.surface, previous);
+        self.record_instance_capacity = capacity;
+        Ok(())
+    }
+
     fn ensure_transient_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
         if required <= self.transient_capacity {
             return Ok(());
@@ -1360,13 +1451,21 @@ impl<'window> TexturedSession<'window> {
         Ok(())
     }
 
-    /// Allocates or reuses the uniform-only descriptor set for one shadow pipeline.
+    /// Allocates or reuses the descriptor set for one shadow pipeline and one sampled-texture
+    /// tuple; buffer-only pipelines cache under the empty tuple.
+    #[allow(clippy::too_many_lines)]
     fn shadow_descriptor_set(
         &mut self,
         pipeline_index: usize,
+        sampled_ids: &[ResourceId],
+        texture_indices: &[usize],
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
-        if let Some(set) = self.shadow_pipelines[pipeline_index].descriptor {
-            return Ok(set);
+        if let Some((_, set)) = self.shadow_pipelines[pipeline_index]
+            .bindings
+            .iter()
+            .find(|(ids, _)| ids.as_slice() == sampled_ids)
+        {
+            return Ok(*set);
         }
         let pipeline = &self.shadow_pipelines[pipeline_index];
         let (set_layout, descriptor_pool, pipeline_uniform, pipeline_storage) = (
@@ -1375,6 +1474,8 @@ impl<'window> TexturedSession<'window> {
             pipeline.uniform,
             pipeline.storage,
         );
+        let texture_bindings = pipeline.texture_bindings.clone();
+        let samplers = pipeline.samplers.clone();
         let allocate = vk::VkDescriptorSetAllocateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             descriptorPool: descriptor_pool,
@@ -1417,7 +1518,22 @@ impl<'window> TexturedSession<'window> {
                 },
             )
         });
-        let mut writes = Vec::with_capacity(2);
+        let images: Vec<vk::VkDescriptorImageInfo> = texture_indices
+            .iter()
+            .map(|&index| vk::VkDescriptorImageInfo {
+                sampler: ptr::null_mut(),
+                imageView: self.textures[index].image.view,
+                imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            })
+            .collect();
+        let sampler_infos: Vec<vk::VkDescriptorImageInfo> = samplers
+            .iter()
+            .map(|&(_, sampler)| vk::VkDescriptorImageInfo {
+                sampler,
+                ..Default::default()
+            })
+            .collect();
+        let mut writes = Vec::with_capacity(2 + images.len() + sampler_infos.len());
         if let Some((binding, ref buffer)) = uniform_buffer {
             writes.push(descriptor_write(
                 set,
@@ -1432,6 +1548,22 @@ impl<'window> TexturedSession<'window> {
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
                 ptr::from_ref(buffer).cast(),
+            ));
+        }
+        for (image, &binding) in images.iter().zip(texture_bindings.iter()) {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                ptr::from_ref(image).cast(),
+            ));
+        }
+        for (info, &(binding, _)) in sampler_infos.iter().zip(samplers.iter()) {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+                ptr::from_ref(info).cast(),
             ));
         }
         if !writes.is_empty() {
@@ -1449,7 +1581,9 @@ impl<'window> TexturedSession<'window> {
                 );
             };
         }
-        self.shadow_pipelines[pipeline_index].descriptor = Some(set);
+        self.shadow_pipelines[pipeline_index]
+            .bindings
+            .push((sampled_ids.to_vec(), set));
         Ok(set)
     }
 
@@ -1801,7 +1935,7 @@ impl<'window> TexturedSession<'window> {
                 );
             }
             pipeline.descriptor_pool = replacement;
-            pipeline.descriptor = None;
+            pipeline.bindings.clear();
         }
         Ok(())
     }
@@ -2571,7 +2705,7 @@ impl<'window> TexturedSession<'window> {
 
     /// Encodes one depth-only pass into a shadow target view — the whole map, or one array
     /// layer — clearing it to the far plane before its records.
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
     fn record_shadow_layer(&self, view: vk::VkImageView, size: u32, draws: &[ResolvedShadowDraw]) {
         let depth_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -2647,29 +2781,52 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offset_count,
                     draw.dynamic_offsets.as_ptr(),
                 );
-                functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                    self.surface.command_buffer,
-                    0,
-                    1,
-                    &raw const mesh.vertices.handle,
-                    &raw const offset,
-                );
+                if let Some((instance_offset, _)) = draw.instances {
+                    let buffers = [mesh.vertices.handle, self.record_instances.handle];
+                    let offsets = [0_u64, instance_offset];
+                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                        self.surface.command_buffer,
+                        0,
+                        2,
+                        buffers.as_ptr(),
+                        offsets.as_ptr(),
+                    );
+                } else {
+                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                        self.surface.command_buffer,
+                        0,
+                        1,
+                        &raw const mesh.vertices.handle,
+                        &raw const offset,
+                    );
+                }
                 functions.cmd_bind_index_buffer.expect("loaded function")(
                     self.surface.command_buffer,
                     mesh.indices.handle,
                     0,
                     mesh.index_type,
                 );
-                functions
-                    .cmd_draw_indexed_indirect
-                    .expect("loaded function")(
-                    self.surface.command_buffer,
-                    mesh.indirect.handle,
-                    0,
-                    1,
-                    u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                        .expect("indirect command size fits u32"),
-                );
+                if let Some((_, instance_count)) = draw.instances {
+                    functions.cmd_draw_indexed.expect("loaded function")(
+                        self.surface.command_buffer,
+                        mesh.index_count,
+                        instance_count,
+                        0,
+                        0,
+                        0,
+                    );
+                } else {
+                    functions
+                        .cmd_draw_indexed_indirect
+                        .expect("loaded function")(
+                        self.surface.command_buffer,
+                        mesh.indirect.handle,
+                        0,
+                        1,
+                        u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                            .expect("indirect command size fits u32"),
+                    );
+                }
             }
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
@@ -3239,10 +3396,10 @@ impl<'window> TexturedSession<'window> {
     /// Records one resolved material draw list on the active rendering. Overlay recording
     /// binds each pipeline's single-sample no-depth variant, whose absence was rejected at
     /// preparation.
+    #[allow(clippy::too_many_lines)]
     unsafe fn record_material_draws(&self, draws: &[ResolvedMaterialDraw], overlay: bool) {
         unsafe {
             let functions = &self.surface.device().functions;
-            let offset = 0_u64;
             for draw in draws {
                 let pipeline = &self.material_pipelines[draw.pipeline];
                 functions.cmd_bind_pipeline.expect("loaded function")(
@@ -3264,46 +3421,70 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offset_count,
                     draw.dynamic_offsets.as_ptr(),
                 );
-                match draw.geometry {
+                let (vertex_buffer, vertex_offset, geometry) = match draw.geometry {
+                    ResolvedGeometry::Mesh(mesh) => {
+                        (self.meshes[mesh].vertices.handle, 0_u64, draw.geometry)
+                    }
+                    ResolvedGeometry::Transient { vertex_offset, .. } => {
+                        (self.transient_geometry.handle, vertex_offset, draw.geometry)
+                    }
+                };
+                if let Some((instance_offset, _)) = draw.instances {
+                    let buffers = [vertex_buffer, self.record_instances.handle];
+                    let offsets = [vertex_offset, instance_offset];
+                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                        self.surface.command_buffer,
+                        0,
+                        2,
+                        buffers.as_ptr(),
+                        offsets.as_ptr(),
+                    );
+                } else {
+                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                        self.surface.command_buffer,
+                        0,
+                        1,
+                        &raw const vertex_buffer,
+                        &raw const vertex_offset,
+                    );
+                }
+                match geometry {
                     ResolvedGeometry::Mesh(mesh) => {
                         let mesh = &self.meshes[mesh];
-                        functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.command_buffer,
-                            0,
-                            1,
-                            &raw const mesh.vertices.handle,
-                            &raw const offset,
-                        );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
                             mesh.indices.handle,
                             0,
                             mesh.index_type,
                         );
-                        functions
-                            .cmd_draw_indexed_indirect
-                            .expect("loaded function")(
-                            self.surface.command_buffer,
-                            mesh.indirect.handle,
-                            0,
-                            1,
-                            u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                                .expect("indirect command size fits u32"),
-                        );
+                        if let Some((_, instance_count)) = draw.instances {
+                            functions.cmd_draw_indexed.expect("loaded function")(
+                                self.surface.command_buffer,
+                                mesh.index_count,
+                                instance_count,
+                                0,
+                                0,
+                                0,
+                            );
+                        } else {
+                            functions
+                                .cmd_draw_indexed_indirect
+                                .expect("loaded function")(
+                                self.surface.command_buffer,
+                                mesh.indirect.handle,
+                                0,
+                                1,
+                                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+                                    .expect("indirect command size fits u32"),
+                            );
+                        }
                     }
                     ResolvedGeometry::Transient {
-                        vertex_offset,
                         index_offset,
                         index_count,
                         index_type,
+                        ..
                     } => {
-                        functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.command_buffer,
-                            0,
-                            1,
-                            &raw const self.transient_geometry.handle,
-                            &raw const vertex_offset,
-                        );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
                             self.transient_geometry.handle,
@@ -3313,7 +3494,7 @@ impl<'window> TexturedSession<'window> {
                         functions.cmd_draw_indexed.expect("loaded function")(
                             self.surface.command_buffer,
                             index_count,
-                            1,
+                            draw.instances.map_or(1, |(_, count)| count),
                             0,
                             0,
                             0,
@@ -3480,6 +3661,7 @@ impl<'window> TexturedSession<'window> {
             destroy_buffer_device(device, mem::take(&mut self.storage));
             destroy_buffer_device(device, mem::take(&mut self.transient_geometry));
             destroy_buffer_device(device, mem::take(&mut self.instance_transforms));
+            destroy_buffer_device(device, mem::take(&mut self.record_instances));
         }
 
         // `shutdown` moves the surface out and deliberately suppresses this
@@ -3629,6 +3811,15 @@ fn destroy_shadow_map_array_device(device: &super::Device, array: ShadowMapArray
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipelineResource) {
+    unsafe {
+        for &(_, sampler) in &pipeline.samplers {
+            device.functions.destroy_sampler.expect("loaded function")(
+                device.handle,
+                sampler,
+                ptr::null(),
+            );
+        }
+    }
     destroy_pipeline_device(
         device,
         PipelineResource {
@@ -4107,6 +4298,110 @@ fn write_material_storage(
         device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
+}
+
+/// Per-record byte offsets into the frame's instance region — scene records first, then
+/// overlay records, then shadow records, each aligned to [`STORAGE_OFFSET_ALIGNMENT`] — plus
+/// the total bytes the region needs. Records without an instance supply occupy no bytes.
+fn record_instance_offsets(
+    records: &[MaterialRecord<'_>],
+    overlay: &[MaterialRecord<'_>],
+    shadow: Option<&ShadowPrepass<'_>>,
+) -> Result<(Vec<usize>, usize), GraphicsError> {
+    let lengths = records
+        .iter()
+        .chain(overlay)
+        .map(|record| record.instances.len())
+        .chain(
+            shadow
+                .into_iter()
+                .flat_map(|shadow| shadow.records().map(|record| record.instances.len())),
+        );
+    let mut offsets = Vec::with_capacity(
+        records.len() + overlay.len() + shadow.map_or(0, |shadow| shadow.records().count()),
+    );
+    let mut running = 0_usize;
+    for length in lengths {
+        offsets.push(running);
+        let aligned = length
+            .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+            .ok_or_else(|| error("Vulkan record instance offsets overflow"))?;
+        running = running
+            .checked_add(aligned)
+            .ok_or_else(|| error("Vulkan record instance offsets overflow"))?;
+    }
+    Ok((offsets, running))
+}
+
+fn write_record_instances(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    records: &[MaterialRecord<'_>],
+    overlay: &[MaterialRecord<'_>],
+    shadow: Option<&ShadowPrepass<'_>>,
+    offsets: &[usize],
+) -> Result<(), GraphicsError> {
+    let contents = records
+        .iter()
+        .chain(overlay)
+        .map(|record| record.instances)
+        .chain(
+            shadow
+                .into_iter()
+                .flat_map(|shadow| shadow.records().map(|record| record.instances)),
+        );
+    if records
+        .iter()
+        .chain(overlay)
+        .all(|record| record.instances.is_empty())
+        && shadow.is_none_or(|shadow| shadow.records().all(|record| record.instances.is_empty()))
+    {
+        return Ok(());
+    }
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for record instances",
+    )?;
+    unsafe {
+        for (bytes, &offset) in contents.zip(offsets) {
+            debug_assert!(
+                offset + bytes.len() <= usize::try_from(buffer.size).expect("size fits"),
+                "instance capacity was ensured before writing"
+            );
+            ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast::<u8>().add(offset), bytes.len());
+        }
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
+/// The instance-region offset and instance count for one record on an instance-layout
+/// pipeline, or `None` for the single-instance form.
+fn resolved_instances(
+    instance_stride: u32,
+    instances: &[u8],
+    offset: usize,
+) -> Result<Option<(u64, u32)>, GraphicsError> {
+    if instance_stride == 0 {
+        return Ok(None);
+    }
+    let stride = usize::try_from(instance_stride).expect("validated stride fits usize");
+    let count = u32::try_from(instances.len() / stride)
+        .map_err(|_| error("Vulkan record instance count exceeds u32"))?;
+    let offset =
+        u64::try_from(offset).map_err(|_| error("Vulkan record instance offset exceeds u64"))?;
+    Ok(Some((offset, count)))
 }
 
 fn write_transient_geometry(
@@ -4883,6 +5178,7 @@ fn create_material_pipeline(
         depth_texture_array_binding: config.depth_texture_array_binding,
         comparison_sampler: None,
         bindings: Vec::new(),
+        instance_stride: config.instance_stride,
     };
     check(
         unsafe {
@@ -4951,18 +5247,27 @@ fn create_material_pipeline(
         shader_stage(vk::VK_SHADER_STAGE_VERTEX_BIT, module, &vertex_entry),
         shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, module, &fragment_entry),
     ];
-    let vertex_binding = vk::VkVertexInputBindingDescription {
-        binding: 0,
-        stride: config.stride,
-        inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
-    };
+    let vertex_bindings = [
+        vk::VkVertexInputBindingDescription {
+            binding: 0,
+            stride: config.stride,
+            inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
+        },
+        vk::VkVertexInputBindingDescription {
+            binding: 1,
+            stride: config.instance_stride,
+            inputRate: vk::VK_VERTEX_INPUT_RATE_INSTANCE,
+        },
+    ];
     let attributes: Vec<vk::VkVertexInputAttributeDescription> = config
         .attributes
         .iter()
-        .map(|input| {
+        .map(|input| (input, 0))
+        .chain(config.instance_attributes.iter().map(|input| (input, 1)))
+        .map(|(input, binding)| {
             attribute(
                 input.location,
-                0,
+                binding,
                 material_vertex_format(input.format),
                 input.offset,
             )
@@ -4970,8 +5275,8 @@ fn create_material_pipeline(
         .collect();
     let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        vertexBindingDescriptionCount: 1,
-        pVertexBindingDescriptions: &raw const vertex_binding,
+        vertexBindingDescriptionCount: if config.instance_stride > 0 { 2 } else { 1 },
+        pVertexBindingDescriptions: vertex_bindings.as_ptr(),
         vertexAttributeDescriptionCount: u32::try_from(attributes.len())
             .map_err(|_| error("material attribute count exceeds u32"))?,
         pVertexAttributeDescriptions: attributes.as_ptr(),
@@ -5213,19 +5518,38 @@ fn create_shadow_pipeline(
     config: &ShadowPipelineConfig<'_>,
 ) -> Result<ShadowPipelineResource, GraphicsError> {
     let device = surface.device();
+    let stages = if config.fragment_entry.is_some() {
+        (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT) as u32
+    } else {
+        vk::VK_SHADER_STAGE_VERTEX_BIT as u32
+    };
     let mut layout_bindings = Vec::new();
     if let Some((binding, _)) = config.uniform {
         layout_bindings.push(layout_binding(
             binding,
             vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
+            stages,
         ));
     }
     if let Some((binding, _)) = config.storage {
         layout_bindings.push(layout_binding(
             binding,
             vk::VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
-            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
+            stages,
+        ));
+    }
+    for &binding in config.texture_bindings {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            stages,
+        ));
+    }
+    for slot in config.sampler_bindings {
+        layout_bindings.push(layout_binding(
+            slot.binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+            stages,
         ));
     }
     let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
@@ -5242,7 +5566,10 @@ fn create_shadow_pipeline(
         descriptor_pool: ptr::null_mut(),
         uniform: config.uniform,
         storage: config.storage,
-        descriptor: None,
+        texture_bindings: config.texture_bindings.to_vec(),
+        samplers: Vec::with_capacity(config.sampler_bindings.len()),
+        instance_stride: config.instance_stride,
+        bindings: Vec::new(),
     };
     check(
         unsafe {
@@ -5305,23 +5632,47 @@ fn create_shadow_pipeline(
     )?;
     let vertex_entry = CString::new(config.vertex_entry)
         .map_err(|_| error("shadow vertex entry point name contains a NUL byte"))?;
-    let shader_stages = [shader_stage(
+    let fragment_entry = config
+        .fragment_entry
+        .map(|entry| {
+            CString::new(entry)
+                .map_err(|_| error("shadow fragment entry point name contains a NUL byte"))
+        })
+        .transpose()?;
+    let mut shader_stages = Vec::with_capacity(2);
+    shader_stages.push(shader_stage(
         vk::VK_SHADER_STAGE_VERTEX_BIT,
         module,
         &vertex_entry,
-    )];
-    let vertex_binding = vk::VkVertexInputBindingDescription {
-        binding: 0,
-        stride: config.stride,
-        inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
-    };
+    ));
+    if let Some(ref entry) = fragment_entry {
+        shader_stages.push(shader_stage(
+            vk::VK_SHADER_STAGE_FRAGMENT_BIT,
+            module,
+            entry,
+        ));
+    }
+    let vertex_bindings = [
+        vk::VkVertexInputBindingDescription {
+            binding: 0,
+            stride: config.stride,
+            inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
+        },
+        vk::VkVertexInputBindingDescription {
+            binding: 1,
+            stride: config.instance_stride,
+            inputRate: vk::VK_VERTEX_INPUT_RATE_INSTANCE,
+        },
+    ];
     let attributes: Vec<vk::VkVertexInputAttributeDescription> = config
         .attributes
         .iter()
-        .map(|input| {
+        .map(|input| (input, 0))
+        .chain(config.instance_attributes.iter().map(|input| (input, 1)))
+        .map(|(input, binding)| {
             attribute(
                 input.location,
-                0,
+                binding,
                 material_vertex_format(input.format),
                 input.offset,
             )
@@ -5329,8 +5680,8 @@ fn create_shadow_pipeline(
         .collect();
     let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        vertexBindingDescriptionCount: 1,
-        pVertexBindingDescriptions: &raw const vertex_binding,
+        vertexBindingDescriptionCount: if config.instance_stride > 0 { 2 } else { 1 },
+        pVertexBindingDescriptions: vertex_bindings.as_ptr(),
         vertexAttributeDescriptionCount: u32::try_from(attributes.len())
             .map_err(|_| error("shadow attribute count exceeds u32"))?,
         pVertexAttributeDescriptions: attributes.as_ptr(),
@@ -5388,7 +5739,7 @@ fn create_shadow_pipeline(
     let pipeline_info = vk::VkGraphicsPipelineCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         pNext: (&raw const rendering).cast(),
-        stageCount: 1,
+        stageCount: u32::try_from(shader_stages.len()).expect("stage count fits u32"),
         pStages: shader_stages.as_ptr(),
         pVertexInputState: &raw const vertex_input,
         pInputAssemblyState: &raw const assembly,
@@ -5425,6 +5776,39 @@ fn create_shadow_pipeline(
             .expect("loaded function")(device.handle, module, ptr::null());
     };
     result?;
+    for slot in config.sampler_bindings {
+        let filter = material_filter(slot.filter);
+        let address = material_address(slot.address);
+        let mipmap_mode = match slot.filter {
+            SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
+            SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        };
+        let sampler_info = vk::VkSamplerCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            magFilter: filter,
+            minFilter: filter,
+            mipmapMode: mipmap_mode,
+            addressModeU: address,
+            addressModeV: address,
+            addressModeW: address,
+            maxAnisotropy: 1.0,
+            maxLod: LOD_CLAMP_NONE,
+            ..Default::default()
+        };
+        let mut sampler = ptr::null_mut();
+        check(
+            unsafe {
+                device.functions.create_sampler.expect("loaded function")(
+                    device.handle,
+                    &raw const sampler_info,
+                    ptr::null(),
+                    &raw mut sampler,
+                )
+            },
+            "vkCreateSampler for shadow pipeline",
+        )?;
+        resource.samplers.push((slot.binding, sampler));
+    }
     resource.descriptor_pool = create_material_descriptor_pool(device)?;
     Ok(resource)
 }

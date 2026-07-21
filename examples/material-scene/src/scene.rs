@@ -106,6 +106,55 @@ pub(crate) const SKINNED_LAYOUT: VertexLayout<'static> = VertexLayout {
     ],
 };
 
+/// Sprout card vertices carry position and texture coordinate; every placement flows through
+/// the record's per-instance model matrix instead of its own uniform.
+pub(crate) const SPROUT_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 20,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x2,
+            offset: 12,
+        },
+    ],
+};
+
+/// Each sprout instance is one column-major `mat4x4<f32>` model matrix supplied as four
+/// instance-stepped `vec4<f32>` locations.
+pub(crate) const SPROUT_INSTANCE_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 64,
+    attributes: &[
+        VertexAttribute {
+            location: 4,
+            format: VertexFormat::Float32x4,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 5,
+            format: VertexFormat::Float32x4,
+            offset: 16,
+        },
+        VertexAttribute {
+            location: 6,
+            format: VertexFormat::Float32x4,
+            offset: 32,
+        },
+        VertexAttribute {
+            location: 7,
+            format: VertexFormat::Float32x4,
+            offset: 48,
+        },
+    ],
+};
+
+/// Sprouts ringed around the scene; one instanced record draws them all.
+pub(crate) const SPROUT_COUNT: usize = 18;
+
 /// HUD vertices carry a clip-space position and a premultiplied linear color; the overlay's
 /// geometry is rebuilt every frame and submitted as frame-transient bytes.
 pub(crate) const HUD_LAYOUT: VertexLayout<'static> = VertexLayout {
@@ -208,6 +257,108 @@ pub(crate) fn floor_vertices() -> Vec<u8> {
         push_f32s(&mut bytes, &position);
         push_f32s(&mut bytes, &uv);
     }
+    bytes
+}
+
+/// Two crossed unit-square leaf cards. The material and shadow pipelines cull back faces, so
+/// each card appears twice with flipped winding; the cutout texture carves the leaf shape out
+/// of both the color pass and the depth-only shadow pass.
+pub(crate) fn sprout_vertices() -> Vec<u8> {
+    let cards: [[[f32; 3]; 4]; 2] = [
+        [
+            [-0.5, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [-0.5, 1.0, 0.0],
+        ],
+        [
+            [0.0, 0.0, -0.5],
+            [0.0, 0.0, 0.5],
+            [0.0, 1.0, 0.5],
+            [0.0, 1.0, -0.5],
+        ],
+    ];
+    let corner_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let mut bytes = Vec::with_capacity(8 * 20);
+    for corners in cards {
+        for (position, uv) in corners.into_iter().zip(corner_uvs) {
+            push_f32s(&mut bytes, &position);
+            push_f32s(&mut bytes, &uv);
+        }
+    }
+    bytes
+}
+
+/// Front and flipped-winding triangles for both cards, so the cutout reads from either side.
+pub(crate) const SPROUT_INDICES: [u16; 24] = [
+    0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 4, 6, 5, 4, 7, 6,
+];
+
+/// A leaf silhouette whose alpha carves the card: opaque along a central stem and three
+/// fronds, transparent elsewhere.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn sprout_texture() -> [u8; 16 * 16 * 4] {
+    let mut texels = [0_u8; 16 * 16 * 4];
+    for y in 0..16 {
+        for x in 0..16 {
+            let u = x as f32 / 15.0 - 0.5;
+            let v = y as f32 / 15.0;
+            let stem = u.abs() < 0.07 && v < 0.85;
+            let frond = (0..3).any(|index| {
+                let height = 0.3 + 0.25 * index as f32;
+                let reach = 0.42 - 0.12 * index as f32;
+                let across = (v - height) * 2.2;
+                u.abs() < reach && across.abs() < 0.16 - 0.18 * u.abs()
+            });
+            let inside = stem || frond;
+            let offset = (y * 16 + x) * 4;
+            let green = 120.0 + 100.0 * v;
+            texels[offset..offset + 4].copy_from_slice(&[
+                (30.0 + 30.0 * v) as u8,
+                green as u8,
+                (40.0 + 25.0 * v) as u8,
+                if inside { 255 } else { 0 },
+            ]);
+        }
+    }
+    texels
+}
+
+/// Packs one column-major model matrix per sprout: ringed placements with per-sprout yaw and
+/// scale, plus a gentle shared sway so the instance bytes genuinely change every frame.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn sprout_instances(seconds: f32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(SPROUT_COUNT * 64);
+    for index in 0..SPROUT_COUNT {
+        let angle = index as f32 * core::f32::consts::TAU / SPROUT_COUNT as f32;
+        let radius = 5.4 + 1.7 * (index as f32 * 2.3).sin();
+        let position = Vec3::new(radius * angle.cos(), -1.6, radius * angle.sin());
+        let scale = 0.8 + 0.45 * (index as f32 * 1.7).cos().abs();
+        let sway = 0.08 * (seconds * 1.3 + index as f32 * 0.9).sin();
+        let model = Mat4::from_translation(position)
+            * Mat4::from_rotation_y(angle + index as f32)
+            * Mat4::from_rotation_z(sway)
+            * Mat4::from_scale(Vec3::new(scale, scale, scale));
+        push_f32s(&mut bytes, &model.to_cols_array());
+    }
+    bytes
+}
+
+/// Packs `SproutParams`: the camera's view-projection; instances place each sprout.
+pub(crate) fn sprout_uniform(aspect: f32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    push_f32s(&mut bytes, &view_projection(aspect).to_cols_array());
+    bytes
+}
+
+/// Packs `SproutShadowParams`: one cascade's light view-projection over the same instances.
+pub(crate) fn sprout_shadow_uniform(light_view_projection: Mat4) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(64);
+    push_f32s(&mut bytes, &light_view_projection.to_cols_array());
     bytes
 }
 

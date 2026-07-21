@@ -24,6 +24,7 @@ use objc::{Object, Origin3, Region3, Size3};
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
 const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
+const PIXEL_FORMAT_INVALID: usize = 0;
 const VERTEX_FORMAT_FLOAT: usize = 28;
 const VERTEX_FORMAT_FLOAT2: usize = 29;
 const VERTEX_FORMAT_FLOAT3: usize = 30;
@@ -110,6 +111,9 @@ struct PostprocessPipelineResource {
 
 struct MaterialPipelineResource {
     pipeline: Object,
+    /// Single-sample no-depth variant for the presentable overlay pass; null unless the
+    /// pipeline declares [`DepthMode::Off`].
+    overlay_pipeline: Object,
     depth_state: Object,
     /// One pipeline-owned sampler state per declared slot as (binding, sampler).
     samplers: Vec<(u32, Object)>,
@@ -837,6 +841,7 @@ impl<'window> TexturedSession<'window> {
             token,
             PreparedScene::Draws(draws),
             None,
+            &[],
             postprocess_pipeline,
             target,
             clear,
@@ -898,6 +903,7 @@ impl<'window> TexturedSession<'window> {
             token,
             PreparedScene::Instances,
             None,
+            &[],
             postprocess_pipeline,
             target,
             clear,
@@ -968,7 +974,7 @@ impl<'window> TexturedSession<'window> {
                 "render targets were reclaimed by a newer surface generation",
             ));
         }
-        self.prepare_material_scene(records, shadow)?;
+        self.prepare_material_scene(records, &[], shadow)?;
         self.encode_present(
             token,
             PreparedScene::Materials(records),
@@ -985,6 +991,7 @@ impl<'window> TexturedSession<'window> {
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
+        overlay: &[MaterialRecord<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         clear: ClearColor,
@@ -1002,11 +1009,12 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets were reclaimed by a newer surface generation",
             ));
         }
-        self.prepare_material_scene(records, shadow)?;
+        self.prepare_material_scene(records, overlay, shadow)?;
         self.encode_postprocessed_present(
             token,
             PreparedScene::Materials(records),
             shadow,
+            overlay,
             postprocess_pipeline,
             target,
             clear,
@@ -1014,10 +1022,14 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
+    /// Checks handles and stages per-record data for the scene records, any overlay records,
+    /// and any shadow records in that fixed order, so encoding recomputes the same uniform
+    /// slots and storage offsets.
     #[allow(clippy::too_many_lines)]
     fn prepare_material_scene(
         &mut self,
         records: &[MaterialRecord<'_>],
+        overlay: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
     ) -> Result<(), GraphicsError> {
         if let Some(shadow) = shadow {
@@ -1034,7 +1046,7 @@ impl<'window> TexturedSession<'window> {
                 self.shadow_pipelines.get(record.pipeline.id())?;
             }
         }
-        for record in records {
+        for record in records.iter().chain(overlay) {
             if let GeometrySource::Mesh(mesh) = record.geometry {
                 self.meshes.get(mesh.id())?;
             }
@@ -1055,7 +1067,8 @@ impl<'window> TexturedSession<'window> {
         let shadow_records = shadow.map_or(0, |shadow| shadow.records().count());
         let uniform_slots = records
             .len()
-            .checked_add(shadow_records)
+            .checked_add(overlay.len())
+            .and_then(|slots| slots.checked_add(shadow_records))
             .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
         if uniform_slots > self.uniform_capacity {
             let capacity = uniform_slots
@@ -1086,11 +1099,15 @@ impl<'window> TexturedSession<'window> {
                     "Metal uniform buffer has no CPU address",
                 ));
             }
-            let uniforms = records.iter().map(|record| record.uniform).chain(
-                shadow
-                    .into_iter()
-                    .flat_map(|shadow| shadow.records().map(|record| record.uniform)),
-            );
+            let uniforms = records
+                .iter()
+                .chain(overlay)
+                .map(|record| record.uniform)
+                .chain(
+                    shadow
+                        .into_iter()
+                        .flat_map(|shadow| shadow.records().map(|record| record.uniform)),
+                );
             for (index, uniform) in uniforms.enumerate() {
                 ptr::copy_nonoverlapping(
                     uniform.as_ptr(),
@@ -1101,6 +1118,7 @@ impl<'window> TexturedSession<'window> {
         }
         let storage_bytes = records
             .iter()
+            .chain(overlay)
             .map(|record| record.storage)
             .chain(
                 shadow
@@ -1141,11 +1159,15 @@ impl<'window> TexturedSession<'window> {
                         "Metal record storage buffer has no CPU address",
                     ));
                 }
-                let sources = records.iter().map(|record| record.storage).chain(
-                    shadow
-                        .into_iter()
-                        .flat_map(|shadow| shadow.records().map(|record| record.storage)),
-                );
+                let sources = records
+                    .iter()
+                    .chain(overlay)
+                    .map(|record| record.storage)
+                    .chain(
+                        shadow
+                            .into_iter()
+                            .flat_map(|shadow| shadow.records().map(|record| record.storage)),
+                    );
                 let mut offset = 0_usize;
                 for storage in sources {
                     ptr::copy_nonoverlapping(
@@ -1157,7 +1179,7 @@ impl<'window> TexturedSession<'window> {
                 }
             }
         }
-        self.stage_transient_geometry(records)?;
+        self.stage_transient_geometry(records, overlay)?;
         match shadow {
             Some(ShadowPrepass::Single(pass)) => {
                 let index = self.shadow_maps.index_of(pass.map.id())?;
@@ -1173,14 +1195,16 @@ impl<'window> TexturedSession<'window> {
     }
 
     /// Copies every transient-geometry record supply into the frame's shared geometry region:
-    /// per record, aligned vertex bytes followed by aligned index bytes, packed in record order
-    /// so encoding recomputes the same offsets.
+    /// per record, aligned vertex bytes followed by aligned index bytes, scene records then
+    /// overlay records in record order, so encoding recomputes the same offsets.
     fn stage_transient_geometry(
         &mut self,
         records: &[MaterialRecord<'_>],
+        overlay: &[MaterialRecord<'_>],
     ) -> Result<(), GraphicsError> {
         let geometry_bytes = records
             .iter()
+            .chain(overlay)
             .filter_map(|record| match record.geometry {
                 GeometrySource::Transient(geometry) => Some(geometry),
                 GeometrySource::Mesh(_) => None,
@@ -1228,7 +1252,7 @@ impl<'window> TexturedSession<'window> {
                     ));
                 }
                 let mut offset = 0_usize;
-                for record in records {
+                for record in records.iter().chain(overlay) {
                     let GeometrySource::Transient(geometry) = record.geometry else {
                         continue;
                     };
@@ -1710,6 +1734,7 @@ impl<'window> TexturedSession<'window> {
         mut token: TexturedFrameToken,
         scene: PreparedScene<'_>,
         shadow: Option<&ShadowPrepass<'_>>,
+        overlay: &[MaterialRecord<'_>],
         postprocess_pipeline: usize,
         target: usize,
         clear: ClearColor,
@@ -1807,8 +1832,8 @@ impl<'window> TexturedSession<'window> {
                 self.encode_shadow_prepass(
                     command,
                     shadow,
-                    records.len(),
-                    material_storage_len(records),
+                    records.len() + overlay.len(),
+                    material_storage_len(records) + material_storage_len(overlay),
                 )?;
             }
             let scene_encoder = required(
@@ -1847,6 +1872,16 @@ impl<'window> TexturedSession<'window> {
                 0,
                 3,
             );
+            if let (false, PreparedScene::Materials(records)) = (overlay.is_empty(), scene) {
+                self.encode_material_records(
+                    post_encoder,
+                    overlay,
+                    records.len(),
+                    material_storage_len(records),
+                    transient_geometry_len(records),
+                    true,
+                )?;
+            }
             objc::void(post_encoder, c"endEncoding");
             self.surface.present_commit(command, drawable);
             token.0.drawable = ptr::null_mut();
@@ -1909,211 +1944,7 @@ impl<'window> TexturedSession<'window> {
                     }
                 }
                 PreparedScene::Materials(records) => {
-                    let mut storage_offset = 0_usize;
-                    let mut transient_offset = 0_usize;
-                    for (index, record) in records.iter().enumerate() {
-                        let pipeline = &self.material_pipelines
-                            [self.material_pipelines.index_of(record.pipeline.id())?];
-                        let geometry = match record.geometry {
-                            GeometrySource::Mesh(mesh) => {
-                                ResolvedGeometry::Mesh(self.meshes.index_of(mesh.id())?)
-                            }
-                            GeometrySource::Transient(supply) => {
-                                let vertex_offset = transient_offset;
-                                let index_offset = vertex_offset
-                                    + supply
-                                        .vertices
-                                        .len()
-                                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
-                                transient_offset = index_offset
-                                    + supply
-                                        .indices
-                                        .byte_len()
-                                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
-                                ResolvedGeometry::Transient {
-                                    vertex_offset,
-                                    index_offset,
-                                    index_count: supply.indices.len(),
-                                    index_type: match supply.indices {
-                                        MeshIndices::U16(_) => INDEX_TYPE_UINT16,
-                                        MeshIndices::U32(_) => INDEX_TYPE_UINT32,
-                                    },
-                                }
-                            }
-                        };
-                        objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
-                        objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
-                        if let Some((binding, _)) = pipeline.uniform {
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_two_usizes(
-                                encoder,
-                                c"setVertexBuffer:offset:atIndex:",
-                                self.uniform,
-                                index * DRAW_UNIFORM_STRIDE,
-                                slot,
-                            );
-                            objc::void_object_two_usizes(
-                                encoder,
-                                c"setFragmentBuffer:offset:atIndex:",
-                                self.uniform,
-                                index * DRAW_UNIFORM_STRIDE,
-                                slot,
-                            );
-                        }
-                        if let Some((binding, _)) = pipeline.storage {
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_two_usizes(
-                                encoder,
-                                c"setVertexBuffer:offset:atIndex:",
-                                self.storage,
-                                storage_offset,
-                                slot,
-                            );
-                            objc::void_object_two_usizes(
-                                encoder,
-                                c"setFragmentBuffer:offset:atIndex:",
-                                self.storage,
-                                storage_offset,
-                                slot,
-                            );
-                        }
-                        storage_offset += record
-                            .storage
-                            .len()
-                            .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
-                        match geometry {
-                            ResolvedGeometry::Mesh(mesh) => objc::void_object_two_usizes(
-                                encoder,
-                                c"setVertexBuffer:offset:atIndex:",
-                                self.meshes[mesh].vertices,
-                                0,
-                                MATERIAL_VERTEX_BUFFER_INDEX,
-                            ),
-                            ResolvedGeometry::Transient { vertex_offset, .. } => {
-                                objc::void_object_two_usizes(
-                                    encoder,
-                                    c"setVertexBuffer:offset:atIndex:",
-                                    self.transient_geometry,
-                                    vertex_offset,
-                                    MATERIAL_VERTEX_BUFFER_INDEX,
-                                );
-                            }
-                        }
-                        for (texture, &binding) in
-                            record.textures.iter().zip(&pipeline.texture_bindings)
-                        {
-                            let resource = &self.textures[self.textures.index_of(texture.id())?];
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_usize(
-                                encoder,
-                                c"setVertexTexture:atIndex:",
-                                resource.texture,
-                                slot,
-                            );
-                            objc::void_object_usize(
-                                encoder,
-                                c"setFragmentTexture:atIndex:",
-                                resource.texture,
-                                slot,
-                            );
-                        }
-                        for &(binding, sampler) in &pipeline.samplers {
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_usize(
-                                encoder,
-                                c"setVertexSamplerState:atIndex:",
-                                sampler,
-                                slot,
-                            );
-                            objc::void_object_usize(
-                                encoder,
-                                c"setFragmentSamplerState:atIndex:",
-                                sampler,
-                                slot,
-                            );
-                        }
-                        let shadow_binding = match record.shadow_map {
-                            Some(ShadowSource::Map(map)) => pipeline
-                                .depth_texture_binding
-                                .map(|binding| {
-                                    self.shadow_maps
-                                        .index_of(map.id())
-                                        .map(|index| (self.shadow_maps[index].texture, binding))
-                                })
-                                .transpose()?,
-                            Some(ShadowSource::Array(array)) => pipeline
-                                .depth_texture_array_binding
-                                .map(|binding| {
-                                    self.shadow_map_arrays.index_of(array.id()).map(|index| {
-                                        (self.shadow_map_arrays[index].texture, binding)
-                                    })
-                                })
-                                .transpose()?,
-                            None => None,
-                        };
-                        if let Some((texture, binding)) = shadow_binding {
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_usize(
-                                encoder,
-                                c"setVertexTexture:atIndex:",
-                                texture,
-                                slot,
-                            );
-                            objc::void_object_usize(
-                                encoder,
-                                c"setFragmentTexture:atIndex:",
-                                texture,
-                                slot,
-                            );
-                        }
-                        if let Some((binding, sampler)) = pipeline.comparison_sampler {
-                            let slot = usize::try_from(binding).expect("validated slot fits usize");
-                            objc::void_object_usize(
-                                encoder,
-                                c"setVertexSamplerState:atIndex:",
-                                sampler,
-                                slot,
-                            );
-                            objc::void_object_usize(
-                                encoder,
-                                c"setFragmentSamplerState:atIndex:",
-                                sampler,
-                                slot,
-                            );
-                        }
-                        match geometry {
-                            ResolvedGeometry::Mesh(mesh) => {
-                                let mesh = &self.meshes[mesh];
-                                objc::void_two_usizes_object_usize_object_usize(
-                                    encoder,
-                                    c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
-                                    PRIMITIVE_TYPE_TRIANGLE,
-                                    mesh.index_type,
-                                    mesh.indices,
-                                    0,
-                                    mesh.indirect,
-                                    0,
-                                );
-                            }
-                            ResolvedGeometry::Transient {
-                                index_offset,
-                                index_count,
-                                index_type,
-                                ..
-                            } => {
-                                objc::void_three_usizes_object_two_usizes(
-                                    encoder,
-                                    c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
-                                    PRIMITIVE_TYPE_TRIANGLE,
-                                    index_count,
-                                    index_type,
-                                    self.transient_geometry,
-                                    index_offset,
-                                    1,
-                                );
-                            }
-                        }
-                    }
+                    self.encode_material_records(encoder, records, 0, 0, 0, false)?;
                 }
                 PreparedScene::Instances => {
                     for batch in &self.resolved_instance_batches {
@@ -2157,6 +1988,234 @@ impl<'window> TexturedSession<'window> {
                             mesh.indices,
                             0,
                             batch.instance_count,
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Encodes one non-empty material record sequence on an active render encoder.
+    ///
+    /// The bases select where this sequence's uniform slots, storage bytes, and transient
+    /// geometry bytes begin inside the frame's shared regions, matching the staging order of
+    /// scene records, then overlay records, then shadow records. Overlay encoding binds each
+    /// pipeline's single-sample no-depth variant and sets no depth-stencil state, because the
+    /// presentable pass carries no depth attachment.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    unsafe fn encode_material_records(
+        &self,
+        encoder: Object,
+        records: &[MaterialRecord<'_>],
+        uniform_base: usize,
+        storage_base: usize,
+        transient_base: usize,
+        overlay: bool,
+    ) -> Result<(), GraphicsError> {
+        unsafe {
+            let mut storage_offset = storage_base;
+            let mut transient_offset = transient_base;
+            for (index, record) in records.iter().enumerate() {
+                let pipeline = &self.material_pipelines
+                    [self.material_pipelines.index_of(record.pipeline.id())?];
+                let geometry = match record.geometry {
+                    GeometrySource::Mesh(mesh) => {
+                        ResolvedGeometry::Mesh(self.meshes.index_of(mesh.id())?)
+                    }
+                    GeometrySource::Transient(supply) => {
+                        let vertex_offset = transient_offset;
+                        let index_offset = vertex_offset
+                            + supply
+                                .vertices
+                                .len()
+                                .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                        transient_offset = index_offset
+                            + supply
+                                .indices
+                                .byte_len()
+                                .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                        ResolvedGeometry::Transient {
+                            vertex_offset,
+                            index_offset,
+                            index_count: supply.indices.len(),
+                            index_type: match supply.indices {
+                                MeshIndices::U16(_) => INDEX_TYPE_UINT16,
+                                MeshIndices::U32(_) => INDEX_TYPE_UINT32,
+                            },
+                        }
+                    }
+                };
+                if overlay {
+                    if pipeline.overlay_pipeline.is_null() {
+                        return Err(GraphicsError::new(
+                            "Metal material pipeline lacks the overlay variant its record needs",
+                        ));
+                    }
+                    objc::void_object(
+                        encoder,
+                        c"setRenderPipelineState:",
+                        pipeline.overlay_pipeline,
+                    );
+                } else {
+                    objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
+                    objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
+                }
+                if let Some((binding, _)) = pipeline.uniform {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.uniform,
+                        (uniform_base + index) * DRAW_UNIFORM_STRIDE,
+                        slot,
+                    );
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setFragmentBuffer:offset:atIndex:",
+                        self.uniform,
+                        (uniform_base + index) * DRAW_UNIFORM_STRIDE,
+                        slot,
+                    );
+                }
+                if let Some((binding, _)) = pipeline.storage {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.storage,
+                        storage_offset,
+                        slot,
+                    );
+                    objc::void_object_two_usizes(
+                        encoder,
+                        c"setFragmentBuffer:offset:atIndex:",
+                        self.storage,
+                        storage_offset,
+                        slot,
+                    );
+                }
+                storage_offset += record
+                    .storage
+                    .len()
+                    .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
+                match geometry {
+                    ResolvedGeometry::Mesh(mesh) => objc::void_object_two_usizes(
+                        encoder,
+                        c"setVertexBuffer:offset:atIndex:",
+                        self.meshes[mesh].vertices,
+                        0,
+                        MATERIAL_VERTEX_BUFFER_INDEX,
+                    ),
+                    ResolvedGeometry::Transient { vertex_offset, .. } => {
+                        objc::void_object_two_usizes(
+                            encoder,
+                            c"setVertexBuffer:offset:atIndex:",
+                            self.transient_geometry,
+                            vertex_offset,
+                            MATERIAL_VERTEX_BUFFER_INDEX,
+                        );
+                    }
+                }
+                for (texture, &binding) in record.textures.iter().zip(&pipeline.texture_bindings) {
+                    let resource = &self.textures[self.textures.index_of(texture.id())?];
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(
+                        encoder,
+                        c"setVertexTexture:atIndex:",
+                        resource.texture,
+                        slot,
+                    );
+                    objc::void_object_usize(
+                        encoder,
+                        c"setFragmentTexture:atIndex:",
+                        resource.texture,
+                        slot,
+                    );
+                }
+                for &(binding, sampler) in &pipeline.samplers {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(
+                        encoder,
+                        c"setVertexSamplerState:atIndex:",
+                        sampler,
+                        slot,
+                    );
+                    objc::void_object_usize(
+                        encoder,
+                        c"setFragmentSamplerState:atIndex:",
+                        sampler,
+                        slot,
+                    );
+                }
+                let shadow_binding = match record.shadow_map {
+                    Some(ShadowSource::Map(map)) => pipeline
+                        .depth_texture_binding
+                        .map(|binding| {
+                            self.shadow_maps
+                                .index_of(map.id())
+                                .map(|index| (self.shadow_maps[index].texture, binding))
+                        })
+                        .transpose()?,
+                    Some(ShadowSource::Array(array)) => pipeline
+                        .depth_texture_array_binding
+                        .map(|binding| {
+                            self.shadow_map_arrays
+                                .index_of(array.id())
+                                .map(|index| (self.shadow_map_arrays[index].texture, binding))
+                        })
+                        .transpose()?,
+                    None => None,
+                };
+                if let Some((texture, binding)) = shadow_binding {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(encoder, c"setVertexTexture:atIndex:", texture, slot);
+                    objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", texture, slot);
+                }
+                if let Some((binding, sampler)) = pipeline.comparison_sampler {
+                    let slot = usize::try_from(binding).expect("validated slot fits usize");
+                    objc::void_object_usize(
+                        encoder,
+                        c"setVertexSamplerState:atIndex:",
+                        sampler,
+                        slot,
+                    );
+                    objc::void_object_usize(
+                        encoder,
+                        c"setFragmentSamplerState:atIndex:",
+                        sampler,
+                        slot,
+                    );
+                }
+                match geometry {
+                    ResolvedGeometry::Mesh(mesh) => {
+                        let mesh = &self.meshes[mesh];
+                        objc::void_two_usizes_object_usize_object_usize(
+                            encoder,
+                            c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
+                            PRIMITIVE_TYPE_TRIANGLE,
+                            mesh.index_type,
+                            mesh.indices,
+                            0,
+                            mesh.indirect,
+                            0,
+                        );
+                    }
+                    ResolvedGeometry::Transient {
+                        index_offset,
+                        index_count,
+                        index_type,
+                        ..
+                    } => {
+                        objc::void_three_usizes_object_two_usizes(
+                            encoder,
+                            c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
+                            PRIMITIVE_TYPE_TRIANGLE,
+                            index_count,
+                            index_type,
+                            self.transient_geometry,
+                            index_offset,
+                            1,
                         );
                     }
                 }
@@ -2295,6 +2354,9 @@ fn release_material_pipeline(pipeline: MaterialPipelineResource) {
         }
         objc::void(pipeline.depth_state, c"release");
         objc::void(pipeline.pipeline, c"release");
+        if !pipeline.overlay_pipeline.is_null() {
+            objc::void(pipeline.overlay_pipeline, c"release");
+        }
     }
 }
 
@@ -2685,6 +2747,31 @@ fn create_material_pipeline(
                 objc::description(pipeline_error)
             )));
         }
+        let overlay_pipeline = if config.depth == DepthMode::Off {
+            objc::void_usize(descriptor, c"setSampleCount:", 1);
+            objc::void_usize(
+                descriptor,
+                c"setDepthAttachmentPixelFormat:",
+                PIXEL_FORMAT_INVALID,
+            );
+            let mut overlay_error = ptr::null_mut();
+            let overlay = objc::object_object_out(
+                device,
+                c"newRenderPipelineStateWithDescriptor:error:",
+                descriptor,
+                &raw mut overlay_error,
+            );
+            if overlay.is_null() {
+                objc::void(pipeline, c"release");
+                return Err(GraphicsError::new(format!(
+                    "creating Metal material overlay pipeline failed: {}",
+                    objc::description(overlay_error)
+                )));
+            }
+            overlay
+        } else {
+            ptr::null_mut()
+        };
         let depth_descriptor = required(
             objc::object(objc::class(c"MTLDepthStencilDescriptor"), c"new"),
             "Metal material depth descriptor",
@@ -2784,6 +2871,7 @@ fn create_material_pipeline(
         }
         Ok(MaterialPipelineResource {
             pipeline,
+            overlay_pipeline,
             depth_state,
             samplers,
             uniform: config.uniform,
@@ -2806,6 +2894,28 @@ fn material_storage_len(records: &[MaterialRecord<'_>]) -> usize {
                 .storage
                 .len()
                 .next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+        })
+        .sum()
+}
+
+/// Aligned bytes the records' transient-geometry supplies occupy in the frame's shared geometry
+/// region; overlay supplies pack after them. Sizes were bounds-checked when the scene was
+/// prepared.
+fn transient_geometry_len(records: &[MaterialRecord<'_>]) -> usize {
+    records
+        .iter()
+        .filter_map(|record| match record.geometry {
+            GeometrySource::Transient(geometry) => Some(
+                geometry
+                    .vertices
+                    .len()
+                    .next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
+                    + geometry
+                        .indices
+                        .byte_len()
+                        .next_multiple_of(STORAGE_OFFSET_ALIGNMENT),
+            ),
+            GeometrySource::Mesh(_) => None,
         })
         .sum()
 }

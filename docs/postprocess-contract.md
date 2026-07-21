@@ -34,6 +34,16 @@ changing it means creating replacement targets, exactly like reacting to a surfa
 reconfiguration. `PostprocessTargets::render_scale` reports it, and the plain constructor is the
 native-scale special case.
 
+`SceneSubmission.overlay` optionally carries a second non-empty material record list drawn into
+the presentable target after the fullscreen resolve — loaded, not cleared — at the surface's
+native extent, so record-based text and UI stay sharp while a sub-native scale shrinks the
+scene pass. The overlay composes with material content and postprocessed output only. The
+presentable pass carries no depth target: every overlay record's pipeline must declare
+`DepthMode::Off` and no depth-texture slot, and painter's order is the record order. Each
+backend rasterizes overlay records through a single-sample no-depth pipeline variant created
+alongside every depth-off material pipeline, so `Cutout` blending degrades to a hard alpha
+threshold in the overlay.
+
 `Device::create_postprocess_pipeline` loads `post_vertex` and `post_fragment` from the same offline
 artifact as the scene pipeline. The post pipeline is always single-sampled and samples resolved
 scene color through the shader's texture and sampler bindings.

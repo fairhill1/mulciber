@@ -116,6 +116,7 @@ impl Resources {
                     targets: &self.targets,
                 },
                 shadow: None,
+                overlay: None,
                 clear: CLEAR,
             },
         )?;

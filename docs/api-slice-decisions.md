@@ -197,6 +197,19 @@ Scales above native supersample. Sharpening or reconstruction filters beyond lin
 and scaling of the direct (non-postprocessed) output stay open until a slice forces them.
 Recorded in the [postprocess contract](postprocess-contract.md).
 
+## Native-resolution overlay
+
+Decided as an optional second material record list on `SceneSubmission` rather than a general
+pass vocabulary, so record-based text and UI stay sharp while a sub-native render scale
+shrinks the scene pass. Overlay records draw into the presentable target after the fullscreen
+postprocess resolve — loaded, not cleared — at the surface's native extent, composing with
+material content and postprocessed output only. The presentable pass carries no depth target,
+so overlay pipelines must declare `DepthMode::Off` and no depth-texture slot, painter's order
+is the record order, and each backend creates a single-sample no-depth pipeline variant
+alongside every depth-off material pipeline to rasterize them. Arbitrary pass ordering and
+overlay depth vocabulary stay open until a slice forces them. Recorded in the
+[postprocess contract](postprocess-contract.md).
+
 ## Read-only storage and skinned records
 
 Decided as one frame-transient read-only storage slot per pipeline, forced by skeletal

@@ -19,7 +19,7 @@ use scene::{
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/instanced.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.012, 0.018, 0.032);
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn Error>> {
     let mut application = Application::new()?;
     let window = application.create_window(&WindowDescriptor::new(
@@ -112,6 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         targets: &targets,
                     },
                     shadow: None,
+                    overlay: None,
                     clear: CLEAR,
                 },
             )?;

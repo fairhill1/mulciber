@@ -745,6 +745,18 @@ impl Queue<'_> {
                 "the shadow pass composes with material scene content only",
             ));
         }
+        if submission.overlay.is_some()
+            && !matches!(
+                (submission.content, submission.output),
+                (SceneContent::Material(_), SceneOutput::Postprocessed { .. })
+            )
+        {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "the overlay pass composes with material scene content and postprocessed output \
+                 only",
+            ));
+        }
         match (submission.content, submission.output) {
             (SceneContent::Textured(draws), SceneOutput::Direct(targets)) => self
                 .draw_textured_scene_and_present(
@@ -796,6 +808,7 @@ impl Queue<'_> {
                     frame,
                     records,
                     submission.shadow,
+                    submission.overlay,
                     pipeline,
                     targets,
                     submission.clear,
@@ -1013,12 +1026,15 @@ impl Queue<'_> {
 
     /// Draws an optional depth-only shadow pass, then a non-empty sequence of
     /// application-authored material records into resolved scene color, runs one fullscreen
-    /// post-processing pass, presents the frame, and consumes it.
+    /// post-processing pass, draws any overlay records into the presentable target at native
+    /// extent, presents the frame, and consumes it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_material_scene_postprocessed_and_present(
         &mut self,
         mut frame: Frame<'_>,
         records: &[MaterialRecord<'_>],
         shadow: Option<ShadowPrepass<'_>>,
+        overlay: Option<&[MaterialRecord<'_>]>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
         clear: ClearColor,
@@ -1027,6 +1043,9 @@ impl Queue<'_> {
         let depth_clear = material_scene_depth_clear(records)?;
         self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
         session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
+        if let Some(overlay) = overlay {
+            self.validate_overlay_records(frame.shared.id, overlay)?;
+        }
         if postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "postprocess pipeline belongs to a different graphics session than the queue",
@@ -1040,6 +1059,7 @@ impl Queue<'_> {
             token,
             records,
             shadow.as_ref(),
+            overlay.unwrap_or(&[]),
             postprocess_pipeline.lease.id,
             targets.lease.id,
             clear,
@@ -1122,7 +1142,6 @@ impl Queue<'_> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn validate_material_scene(
         &self,
         frame_session: u64,
@@ -1136,6 +1155,45 @@ impl Queue<'_> {
             ));
         }
         self.validate_targets(frame_session, frame_info, targets)?;
+        self.validate_material_records(frame_session, records)
+    }
+
+    /// Validates the overlay pass: non-empty records whose pipelines fit the presentable pass,
+    /// which carries no depth target and samples no shadow map.
+    fn validate_overlay_records(
+        &self,
+        frame_session: u64,
+        overlay: &[MaterialRecord<'_>],
+    ) -> Result<(), GraphicsError> {
+        if overlay.is_empty() {
+            return Err(GraphicsError::invalid_request(
+                "overlay pass must contain at least one record",
+            ));
+        }
+        self.validate_material_records(frame_session, overlay)?;
+        for record in overlay {
+            if record.pipeline.depth != DepthMode::Off {
+                return Err(GraphicsError::invalid_request(
+                    "overlay records draw into the presentable target, which carries no depth \
+                     target; their pipelines must declare DepthMode::Off",
+                ));
+            }
+            if record.pipeline.shadow_slot.is_some() {
+                return Err(GraphicsError::invalid_request(
+                    "overlay records draw after the scene pass and may not sample a shadow map; \
+                     their pipelines must declare no depth-texture slot",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate_material_records(
+        &self,
+        frame_session: u64,
+        records: &[MaterialRecord<'_>],
+    ) -> Result<(), GraphicsError> {
         for record in records {
             let mesh = match record.geometry {
                 GeometrySource::Mesh(mesh) => Some(mesh),
@@ -2465,6 +2523,17 @@ pub struct SceneSubmission<'resources> {
     /// Optional depth-only pre-pass work — a single map or one pass per cascade layer —
     /// rendered before the scene pass; composes with material content only.
     pub shadow: Option<ShadowPrepass<'resources>>,
+    /// Optional non-empty material records drawn into the presentable target after the
+    /// fullscreen postprocess draw, at the surface's native extent.
+    ///
+    /// The overlay keeps record-based text and UI sharp while a below-native [`RenderScale`]
+    /// shrinks the scene pass: overlay records never touch the scaled offscreen storage. It
+    /// composes with material content and postprocessed output only. The presentable pass
+    /// carries no depth target, so every overlay record's pipeline must declare
+    /// [`DepthMode::Off`] and no depth-texture slot; painter's order is the record order.
+    /// Overlay pipelines rasterize at one sample, so [`BlendMode::Cutout`] degrades to a hard
+    /// alpha threshold here.
+    pub overlay: Option<&'resources [MaterialRecord<'resources>]>,
     /// Linear color used to clear the scene before its first draw or batch.
     pub clear: ClearColor,
 }

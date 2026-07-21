@@ -333,6 +333,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 map: &shadow_map,
                                 cascades: &cascade_lists,
                             })),
+                            overlay: None,
                             clear: CLEAR,
                         },
                     )?;

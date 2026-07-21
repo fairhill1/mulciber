@@ -1,5 +1,35 @@
 # macOS AppKit/Metal validation runbook
 
+## Native-resolution overlay checkpoint
+
+On 2026-07-21, on an uncommitted working tree based on `8725179`, the native-resolution
+overlay extension (see the [postprocess contract](postprocess-contract.md) and the
+[decision ledger](api-slice-decisions.md)) ran on the Apple M2 / macOS 15.7.7 machine. No
+shader artifacts changed: the overlay reuses existing material shader modules through a
+single-sample no-depth pipeline variant, which is pipeline and pass state only. The
+structural preflight (fmt, workspace check, clippy `-D warnings`, workspace tests,
+`git diff --check`) passed natively — clippy required the repository's established
+line-count allow on one example main grown by the new submission field — and the Vulkan
+backend's peer implementation additionally passed `cargo check` and clippy `-D warnings`
+for the `x86_64-pc-windows-msvc` target from this host.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 70 Metal cases — including
+the three new cases: an overlay composed with direct output rejected by its exact message, a
+depth-testing overlay record rejected by its exact message, and a depth-off translucent
+overlay record drawn into the presentable target after the postprocess resolve — with exit
+zero and no diagnostic beyond the validation-enabled banner. One intermediate probe
+invocation in the same session stalled before printing any case and was killed at a
+three-minute timeout; the immediately following run with no code change completed cleanly,
+and the stall was not reproduced.
+
+`mulciber-material-scene` (which does not use the overlay) ran under `MTL_DEBUG_LAYER=1`,
+selected Metal and four samples, rendered roughly fifteen seconds of frames, and closed
+through an agent-scripted titlebar close, exiting zero with no validation output beyond the
+banner. This is agent-driven automated execution evidence; no visual claim is made for
+overlay output beyond validation-clean presentation, and all physical Vulkan evidence for
+the overlay (validation layers, visuals, lifecycle) remains outstanding on the
+Linux/Windows machines.
+
 ## Reversed-Z depth modes checkpoint
 
 On 2026-07-21, on an uncommitted working tree based on `061d804`, the reversed-Z depth-mode

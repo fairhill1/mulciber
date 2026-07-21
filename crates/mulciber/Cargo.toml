@@ -1,6 +1,6 @@
 [package]
 name = "mulciber"
-version = "0.12.3"
+version = "0.12.4"
 description = "Native Vulkan and Metal graphics layer for the Mulciber game-development stack"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"

@@ -137,7 +137,11 @@ Vulkan derives one descriptor-set layout from the declaration (dynamic uniform b
 images, samplers), reuses the shared 256-byte-stride dynamic uniform buffer for per-record
 bytes, caches descriptor sets per texture-identity tuple, and draws through the existing
 indexed-indirect path; descriptor pools reset with the same texture-reclamation and
-buffer-growth rules as the fixed pipelines. Metal builds a vertex descriptor from the declared
+buffer-growth rules as the fixed pipelines. Immutable Vulkan meshes pack their vertex, index,
+and indirect regions into 16-byte-aligned allocations from persistently mapped, host-coherent
+64 MiB blocks. Completed-frame reclamation returns each region to a coalescing free list, avoiding
+native buffer, device-memory, and mapping churn when a streaming consumer creates many meshes.
+Metal builds a vertex descriptor from the declared
 layout at reserved buffer index 30 (collision-free because slots are capped at 15), binds the
 uniform region and textures at their WGSL binding numbers on both vertex and fragment stages,
 and draws through the existing indirect encoder path. Both backends bake the declared blend and

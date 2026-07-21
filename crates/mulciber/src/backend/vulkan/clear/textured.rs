@@ -2,6 +2,7 @@ use core::ffi::c_void;
 use core::{mem, ptr, slice};
 use std::collections::VecDeque;
 use std::ffi::CString;
+use std::ops::Range;
 use std::time::Duration;
 use std::{format, vec::Vec};
 
@@ -39,6 +40,8 @@ const SHADOW_QUERY_START: u32 = 2;
 const SCENE_QUERY_START: u32 = 4;
 const POSTPROCESS_QUERY_START: u32 = 6;
 const GPU_TIMING_FEEDBACK_CAP: usize = 1024;
+const MESH_BUFFER_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
+const MESH_ALLOCATION_ALIGNMENT: u64 = 16;
 
 #[derive(Clone, Copy)]
 struct PendingGpuTiming {
@@ -68,12 +71,179 @@ struct Image {
     view: vk::VkImageView,
 }
 
+#[derive(Clone, Copy)]
+struct MeshAllocation {
+    block: usize,
+    offset: u64,
+    size: u64,
+}
+
+struct MeshBufferBlock {
+    buffer: Buffer,
+    mapped: *mut u8,
+    free: Vec<Range<u64>>,
+}
+
+struct MeshBufferArena {
+    blocks: Vec<MeshBufferBlock>,
+}
+
+#[derive(Clone, Copy)]
 struct MeshResource {
-    vertices: Buffer,
-    indices: Buffer,
-    indirect: Buffer,
+    buffer: vk::VkBuffer,
+    allocation: MeshAllocation,
+    vertex_offset: u64,
+    index_offset: u64,
+    indirect_offset: u64,
     index_count: u32,
     index_type: vk::VkIndexType,
+}
+
+impl MeshBufferArena {
+    const fn new() -> Self {
+        Self { blocks: Vec::new() }
+    }
+
+    fn create_mesh(
+        &mut self,
+        surface: &ClearSurface<'_>,
+        vertex_bytes: &[u8],
+        index_bytes: &[u8],
+        index_count: u32,
+        index_type: vk::VkIndexType,
+        indirect_bytes: &[u8],
+    ) -> Result<MeshResource, GraphicsError> {
+        let vertex_size = u64::try_from(vertex_bytes.len())
+            .map_err(|_| error("mesh vertex bytes exceed Vulkan address space"))?;
+        let index_size = u64::try_from(index_bytes.len())
+            .map_err(|_| error("mesh index bytes exceed Vulkan address space"))?;
+        let indirect_size = u64::try_from(indirect_bytes.len())
+            .map_err(|_| error("mesh indirect bytes exceed Vulkan address space"))?;
+        let index_relative =
+            align_up(vertex_size, 4).ok_or_else(|| error("mesh buffer offsets overflow"))?;
+        let indirect_relative = align_up(
+            index_relative
+                .checked_add(index_size)
+                .ok_or_else(|| error("mesh buffer offsets overflow"))?,
+            4,
+        )
+        .ok_or_else(|| error("mesh buffer offsets overflow"))?;
+        let allocation_size = align_up(
+            indirect_relative
+                .checked_add(indirect_size)
+                .ok_or_else(|| error("mesh buffer offsets overflow"))?,
+            MESH_ALLOCATION_ALIGNMENT,
+        )
+        .ok_or_else(|| error("mesh buffer offsets overflow"))?;
+        let allocation = self.allocate(surface, allocation_size)?;
+        let block = &self.blocks[allocation.block];
+        unsafe {
+            ptr::copy_nonoverlapping(
+                vertex_bytes.as_ptr(),
+                block.mapped.add(
+                    usize::try_from(allocation.offset)
+                        .expect("mesh allocation offset came from a usize-sized buffer"),
+                ),
+                vertex_bytes.len(),
+            );
+            ptr::copy_nonoverlapping(
+                index_bytes.as_ptr(),
+                block.mapped.add(
+                    usize::try_from(allocation.offset + index_relative)
+                        .expect("mesh index offset came from a usize-sized buffer"),
+                ),
+                index_bytes.len(),
+            );
+            ptr::copy_nonoverlapping(
+                indirect_bytes.as_ptr(),
+                block.mapped.add(
+                    usize::try_from(allocation.offset + indirect_relative)
+                        .expect("mesh indirect offset came from a usize-sized buffer"),
+                ),
+                indirect_bytes.len(),
+            );
+        }
+        Ok(MeshResource {
+            buffer: block.buffer.handle,
+            allocation,
+            vertex_offset: allocation.offset,
+            index_offset: allocation.offset + index_relative,
+            indirect_offset: allocation.offset + indirect_relative,
+            index_count,
+            index_type,
+        })
+    }
+
+    fn allocate(
+        &mut self,
+        surface: &ClearSurface<'_>,
+        size: u64,
+    ) -> Result<MeshAllocation, GraphicsError> {
+        for (block_index, block) in self.blocks.iter_mut().enumerate() {
+            if let Some(offset) = take_free_range(&mut block.free, size, MESH_ALLOCATION_ALIGNMENT)
+            {
+                return Ok(MeshAllocation {
+                    block: block_index,
+                    offset,
+                    size,
+                });
+            }
+        }
+        let block_size = MESH_BUFFER_BLOCK_SIZE.max(
+            size.checked_next_power_of_two()
+                .ok_or_else(|| error("mesh buffer block size overflow"))?,
+        );
+        let buffer = create_buffer(
+            surface,
+            usize::try_from(block_size)
+                .map_err(|_| error("mesh buffer block exceeds this target"))?,
+            (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                | vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) as u32,
+            &[],
+        )?;
+        let mapped = match map_buffer(surface, &buffer) {
+            Ok(mapped) => mapped,
+            Err(failure) => {
+                destroy_buffer(surface, buffer);
+                return Err(failure);
+            }
+        };
+        let free = core::iter::once(0..block_size).collect();
+        let mut block = MeshBufferBlock {
+            buffer,
+            mapped,
+            free,
+        };
+        let offset = take_free_range(&mut block.free, size, MESH_ALLOCATION_ALIGNMENT)
+            .expect("new mesh buffer block fits its requested allocation");
+        let block_index = self.blocks.len();
+        self.blocks.push(block);
+        Ok(MeshAllocation {
+            block: block_index,
+            offset,
+            size,
+        })
+    }
+
+    fn free(&mut self, allocation: MeshAllocation) {
+        insert_free_range(
+            &mut self.blocks[allocation.block].free,
+            allocation.offset..allocation.offset + allocation.size,
+        );
+    }
+
+    fn destroy(&mut self, device: &super::Device) {
+        for block in self.blocks.drain(..) {
+            unsafe {
+                device.functions.unmap_memory.expect("loaded function")(
+                    device.handle,
+                    block.buffer.memory,
+                );
+                destroy_buffer_device(device, block.buffer);
+            }
+        }
+    }
 }
 
 struct TextureResource {
@@ -297,6 +467,7 @@ pub(crate) struct TexturedSession<'window> {
     /// Target of the prepared frame's depth-only pre-pass.
     pending_shadow_target: Option<PendingShadowTarget>,
     recorded_has_shadow: bool,
+    mesh_buffers: MeshBufferArena,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
@@ -443,6 +614,7 @@ impl<'window> TexturedSession<'window> {
                 resolved_shadow_cascades: Vec::new(),
                 pending_shadow_target: None,
                 recorded_has_shadow: false,
+                mesh_buffers: MeshBufferArena::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
@@ -540,44 +712,21 @@ impl<'window> TexturedSession<'window> {
             vertexOffset: 0,
             firstInstance: 0,
         };
-        let vertices = create_buffer(
+        let mesh = self.mesh_buffers.create_mesh(
             &self.surface,
-            vertex_bytes.len(),
-            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
             vertex_bytes,
-        )?;
-        let indices = match create_buffer(
-            &self.surface,
-            index_bytes.len(),
-            vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT as u32,
             index_bytes,
-        ) {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                destroy_buffer(&self.surface, vertices);
-                return Err(failure);
-            }
-        };
-        let indirect = match create_buffer(
-            &self.surface,
-            mem::size_of_val(&draw),
-            vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT as u32,
-            bytes_of(&draw),
-        ) {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                destroy_buffer(&self.surface, vertices);
-                destroy_buffer(&self.surface, indices);
-                return Err(failure);
-            }
-        };
-        self.meshes.insert(MeshResource {
-            vertices,
-            indices,
-            indirect,
-            index_count: draw.indexCount,
+            draw.indexCount,
             index_type,
-        })
+            bytes_of(&draw),
+        )?;
+        match self.meshes.insert(mesh) {
+            Ok(id) => Ok(id),
+            Err(failure) => {
+                self.mesh_buffers.free(mesh.allocation);
+                Err(failure)
+            }
+        }
     }
 
     pub(crate) fn create_texture(
@@ -1813,7 +1962,10 @@ impl<'window> TexturedSession<'window> {
         }
         let device = self.surface.device();
         match request.kind {
-            ResourceKind::Mesh => destroy_mesh_device(device, self.meshes.remove(request.id)?),
+            ResourceKind::Mesh => {
+                let mesh = self.meshes.remove(request.id)?;
+                self.mesh_buffers.free(mesh.allocation);
+            }
             ResourceKind::Texture => {
                 destroy_texture_device(device, self.textures.remove(request.id)?);
             }
@@ -1859,7 +2011,7 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::Mesh => self
                 .meshes
                 .remove_if_live(request.id)
-                .map(|resource| destroy_mesh_device(device, resource)),
+                .map(|mesh| self.mesh_buffers.free(mesh.allocation)),
             ResourceKind::Texture => self
                 .textures
                 .remove_if_live(request.id)
@@ -2800,7 +2952,6 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const area,
             );
-            let offset = 0_u64;
             for draw in draws {
                 let mesh = &self.meshes[draw.mesh];
                 let pipeline = &self.shadow_pipelines[draw.pipeline];
@@ -2820,8 +2971,8 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offsets.as_ptr(),
                 );
                 if let Some((instance_offset, _)) = draw.instances {
-                    let buffers = [mesh.vertices.handle, self.record_instances.handle];
-                    let offsets = [0_u64, instance_offset];
+                    let buffers = [mesh.buffer, self.record_instances.handle];
+                    let offsets = [mesh.vertex_offset, instance_offset];
                     functions.cmd_bind_vertex_buffers.expect("loaded function")(
                         self.surface.command_buffer,
                         0,
@@ -2834,14 +2985,14 @@ impl<'window> TexturedSession<'window> {
                         self.surface.command_buffer,
                         0,
                         1,
-                        &raw const mesh.vertices.handle,
-                        &raw const offset,
+                        &raw const mesh.buffer,
+                        &raw const mesh.vertex_offset,
                     );
                 }
                 functions.cmd_bind_index_buffer.expect("loaded function")(
                     self.surface.command_buffer,
-                    mesh.indices.handle,
-                    0,
+                    mesh.buffer,
+                    mesh.index_offset,
                     mesh.index_type,
                 );
                 if let Some((_, instance_count)) = draw.instances {
@@ -2858,8 +3009,8 @@ impl<'window> TexturedSession<'window> {
                         .cmd_draw_indexed_indirect
                         .expect("loaded function")(
                         self.surface.command_buffer,
-                        mesh.indirect.handle,
-                        0,
+                        mesh.buffer,
+                        mesh.indirect_offset,
                         1,
                         u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                             .expect("indirect command size fits u32"),
@@ -3464,9 +3615,11 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offsets.as_ptr(),
                 );
                 let (vertex_buffer, vertex_offset, geometry) = match draw.geometry {
-                    ResolvedGeometry::Mesh(mesh) => {
-                        (self.meshes[mesh].vertices.handle, 0_u64, draw.geometry)
-                    }
+                    ResolvedGeometry::Mesh(mesh) => (
+                        self.meshes[mesh].buffer,
+                        self.meshes[mesh].vertex_offset,
+                        draw.geometry,
+                    ),
                     ResolvedGeometry::Transient { vertex_offset, .. } => {
                         (self.transient_geometry.handle, vertex_offset, draw.geometry)
                     }
@@ -3495,8 +3648,8 @@ impl<'window> TexturedSession<'window> {
                         let mesh = &self.meshes[mesh];
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
-                            mesh.indices.handle,
-                            0,
+                            mesh.buffer,
+                            mesh.index_offset,
                             mesh.index_type,
                         );
                         if let Some((_, instance_count)) = draw.instances {
@@ -3513,8 +3666,8 @@ impl<'window> TexturedSession<'window> {
                                 .cmd_draw_indexed_indirect
                                 .expect("loaded function")(
                                 self.surface.command_buffer,
-                                mesh.indirect.handle,
-                                0,
+                                mesh.buffer,
+                                mesh.indirect_offset,
                                 1,
                                 u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                                     .expect("indirect command size fits u32"),
@@ -3553,7 +3706,6 @@ impl<'window> TexturedSession<'window> {
             let functions = &self.surface.device().functions;
             match scene {
                 PreparedScene::Draws => {
-                    let offset = 0_u64;
                     for draw in &self.resolved_draws {
                         let mesh = &self.meshes[draw.mesh];
                         let pipeline = &self.pipelines[draw.pipeline];
@@ -3576,21 +3728,21 @@ impl<'window> TexturedSession<'window> {
                             self.surface.command_buffer,
                             0,
                             1,
-                            &raw const mesh.vertices.handle,
-                            &raw const offset,
+                            &raw const mesh.buffer,
+                            &raw const mesh.vertex_offset,
                         );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
-                            mesh.indices.handle,
-                            0,
+                            mesh.buffer,
+                            mesh.index_offset,
                             mesh.index_type,
                         );
                         functions
                             .cmd_draw_indexed_indirect
                             .expect("loaded function")(
                             self.surface.command_buffer,
-                            mesh.indirect.handle,
-                            0,
+                            mesh.buffer,
+                            mesh.indirect_offset,
                             1,
                             u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                                 .expect("indirect command size fits u32"),
@@ -3620,8 +3772,8 @@ impl<'window> TexturedSession<'window> {
                             1,
                             &raw const dynamic_offset,
                         );
-                        let buffers = [mesh.vertices.handle, self.instance_transforms.handle];
-                        let offsets = [0_u64, batch.transform_offset];
+                        let buffers = [mesh.buffer, self.instance_transforms.handle];
+                        let offsets = [mesh.vertex_offset, batch.transform_offset];
                         functions.cmd_bind_vertex_buffers.expect("loaded function")(
                             self.surface.command_buffer,
                             0,
@@ -3631,8 +3783,8 @@ impl<'window> TexturedSession<'window> {
                         );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
-                            mesh.indices.handle,
-                            0,
+                            mesh.buffer,
+                            mesh.index_offset,
                             mesh.index_type,
                         );
                         functions.cmd_draw_indexed.expect("loaded function")(
@@ -3696,8 +3848,9 @@ impl<'window> TexturedSession<'window> {
             destroy_postprocess_target_device(device, target);
         }
         for mesh in self.meshes.take_all() {
-            destroy_mesh_device(device, mesh);
+            self.mesh_buffers.free(mesh.allocation);
         }
+        self.mesh_buffers.destroy(device);
         unsafe {
             destroy_buffer_device(device, mem::take(&mut self.uniform));
             destroy_buffer_device(device, mem::take(&mut self.postprocess_uniform));
@@ -3718,6 +3871,7 @@ impl<'window> TexturedSession<'window> {
         self.targets = Arena::new("render targets");
         self.postprocess_targets = Arena::new("postprocess targets");
         self.meshes = Arena::new("mesh");
+        self.mesh_buffers = MeshBufferArena::new();
     }
 }
 
@@ -3725,17 +3879,6 @@ impl Drop for TexturedSession<'_> {
     fn drop(&mut self) {
         let _ = self.surface.finish();
         self.destroy_resources();
-    }
-}
-
-// These helpers intentionally consume the wrapper so one call owns the native destruction
-// authority. Most fields are raw handles, so Clippy cannot otherwise observe that ownership.
-#[allow(clippy::needless_pass_by_value)]
-fn destroy_mesh_device(device: &super::Device, mesh: MeshResource) {
-    unsafe {
-        destroy_buffer_device(device, mesh.vertices);
-        destroy_buffer_device(device, mesh.indices);
-        destroy_buffer_device(device, mesh.indirect);
     }
 }
 
@@ -3997,6 +4140,80 @@ fn create_buffer(
         return Err(failure);
     }
     Ok(buffer)
+}
+
+fn map_buffer(surface: &ClearSurface<'_>, buffer: &Buffer) -> Result<*mut u8, GraphicsError> {
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            surface
+                .device()
+                .functions
+                .map_memory
+                .expect("loaded function")(
+                surface.device().handle,
+                buffer.memory,
+                0,
+                buffer.size,
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for persistent mesh storage",
+    )?;
+    Ok(mapped.cast())
+}
+
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    debug_assert!(alignment.is_power_of_two());
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+}
+
+fn take_free_range(free: &mut Vec<Range<u64>>, size: u64, alignment: u64) -> Option<u64> {
+    for index in 0..free.len() {
+        let range = free[index].clone();
+        let Some(start) = align_up(range.start, alignment) else {
+            continue;
+        };
+        let Some(end) = start.checked_add(size) else {
+            continue;
+        };
+        if end > range.end {
+            continue;
+        }
+        free.remove(index);
+        let mut insertion = index;
+        if range.start < start {
+            free.insert(insertion, range.start..start);
+            insertion += 1;
+        }
+        if end < range.end {
+            free.insert(insertion, end..range.end);
+        }
+        return Some(start);
+    }
+    None
+}
+
+fn insert_free_range(free: &mut Vec<Range<u64>>, released: Range<u64>) {
+    if released.is_empty() {
+        return;
+    }
+    free.push(released);
+    free.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<u64>> = Vec::with_capacity(free.len());
+    for range in free.drain(..) {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    *free = merged;
 }
 
 fn create_gpu_query_pool(surface: &ClearSurface<'_>) -> Result<vk::VkQueryPool, GraphicsError> {
@@ -6376,11 +6593,26 @@ fn shader_stage(
 
 #[cfg(test)]
 mod tests {
-    use super::timestamp_tick_delta;
+    use std::vec::Vec;
+
+    use super::{insert_free_range, take_free_range, timestamp_tick_delta};
 
     #[test]
     fn timestamp_delta_handles_queue_counter_wraparound() {
         assert_eq!(timestamp_tick_delta(1_000, 1_025, 64), 25);
         assert_eq!(timestamp_tick_delta(250, 7, 8), 13);
+    }
+
+    #[test]
+    fn mesh_suballocations_align_split_and_coalesce() {
+        let mut free: Vec<_> = core::iter::once(0..128).collect();
+        assert_eq!(take_free_range(&mut free, 17, 16), Some(0));
+        assert_eq!(take_free_range(&mut free, 16, 16), Some(32));
+        assert_eq!(free.as_slice(), &[17..32, 48..128]);
+
+        insert_free_range(&mut free, 0..17);
+        insert_free_range(&mut free, 32..48);
+        assert_eq!(free.len(), 1);
+        assert_eq!(free[0], 0..128);
     }
 }

@@ -31,6 +31,9 @@ const SHADOW_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.sh
 const SKINNED_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skinned.shaderbin"));
 const SKINNED_SHADOW_SHADER: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/skinned-shadow.shaderbin"));
+const SPROUT_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sprout.shaderbin"));
+const SPROUT_SHADOW_SHADER: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/sprout-shadow.shaderbin"));
 
 /// Bytes in the skinned module's recorded palette: six column-major `mat4x4<f32>` bones.
 const PALETTE_SIZE: u32 = 384;
@@ -162,6 +165,66 @@ const SKINNED_BINDINGS: [MaterialBinding; 2] = [
     },
 ];
 
+/// The sprout module's recorded per-vertex interface: position and texture coordinate.
+const SPROUT_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 20,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x2,
+            offset: 12,
+        },
+    ],
+};
+
+/// The sprout module's recorded instance-rate interface: one column-major `mat4x4<f32>` model
+/// matrix as four instance-stepped `vec4<f32>` locations.
+const SPROUT_INSTANCE_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 64,
+    attributes: &[
+        VertexAttribute {
+            location: 4,
+            format: VertexFormat::Float32x4,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 5,
+            format: VertexFormat::Float32x4,
+            offset: 16,
+        },
+        VertexAttribute {
+            location: 6,
+            format: VertexFormat::Float32x4,
+            offset: 32,
+        },
+        VertexAttribute {
+            location: 7,
+            format: VertexFormat::Float32x4,
+            offset: 48,
+        },
+    ],
+};
+
+/// The sprout modules' recorded binding interface: one 64-byte uniform, one sampled texture,
+/// and one sampler — shared by the material pipeline and its cutout shadow caster.
+const SPROUT_BINDINGS: [MaterialBinding; 3] = [
+    MaterialBinding::Uniform {
+        binding: 0,
+        size: 64,
+    },
+    MaterialBinding::Texture { binding: 1 },
+    MaterialBinding::Sampler {
+        binding: 2,
+        filter: SamplerFilter::Linear,
+        address: SamplerAddress::ClampToEdge,
+    },
+];
+
 const IDENTITY: [[f32; 4]; 4] = [
     [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
@@ -256,6 +319,10 @@ struct Cases<'window> {
     skinned_pipeline: Option<mulciber::MaterialPipeline>,
     skinned_shadow_pipeline: Option<mulciber::ShadowPipeline>,
     skinned_mesh: Option<Mesh>,
+    sprout_pipeline: Option<mulciber::MaterialPipeline>,
+    sprout_shadow_pipeline: Option<mulciber::ShadowPipeline>,
+    sprout_mesh: Option<Mesh>,
+    sprout_shadow_map: Option<mulciber::ShadowMap>,
 }
 
 impl<'window> Cases<'window> {
@@ -286,6 +353,10 @@ impl<'window> Cases<'window> {
             skinned_pipeline: None,
             skinned_shadow_pipeline: None,
             skinned_mesh: None,
+            sprout_pipeline: None,
+            sprout_shadow_pipeline: None,
+            sprout_mesh: None,
+            sprout_shadow_map: None,
         })
     }
 
@@ -703,6 +774,7 @@ impl<'window> Cases<'window> {
                                 ],
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                instance_layout: None,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -720,6 +792,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS,
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                instance_layout: None,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -740,6 +813,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS,
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                instance_layout: None,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -757,6 +831,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS[..3],
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                instance_layout: None,
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -808,6 +883,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 self.foreign_material_pipeline = Some(graphics.device.create_material_pipeline(
@@ -819,6 +895,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 // 32-bit indices deliberately back the shared material mesh so every material
@@ -848,6 +925,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &short_uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -890,6 +968,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -933,6 +1012,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -992,6 +1072,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            instance_layout: None,
                         },
                     )?;
                     let cutout = graphics.device.create_material_pipeline(
@@ -1003,6 +1084,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Cutout,
                             depth: DepthMode::Off,
+                            instance_layout: None,
                         },
                     )?;
                     let translucent = graphics.device.create_material_pipeline(
@@ -1014,6 +1096,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::TestOnly,
+                            instance_layout: None,
                         },
                     )?;
                     (nearest, cutout, translucent)
@@ -1031,6 +1114,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &nearest_pipeline,
@@ -1041,6 +1125,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &cutout_pipeline,
@@ -1051,6 +1136,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &translucent_pipeline,
@@ -1061,6 +1147,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                 ];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1109,6 +1196,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWriteGreater,
+                            instance_layout: None,
                         },
                     )?;
                     let greater_only = graphics.device.create_material_pipeline(
@@ -1120,6 +1208,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::TestOnlyGreater,
+                            instance_layout: None,
                         },
                     )?;
                     let off = graphics.device.create_material_pipeline(
@@ -1131,6 +1220,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::Off,
+                            instance_layout: None,
                         },
                     )?;
                     (greater_write, greater_only, off)
@@ -1148,6 +1238,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &greater_write_pipeline,
@@ -1158,6 +1249,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &greater_only_pipeline,
@@ -1168,6 +1260,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                 ];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1212,6 +1305,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWriteGreater,
+                            instance_layout: None,
                         },
                     )?
                 };
@@ -1228,6 +1322,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: &greater_pipeline,
@@ -1238,6 +1333,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                 ];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1287,6 +1383,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1331,6 +1428,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1430,6 +1528,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::Off,
+                            instance_layout: None,
                         },
                     )?
                 };
@@ -1445,6 +1544,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let overlay_records = [MaterialRecord {
                     pipeline: &overlay_pipeline,
@@ -1455,6 +1555,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -1505,6 +1606,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 self.pass("material destruction and drop reclamation");
@@ -1544,6 +1646,8 @@ impl<'window> Cases<'window> {
                             vertex_entry: "lava_vertex",
                             vertex_layout: LAVA_LAYOUT,
                             bindings: &LAVA_BINDINGS,
+                            fragment_entry: None,
+                            instance_layout: None,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
@@ -1561,6 +1665,8 @@ impl<'window> Cases<'window> {
                             binding: 0,
                             size: 64,
                         }],
+                        fragment_entry: None,
+                        instance_layout: None,
                     },
                 )?);
                 self.shadowed_pipeline = Some(graphics.device.create_material_pipeline(
@@ -1572,6 +1678,7 @@ impl<'window> Cases<'window> {
                         bindings: &LAVA_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 self.floor_mesh = Some(graphics.device.create_mesh_with_layout(
@@ -1588,6 +1695,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 self.material_mesh = Some(graphics.device.create_mesh_with_layout(
@@ -1618,6 +1726,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &cascades,
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1663,6 +1772,7 @@ impl<'window> Cases<'window> {
                     )),
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1707,6 +1817,7 @@ impl<'window> Cases<'window> {
                     )),
                     uniform: &uniform,
                     storage: &cascades,
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1752,6 +1863,7 @@ impl<'window> Cases<'window> {
                     )),
                     uniform: &uniform,
                     storage: &cascades,
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1795,6 +1907,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let shadow_uniform = matrix_bytes(IDENTITY);
                 let shadow_records = [ShadowRecord {
@@ -1802,6 +1915,8 @@ impl<'window> Cases<'window> {
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     uniform: &shadow_uniform,
                     storage: &[],
+                    textures: &[],
+                    instances: &[],
                 }];
                 let cascades: [&[ShadowRecord]; 1] = [&shadow_records];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -1849,6 +1964,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let short_uniform = [0_u8; 32];
                 let shadow_records = [ShadowRecord {
@@ -1856,6 +1972,8 @@ impl<'window> Cases<'window> {
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     uniform: &short_uniform,
                     storage: &[],
+                    textures: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -1944,6 +2062,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            instance_layout: None,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
@@ -1970,6 +2089,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            instance_layout: None,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
@@ -1996,6 +2116,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            instance_layout: None,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2011,6 +2132,7 @@ impl<'window> Cases<'window> {
                         bindings: &SKINNED_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        instance_layout: None,
                     },
                 )?);
                 self.skinned_shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
@@ -2019,6 +2141,8 @@ impl<'window> Cases<'window> {
                         vertex_entry: "skinned_shadow_vertex",
                         vertex_layout: SKINNED_LAYOUT,
                         bindings: &SKINNED_BINDINGS,
+                        fragment_entry: None,
+                        instance_layout: None,
                     },
                 )?);
                 self.skinned_mesh = Some(graphics.device.create_mesh_with_layout(
@@ -2048,6 +2172,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &short_palette,
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2090,6 +2215,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &palette,
+                    instances: &[],
                 }];
                 let shadow_records = [ShadowRecord {
                     pipeline: self
@@ -2099,6 +2225,8 @@ impl<'window> Cases<'window> {
                     mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
                     uniform: &uniform,
                     storage: &[],
+                    textures: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2145,6 +2273,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &palette,
+                    instances: &[],
                 }];
                 let shadow_records = [ShadowRecord {
                     pipeline: self
@@ -2154,6 +2283,8 @@ impl<'window> Cases<'window> {
                     mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
                     uniform: &uniform,
                     storage: &palette,
+                    textures: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -2208,6 +2339,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -2219,6 +2351,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &uniform,
                         storage: &[],
+                        instances: &[],
                     },
                 ];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -2256,6 +2389,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -2293,6 +2427,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2338,6 +2473,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2383,6 +2519,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2430,6 +2567,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
@@ -2481,6 +2619,7 @@ impl<'window> Cases<'window> {
                         )),
                         uniform: &lava_uniform,
                         storage: &lava_storage,
+                        instances: &[],
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -2491,6 +2630,7 @@ impl<'window> Cases<'window> {
                         shadow_map: None,
                         uniform: &crystal_uniform,
                         storage: &[],
+                        instances: &[],
                     },
                 ];
                 let shadow_uniform = matrix_bytes(IDENTITY);
@@ -2499,6 +2639,8 @@ impl<'window> Cases<'window> {
                     mesh: self.material_mesh.as_ref().expect("material mesh"),
                     uniform: &shadow_uniform,
                     storage: &[],
+                    textures: &[],
+                    instances: &[],
                 }];
                 let cascades: [&[ShadowRecord]; 2] = [&shadow_records, &shadow_records];
                 let graphics = self.graphics.as_mut().expect("session A is open");
@@ -2543,9 +2685,236 @@ impl<'window> Cases<'window> {
                 self.step = 39;
                 Ok(false)
             }
+            // Instance-layout and shadow-fragment declarations are enforced at creation.
+            39 => {
+                expect_error(
+                    self.graphics
+                        .as_ref()
+                        .expect("session A is open")
+                        .device
+                        .create_shadow_pipeline(mulciber::ShadowPipelineDescriptor {
+                            shader: ShaderArtifact::new(SPROUT_SHADOW_SHADER)?,
+                            vertex_entry: "sprout_shadow_vertex",
+                            fragment_entry: None,
+                            vertex_layout: SPROUT_LAYOUT,
+                            instance_layout: Some(SPROUT_INSTANCE_LAYOUT),
+                            bindings: &SPROUT_BINDINGS,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::Unsupported,
+                    "texture and sampler bindings only with a declared fragment entry",
+                    "shadow texture bindings without a fragment entry rejected",
+                )?;
+                self.pass("shadow texture bindings without a fragment entry rejected");
+                expect_error(
+                    self.graphics
+                        .as_ref()
+                        .expect("session A is open")
+                        .device
+                        .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(SPROUT_SHADER)?,
+                            vertex_entry: "sprout_vertex",
+                            fragment_entry: "sprout_fragment",
+                            vertex_layout: SPROUT_LAYOUT,
+                            instance_layout: Some(SPROUT_LAYOUT),
+                            bindings: &SPROUT_BINDINGS,
+                            blend: BlendMode::Cutout,
+                            depth: DepthMode::TestWrite,
+                        })
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "instance layout declares location 0 that the vertex layout already declares",
+                    "overlapping instance locations rejected",
+                )?;
+                self.pass("overlapping instance locations rejected");
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                self.sprout_pipeline = Some(graphics.device.create_material_pipeline(
+                    mulciber::MaterialPipelineDescriptor {
+                        shader: ShaderArtifact::new(SPROUT_SHADER)?,
+                        vertex_entry: "sprout_vertex",
+                        fragment_entry: "sprout_fragment",
+                        vertex_layout: SPROUT_LAYOUT,
+                        instance_layout: Some(SPROUT_INSTANCE_LAYOUT),
+                        bindings: &SPROUT_BINDINGS,
+                        blend: BlendMode::Cutout,
+                        depth: DepthMode::TestWrite,
+                    },
+                )?);
+                self.sprout_shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
+                    mulciber::ShadowPipelineDescriptor {
+                        shader: ShaderArtifact::new(SPROUT_SHADOW_SHADER)?,
+                        vertex_entry: "sprout_shadow_vertex",
+                        fragment_entry: Some("sprout_shadow_fragment"),
+                        vertex_layout: SPROUT_LAYOUT,
+                        instance_layout: Some(SPROUT_INSTANCE_LAYOUT),
+                        bindings: &SPROUT_BINDINGS,
+                    },
+                )?);
+                self.sprout_mesh = Some(graphics.device.create_mesh_with_layout(
+                    SPROUT_LAYOUT,
+                    &sprout_triangle_vertices(),
+                    MeshIndices::U16(&[0, 1, 2]),
+                )?);
+                self.sprout_shadow_map = Some(graphics.device.create_shadow_map(256)?);
+                self.pass("instanced material and cutout shadow pipelines created");
+                self.step = 40;
+                Ok(false)
+            }
+            // A record must supply instance bytes exactly when its pipeline declares an
+            // instance layout.
+            40 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let sprout_textures = [texture];
+                let uniform = matrix_bytes(IDENTITY);
+                let records = [MaterialRecord {
+                    pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
+                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    textures: &sprout_textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                    instances: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "must be a non-zero multiple of its pipeline's declared 64-byte instance",
+                    "missing instance supply rejected",
+                )?;
+                self.pass("missing instance supply rejected");
+                self.step = 41;
+                Ok(false)
+            }
+            // An instance supply must be a whole number of declared instance strides.
+            41 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let sprout_textures = [texture];
+                let uniform = matrix_bytes(IDENTITY);
+                let truncated = [0_u8; 96];
+                let records = [MaterialRecord {
+                    pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
+                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    textures: &sprout_textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                    instances: &truncated,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "must be a non-zero multiple of its pipeline's declared 64-byte instance",
+                    "ragged instance supply rejected",
+                )?;
+                self.pass("ragged instance supply rejected");
+                self.step = 42;
+                Ok(false)
+            }
+            // Instanced material records present, with the caster's declared fragment stage
+            // alpha-testing its texture inside the depth-only shadow pass.
+            42 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let sprout_textures = [texture];
+                let uniform = matrix_bytes(IDENTITY);
+                let mut instances = matrix_bytes(IDENTITY);
+                instances.extend_from_slice(&matrix_bytes(SHIFTED));
+                let records = [MaterialRecord {
+                    pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
+                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    textures: &sprout_textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                    instances: &instances,
+                }];
+                let shadow_records = [ShadowRecord {
+                    pipeline: self
+                        .sprout_shadow_pipeline
+                        .as_ref()
+                        .expect("sprout shadow pipeline"),
+                    mesh: self.sprout_mesh.as_ref().expect("sprout mesh"),
+                    uniform: &uniform,
+                    storage: &[],
+                    textures: &sprout_textures,
+                    instances: &instances,
+                }];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: Some(ShadowPrepass::Single(ShadowPass {
+                            map: self.sprout_shadow_map.as_ref().expect("sprout shadow map"),
+                            records: &shadow_records,
+                        })),
+                        overlay: None,
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("instanced records and cutout shadow presentation");
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics.device.destroy_material_pipeline(
+                    self.sprout_pipeline.take().expect("sprout pipeline"),
+                )?;
+                graphics.device.destroy_shadow_pipeline(
+                    self.sprout_shadow_pipeline
+                        .take()
+                        .expect("sprout shadow pipeline"),
+                )?;
+                graphics
+                    .device
+                    .destroy_mesh(self.sprout_mesh.take().expect("sprout mesh"))?;
+                graphics.device.destroy_shadow_map(
+                    self.sprout_shadow_map.take().expect("sprout shadow map"),
+                )?;
+                self.pass("instanced resource destruction");
+                self.step = 43;
+                Ok(false)
+            }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            39 => {
+            43 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -2586,11 +2955,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 40;
+                self.step = 44;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            40 => {
+            44 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2613,11 +2982,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 41;
+                self.step = 45;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            41 => {
+            45 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2636,6 +3005,7 @@ impl<'window> Cases<'window> {
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
+                    instances: &[],
                 }];
                 let graphics = self.graphics.as_mut().expect("session B is open");
                 expect_error(
@@ -2659,7 +3029,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 42;
+                self.step = 46;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -2775,6 +3145,23 @@ fn matrix_bytes(matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(64);
     for column in matrix {
         for value in column {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
+/// One triangle against the sprout module's recorded per-vertex interface: position and
+/// texture coordinate.
+fn sprout_triangle_vertices() -> Vec<u8> {
+    let vertices: [[f32; 5]; 3] = [
+        [-0.5, -0.5, 0.0, 0.0, 1.0],
+        [0.5, -0.5, 0.0, 1.0, 1.0],
+        [0.0, 0.5, 0.0, 0.5, 0.0],
+    ];
+    let mut bytes = Vec::with_capacity(3 * 20);
+    for vertex in vertices {
+        for value in vertex {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
     }

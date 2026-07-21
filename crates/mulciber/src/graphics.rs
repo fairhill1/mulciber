@@ -366,6 +366,10 @@ impl Device<'_> {
         descriptor: MaterialPipelineDescriptor<'_>,
     ) -> Result<MaterialPipeline, GraphicsError> {
         let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+        let instance_layout = descriptor
+            .instance_layout
+            .map(|instance| validate_instance_layout(&layout, instance))
+            .transpose()?;
         let interface = descriptor.shader.parse_interface();
         let vertex_entry = find_entry_point(
             &interface,
@@ -379,13 +383,19 @@ impl Device<'_> {
             shader::INTERFACE_STAGE_FRAGMENT,
             "fragment",
         )?;
-        validate_layout_against_entry(&layout, vertex_entry)?;
+        validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
         let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
         let config = MaterialPipelineConfig {
             vertex_entry: descriptor.vertex_entry,
             fragment_entry: descriptor.fragment_entry,
             stride: layout.stride,
             attributes: &layout.attributes,
+            instance_stride: instance_layout
+                .as_ref()
+                .map_or(0, |instance| instance.stride),
+            instance_attributes: instance_layout
+                .as_ref()
+                .map_or(&[][..], |instance| &instance.attributes),
             uniform: declaration.uniform,
             storage: declaration.storage,
             texture_bindings: &declaration.texture_bindings,
@@ -402,6 +412,7 @@ impl Device<'_> {
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
             storage_size: declaration.storage.map_or(0, |(_, size)| size),
+            instance_stride: instance_layout.map_or(0, |instance| instance.stride),
             texture_count: declaration.texture_bindings.len(),
             shadow_slot: if declaration.depth_texture.is_some() {
                 Some(ShadowSlotKind::Map)
@@ -470,22 +481,30 @@ impl Device<'_> {
     /// Creates a depth-only pipeline from an application-authored shader module for shadow
     /// passes.
     ///
-    /// The pipeline runs the named vertex entry point with no fragment stage into a
-    /// [`ShadowMap`]'s depth target, testing and writing depth. Shadow pipelines support at
-    /// most one uniform binding and one read-only storage binding (so skinned casters shadow
-    /// with the same bone palette as their material records); the module must record no other
-    /// bindings.
+    /// The pipeline runs the named vertex entry point into a [`ShadowMap`]'s depth target,
+    /// testing and writing depth. Shadow pipelines support at most one uniform binding and one
+    /// read-only storage binding (so skinned casters shadow with the same bone palette as
+    /// their material records). A caster that must carve fragments out of the depth result —
+    /// typically a foliage cutout alpha test — additionally names a fragment entry point,
+    /// which unlocks texture and sampler bindings for the test; without a fragment entry the
+    /// pipeline runs no fragment stage and the module must record no other bindings. An
+    /// instance layout mirrors the caster's material pipeline so scattered geometry shadows
+    /// through the same per-instance transforms.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid layout, a missing vertex entry point, a declaration that
-    /// does not match the artifact's recorded interface, a binding outside the uniform and
-    /// storage kinds, or native shader loading and pipeline creation failure.
+    /// Returns an error for an invalid layout, a missing entry point, a declaration that does
+    /// not match the artifact's recorded interface, a binding outside the supported kinds, or
+    /// native shader loading and pipeline creation failure.
     pub fn create_shadow_pipeline(
         &self,
         descriptor: ShadowPipelineDescriptor<'_>,
     ) -> Result<ShadowPipeline, GraphicsError> {
         let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+        let instance_layout = descriptor
+            .instance_layout
+            .map(|instance| validate_instance_layout(&layout, instance))
+            .transpose()?;
         let interface = descriptor.shader.parse_interface();
         let vertex_entry = find_entry_point(
             &interface,
@@ -493,25 +512,49 @@ impl Device<'_> {
             shader::INTERFACE_STAGE_VERTEX,
             "vertex",
         )?;
-        let consumed = validate_layout_covers_entry(&layout, vertex_entry)?;
+        if let Some(fragment_entry) = descriptor.fragment_entry {
+            find_entry_point(
+                &interface,
+                fragment_entry,
+                shader::INTERFACE_STAGE_FRAGMENT,
+                "fragment",
+            )?;
+        }
+        let (consumed, consumed_instance) =
+            validate_layouts_cover_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
         let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
-        if !declaration.texture_bindings.is_empty()
-            || !declaration.sampler_bindings.is_empty()
-            || declaration.depth_texture.is_some()
+        if declaration.depth_texture.is_some()
             || declaration.depth_texture_array.is_some()
             || declaration.comparison_sampler.is_some()
         {
             return Err(GraphicsError::with_kind(
                 GraphicsErrorKind::Unsupported,
-                "shadow pipelines support only uniform and storage bindings",
+                "shadow pipelines do not sample depth resources",
+            ));
+        }
+        if descriptor.fragment_entry.is_none()
+            && (!declaration.texture_bindings.is_empty()
+                || !declaration.sampler_bindings.is_empty())
+        {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "shadow pipelines support texture and sampler bindings only with a declared \
+                 fragment entry point",
             ));
         }
         let config = ShadowPipelineConfig {
             vertex_entry: descriptor.vertex_entry,
+            fragment_entry: descriptor.fragment_entry,
             stride: layout.stride,
             attributes: &consumed,
+            instance_stride: instance_layout
+                .as_ref()
+                .map_or(0, |instance| instance.stride),
+            instance_attributes: &consumed_instance,
             uniform: declaration.uniform,
             storage: declaration.storage,
+            texture_bindings: &declaration.texture_bindings,
+            sampler_bindings: &declaration.sampler_bindings,
         };
         let id = session_mut(&self.shared)?.create_shadow_pipeline(descriptor.shader, &config)?;
         Ok(ShadowPipeline {
@@ -519,6 +562,8 @@ impl Device<'_> {
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
             storage_size: declaration.storage.map_or(0, |(_, size)| size),
+            instance_stride: instance_layout.map_or(0, |instance| instance.stride),
+            texture_count: declaration.texture_bindings.len(),
         })
     }
 
@@ -1105,6 +1150,13 @@ impl Queue<'_> {
                     ("shadow pipeline", record.pipeline.lease.session),
                     ("mesh", record.mesh.lease.session),
                 ]
+                .into_iter()
+                .chain(
+                    record
+                        .textures
+                        .iter()
+                        .map(|texture| ("texture", texture.lease.session)),
+                )
             })
             .chain([target_session])
         {
@@ -1138,6 +1190,19 @@ impl Queue<'_> {
                      layout",
                 ));
             }
+            if record.textures.len() != record.pipeline.texture_count {
+                return Err(GraphicsError::invalid_request(format!(
+                    "shadow record supplies {} textures but its pipeline declares {} texture \
+                     slots",
+                    record.textures.len(),
+                    record.pipeline.texture_count
+                )));
+            }
+            validate_instance_supply(
+                "shadow record",
+                record.instances,
+                record.pipeline.instance_stride,
+            )?;
         }
         Ok(())
     }
@@ -1271,6 +1336,11 @@ impl Queue<'_> {
                     record.storage.len()
                 )));
             }
+            validate_instance_supply(
+                "material record",
+                record.instances,
+                record.pipeline.instance_stride,
+            )?;
             match record.geometry {
                 GeometrySource::Mesh(mesh) => {
                     if mesh.layout != record.pipeline.layout {
@@ -1869,6 +1939,13 @@ pub const MATERIAL_STORAGE_SIZE_LIMIT: u32 = 65536;
 /// region bounded, and it caps the index count well inside the native draw-call range.
 pub const TRANSIENT_GEOMETRY_SIZE_LIMIT: u32 = 4_194_304;
 
+/// Largest supported per-record instance supply in bytes.
+///
+/// Four mebibytes carries 65,536 four-by-four float matrices in one record — far past any
+/// practical single-submission scatter — while keeping the frame-transient instance region
+/// bounded.
+pub const INSTANCE_SUPPLY_SIZE_LIMIT: u32 = 4_194_304;
+
 /// Largest supported material binding slot and vertex attribute location.
 ///
 /// The range 0 through 15 fits inside every native binding namespace both backends guarantee,
@@ -2045,8 +2122,18 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub vertex_entry: &'inputs str,
     /// Fragment entry point name.
     pub fragment_entry: &'inputs str,
-    /// Per-vertex input layout; must match the vertex entry point's recorded inputs.
+    /// Per-vertex input layout; together with any instance layout it must match the vertex
+    /// entry point's recorded inputs.
     pub vertex_layout: VertexLayout<'inputs>,
+    /// Optional per-instance input layout fed from each record's instance supply at
+    /// instance-stepping rate.
+    ///
+    /// A location may appear in the vertex layout or the instance layout but not both, and the
+    /// two layouts together must match the vertex entry point's recorded inputs exactly. A
+    /// pipeline declaring an instance layout draws each record once per supplied instance
+    /// (typically a column-major model or model-view-projection matrix as four `vec4<f32>`
+    /// locations), indexed implicitly by the instance-rate attributes.
+    pub instance_layout: Option<VertexLayout<'inputs>>,
     /// Declared resource slots; must match the module's recorded bindings.
     pub bindings: &'inputs [MaterialBinding],
     /// How fragment output combines with the color target.
@@ -2064,6 +2151,8 @@ pub struct MaterialPipeline {
     uniform_size: u32,
     /// Zero when no storage slot is declared.
     storage_size: u32,
+    /// Zero when no instance layout is declared.
+    instance_stride: u32,
     texture_count: usize,
     /// The kind of depth-texture slot the pipeline declares, fed per record.
     shadow_slot: Option<ShadowSlotKind>,
@@ -2150,12 +2239,25 @@ pub enum ShadowSource<'resources> {
 pub struct ShadowPipelineDescriptor<'inputs> {
     /// Offline-compiled shader module containing the vertex entry point.
     pub shader: ShaderArtifact<'inputs>,
-    /// Vertex entry point name; the pipeline runs no fragment stage.
+    /// Vertex entry point name.
     pub vertex_entry: &'inputs str,
-    /// Per-vertex input layout; must match the vertex entry point's recorded inputs.
+    /// Optional fragment entry point name for casters that carve fragments out of the depth
+    /// result, typically an alpha test that `discard`s below a cutout threshold; the pipeline
+    /// runs no fragment stage when absent.
+    ///
+    /// The fragment stage rasterizes into no color target, so its only observable effect is
+    /// discarding fragments; texture and sampler bindings become available so the test can
+    /// sample the same base-color texture the caster's material pass uses.
+    pub fragment_entry: Option<&'inputs str>,
+    /// Per-vertex input layout; together with any instance layout it must cover the vertex
+    /// entry point's recorded inputs.
     pub vertex_layout: VertexLayout<'inputs>,
-    /// Declared resource slots; shadow pipelines support at most one uniform slot, and the
-    /// module must record no other bindings.
+    /// Optional per-instance input layout fed from each record's instance supply at
+    /// instance-stepping rate, mirroring the caster's material pipeline.
+    pub instance_layout: Option<VertexLayout<'inputs>>,
+    /// Declared resource slots; shadow pipelines support at most one uniform slot and one
+    /// read-only storage slot, plus texture and sampler slots when a fragment entry point is
+    /// declared. The module must record no other bindings.
     pub bindings: &'inputs [MaterialBinding],
 }
 
@@ -2168,6 +2270,9 @@ pub struct ShadowPipeline {
     uniform_size: u32,
     /// Zero when no storage slot is declared.
     storage_size: u32,
+    /// Zero when no instance layout is declared.
+    instance_stride: u32,
+    texture_count: usize,
 }
 
 impl ShadowPipeline {
@@ -2189,6 +2294,15 @@ pub struct ShadowRecord<'resources> {
     /// Read-only storage data matching the pipeline's declared storage size (typically the same
     /// bone-matrix palette as the caster's material record); empty when no storage is declared.
     pub storage: &'resources [u8],
+    /// Textures for the pipeline's declared texture slots in ascending binding order, typically
+    /// the same base-color texture the caster's material record samples for its alpha test;
+    /// empty when the pipeline declares no texture slots.
+    pub textures: &'resources [&'resources Texture],
+    /// Per-instance data laid out per the pipeline's declared instance layout, mirroring the
+    /// caster's material record: a non-empty multiple of the instance stride when the pipeline
+    /// declares an instance layout, and empty when it declares none. Bounded by
+    /// [`INSTANCE_SUPPLY_SIZE_LIMIT`].
+    pub instances: &'resources [u8],
 }
 
 /// One depth-only pre-pass rendered into a shadow map before the scene pass samples it.
@@ -2246,6 +2360,10 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) fragment_entry: &'inputs str,
     pub(crate) stride: u32,
     pub(crate) attributes: &'inputs [VertexAttribute],
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    pub(crate) instance_stride: u32,
+    /// Declared instance-rate attributes; empty when no instance layout is declared.
+    pub(crate) instance_attributes: &'inputs [VertexAttribute],
     /// Declared uniform slot as (binding, size).
     pub(crate) uniform: Option<(u32, u32)>,
     /// Declared read-only storage slot as (binding, size).
@@ -2267,12 +2385,22 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
 /// Validated shadow pipeline creation inputs handed to the native backends.
 pub(crate) struct ShadowPipelineConfig<'inputs> {
     pub(crate) vertex_entry: &'inputs str,
+    /// Declared fragment entry point for depth-carving casters; absent for the depth-only form.
+    pub(crate) fragment_entry: Option<&'inputs str>,
     pub(crate) stride: u32,
     pub(crate) attributes: &'inputs [VertexAttribute],
+    /// Declared per-instance stride in bytes; zero when no instance layout is declared.
+    pub(crate) instance_stride: u32,
+    /// Declared instance-rate attributes consumed by the entry points.
+    pub(crate) instance_attributes: &'inputs [VertexAttribute],
     /// Declared uniform slot as (binding, size).
     pub(crate) uniform: Option<(u32, u32)>,
     /// Declared read-only storage slot as (binding, size).
     pub(crate) storage: Option<(u32, u32)>,
+    /// Declared texture binding numbers in ascending order.
+    pub(crate) texture_bindings: &'inputs [u32],
+    /// Declared sampler slots with their filter and address modes.
+    pub(crate) sampler_bindings: &'inputs [SamplerSlot],
 }
 
 /// Extent- and generation-dependent color/depth targets.
@@ -2479,6 +2607,12 @@ pub struct MaterialRecord<'resources> {
     /// Read-only storage data matching the pipeline's declared storage size (typically a
     /// bone-matrix palette); empty when the pipeline declares no storage slot.
     pub storage: &'resources [u8],
+    /// Per-instance data laid out per the pipeline's declared instance layout: a non-empty
+    /// multiple of the instance stride when the pipeline declares an instance layout (the
+    /// record draws once per instance), and empty when it declares none. Bounded by
+    /// [`INSTANCE_SUPPLY_SIZE_LIMIT`]; the bytes are copied into the session's frame-transient
+    /// instance region at submission.
+    pub instances: &'resources [u8],
 }
 
 /// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
@@ -2678,6 +2812,40 @@ fn material_scene_depth_clear(records: &[MaterialRecord<'_>]) -> Result<f32, Gra
     Ok(if greater { 0.0 } else { 1.0 })
 }
 
+/// Checks one record's instance supply against its pipeline's declared instance stride: empty
+/// when no instance layout is declared, otherwise a non-empty stride multiple inside the
+/// supply limit.
+fn validate_instance_supply(
+    record_label: &str,
+    instances: &[u8],
+    instance_stride: u32,
+) -> Result<(), GraphicsError> {
+    if instance_stride == 0 {
+        if !instances.is_empty() {
+            return Err(GraphicsError::invalid_request(format!(
+                "{record_label} supplies instance bytes but its pipeline declares no instance \
+                 layout"
+            )));
+        }
+        return Ok(());
+    }
+    let stride = usize::try_from(instance_stride).expect("validated stride fits usize");
+    if instances.is_empty() || !instances.len().is_multiple_of(stride) {
+        return Err(GraphicsError::invalid_request(format!(
+            "{record_label}'s instance bytes must be a non-zero multiple of its pipeline's \
+             declared {instance_stride}-byte instance stride"
+        )));
+    }
+    if instances.len() > usize::try_from(INSTANCE_SUPPLY_SIZE_LIMIT).expect("u32 limit fits usize")
+    {
+        return Err(GraphicsError::invalid_request(format!(
+            "{record_label}'s instance supply exceeds the {INSTANCE_SUPPLY_SIZE_LIMIT}-byte \
+             supply limit"
+        )));
+    }
+    Ok(())
+}
+
 /// Checks stride and attribute fit, and returns the location-sorted owned layout.
 fn validate_vertex_layout(layout: VertexLayout<'_>) -> Result<OwnedVertexLayout, GraphicsError> {
     if layout.stride == 0 {
@@ -2738,43 +2906,94 @@ fn find_entry_point<'interface>(
         })
 }
 
-/// Requires the declared attributes and the artifact's recorded vertex inputs to match exactly,
-/// naming the first offending location.
-fn validate_layout_against_entry(
-    layout: &OwnedVertexLayout,
-    entry: &shader::InterfaceEntryPoint,
-) -> Result<(), GraphicsError> {
-    for attribute in &layout.attributes {
-        let Some(input) = entry
-            .inputs
+/// Checks an instance layout's stride and attribute fit, and rejects locations the vertex
+/// layout already declares, returning the location-sorted owned layout.
+fn validate_instance_layout(
+    vertex: &OwnedVertexLayout,
+    instance: VertexLayout<'_>,
+) -> Result<OwnedVertexLayout, GraphicsError> {
+    let owned = validate_vertex_layout(instance)?;
+    for attribute in &owned.attributes {
+        if vertex
+            .attributes
             .iter()
-            .find(|input| input.location == attribute.location)
-        else {
+            .any(|declared| declared.location == attribute.location)
+        {
             return Err(GraphicsError::invalid_request(format!(
-                "vertex layout declares location {} that entry point `{}` does not consume",
-                attribute.location, entry.name
-            )));
-        };
-        if input.format != attribute.format.interface_code() {
-            let recorded = VertexFormat::from_interface_code(input.format)
-                .map_or("an unsupported format", VertexFormat::wgsl_name);
-            return Err(GraphicsError::invalid_request(format!(
-                "vertex layout declares location {} as {} but the shader artifact records {}",
-                attribute.location,
-                attribute.format.wgsl_name(),
-                recorded
+                "instance layout declares location {} that the vertex layout already declares",
+                attribute.location
             )));
         }
     }
-    for input in &entry.inputs {
-        if !layout
-            .attributes
+    Ok(owned)
+}
+
+/// Finds the declared attribute feeding one recorded input — in the vertex layout or, when
+/// declared, the instance layout — and checks its format, naming the first mismatch.
+fn find_declared_attribute<'layouts>(
+    layout: &'layouts OwnedVertexLayout,
+    instance_layout: Option<&'layouts OwnedVertexLayout>,
+    input: shader::InterfaceVertexInput,
+    entry_name: &str,
+) -> Result<(&'layouts VertexAttribute, bool), GraphicsError> {
+    let vertex_attribute = layout
+        .attributes
+        .iter()
+        .find(|attribute| attribute.location == input.location)
+        .map(|attribute| (attribute, false));
+    let attribute = vertex_attribute.or_else(|| {
+        instance_layout.and_then(|instance| {
+            instance
+                .attributes
+                .iter()
+                .find(|attribute| attribute.location == input.location)
+                .map(|attribute| (attribute, true))
+        })
+    });
+    let Some((attribute, from_instance)) = attribute else {
+        return Err(GraphicsError::invalid_request(format!(
+            "entry point `{entry_name}` consumes location {} that the declared layouts do not \
+             supply",
+            input.location
+        )));
+    };
+    if input.format != attribute.format.interface_code() {
+        let recorded = VertexFormat::from_interface_code(input.format)
+            .map_or("an unsupported format", VertexFormat::wgsl_name);
+        return Err(GraphicsError::invalid_request(format!(
+            "declared layouts supply location {} as {} but the shader artifact records {}",
+            attribute.location,
+            attribute.format.wgsl_name(),
+            recorded
+        )));
+    }
+    Ok((attribute, from_instance))
+}
+
+/// Requires the declared vertex and instance attributes together to match the artifact's
+/// recorded vertex inputs exactly, naming the first offending location.
+fn validate_layouts_against_entry(
+    layout: &OwnedVertexLayout,
+    instance_layout: Option<&OwnedVertexLayout>,
+    entry: &shader::InterfaceEntryPoint,
+) -> Result<(), GraphicsError> {
+    for &input in &entry.inputs {
+        find_declared_attribute(layout, instance_layout, input, &entry.name)?;
+    }
+    let declared = layout.attributes.iter().chain(
+        instance_layout
+            .map(|instance| instance.attributes.as_slice())
+            .unwrap_or_default(),
+    );
+    for attribute in declared {
+        if !entry
+            .inputs
             .iter()
-            .any(|attribute| attribute.location == input.location)
+            .any(|input| input.location == attribute.location)
         {
             return Err(GraphicsError::invalid_request(format!(
-                "entry point `{}` consumes location {} that the vertex layout does not declare",
-                entry.name, input.location
+                "declared layouts supply location {} that entry point `{}` does not consume",
+                attribute.location, entry.name
             )));
         }
     }
@@ -2783,36 +3002,24 @@ fn validate_layout_against_entry(
 
 /// Requires every recorded vertex input to have a matching declared attribute — extra declared
 /// attributes are legal and simply not consumed by the depth-only stage — and returns the
-/// consumed subset for native vertex-input construction.
-fn validate_layout_covers_entry(
+/// consumed vertex-rate and instance-rate subsets for native vertex-input construction.
+fn validate_layouts_cover_entry(
     layout: &OwnedVertexLayout,
+    instance_layout: Option<&OwnedVertexLayout>,
     entry: &shader::InterfaceEntryPoint,
-) -> Result<Vec<VertexAttribute>, GraphicsError> {
+) -> Result<(Vec<VertexAttribute>, Vec<VertexAttribute>), GraphicsError> {
     let mut consumed = Vec::with_capacity(entry.inputs.len());
-    for input in &entry.inputs {
-        let Some(attribute) = layout
-            .attributes
-            .iter()
-            .find(|attribute| attribute.location == input.location)
-        else {
-            return Err(GraphicsError::invalid_request(format!(
-                "entry point `{}` consumes location {} that the vertex layout does not declare",
-                entry.name, input.location
-            )));
-        };
-        if input.format != attribute.format.interface_code() {
-            let recorded = VertexFormat::from_interface_code(input.format)
-                .map_or("an unsupported format", VertexFormat::wgsl_name);
-            return Err(GraphicsError::invalid_request(format!(
-                "vertex layout declares location {} as {} but the shader artifact records {}",
-                attribute.location,
-                attribute.format.wgsl_name(),
-                recorded
-            )));
+    let mut consumed_instance = Vec::new();
+    for &input in &entry.inputs {
+        let (attribute, from_instance) =
+            find_declared_attribute(layout, instance_layout, input, &entry.name)?;
+        if from_instance {
+            consumed_instance.push(*attribute);
+        } else {
+            consumed.push(*attribute);
         }
-        consumed.push(*attribute);
     }
-    Ok(consumed)
+    Ok((consumed, consumed_instance))
 }
 
 struct BindingDeclaration {

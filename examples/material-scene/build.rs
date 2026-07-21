@@ -14,6 +14,8 @@ fn main() {
         "shadow",
         "skinned",
         "skinned-shadow",
+        "sprout",
+        "sprout-shadow",
     ];
     let flavor = if target_os == OsStr::new("macos") {
         if std::env::var_os("MULCIBER_METAL_TYPECHECK_ONLY").as_deref() == Some(OsStr::new("1")) {

@@ -45,7 +45,7 @@ use mulciber_platform::{InputEvent, WindowEvent};
 pub use pacing::{FramePacer, FrameSchedule, IntervalSummary, PacingDiagnostics, PacingReport};
 pub use timing::{FramePlan, RuntimeConfig, RuntimeConfigError};
 
-/// Coordinates frame-scoped input, a fixed-rate simulation clock, and presentation pacing.
+/// Coordinates simulation-latched input, a fixed-rate simulation clock, and presentation pacing.
 #[derive(Debug)]
 pub struct Runtime {
     input: InputSnapshot,
@@ -55,8 +55,9 @@ pub struct Runtime {
 
 /// One scoped runtime frame containing its timing plan and immutable input snapshot.
 ///
-/// Dropping the frame clears pressed/released transitions and scroll samples while preserving held
-/// controls. This includes early returns from surface acquisition or rendering errors.
+/// Dropping a frame that schedules at least one fixed update clears pressed/released transitions
+/// and scroll samples while preserving held controls. A zero-update render frame retains those
+/// transients for the next simulation-bearing frame, so one-shot input cannot fall between ticks.
 #[derive(Debug)]
 #[must_use = "a runtime frame must be consumed by update/render work"]
 pub struct RuntimeFrame<'runtime> {
@@ -78,7 +79,7 @@ impl RuntimeFrame<'_> {
         self.schedule
     }
 
-    /// Returns the held state and transitions accumulated for this frame.
+    /// Returns held state and transitions accumulated since the last simulation-bearing frame.
     #[must_use]
     pub const fn input(&self) -> &InputSnapshot {
         self.input
@@ -87,7 +88,9 @@ impl RuntimeFrame<'_> {
 
 impl Drop for RuntimeFrame<'_> {
     fn drop(&mut self) {
-        self.input.end_frame();
+        if self.plan.fixed_steps() != 0 {
+            self.input.end_frame();
+        }
     }
 }
 
@@ -144,7 +147,7 @@ impl Runtime {
         }
     }
 
-    /// Returns the held state and transitions accumulated for the current frame.
+    /// Returns held state and transitions accumulated since the last simulation-bearing frame.
     #[must_use]
     pub const fn input(&self) -> &InputSnapshot {
         &self.input
@@ -158,7 +161,8 @@ impl Runtime {
     /// the delta observably falls back to the wall-clock gap since the previous frame — see
     /// [`RuntimeFrame::schedule`].
     ///
-    /// Dropping the returned frame automatically ends the input snapshot, including on early return.
+    /// Dropping a frame with fixed updates consumes transient input, including on early return.
+    /// A frame with no fixed update retains it for the next simulation-bearing frame.
     pub fn begin_frame(&mut self, now: Instant) -> RuntimeFrame<'_> {
         let (plan, schedule) = if self.clock.suspended() {
             (self.clock.idle_plan(), FrameSchedule::idle())
@@ -274,14 +278,16 @@ mod tests {
 
     #[test]
     fn scoped_frame_cleanup_and_window_suspension_release_input() {
-        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), Instant::now());
+        let started = Instant::now();
+        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), started);
         runtime.handle_window_event(WindowEvent::Input(InputEvent::Keyboard {
             key: KeyCode::KeyW,
             state: ButtonState::Pressed,
             repeat: false,
             modifiers: Modifiers::default(),
         }));
-        let frame = runtime.begin_frame(Instant::now());
+        let frame = runtime.begin_frame(started + STEP);
+        assert_eq!(frame.plan().fixed_steps(), 1);
         assert!(frame.input().key_pressed(KeyCode::KeyW));
         drop(frame);
         assert!(!runtime.input().key_pressed(KeyCode::KeyW));
@@ -291,5 +297,32 @@ mod tests {
         assert!(runtime.suspended());
         assert!(!runtime.input().key_held(KeyCode::KeyW));
         assert!(runtime.input().key_released(KeyCode::KeyW));
+    }
+
+    #[test]
+    fn zero_step_frame_preserves_transitions_until_simulation_can_consume_them() {
+        const DISPLAY_75_HZ_FRAME: Duration = Duration::from_nanos(13_333_333);
+
+        let started = Instant::now();
+        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), started);
+        runtime.handle_input(InputEvent::Keyboard {
+            key: KeyCode::Space,
+            state: ButtonState::Pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        });
+
+        let render_only = runtime.begin_frame(started + DISPLAY_75_HZ_FRAME);
+        assert_eq!(render_only.plan().fixed_steps(), 0);
+        assert!(render_only.input().key_pressed(KeyCode::Space));
+        drop(render_only);
+        assert!(runtime.input().key_pressed(KeyCode::Space));
+
+        let simulation_frame = runtime.begin_frame(started + DISPLAY_75_HZ_FRAME * 2);
+        assert_eq!(simulation_frame.plan().fixed_steps(), 1);
+        assert!(simulation_frame.input().key_pressed(KeyCode::Space));
+        drop(simulation_frame);
+        assert!(!runtime.input().key_pressed(KeyCode::Space));
+        assert!(runtime.input().key_held(KeyCode::Space));
     }
 }

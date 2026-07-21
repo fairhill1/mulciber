@@ -40,13 +40,14 @@ The initial application locally owned:
 - the platform pump, nonfatal frame acquisition, generation-bound target rebuild, and shutdown loop.
 
 The first extraction moves only the generic pieces into `mulciber-runtime`. Ordered
-`mulciber-platform` transitions accumulate into frame-scoped held/pressed/released snapshots, and
-focus loss releases every held key or pointer button. A 60 Hz accumulator produces zero or more
+`mulciber-platform` transitions accumulate into simulation-latched held/pressed/released snapshots,
+and focus loss releases every held key or pointer button. A 60 Hz accumulator produces zero or more
 fixed gameplay updates per displayed frame, caps hitch recovery at eight steps, reports discarded
 time, and supplies an interpolation fraction. Forge Run retains previous/current simulation states
 and interpolates player motion, facing, camera, and sentries for the renderer. Cosmetic pickup
 animation consumes the clamped variable frame delta. A scoped runtime frame clears transient input
-automatically on normal completion or early return.
+after a simulation-bearing frame on normal completion or early return; zero-update render frames
+retain one-shot transitions so high-refresh presentation cannot drop them between fixed ticks.
 
 Simulation advances before graphics acquisition, so a temporarily unavailable surface does not
 make game time conditional on acquiring a drawable. Collision, camera, game state, reset/win policy,

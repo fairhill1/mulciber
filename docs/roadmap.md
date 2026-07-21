@@ -305,8 +305,11 @@ conformance plus visual confirmation on Intel UHD 620. Line counts and native be
 Runtime dogfood: Forge Run's playable loop earned a narrow `mulciber-runtime` extraction covering
 held/pressed/released input snapshots with focus-loss clearing, a configurable fixed-step
 accumulator with bounded hitch catch-up, clamped variable deltas, dropped-time diagnostics, and
-render interpolation; the runtime does not own collision, camera, scene, or the platform/GPU event
-loop. Rendering suspension freezes runtime time, preserves interpolation, releases held input, and
+render interpolation. Transient input is retained across zero-update render frames and consumed by
+the next simulation-bearing frame, fixing the high-refresh one-shot loss recorded in the consumer
+evidence without claiming timestamped per-tick staging; the runtime does not own collision, camera,
+scene, or the platform/GPU event loop. Rendering suspension freezes runtime time, preserves
+interpolation, releases held input, and
 physically passed minimize/restore on macOS and, on 2026-07-20, on both Linux paths through the
 physically played Forge Run sessions. Native pacing, process/OS suspension, fullscreen/display
 transitions, device recovery, and the full lifecycle comparison remain pending, so Gate 5 is not

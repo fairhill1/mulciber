@@ -23,7 +23,7 @@ impl ScrollSample {
     }
 }
 
-/// Held controls and transitions accumulated for one game frame.
+/// Held controls and transitions accumulated for the next simulation-bearing frame.
 #[derive(Debug)]
 pub struct InputSnapshot {
     focused: bool,
@@ -80,13 +80,13 @@ impl InputSnapshot {
         self.held_keys.contains(&key)
     }
 
-    /// Returns whether `key` became pressed during the current frame.
+    /// Returns whether `key` became pressed since transient input was last consumed.
     #[must_use]
     pub fn key_pressed(&self, key: KeyCode) -> bool {
         self.pressed_keys.contains(&key)
     }
 
-    /// Returns whether `key` became released during the current frame.
+    /// Returns whether `key` became released since transient input was last consumed.
     #[must_use]
     pub fn key_released(&self, key: KeyCode) -> bool {
         self.released_keys.contains(&key)
@@ -98,19 +98,19 @@ impl InputSnapshot {
         self.held_pointer_buttons.contains(&button)
     }
 
-    /// Returns whether `button` became pressed during the current frame.
+    /// Returns whether `button` became pressed since transient input was last consumed.
     #[must_use]
     pub fn pointer_button_pressed(&self, button: PointerButton) -> bool {
         self.pressed_pointer_buttons.contains(&button)
     }
 
-    /// Returns whether `button` became released during the current frame.
+    /// Returns whether `button` became released since transient input was last consumed.
     #[must_use]
     pub fn pointer_button_released(&self, button: PointerButton) -> bool {
         self.released_pointer_buttons.contains(&button)
     }
 
-    /// Returns the ordered scroll transitions accumulated during the current frame.
+    /// Returns ordered scroll transitions accumulated since transient input was last consumed.
     #[must_use]
     pub fn scroll(&self) -> &[ScrollSample] {
         &self.scroll

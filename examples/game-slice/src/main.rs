@@ -191,7 +191,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let runtime_frame = runtime.begin_frame(Instant::now());
             let plan = runtime_frame.plan();
-            game.handle_frame_input(runtime_frame.input());
+            if plan.fixed_steps() != 0 {
+                game.handle_frame_input(runtime_frame.input());
+            }
             for _ in 0..plan.fixed_steps() {
                 game.fixed_update(runtime_frame.input(), plan.fixed_step().as_secs_f32());
             }

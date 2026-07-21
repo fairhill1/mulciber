@@ -15,10 +15,11 @@ let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
 The application forwards each `mulciber-platform::WindowEvent` through
 `Runtime::handle_window_event`; the runtime consumes its input and rendering-lifecycle portions while
 redraw, metrics, close, and graphics policy stay with the application. On each redraw it begins a
-scoped `RuntimeFrame`, handles one-frame input transitions, runs the requested number of fixed
-updates, runs variable presentation work with the clamped frame delta, and renders its own
+scoped `RuntimeFrame`, handles simulation-latched input transitions, runs the requested number of
+fixed updates, runs variable presentation work with the clamped frame delta, and renders its own
 previous/current state with `FramePlan::interpolation()`. Dropping the frame automatically clears
-transient input, including on an early return.
+transient input after a frame that scheduled fixed updates, including on an early return. A rendered
+frame with no fixed update retains those transitions for the next simulation-bearing frame.
 
 This makes the simulation rate independent from a 60, 120, 144, 240, or other-Hz display. The
 renderer deliberately runs one fixed step behind the newest simulation state and interpolates
@@ -45,18 +46,23 @@ The runtime uses `std::time::Instant` and has no third-party dependency beyond
 
 ## Input semantics
 
-`InputSnapshot` preserves held state across frames and exposes pressed/released membership for the
-current frame. Key-repeat events do not manufacture new presses. Pointer position, held and
-transitional pointer buttons, modifiers, and ordered precise/coarse scroll samples are also retained.
-Dropping `RuntimeFrame` clears transitions and scroll samples while preserving held controls.
+`InputSnapshot` preserves held state across frames and exposes pressed/released membership accumulated
+since the last simulation-bearing frame. Key-repeat events do not manufacture new presses. Pointer
+position, held and transitional pointer buttons, modifiers, and ordered precise/coarse scroll samples
+are also retained.
+Dropping a `RuntimeFrame` with at least one fixed update clears transitions and scroll samples while
+preserving held controls. Dropping a zero-update frame deliberately leaves them latched. This prevents
+a one-shot press from being lost when display cadence exceeds the fixed simulation rate, such as a
+75 Hz display driving a 60 Hz simulation.
 
 Focus loss synthesizes release membership for every held key and pointer button, clears held state,
 and clears modifiers. This prevents movement or dragging from sticking if a native backend cannot
 deliver the corresponding physical release while the window is unfocused.
 
-Pressed and released membership belongs to the whole rendered frame, not to each fixed update. An
-edge-triggered action such as reset should therefore run once before the fixed-step loop, as Forge
-Run demonstrates. Every catch-up update currently consumes the latest held snapshot; platform input
+Pressed and released membership belongs to the whole simulation-bearing rendered frame, not to each
+fixed update. An edge-triggered action such as reset should therefore run once before the fixed-step
+loop, guarded by `FramePlan::fixed_steps() != 0`, as Forge Run demonstrates. Every catch-up update
+currently consumes the latest held snapshot; platform input
 events do not yet carry timestamps that would permit historical per-tick staging. Deterministic
 replay/rollback evidence must decide whether that narrower input timeline belongs here later.
 
@@ -121,9 +127,10 @@ See the [game-slice comparison](game-slice-comparison.md) for source-count metho
 
 Unit tests cover invalid timing limits, partial-step accumulation, interpolation, frame clamping,
 catch-up discard reporting, held/pressed/released key semantics, key repeats, focus-loss releases,
-pointer buttons, precise scroll preservation, suspended time freezing, interpolation preservation,
-and held-input release. Forge Run is the first integrated consumer and keeps simulation updates ahead
-of graphics acquisition so drawable unavailability does not directly gate game time.
+pointer buttons, precise scroll preservation, zero-step transient retention, suspended time freezing,
+interpolation preservation, and held-input release. Forge Run is the first integrated consumer and
+keeps simulation updates ahead of graphics acquisition so drawable unavailability does not directly
+gate game time.
 
 The application-owned and runtime-backed Forge Run checkpoints were physically exercised on an Apple
 M2 running macOS 15.7.7, where the operator reported that the game and interpolated movement felt

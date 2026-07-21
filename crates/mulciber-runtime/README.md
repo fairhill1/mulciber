@@ -1,20 +1,38 @@
 # mulciber-runtime
 
-Experimental game-loop timing and input snapshots for Mulciber.
+Experimental game-loop timing and input coordination for Mulciber.
 
-The first slice provides a fixed-rate simulation accumulator, render interpolation, bounded catch-up,
-scoped input transitions, and rendering suspend/resume coordination over `mulciber-platform`. Since
-0.2.0, presented-cadence pacing diagnostics consume drained presentation feedback into cadence
-estimates, interval distributions, and missed-interval counts. Since 0.3.0, the display-interval
-frame pacer schedules simulation deltas as whole display intervals of the observed cadence with an
-observable wall-clock fallback, so steady presentation no longer animates build-start jitter. Since
-0.4.0, `Runtime` owns that pacer: drain presentation feedback into `Runtime::record_presented`
-and `begin_frame` is paced with no further wiring, with the fallback observable per frame through
-`RuntimeFrame::schedule` and in aggregate through `Runtime::pacing_report`. Version 0.5.0 carries
-no runtime API change; it moves to the `mulciber-platform` 0.5 contract, whose window-mode intent
-adds fullscreen to the platform types this crate exposes. The crate does not yet
-own the native event pump, absolute frame-start scheduling, process/OS suspension, display
-transitions, jobs, or device recovery.
+`mulciber-runtime` combines a fixed-rate simulation clock, render interpolation, bounded hitch
+catch-up, input snapshots, rendering suspension, and presentation-cadence pacing. It consumes
+platform events without owning the native event pump or game state.
 
-Development, design contracts, and recorded validation evidence live in the
-[Mulciber repository](https://github.com/fairhill1/mulciber).
+## Frame flow
+
+Forward platform events to `Runtime::handle_window_event`, drain presentation feedback with
+`Runtime::record_presented`, then call `Runtime::begin_frame` once per rendered frame. The returned
+`FramePlan` specifies the exact number and duration of fixed updates plus the interpolation fraction
+for rendering between the previous and current simulation states.
+
+Frame deltas follow observed presentation cadence when fresh feedback is available and fall back to
+wall-clock timing otherwise. Catch-up work and accepted frame time are bounded so a hitch cannot
+create an unbounded simulation spiral; discarded time remains visible through diagnostics.
+
+## Input semantics
+
+`InputSnapshot` exposes held controls and pressed/released transitions with focus-loss clearing.
+Transient presses, releases, and scroll samples remain latched through render-only frames and are
+consumed after a frame schedules fixed simulation work. This prevents one-shot input from being
+lost when the display rate exceeds the fixed simulation rate.
+
+Transitions belong to the whole simulation-bearing frame rather than individual catch-up ticks.
+Handle an edge-triggered action once before the fixed-update loop, guarded by
+`FramePlan::fixed_steps() != 0`; every fixed update may read the latest held state.
+
+## Scope
+
+The crate owns timing, input accumulation, presentation-cadence diagnostics, and rendering
+suspend/resume coordination. It deliberately does not own the platform event pump, graphics
+submission, collision, scene state, camera policy, process suspension, jobs, or device recovery.
+
+The complete experimental contract and validation record live in the
+[Mulciber repository](https://github.com/fairhill1/mulciber/blob/main/docs/runtime-contract.md).

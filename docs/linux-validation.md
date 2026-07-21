@@ -309,6 +309,19 @@ destruction, and both fallible shutdowns. These checks establish lifetime correc
 bound; they do not reproduce the game's original 37–41-terrain-mesh hitch trace, so the before/after
 frame-time improvement remains to be measured in that workload.
 
+### RGBA8 UNORM upload evidence
+
+On 2026-07-21, an uncommitted tree based on `57c9240` added single-level and complete-mip-chain
+RGBA8 UNORM upload APIs while retaining the existing `Texture` binding handle. On the same native
+KDE Plasma Wayland / Nvidia tier, `cargo run -p mulciber-api-conformance` passed all 80 Vulkan cases
+with validation enabled and no validation output. The material scene in that run sampled both a
+single-level `VK_FORMAT_R8G8B8A8_UNORM` image and a four-level 8x8-to-1x1 image; its overlay retained
+the existing sRGB mip-chain path in the same submission. The host workspace formatting, check,
+clippy-with-warnings-denied, tests, and diff checks passed, and the Metal peer type-checked for
+`aarch64-apple-darwin` with cross-host shader generation disabled. This is automated API/upload,
+binding, presentation, and destruction evidence on one Vulkan machine; it is not visual normal-map
+correctness, lifecycle, multi-display, broader hardware, or physical Metal evidence.
+
 ### Pacing policy evidence
 
 Later on 2026-07-20, an instrumented Skyrimlike walkaround (auto strafe-plus-yaw, per-frame

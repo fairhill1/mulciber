@@ -9,8 +9,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
-    ShadowPipelineConfig, mip_extent,
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, Rgba8TextureFormat, SamplerAddress,
+    SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -562,6 +562,7 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         levels: &[&[u8]],
+        format: Rgba8TextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
         let mip_levels =
             u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
@@ -575,11 +576,15 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
             &packed,
         )?;
+        let native_format = match format {
+            Rgba8TextureFormat::Srgb => vk::VK_FORMAT_R8G8B8A8_SRGB,
+            Rgba8TextureFormat::Unorm => vk::VK_FORMAT_R8G8B8A8_UNORM,
+        };
         let image = match create_image(
             &self.surface,
             width,
             height,
-            vk::VK_FORMAT_R8G8B8A8_SRGB,
+            native_format,
             (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,

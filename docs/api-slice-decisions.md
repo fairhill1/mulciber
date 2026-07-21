@@ -137,16 +137,19 @@ stays application-owned, and shadow passes keep their conventional less-compare 
 ## Texture mip chains
 
 Decided as an application-supplied chain, not native generation.
-`Device::create_rgba8_srgb_texture_with_mips` uploads a complete chain from the base level to
-1x1 — each level halving both extents and flooring at one texel, every level's byte count
-validated against its extent, partial chains rejected by name. Mip content is application
-policy in the same sense as packed uniform bytes and WGSL modules: the downsampling filter,
-color-space handling, and any per-level authoring stay outside the engine, and blit-based
-native generation stays closed until a slice forces it. Mip filtering derives from each
-sampler slot's declared filter — `Linear` interpolates between levels, `Nearest` picks one —
-so no separate mip-filter axis opens; single-level textures sample exactly as before. The
-fixed-recipe texture and postprocess samplers keep their recorded single-level behavior.
-Recorded in the [material contract](material-contract.md).
+`Device::create_rgba8_srgb_texture_with_mips` and
+`Device::create_rgba8_unorm_texture_with_mips` upload complete chains from the base level to 1x1 —
+each level halving both extents and flooring at one texel, every level's byte count validated against
+its extent, partial chains rejected by name. Matching single-level APIs cover base-only uploads.
+sRGB applies the native transfer-function decode for color data; UNORM returns normalized linear
+values for data such as tangent-space normal maps, without adding a second binding type. Mip content
+is application policy in the same sense as packed uniform bytes and WGSL modules: the downsampling
+filter, color-space handling, and any per-level authoring stay outside the engine, and blit-based
+native generation stays closed until a slice forces it. Mip filtering derives from each sampler
+slot's declared filter — `Linear` interpolates between levels, `Nearest` picks one — so no separate
+mip-filter axis opens; single-level textures sample exactly as before. The fixed-recipe texture and
+postprocess samplers keep their recorded single-level behavior. Recorded in the
+[material contract](material-contract.md).
 
 ## Shadow pass and depth sampling
 

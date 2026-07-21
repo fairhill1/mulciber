@@ -1517,6 +1517,17 @@ impl<'window> Cases<'window> {
                         .device
                         .create_rgba8_srgb_texture_with_mips(8, 8, &mip_refs)?
                 };
+                let (unorm_texture, unorm_mip_texture) = {
+                    let graphics = self.graphics.as_ref().expect("session A is open");
+                    (
+                        graphics
+                            .device
+                            .create_rgba8_unorm_texture(8, 8, &mip_levels[0])?,
+                        graphics
+                            .device
+                            .create_rgba8_unorm_texture_with_mips(8, 8, &mip_refs)?,
+                    )
+                };
                 let overlay_pipeline = {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     graphics.device.create_material_pipeline(
@@ -1533,7 +1544,8 @@ impl<'window> Cases<'window> {
                     )?
                 };
                 let texture = self.texture.as_ref().expect("texture exists");
-                let textures = [&mip_texture, texture];
+                let textures = [&unorm_mip_texture, &unorm_texture];
+                let overlay_textures = [&mip_texture, texture];
                 let uniform = material_uniform();
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
@@ -1551,7 +1563,7 @@ impl<'window> Cases<'window> {
                     geometry: GeometrySource::Mesh(
                         self.material_mesh.as_ref().expect("material mesh"),
                     ),
-                    textures: &textures,
+                    textures: &overlay_textures,
                     shadow_map: None,
                     uniform: &uniform,
                     storage: &[],
@@ -1583,9 +1595,13 @@ impl<'window> Cases<'window> {
                 self.pass("partial mip chain rejected");
                 self.pass("mip level byte mismatch rejected");
                 self.pass("mip-chained material presentation");
+                self.pass("RGBA8 UNORM texture presentation");
+                self.pass("mip-chained RGBA8 UNORM texture presentation");
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 graphics.device.destroy_texture(mip_texture)?;
+                graphics.device.destroy_texture(unorm_texture)?;
+                graphics.device.destroy_texture(unorm_mip_texture)?;
                 graphics
                     .device
                     .destroy_material_pipeline(overlay_pipeline)?;

@@ -15,7 +15,8 @@ and binding slots validated against the interface recorded in the artifact — a
 per-record uniform, read-only storage, and frame-transient geometry as plain bytes: the
 application owns the layouts, the engine sees bytes. Policy that engines commonly absorb
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
-application code.
+application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
+normal maps, with either one level or a complete application-authored mip chain.
 
 Optional GPU diagnostics correlate completed durations with presentation frame indices. Metal
 reports whole-command-buffer time; Vulkan additionally reports the fixed shadow, scene, and

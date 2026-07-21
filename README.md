@@ -48,7 +48,8 @@ evaluated against the pre-registered comparisons in the
   ([platform contract](docs/api-platform-contract.md)).
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
   generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
-  feedback, opt-in correlated GPU duration feedback, bounded completed-frame lazy resource
+  feedback, opt-in correlated GPU duration feedback, RGBA8 sRGB and linear-UNORM sampled-texture
+  uploads with optional application-authored mip chains, bounded completed-frame lazy resource
   reclamation, and recovery-oriented errors
   ([graphics contract](docs/api-graphics-contract.md),
   [decision ledger](docs/api-slice-decisions.md)).

@@ -196,17 +196,19 @@ fallback, and acquired-frame abandonment/recovery controls.
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   resource-reclamation, multi-draw, instancing, material-declaration, and shutdown conformance
-  tests: `probes/api-conformance` currently asserts seventy shared cases across those categories
-  (plus the Vulkan-only superseded-generation branch) and exits nonzero on divergence;
+  tests: `probes/api-conformance` currently asserts seventy-nine shared cases across those
+  categories (plus the Vulkan-only superseded-generation branch) and exits nonzero on divergence;
   per-platform runs are recorded in the validation ledgers as they are exercised.
   `create_mesh_with_layout` additionally accepts 32-bit indices (`MeshIndices::U32`), exercised
   by the material conformance mesh on both Linux paths; material sampler slots declare
   per-slot filter and address modes backed by pipeline-owned native samplers; material
   pipelines declare their blend mode (opaque, alpha-to-coverage cutout, premultiplied
   translucent) and depth mode (test-write, test-only, off) from the fixed mode set recorded in
-  the [decision ledger](api-slice-decisions.md); textures accept an application-supplied
-  full mip chain sampled through the declared per-slot filters, with native generation
-  deliberately closed per the same ledger; and scene submissions compose one fixed depth-only
+  the [decision ledger](api-slice-decisions.md); RGBA8 textures select sRGB transfer decoding or
+  linear UNORM interpretation at creation while retaining one `Texture` binding type, and accept
+  either a single level or an application-supplied full mip chain sampled through the declared
+  per-slot filters, with native generation deliberately closed per the same ledger; and scene
+  submissions compose one fixed depth-only
   shadow pre-pass whose map material pipelines sample through declared depth-texture and
   fixed-recipe comparison-sampler slots, per the same ledger; and material and shadow
   pipelines declare one read-only storage slot supplied as per-record bytes, opened for

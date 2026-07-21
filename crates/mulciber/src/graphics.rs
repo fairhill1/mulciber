@@ -278,11 +278,7 @@ impl Device<'_> {
         height: u32,
         texels: &[u8],
     ) -> Result<Texture, GraphicsError> {
-        validate_mip_level(width, height, 0, texels)?;
-        let id = session_mut(&self.shared)?.create_texture(width, height, &[texels])?;
-        Ok(Texture {
-            lease: self.lease(id, ResourceKind::Texture),
-        })
+        self.create_rgba8_texture(width, height, texels, Rgba8TextureFormat::Srgb)
     }
 
     /// Uploads a tightly packed RGBA8 sRGB texture with an application-supplied mip chain.
@@ -302,6 +298,68 @@ impl Device<'_> {
         height: u32,
         levels: &[&[u8]],
     ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_mips(width, height, levels, Rgba8TextureFormat::Srgb)
+    }
+
+    /// Uploads a tightly packed RGBA8 UNORM texture without sRGB transfer-function decoding.
+    ///
+    /// This format is suitable for linearly interpreted data such as tangent-space normal maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty dimensions, a mismatched byte count, overflow, or native upload
+    /// failure.
+    pub fn create_rgba8_unorm_texture(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture(width, height, texels, Rgba8TextureFormat::Unorm)
+    }
+
+    /// Uploads a tightly packed RGBA8 UNORM texture with an application-supplied mip chain.
+    ///
+    /// `levels[0]` holds the base image; each following level halves both dimensions (flooring at
+    /// one texel), and the chain must run to its final 1×1 level. The application owns mip
+    /// content, including its downsampling filter. Sampling does not apply the sRGB transfer
+    /// function, making this format suitable for linearly interpreted data such as normal maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty dimensions, a chain that does not run from the base level to
+    /// 1×1, a level whose byte count does not match its dimensions, overflow, or native upload
+    /// failure.
+    pub fn create_rgba8_unorm_texture_with_mips(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[u8]],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_mips(width, height, levels, Rgba8TextureFormat::Unorm)
+    }
+
+    fn create_rgba8_texture(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+        format: Rgba8TextureFormat,
+    ) -> Result<Texture, GraphicsError> {
+        validate_mip_level(width, height, 0, texels)?;
+        let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+        })
+    }
+
+    fn create_rgba8_texture_with_mips(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[u8]],
+        format: Rgba8TextureFormat,
+    ) -> Result<Texture, GraphicsError> {
         if width == 0 || height == 0 {
             return Err(GraphicsError::invalid_request(
                 "texture byte count does not match its dimensions",
@@ -318,7 +376,7 @@ impl Device<'_> {
         for (level, texels) in (0_u32..).zip(levels) {
             validate_mip_level(width, height, level, texels)?;
         }
-        let id = session_mut(&self.shared)?.create_texture(width, height, levels)?;
+        let id = session_mut(&self.shared)?.create_texture(width, height, levels, format)?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
         })
@@ -2012,10 +2070,17 @@ pub enum GeometrySource<'resources> {
     Transient(TransientGeometry<'resources>),
 }
 
-/// Uploaded RGBA8 sRGB texture.
+/// Uploaded RGBA8 sampled texture, interpreted as sRGB or linear UNORM according to its creation
+/// API.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
     lease: ResourceLease,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Rgba8TextureFormat {
+    Srgb,
+    Unorm,
 }
 
 impl Texture {

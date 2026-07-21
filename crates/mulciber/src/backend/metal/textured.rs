@@ -9,8 +9,8 @@ use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, SamplerAddress, SamplerFilter,
-    ShadowPipelineConfig, mip_extent,
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, Rgba8TextureFormat, SamplerAddress,
+    SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -22,6 +22,7 @@ use crate::{
 use objc::{Object, Origin3, Region3, Size3};
 
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
+const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
 const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
 const PIXEL_FORMAT_INVALID: usize = 0;
@@ -502,13 +503,18 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         levels: &[&[u8]],
+        format: Rgba8TextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
         unsafe {
+            let pixel_format = match format {
+                Rgba8TextureFormat::Srgb => PIXEL_FORMAT_RGBA8_UNORM_SRGB,
+                Rgba8TextureFormat::Unorm => PIXEL_FORMAT_RGBA8_UNORM,
+            };
             let descriptor = required(
                 objc::object_three_usizes_bool(
                     objc::class(c"MTLTextureDescriptor"),
                     c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-                    PIXEL_FORMAT_RGBA8_UNORM_SRGB,
+                    pixel_format,
                     usize::try_from(width)
                         .map_err(|_| GraphicsError::new("texture width exceeds usize"))?,
                     usize::try_from(height)

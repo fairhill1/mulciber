@@ -37,13 +37,16 @@ data is supplied per record as plain bytes of exactly the declared size — the 
 WGSL memory-layout correctness — and flows through the session's frame-transient per-draw
 uniform region; no persistent application-owned buffer handle was forced by this slice.
 
-`Device::create_rgba8_srgb_texture_with_mips` uploads an application-supplied mip chain: the
-base level through 1x1, each level halving and flooring at one texel, every level's byte count
-validated against its extent. Sampler slots follow their declared filter across levels —
-`Linear` interpolates between them, `Nearest` picks one — so mip behavior costs no new
-declaration axis, and single-level textures sample exactly as before. Mip content
-(downsampling filter, color-space handling) is application policy; native generation is not
-part of the vocabulary.
+`Device::create_rgba8_srgb_texture_with_mips` and
+`Device::create_rgba8_unorm_texture_with_mips` upload application-supplied mip chains: the base
+level through 1x1, each level halving and flooring at one texel, every level's byte count validated
+against its extent. Their non-mip peers upload one base level. sRGB textures apply the native sRGB
+transfer-function decode while UNORM textures expose normalized linear values, allowing color maps
+and data maps such as tangent-space normals to share the existing `Texture` binding type. Sampler
+slots follow their declared filter across levels — `Linear` interpolates between them, `Nearest`
+picks one — so mip behavior costs no new declaration axis, and single-level textures sample exactly
+as before. Mip content (downsampling filter, color-space handling) is application policy; native
+generation is not part of the vocabulary.
 
 A material pipeline may declare one read-only storage slot (`MaterialBinding::Storage`): a
 WGSL `var<storage, read>` whose creation-fixed byte size must match the recorded type exactly,
@@ -179,10 +182,10 @@ This checkpoint does not add general pass composition — the shadow pre-pass is
 depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
 color render-to-texture beyond the postprocess recipe, load/store policy, compute, read-write
 or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
-equations beyond the fixed mode set, bind-group abstractions, new texture formats, packed
-vertex formats, native mip generation, per-cascade map resolutions, engine-side cascade
-selection or blending, or persistent updatable mesh handles beyond the frame-transient
-geometry supply.
+equations beyond the fixed mode set, bind-group abstractions, sampled color formats beyond RGBA8
+sRGB and RGBA8 UNORM, packed vertex formats, native mip generation, per-cascade map resolutions,
+engine-side cascade selection or blending, or persistent updatable mesh handles beyond the
+frame-transient geometry supply.
 
 ## Evidence
 
@@ -218,6 +221,14 @@ close, with agent-captured screenshots showing seam-free moving shadows across t
 boundaries. The Vulkan peer implementation passed check and clippy for the Windows target from
 the same host; its physical validation-layer, visual, and lifecycle evidence remains
 outstanding, per the [macOS runbook](macos-validation.md).
+
+On 2026-07-21, an uncommitted tree based on `57c9240` added the RGBA8 UNORM creation pair. The
+native-Wayland Vulkan conformance probe passed all 80 cases with validation enabled, sampling both
+single-level and complete-mip `VK_FORMAT_R8G8B8A8_UNORM` images through the unchanged material
+texture binding while retaining sRGB mip sampling in the same submission. The Metal peer selects
+`MTLPixelFormatRGBA8Unorm` and passed an `aarch64-apple-darwin` cross-target check, but has not run
+on Apple hardware. The [Linux runbook](linux-validation.md) records the exact automated scope; no
+visual normal-map correctness or new lifecycle evidence is claimed.
 
 On 2026-07-21, on the working tree committed as `fe277f2` and `effbdef`, the
 transient-geometry extension ran on the same M2 tier: `mulciber-shader` generated both `hud`

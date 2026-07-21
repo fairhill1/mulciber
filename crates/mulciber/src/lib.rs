@@ -39,7 +39,8 @@ pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErr
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
     BlendMode, CascadedShadowPass, DepthMode, Device, DeviceRequest, DeviceSelection, Frame,
-    GeometrySource, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT,
+    GeometrySource, GpuFrameTiming, GpuScopeTiming, GpuTimingFeedback, GpuTimingScope,
+    GpuTimingSupport, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT,
     MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
     MaterialRecord, Mesh, MeshIndices, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
     PostprocessedDraw, PostprocessedScene, PresentFeedback, PresentedFrame, Queue, RenderScale,

@@ -17,6 +17,12 @@ application owns the layouts, the engine sees bytes. Policy that engines commonl
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
 application code.
 
+Optional GPU diagnostics correlate completed durations with presentation frame indices. Metal
+reports whole-command-buffer time; Vulkan additionally reports the fixed shadow, scene, and
+postprocess regions when its graphics queue supports timestamps. Lazy resource drops are reclaimed
+in bounded batches at frame boundaries, while explicit destruction and shutdown remain synchronous
+and fallible.
+
 The API is experimental and may change without compatibility guarantees. Design contracts,
 decision records, runnable examples, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).

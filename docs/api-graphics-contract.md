@@ -98,6 +98,34 @@ report — intervals between reported times are native-exact within one swapchai
 paired across recreations, while absolute placement carries at most one drain latency of bias.
 Physical evidence lives in the [Linux runbook](linux-validation.md).
 
+### GPU duration feedback is opt-in, correlated, and backend-honest
+
+`DeviceSelection::gpu_timing_support` reports whether the selected queue exposes no usable timing,
+whole-frame timing, or fixed-region timing. `Queue::set_gpu_timing_enabled` controls collection
+without changing `DeviceRequest` or imposing timestamp writes on an uninstrumented game.
+`Queue::take_gpu_timings` is a non-blocking bounded drain whose `GpuFrameTiming::frame_index` shares
+the zero-based session index used by `PresentedFrame::index`, so CPU-side frame records can join GPU
+duration data to presentation feedback without comparing unrelated clock epochs. Disabled and
+unsupported states remain distinct.
+
+The Vulkan implementation lazily creates an eight-entry timestamp query pool on a capable graphics
+queue, labels and measures the complete frame plus the fixed shadow, scene, and postprocess regions,
+masks counter wraparound to `timestampValidBits`, converts through `timestampPeriod`, and reads only
+after the one in-flight frame fence has completed. The Metal implementation reports only completed
+command-buffer `GPUStartTime`/`GPUEndTime`. The shared types deliberately do not claim identical
+scope boundaries, timestamp domains, or resolution.
+
+### Lazy resource reclamation is bounded at a frame boundary
+
+Dropping an owning resource handle appends one lazy destruction request. Arbitrary mutable graphics
+operations, including resource creation, do not drain that queue. Surface acquisition processes at
+most eight requests after establishing the prior Vulkan frame's fence completion; Metal preserves
+its retained-command-buffer lifetime rule. This bounds a large eviction burst and prevents several
+creations in one frame from each triggering another reclamation pass. Explicit `destroy_*` methods
+still synchronously validate, wait where required, destroy the named resource, and report errors.
+Repeated frame boundaries eventually drain the queue, while fallible shutdown drains every remaining
+request before destroying all still-live session resources.
+
 ### The clear checkpoint keeps topology private
 
 The first compiling graphics application uses `ClearSurface`, a scoped `ClearFrame`, and a normalized

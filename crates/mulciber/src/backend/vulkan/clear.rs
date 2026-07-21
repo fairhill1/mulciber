@@ -1101,6 +1101,8 @@ struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
     sample_count: vk::VkSampleCountFlagBits,
+    timestamp_valid_bits: u32,
+    timestamp_period: f32,
     present_timing: Result<timing::PresentTimingSelection, &'static str>,
 }
 
@@ -1160,6 +1162,13 @@ struct DeviceFns {
     cmd_draw: vk::PFN_vkCmdDraw,
     cmd_draw_indexed: vk::PFN_vkCmdDrawIndexed,
     cmd_draw_indexed_indirect: vk::PFN_vkCmdDrawIndexedIndirect,
+    create_query_pool: vk::PFN_vkCreateQueryPool,
+    destroy_query_pool: vk::PFN_vkDestroyQueryPool,
+    cmd_reset_query_pool: vk::PFN_vkCmdResetQueryPool,
+    cmd_write_timestamp2: vk::PFN_vkCmdWriteTimestamp2,
+    get_query_pool_results: vk::PFN_vkGetQueryPoolResults,
+    cmd_begin_debug_utils_label: vk::PFN_vkCmdBeginDebugUtilsLabelEXT,
+    cmd_end_debug_utils_label: vk::PFN_vkCmdEndDebugUtilsLabelEXT,
     create_semaphore: vk::PFN_vkCreateSemaphore,
     destroy_semaphore: vk::PFN_vkDestroySemaphore,
     create_fence: vk::PFN_vkCreateFence,
@@ -1248,6 +1257,13 @@ impl DeviceFns {
             cmd_draw: load!(c"vkCmdDraw"),
             cmd_draw_indexed: load!(c"vkCmdDrawIndexed"),
             cmd_draw_indexed_indirect: load!(c"vkCmdDrawIndexedIndirect"),
+            create_query_pool: load!(c"vkCreateQueryPool"),
+            destroy_query_pool: load!(c"vkDestroyQueryPool"),
+            cmd_reset_query_pool: load!(c"vkCmdResetQueryPool"),
+            cmd_write_timestamp2: load!(c"vkCmdWriteTimestamp2"),
+            get_query_pool_results: load!(c"vkGetQueryPoolResults"),
+            cmd_begin_debug_utils_label: load!(c"vkCmdBeginDebugUtilsLabelEXT"),
+            cmd_end_debug_utils_label: load!(c"vkCmdEndDebugUtilsLabelEXT"),
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
             create_fence: load!(c"vkCreateFence"),
@@ -1540,6 +1556,8 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         } else {
                             vk::VK_SAMPLE_COUNT_1_BIT
                         },
+                        timestamp_valid_bits: family.timestampValidBits,
+                        timestamp_period: properties.limits.timestampPeriod,
                         present_timing,
                     },
                 ));

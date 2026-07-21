@@ -351,6 +351,19 @@ impl<'window> TexturedSession<'window> {
         self.surface.info()
     }
 
+    pub(crate) const fn gpu_timing_support(&self) -> crate::GpuTimingSupport {
+        crate::GpuTimingSupport::Frame
+    }
+
+    pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        self.surface.enable_gpu_timing(enabled);
+        Ok(())
+    }
+
+    pub(crate) fn take_gpu_timings(&mut self) -> crate::GpuTimingFeedback {
+        self.surface.take_gpu_timings()
+    }
+
     pub(crate) fn acquire(
         &mut self,
         metrics: WindowMetrics,

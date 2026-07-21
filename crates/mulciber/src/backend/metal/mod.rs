@@ -12,8 +12,9 @@ use std::vec::Vec;
 use mulciber_platform::{SurfaceTarget, WindowMetrics, integration};
 
 use crate::{
-    ClearColor, FrameAcquire, FrameDisposition, GraphicsError, GraphicsErrorKind, PresentFeedback,
-    PresentedFrame, SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
+    ClearColor, FrameAcquire, FrameDisposition, GpuFrameTiming, GpuScopeTiming, GpuTimingFeedback,
+    GpuTimingScope, GraphicsError, GraphicsErrorKind, PresentFeedback, PresentedFrame,
+    SurfaceExtent, SurfaceInfo, SurfaceUnavailable,
 };
 
 pub(crate) const BACKEND_NAME: &str = "Metal";
@@ -127,6 +128,9 @@ pub(crate) struct ClearSurface<'window> {
     queue: Object,
     info: SurfaceInfo,
     last_command_buffer: Object,
+    last_command_buffer_index: Option<u64>,
+    gpu_timing_enabled: bool,
+    gpu_timings: VecDeque<GpuFrameTiming>,
     pending_presents: VecDeque<PendingPresent>,
     presented_count: u64,
     _window: PhantomData<SurfaceTarget<'window>>,
@@ -189,6 +193,9 @@ impl<'window> ClearSurface<'window> {
                 queue,
                 info,
                 last_command_buffer: ptr::null_mut(),
+                last_command_buffer_index: None,
+                gpu_timing_enabled: false,
+                gpu_timings: VecDeque::new(),
                 pending_presents: VecDeque::new(),
                 presented_count: 0,
                 _window: PhantomData,
@@ -198,6 +205,17 @@ impl<'window> ClearSurface<'window> {
 
     pub(crate) const fn info(&self) -> SurfaceInfo {
         self.info
+    }
+
+    pub(crate) fn enable_gpu_timing(&mut self, enabled: bool) {
+        self.gpu_timing_enabled = enabled;
+    }
+
+    pub(crate) fn take_gpu_timings(&mut self) -> GpuTimingFeedback {
+        if !self.gpu_timing_enabled {
+            return GpuTimingFeedback::Disabled;
+        }
+        GpuTimingFeedback::Reported(self.gpu_timings.drain(..).collect())
     }
 
     pub(crate) fn acquire<'surface>(
@@ -356,6 +374,8 @@ impl<'window> ClearSurface<'window> {
             objc::void(command_buffer, c"retain");
             objc::void(command_buffer, c"commit");
             self.last_command_buffer = command_buffer;
+            self.last_command_buffer_index =
+                self.gpu_timing_enabled.then_some(self.presented_count);
             if self.pending_presents.len() >= PRESENT_FEEDBACK_CAP {
                 self.pending_presents.pop_front();
             }
@@ -411,11 +431,32 @@ impl<'window> ClearSurface<'window> {
             return Ok(());
         }
         let command_buffer = core::mem::replace(&mut self.last_command_buffer, ptr::null_mut());
+        let frame_index = self.last_command_buffer_index.take();
         // SAFETY: This surface owns one retain on a committed command buffer.
         unsafe { objc::void(command_buffer, c"waitUntilCompleted") };
         // MTLCommandBufferStatusCompleted is 4; status 5 is an error.
         let status = unsafe { objc::usize_value(command_buffer, c"status") };
         let result = if status == 4 {
+            if self.gpu_timing_enabled
+                && let Some(frame_index) = frame_index
+            {
+                // SAFETY: These read-only properties are queried only after successful command
+                // buffer completion and are available on Mulciber's macOS 13 baseline.
+                let start = unsafe { objc::f64_value(command_buffer, c"GPUStartTime") };
+                let end = unsafe { objc::f64_value(command_buffer, c"GPUEndTime") };
+                if start > 0.0 && end >= start {
+                    if self.gpu_timings.len() >= PRESENT_FEEDBACK_CAP {
+                        self.gpu_timings.pop_front();
+                    }
+                    self.gpu_timings.push_back(GpuFrameTiming::new(
+                        frame_index,
+                        std::vec![GpuScopeTiming::new(
+                            GpuTimingScope::Frame,
+                            Duration::from_secs_f64(end - start),
+                        )],
+                    ));
+                }
+            }
             Ok(())
         } else {
             // SAFETY: `error` is nil or an NSError after completion.

@@ -8,9 +8,10 @@ use std::time::Instant;
 
 use game::Game;
 use mulciber::{
-    ClearColor, Device, DeviceRequest, Frame, FrameAcquire, InstancedTexturedPipeline, Mesh,
-    OpenedGraphics, PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, Texture, TexturedInstanceBatch,
+    ClearColor, Device, DeviceRequest, Frame, FrameAcquire, GpuTimingFeedback,
+    InstancedTexturedPipeline, Mesh, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
+    PresentFeedback, Queue, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, Texture,
+    TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
@@ -20,6 +21,7 @@ use scene::{
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/game.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.008, 0.014, 0.026);
+const GPU_HITCH_SECONDS: f64 = 0.020;
 
 struct Resources {
     cube: Mesh,
@@ -136,6 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         initial_metrics,
         DeviceRequest::default(),
     )?;
+    graphics.queue.set_gpu_timing_enabled(true)?;
     println!(
         "backend: {}, samples: {:?}",
         graphics.selection.backend(),
@@ -170,6 +173,21 @@ fn main() -> Result<(), Box<dyn Error>> {
             let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else {
                 return Ok(());
             };
+            if let GpuTimingFeedback::Reported(frames) = graphics.queue.take_gpu_timings()? {
+                for timing in frames {
+                    let Some(frame_scope) = timing.scopes().first() else {
+                        continue;
+                    };
+                    if frame_scope.duration().as_secs_f64() >= GPU_HITCH_SECONDS {
+                        eprintln!(
+                            "GPU hitch: frame={} total={:.3} ms scopes={:?}",
+                            timing.frame_index(),
+                            frame_scope.duration().as_secs_f64() * 1_000.0,
+                            timing.scopes()
+                        );
+                    }
+                }
+            }
             let runtime_frame = runtime.begin_frame(Instant::now());
             let plan = runtime_frame.plan();
             game.handle_frame_input(runtime_frame.input());

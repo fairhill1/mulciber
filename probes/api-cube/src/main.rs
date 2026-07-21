@@ -5,11 +5,11 @@ mod scene;
 
 use std::env;
 use std::error::Error;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PresentFeedback, ShaderArtifact,
-    TexturedDraw,
+    ClearColor, DeviceRequest, FrameAcquire, GpuTimingFeedback, GpuTimingScope, OpenedGraphics,
+    PresentFeedback, ShaderArtifact, TexturedDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::PacingDiagnostics;
@@ -42,10 +42,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     };
     let mut graphics = OpenedGraphics::open(window.surface_target(), initial_metrics, request)?;
+    graphics.queue.set_gpu_timing_enabled(true)?;
     println!(
-        "backend: {}, samples: {:?}",
+        "backend: {}, samples: {:?}, GPU timing: {:?}",
         graphics.selection.backend(),
-        graphics.selection.sample_count()
+        graphics.selection.sample_count(),
+        graphics.selection.gpu_timing_support()
     );
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
@@ -63,6 +65,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut abandon_pending = options.abandon_once;
     let mut pacing = PacingDiagnostics::new();
     let mut feedback_unsupported = false;
+    let mut gpu_timing_unsupported = false;
+    let mut gpu_timing_samples = 0_u64;
+    let mut maximum_gpu_frame = Duration::ZERO;
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
@@ -116,6 +121,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 PresentFeedback::Unsupported => feedback_unsupported = true,
                 _ => {}
             }
+            match graphics.queue.take_gpu_timings()? {
+                GpuTimingFeedback::Reported(frames) => {
+                    gpu_timing_samples += u64::try_from(frames.len())?;
+                    for frame in frames {
+                        if let Some(scope) = frame
+                            .scopes()
+                            .iter()
+                            .find(|scope| scope.scope() == GpuTimingScope::Frame)
+                        {
+                            maximum_gpu_frame = maximum_gpu_frame.max(scope.duration());
+                        }
+                    }
+                }
+                GpuTimingFeedback::Unsupported => gpu_timing_unsupported = true,
+                GpuTimingFeedback::Disabled => {
+                    return Err("GPU timing unexpectedly remained disabled".into());
+                }
+                _ => {}
+            }
             Ok(())
         })?;
         if status == PumpStatus::Exit
@@ -130,12 +154,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     if abandon_pending {
         return Err("requested abandonment never acquired a frame".into());
     }
+    if !gpu_timing_unsupported && presented >= 2 && gpu_timing_samples == 0 {
+        return Err("GPU timing produced no completed samples".into());
+    }
     graphics.shutdown()?;
     println!("presented {presented} textured cube frame(s)");
     if feedback_unsupported {
         println!("presentation feedback: unsupported on this backend");
     } else {
         println!("presentation pacing: {}", pacing.report());
+    }
+    if gpu_timing_unsupported {
+        println!("GPU timing: unsupported on the selected queue");
+    } else {
+        println!(
+            "GPU timing: samples={gpu_timing_samples} maximum_frame={:.3} ms",
+            maximum_gpu_frame.as_secs_f64() * 1_000.0
+        );
     }
     Ok(())
 }

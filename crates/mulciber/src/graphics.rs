@@ -2,7 +2,7 @@ use core::cell::RefCell;
 use std::format;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
@@ -16,6 +16,9 @@ use crate::{
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+/// Maximum lazy resource handles reclaimed at one completed-frame boundary. Vulkan meshes own
+/// three allocations, so the native destruction count may be a small multiple of this budget.
+const LAZY_RECLAIM_BUDGET: usize = 8;
 
 /// Multisample count supported by the first textured rendering slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,11 +44,24 @@ impl Default for DeviceRequest {
     }
 }
 
+/// Granularity of GPU duration diagnostics exposed by the selected backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GpuTimingSupport {
+    /// The selected queue cannot produce GPU duration timestamps.
+    Unsupported,
+    /// Only the complete submitted command-buffer duration is available.
+    Frame,
+    /// The backend can measure the fixed rendering regions inside the submitted frame.
+    Regions,
+}
+
 /// Native choices made while opening graphics.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceSelection {
     backend: &'static str,
     sample_count: SampleCount,
+    gpu_timing: GpuTimingSupport,
 }
 
 impl DeviceSelection {
@@ -59,6 +75,13 @@ impl DeviceSelection {
     #[must_use]
     pub const fn sample_count(&self) -> SampleCount {
         self.sample_count
+    }
+
+    /// GPU duration timing supported by the selected queue, independently of whether collection
+    /// was enabled in [`DeviceRequest`].
+    #[must_use]
+    pub const fn gpu_timing_support(&self) -> GpuTimingSupport {
+        self.gpu_timing
     }
 }
 
@@ -109,6 +132,7 @@ impl<'window> OpenedGraphics<'window> {
             ));
         }
         let (session, sample_count) = backend::TexturedSession::new(target, metrics, request)?;
+        let gpu_timing = session.gpu_timing_support();
         let shared = Shared {
             id,
             inner: Rc::new(RefCell::new(Some(session))),
@@ -125,6 +149,7 @@ impl<'window> OpenedGraphics<'window> {
             selection: DeviceSelection {
                 backend: backend::BACKEND_NAME,
                 sample_count,
+                gpu_timing,
             },
         })
     }
@@ -151,12 +176,14 @@ impl<'window> OpenedGraphics<'window> {
         }
         drop(device);
         drop(queue);
-        let session = surface
+        let mut session = surface
             .shared
             .inner
             .borrow_mut()
             .take()
             .ok_or_else(|| GraphicsError::lifecycle("graphics session is already shut down"))?;
+        let pending = surface.shared.drops.take_bounded(usize::MAX);
+        session.reclaim_resources(&pending)?;
         session.shutdown()
     }
 }
@@ -724,6 +751,31 @@ pub struct Queue<'window> {
 }
 
 impl Queue<'_> {
+    /// Enables or disables asynchronous GPU duration diagnostics for future submissions.
+    ///
+    /// Enabling an unsupported queue succeeds so rendering remains available; capability and
+    /// drain results keep the fallback observable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after session shutdown or if native instrumentation allocation fails.
+    pub fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        session_mut(&self.shared)?.set_gpu_timing_enabled(enabled)
+    }
+
+    /// Drains completed GPU duration samples without waiting for unfinished GPU work.
+    ///
+    /// Samples may arrive one or more frames after submission. Their frame index is the same
+    /// zero-based session index reported by [`PresentedFrame::index`], allowing an application to
+    /// correlate GPU work with presentation feedback. Ignoring the drain costs bounded memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after session shutdown.
+    pub fn take_gpu_timings(&mut self) -> Result<GpuTimingFeedback, GraphicsError> {
+        Ok(session_mut(&self.shared)?.take_gpu_timings())
+    }
+
     /// Renders one explicitly selected scene recipe, presents the frame, and consumes it.
     ///
     /// This stable verb prevents each experimentally extracted workload from growing another
@@ -1475,6 +1527,7 @@ impl<'window> Surface<'window> {
         &mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<Frame<'window>>, GraphicsError> {
+        reclaim_lazy_resources(&self.shared)?;
         let acquisition = session_mut(&self.shared)?.acquire(metrics)?;
         Ok(acquisition.map_ready(|token| Frame {
             info: token.info(),
@@ -1539,6 +1592,88 @@ pub enum PresentFeedback {
     /// order. The list is empty when no new completions have been reported yet.
     Reported(Vec<PresentedFrame>),
     /// This session's backend exposes no native presentation feedback; cadence must be estimated.
+    Unsupported,
+}
+
+/// One backend-defined region in a submitted frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GpuTimingScope {
+    /// Complete GPU command-buffer work submitted for the frame.
+    Frame,
+    /// Optional depth-only shadow work.
+    Shadow,
+    /// Main scene rendering.
+    Scene,
+    /// Fullscreen post-processing and any overlay encoded into that pass.
+    Postprocess,
+}
+
+/// Duration of one GPU diagnostic region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuScopeTiming {
+    scope: GpuTimingScope,
+    duration: Duration,
+}
+
+impl GpuScopeTiming {
+    pub(crate) const fn new(scope: GpuTimingScope, duration: Duration) -> Self {
+        Self { scope, duration }
+    }
+
+    /// Region measured by this sample.
+    #[must_use]
+    pub const fn scope(&self) -> GpuTimingScope {
+        self.scope
+    }
+
+    /// Elapsed time in the backend's GPU timestamp domain.
+    #[must_use]
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+}
+
+/// Completed GPU duration data for one submitted and presented frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GpuFrameTiming {
+    frame_index: u64,
+    scopes: Vec<GpuScopeTiming>,
+}
+
+impl GpuFrameTiming {
+    pub(crate) const fn new(frame_index: u64, scopes: Vec<GpuScopeTiming>) -> Self {
+        Self {
+            frame_index,
+            scopes,
+        }
+    }
+
+    /// Zero-based session index shared with [`PresentedFrame::index`].
+    #[must_use]
+    pub const fn frame_index(&self) -> u64 {
+        self.frame_index
+    }
+
+    /// Backend-supported regions in recording order.
+    ///
+    /// Metal currently reports only [`GpuTimingScope::Frame`]. Vulkan reports the complete frame
+    /// plus the fixed shadow, scene, and postprocess regions that were present in the submission.
+    #[must_use]
+    pub fn scopes(&self) -> &[GpuScopeTiming] {
+        &self.scopes
+    }
+}
+
+/// GPU duration feedback drained from a [`Queue`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GpuTimingFeedback {
+    /// Completed samples in submission order; empty when no new sample is ready.
+    Reported(Vec<GpuFrameTiming>),
+    /// Collection was not requested when the graphics session was opened.
+    Disabled,
+    /// Collection was requested, but the selected queue exposes no usable timestamp facility.
     Unsupported,
 }
 
@@ -3034,12 +3169,28 @@ fn session_ref<'a, 'window>(
 fn session_mut<'a, 'window>(
     shared: &'a Shared<'window>,
 ) -> Result<core::cell::RefMut<'a, backend::TexturedSession<'window>>, GraphicsError> {
-    let pending = shared.drops.take();
-    let mut session = core::cell::RefMut::filter_map(shared.inner.borrow_mut(), Option::as_mut)
-        .map_err(|_| GraphicsError::lifecycle("graphics session is shut down"))?;
+    // Lazy drops deliberately do not run here: resource creation and diagnostic drains may call
+    // this several times in one frame. Surface acquisition owns the single bounded reclamation
+    // boundary instead.
+    core::cell::RefMut::filter_map(shared.inner.borrow_mut(), Option::as_mut)
+        .map_err(|_| GraphicsError::lifecycle("graphics session is shut down"))
+}
+
+fn reclaim_lazy_resources(shared: &Shared<'_>) -> Result<(), GraphicsError> {
+    let pending = shared.drops.take_bounded(LAZY_RECLAIM_BUDGET);
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut session = match session_mut(shared) {
+        Ok(session) => session,
+        Err(error) => {
+            shared.drops.restore_front(pending);
+            return Err(error);
+        }
+    };
     if let Err(error) = session.reclaim_resources(&pending) {
-        shared.drops.restore(pending);
+        shared.drops.restore_front(pending);
         return Err(error);
     }
-    Ok(session)
+    Ok(())
 }

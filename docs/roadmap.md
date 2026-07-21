@@ -174,6 +174,13 @@ fallback, and acquired-frame abandonment/recovery controls.
   by peer AppKit, Win32, Wayland, and X11 modules.
 - [x] Extract owned device, queue, mesh, texture, pipeline, surface-generation, frame, and
   presentation types into `mulciber` with Metal and Vulkan implementations.
+- [x] Extract opt-in GPU duration diagnostics with observable unsupported/frame/region capability,
+  bounded asynchronous drains, and frame indices shared with presentation feedback. Vulkan reports
+  complete-frame plus fixed shadow/scene/postprocess scopes; Metal preserves whole-command-buffer
+  granularity.
+- [x] Move lazy resource drops off arbitrary mutable operations into an eight-handle
+  completed-frame reclamation budget, preserving synchronous explicit destruction and full shutdown
+  drain; the focused 41-handle batching test and native-Wayland 71-case conformance run pass.
 - [ ] Generalize the deliberately narrow scene-submission vocabulary into owned buffer, binding,
   command/pass-composition, and synchronization facilities only as representative game slices force
   those concepts. The first forcing slice landed: the [material slice plan](material-slice-plan.md)
@@ -189,8 +196,8 @@ fallback, and acquired-frame abandonment/recovery controls.
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   resource-reclamation, multi-draw, instancing, material-declaration, and shutdown conformance
-  tests: `probes/api-conformance` currently asserts sixty-four cases across those categories (plus the
-  Vulkan-only superseded-generation branch when applicable) and exits nonzero on divergence;
+  tests: `probes/api-conformance` currently asserts seventy shared cases across those categories
+  (plus the Vulkan-only superseded-generation branch) and exits nonzero on divergence;
   per-platform runs are recorded in the validation ledgers as they are exercised.
   `create_mesh_with_layout` additionally accepts 32-bit indices (`MeshIndices::U32`), exercised
   by the material conformance mesh on both Linux paths; material sampler slots declare

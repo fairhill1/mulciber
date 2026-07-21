@@ -1,6 +1,7 @@
 use core::fmt;
 use core::ops::{Index, IndexMut};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::format;
 use std::rc::Rc;
 use std::vec::Vec;
@@ -54,17 +55,25 @@ pub(crate) struct DestroyRequest {
 }
 
 #[derive(Default)]
-pub(crate) struct DropQueue(RefCell<Vec<DestroyRequest>>);
+pub(crate) struct DropQueue(RefCell<VecDeque<DestroyRequest>>);
 
 impl DropQueue {
-    pub(crate) fn take(&self) -> Vec<DestroyRequest> {
-        core::mem::take(&mut *self.0.borrow_mut())
+    pub(crate) fn take_bounded(&self, limit: usize) -> Vec<DestroyRequest> {
+        let mut pending = self.0.borrow_mut();
+        let count = limit.min(pending.len());
+        pending.drain(..count).collect()
     }
 
-    pub(crate) fn restore(&self, mut requests: Vec<DestroyRequest>) {
+    pub(crate) fn restore_front(&self, requests: Vec<DestroyRequest>) {
         let mut pending = self.0.borrow_mut();
-        requests.append(&mut pending);
-        *pending = requests;
+        for request in requests.into_iter().rev() {
+            pending.push_front(request);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.borrow().len()
     }
 }
 
@@ -118,7 +127,7 @@ impl ResourceLease {
 impl Drop for ResourceLease {
     fn drop(&mut self) {
         if self.armed {
-            self.drops.0.borrow_mut().push(DestroyRequest {
+            self.drops.0.borrow_mut().push_back(DestroyRequest {
                 kind: self.kind,
                 id: self.id,
             });
@@ -291,10 +300,38 @@ mod tests {
             ResourceKind::Mesh,
             Rc::clone(&drops),
         ));
-        let pending = drops.take();
+        let pending = drops.take_bounded(usize::MAX);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
         assert_eq!(pending[0].kind, ResourceKind::Mesh);
-        assert!(drops.take().is_empty());
+        assert!(drops.take_bounded(usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn large_drop_batch_is_taken_in_bounded_fifo_chunks() {
+        let mut arena = Arena::new("test resource");
+        let drops = Rc::new(DropQueue::default());
+        for _ in 0..41 {
+            let id = arena.insert(()).expect("insertion");
+            drop(ResourceLease::new(
+                7,
+                id,
+                ResourceKind::Mesh,
+                Rc::clone(&drops),
+            ));
+        }
+
+        let first = drops.take_bounded(8);
+        assert_eq!(first.len(), 8);
+        assert_eq!(drops.len(), 33);
+
+        let second = drops.take_bounded(8);
+        assert_eq!(second.len(), 8);
+        assert_eq!(drops.len(), 25);
+        assert_ne!(first[0].id, second[0].id);
+
+        drops.restore_front(first.clone());
+        assert_eq!(drops.len(), 33);
+        assert_eq!(drops.take_bounded(8), first);
     }
 }

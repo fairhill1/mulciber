@@ -1,6 +1,8 @@
 use core::ffi::c_void;
 use core::{mem, ptr, slice};
+use std::collections::VecDeque;
 use std::ffi::CString;
+use std::time::Duration;
 use std::{format, vec::Vec};
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
@@ -12,7 +14,8 @@ use crate::graphics::{
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
-    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GraphicsError,
+    ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GpuFrameTiming,
+    GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport, GraphicsError,
     MaterialRecord, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowSource,
     SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
 };
@@ -30,6 +33,26 @@ const DRAW_UNIFORM_STRIDE: usize = 256;
 /// specification's cap on `minStorageBufferOffsetAlignment`, valid on every implementation.
 const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
+const GPU_QUERY_COUNT: u32 = 8;
+const FRAME_QUERY_START: u32 = 0;
+const SHADOW_QUERY_START: u32 = 2;
+const SCENE_QUERY_START: u32 = 4;
+const POSTPROCESS_QUERY_START: u32 = 6;
+const GPU_TIMING_FEEDBACK_CAP: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct PendingGpuTiming {
+    frame_index: u64,
+    has_shadow: bool,
+    has_postprocess: bool,
+}
+
+struct GpuTimingState {
+    enabled: bool,
+    query_pool: vk::VkQueryPool,
+    pending: Option<PendingGpuTiming>,
+    completed: VecDeque<GpuFrameTiming>,
+}
 
 #[derive(Clone, Copy, Default)]
 struct Buffer {
@@ -225,6 +248,7 @@ enum PreparedScene {
 pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: vk::VkSampleCountFlagBits,
+    gpu_timing: GpuTimingState,
     uniform: Buffer,
     uniform_capacity: usize,
     /// Frame-transient read-only storage region for material and shadow records, in bytes.
@@ -247,6 +271,7 @@ pub(crate) struct TexturedSession<'window> {
     resolved_shadow_cascades: Vec<usize>,
     /// Target of the prepared frame's depth-only pre-pass.
     pending_shadow_target: Option<PendingShadowTarget>,
+    recorded_has_shadow: bool,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
     pipelines: Arena<PipelineResource>,
@@ -336,6 +361,12 @@ impl<'window> TexturedSession<'window> {
             Self {
                 surface,
                 sample_count,
+                gpu_timing: GpuTimingState {
+                    enabled: false,
+                    query_pool: ptr::null_mut(),
+                    pending: None,
+                    completed: VecDeque::new(),
+                },
                 uniform,
                 uniform_capacity: 1,
                 storage,
@@ -351,6 +382,7 @@ impl<'window> TexturedSession<'window> {
                 resolved_shadow_draws: Vec::new(),
                 resolved_shadow_cascades: Vec::new(),
                 pending_shadow_target: None,
+                recorded_has_shadow: false,
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
                 pipelines: Arena::new("textured pipeline"),
@@ -374,6 +406,38 @@ impl<'window> TexturedSession<'window> {
 
     pub(crate) const fn info(&self) -> SurfaceInfo {
         self.surface.info()
+    }
+
+    pub(crate) fn gpu_timing_support(&self) -> GpuTimingSupport {
+        if self.surface.device().adapter.timestamp_valid_bits == 0 {
+            GpuTimingSupport::Unsupported
+        } else {
+            GpuTimingSupport::Regions
+        }
+    }
+
+    pub(crate) fn take_gpu_timings(&mut self) -> GpuTimingFeedback {
+        if !self.gpu_timing.enabled {
+            return GpuTimingFeedback::Disabled;
+        }
+        if self.gpu_timing.query_pool.is_null() {
+            return GpuTimingFeedback::Unsupported;
+        }
+        GpuTimingFeedback::Reported(self.gpu_timing.completed.drain(..).collect())
+    }
+
+    pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        if enabled
+            && self.gpu_timing.query_pool.is_null()
+            && self.surface.device().adapter.timestamp_valid_bits != 0
+        {
+            self.gpu_timing.query_pool = create_gpu_query_pool(&self.surface)?;
+        }
+        self.gpu_timing.enabled = enabled;
+        if !enabled {
+            self.gpu_timing.completed.clear();
+        }
+        Ok(())
     }
 
     pub(crate) fn acquire(
@@ -853,7 +917,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             DEPTH_CLEAR_FAR,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, false)
     }
 
     pub(crate) fn draw_scene_postprocessed_and_present(
@@ -884,7 +948,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             DEPTH_CLEAR_FAR,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, true)
     }
 
     pub(crate) fn draw_instanced_scene_and_present(
@@ -908,7 +972,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             DEPTH_CLEAR_FAR,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, false)
     }
 
     pub(crate) fn draw_instanced_scene_postprocessed_and_present(
@@ -939,7 +1003,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             DEPTH_CLEAR_FAR,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, true)
     }
 
     /// Rejects sampling a shadow map that neither an earlier frame nor this submission's shadow
@@ -1008,7 +1072,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             depth_clear,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1043,7 +1107,7 @@ impl<'window> TexturedSession<'window> {
             clear,
             depth_clear,
         )?;
-        self.surface.submit_recorded(token.image_index)
+        self.submit_recorded(token.image_index, true)
     }
 
     /// Checks handles and stages per-record data for the scene records, any overlay records,
@@ -2246,6 +2310,185 @@ impl<'window> TexturedSession<'window> {
         Ok(set)
     }
 
+    fn collect_gpu_timing(&mut self) -> Result<(), GraphicsError> {
+        let Some(pending) = self.gpu_timing.pending.take() else {
+            return Ok(());
+        };
+        let mut values = [0_u64; GPU_QUERY_COUNT as usize];
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device
+                    .functions
+                    .get_query_pool_results
+                    .expect("loaded function")(
+                    device.handle,
+                    self.gpu_timing.query_pool,
+                    0,
+                    GPU_QUERY_COUNT,
+                    mem::size_of_val(&values),
+                    values.as_mut_ptr().cast(),
+                    u64::try_from(mem::size_of::<u64>()).expect("u64 size fits VkDeviceSize"),
+                    vk::VK_QUERY_RESULT_64_BIT.cast_unsigned(),
+                )
+            },
+            "vkGetQueryPoolResults for GPU frame diagnostics",
+        )?;
+        if !self.gpu_timing.enabled {
+            return Ok(());
+        }
+        let mut scopes = Vec::with_capacity(4);
+        scopes.push(self.gpu_scope_timing(
+            GpuTimingScope::Frame,
+            values[FRAME_QUERY_START as usize],
+            values[FRAME_QUERY_START as usize + 1],
+        ));
+        if pending.has_shadow {
+            scopes.push(self.gpu_scope_timing(
+                GpuTimingScope::Shadow,
+                values[SHADOW_QUERY_START as usize],
+                values[SHADOW_QUERY_START as usize + 1],
+            ));
+        }
+        scopes.push(self.gpu_scope_timing(
+            GpuTimingScope::Scene,
+            values[SCENE_QUERY_START as usize],
+            values[SCENE_QUERY_START as usize + 1],
+        ));
+        if pending.has_postprocess {
+            scopes.push(self.gpu_scope_timing(
+                GpuTimingScope::Postprocess,
+                values[POSTPROCESS_QUERY_START as usize],
+                values[POSTPROCESS_QUERY_START as usize + 1],
+            ));
+        }
+        if self.gpu_timing.completed.len() >= GPU_TIMING_FEEDBACK_CAP {
+            self.gpu_timing.completed.pop_front();
+        }
+        self.gpu_timing
+            .completed
+            .push_back(GpuFrameTiming::new(pending.frame_index, scopes));
+        Ok(())
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn gpu_scope_timing(&self, scope: GpuTimingScope, start: u64, end: u64) -> GpuScopeTiming {
+        let ticks = timestamp_tick_delta(
+            start,
+            end,
+            self.surface.device().adapter.timestamp_valid_bits,
+        );
+        let seconds = ticks as f64 * f64::from(self.surface.device().adapter.timestamp_period)
+            / 1_000_000_000.0;
+        GpuScopeTiming::new(scope, Duration::from_secs_f64(seconds))
+    }
+
+    fn begin_gpu_region(&self, name: &core::ffi::CStr, color: [f32; 4], start_query: u32) {
+        if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
+            return;
+        }
+        let label = vk::VkDebugUtilsLabelEXT {
+            sType: vk::VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+            pLabelName: name.as_ptr(),
+            color,
+            ..Default::default()
+        };
+        unsafe {
+            let functions = &self.surface.device().functions;
+            functions
+                .cmd_begin_debug_utils_label
+                .expect("loaded function")(
+                self.surface.command_buffer, &raw const label
+            );
+            functions.cmd_write_timestamp2.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                self.gpu_timing.query_pool,
+                start_query,
+            );
+        }
+    }
+
+    fn end_gpu_region(&self, end_query: u32) {
+        if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
+            return;
+        }
+        unsafe {
+            let functions = &self.surface.device().functions;
+            functions.cmd_write_timestamp2.expect("loaded function")(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                self.gpu_timing.query_pool,
+                end_query,
+            );
+            functions
+                .cmd_end_debug_utils_label
+                .expect("loaded function")(self.surface.command_buffer);
+        }
+    }
+
+    fn begin_gpu_frame(&self) {
+        if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
+            return;
+        }
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .cmd_reset_query_pool
+                .expect("loaded function")(
+                self.surface.command_buffer,
+                self.gpu_timing.query_pool,
+                0,
+                GPU_QUERY_COUNT,
+            );
+        }
+        self.begin_gpu_region(c"frame", [0.2, 0.55, 1.0, 1.0], FRAME_QUERY_START);
+    }
+
+    fn write_empty_gpu_region(&self, start_query: u32) {
+        if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
+            return;
+        }
+        unsafe {
+            let write = self
+                .surface
+                .device()
+                .functions
+                .cmd_write_timestamp2
+                .expect("loaded function");
+            write(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                self.gpu_timing.query_pool,
+                start_query,
+            );
+            write(
+                self.surface.command_buffer,
+                vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                self.gpu_timing.query_pool,
+                start_query + 1,
+            );
+        }
+    }
+
+    fn submit_recorded(
+        &mut self,
+        image_index: u32,
+        has_postprocess: bool,
+    ) -> Result<FrameDisposition, GraphicsError> {
+        let frame_index = self.surface.presented_count;
+        let disposition = self.surface.submit_recorded(image_index)?;
+        if self.gpu_timing.enabled && !self.gpu_timing.query_pool.is_null() {
+            self.gpu_timing.pending = Some(PendingGpuTiming {
+                frame_index,
+                has_shadow: self.recorded_has_shadow,
+                has_postprocess,
+            });
+        }
+        Ok(disposition)
+    }
+
     /// Encodes the prepared depth-only shadow work — one pass for a single map, or one pass per
     /// cascade layer — into the open command buffer, transitioning the target from its prior
     /// state into depth rendering and out to fragment-sampled reading.
@@ -2454,6 +2697,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_LAYOUT_UNDEFINED
         };
         self.surface.wait_for_frame()?;
+        self.collect_gpu_timing()?;
         let device = self.surface.device();
         check(
             unsafe {
@@ -2490,7 +2734,15 @@ impl<'window> TexturedSession<'window> {
             },
             "vkBeginCommandBuffer for textured frame",
         )?;
-        self.record_shadow_pass_if_pending();
+        self.begin_gpu_frame();
+        self.recorded_has_shadow = self.pending_shadow_target.is_some();
+        if self.recorded_has_shadow {
+            self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
+            self.record_shadow_pass_if_pending();
+            self.end_gpu_region(SHADOW_QUERY_START + 1);
+        } else {
+            self.write_empty_gpu_region(SHADOW_QUERY_START);
+        }
         let device = self.surface.device();
         let color_barrier = image_barrier(
             image,
@@ -2596,6 +2848,7 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
+        self.begin_gpu_region(c"scene", [0.15, 0.75, 0.35, 1.0], SCENE_QUERY_START);
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
@@ -2617,6 +2870,8 @@ impl<'window> TexturedSession<'window> {
             self.record_prepared_scene(scene);
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
+        self.end_gpu_region(SCENE_QUERY_START + 1);
+        self.write_empty_gpu_region(POSTPROCESS_QUERY_START);
         let present = image_barrier(
             image,
             vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -2628,6 +2883,7 @@ impl<'window> TexturedSession<'window> {
             color_subresource_range(),
         );
         pipeline_barrier(&self.surface, &present);
+        self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
                 device
@@ -2672,6 +2928,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_LAYOUT_UNDEFINED
         };
         self.surface.wait_for_frame()?;
+        self.collect_gpu_timing()?;
         let device = self.surface.device();
         check(
             unsafe {
@@ -2708,7 +2965,15 @@ impl<'window> TexturedSession<'window> {
             },
             "vkBeginCommandBuffer for postprocessed frame",
         )?;
-        self.record_shadow_pass_if_pending();
+        self.begin_gpu_frame();
+        self.recorded_has_shadow = self.pending_shadow_target.is_some();
+        if self.recorded_has_shadow {
+            self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
+            self.record_shadow_pass_if_pending();
+            self.end_gpu_region(SHADOW_QUERY_START + 1);
+        } else {
+            self.write_empty_gpu_region(SHADOW_QUERY_START);
+        }
         let device = self.surface.device();
         let swapchain_barrier = image_barrier(
             image,
@@ -2845,6 +3110,7 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
+        self.begin_gpu_region(c"scene", [0.15, 0.75, 0.35, 1.0], SCENE_QUERY_START);
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
@@ -2866,6 +3132,7 @@ impl<'window> TexturedSession<'window> {
             self.record_prepared_scene(scene);
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
+        self.end_gpu_region(SCENE_QUERY_START + 1);
 
         let sample_scene = image_barrier(
             scene_color.handle,
@@ -2900,6 +3167,11 @@ impl<'window> TexturedSession<'window> {
             ..Default::default()
         };
         let post_pipeline = &self.postprocess_pipelines[postprocess_pipeline_index];
+        self.begin_gpu_region(
+            c"postprocess",
+            [0.95, 0.55, 0.15, 1.0],
+            POSTPROCESS_QUERY_START,
+        );
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
@@ -2940,6 +3212,7 @@ impl<'window> TexturedSession<'window> {
             }
             functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
         }
+        self.end_gpu_region(POSTPROCESS_QUERY_START + 1);
         let present = image_barrier(
             image,
             vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -2951,6 +3224,7 @@ impl<'window> TexturedSession<'window> {
             color_subresource_range(),
         );
         pipeline_barrier(&self.surface, &present);
+        self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
                 device
@@ -3154,6 +3428,20 @@ impl<'window> TexturedSession<'window> {
 
     fn destroy_resources(&mut self) {
         let device = self.surface.device();
+        if !self.gpu_timing.query_pool.is_null() {
+            unsafe {
+                device
+                    .functions
+                    .destroy_query_pool
+                    .expect("loaded function")(
+                    device.handle,
+                    self.gpu_timing.query_pool,
+                    ptr::null(),
+                );
+            }
+            self.gpu_timing.query_pool = ptr::null_mut();
+            self.gpu_timing.pending = None;
+        }
         for pipeline in self
             .pipelines
             .take_all()
@@ -3473,6 +3761,41 @@ fn create_buffer(
         return Err(failure);
     }
     Ok(buffer)
+}
+
+fn create_gpu_query_pool(surface: &ClearSurface<'_>) -> Result<vk::VkQueryPool, GraphicsError> {
+    let info = vk::VkQueryPoolCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        queryType: vk::VK_QUERY_TYPE_TIMESTAMP,
+        queryCount: GPU_QUERY_COUNT,
+        ..Default::default()
+    };
+    let mut pool = ptr::null_mut();
+    check(
+        unsafe {
+            surface
+                .device()
+                .functions
+                .create_query_pool
+                .expect("loaded function")(
+                surface.device().handle,
+                &raw const info,
+                ptr::null(),
+                &raw mut pool,
+            )
+        },
+        "vkCreateQueryPool for GPU frame diagnostics",
+    )?;
+    Ok(pool)
+}
+
+fn timestamp_tick_delta(start: u64, end: u64, valid_bits: u32) -> u64 {
+    if valid_bits >= 64 {
+        end.wrapping_sub(start)
+    } else {
+        let mask = (1_u64 << valid_bits) - 1;
+        end.wrapping_sub(start) & mask
+    }
 }
 
 fn complete_buffer_storage(
@@ -5576,5 +5899,16 @@ fn shader_stage(
         module,
         pName: name.as_ptr(),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timestamp_tick_delta;
+
+    #[test]
+    fn timestamp_delta_handles_queue_counter_wraparound() {
+        assert_eq!(timestamp_tick_delta(1_000, 1_025, 64), 25);
+        assert_eq!(timestamp_tick_delta(250, 7, 8), 13);
     }
 }

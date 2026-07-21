@@ -1651,7 +1651,7 @@ impl<'window> Cases<'window> {
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
-                    "only uniform and storage bindings",
+                    "shadow pipelines do not sample depth resources",
                     "non-uniform shadow binding rejected",
                 )?;
                 self.shadow_map = Some(graphics.device.create_shadow_map(512)?);

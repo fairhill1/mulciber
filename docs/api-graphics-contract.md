@@ -138,6 +138,18 @@ This collapsed owner is evidence, not the final answer to the open context/devic
 The representative textured/depth slice must expose uploads, resources, pipelines, and more than one
 operation; that pressure will determine which objects deserve independent public ownership.
 
+### Postprocess parameters are bounded submission data
+
+`PostprocessPipelineDescriptor` optionally declares one exact-size group-0/binding-0 uniform of at
+most 256 bytes. The shader-only conversion remains the no-uniform convenience path. Every direct or
+`SceneSubmission` postprocessed route borrows a byte slice for that submission; its length is
+validated exactly before the acquired frame is consumed, while group-0 bindings 1 and 2 remain the
+resolved scene-color texture and fixed sampler. The application owns byte layout and animation
+policy. Vulkan uses storage independent from the scene/material uniform region and rewrites it only
+after fence completion; Metal copies it into fragment buffer index 0. This extends the fixed
+two-pass recipe rather than opening retained parameter buffers or general pass bindings. See the
+[postprocess contract](postprocess-contract.md).
+
 ### Shutdown is explicit
 
 Surface shutdown drains presentation ownership before device shutdown drains remaining GPU work. Both

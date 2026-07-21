@@ -419,18 +419,29 @@ impl Device<'_> {
     /// Creates the single-sample fullscreen pipeline for the post-processing checkpoint.
     ///
     /// The shader module must contain `post_vertex` and `post_fragment` entry points. The
-    /// fragment stage samples the resolved scene color through bindings 1 and 2.
+    /// fragment stage samples the resolved scene color through group-0 bindings 1 and 2. Pass a
+    /// [`ShaderArtifact`] directly for the no-uniform convenience form, or a
+    /// [`PostprocessPipelineDescriptor`] to declare an exact-size group-0/binding-0 uniform of at
+    /// most [`POSTPROCESS_UNIFORM_SIZE_LIMIT`] bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error when native shader loading, sampler creation, or pipeline creation fails.
-    pub fn create_postprocess_pipeline(
+    /// Returns an error for an invalid uniform declaration, a declaration that disagrees with the
+    /// artifact's recorded interface, or native shader loading, sampler creation, and pipeline
+    /// creation failure.
+    pub fn create_postprocess_pipeline<'inputs>(
         &self,
-        shader: ShaderArtifact<'_>,
+        descriptor: impl Into<PostprocessPipelineDescriptor<'inputs>>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
-        let id = session_mut(&self.shared)?.create_postprocess_pipeline(shader)?;
+        let descriptor = descriptor.into();
+        validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
+        let uniform_size = descriptor.uniform_size.unwrap_or(0);
+        let config = PostprocessPipelineConfig { uniform_size };
+        let id =
+            session_mut(&self.shared)?.create_postprocess_pipeline(descriptor.shader, &config)?;
         Ok(PostprocessPipeline {
             lease: self.lease(id, ResourceKind::PostprocessPipeline),
+            uniform_size,
         })
     }
 
@@ -922,17 +933,23 @@ impl Queue<'_> {
                         clear: submission.clear,
                     },
                 ),
-            (SceneContent::Textured(draws), SceneOutput::Postprocessed { pipeline, targets }) => {
-                self.draw_textured_scene_postprocessed_and_present(
-                    frame,
-                    PostprocessedScene {
-                        draws,
-                        postprocess_pipeline: pipeline,
-                        targets,
-                        clear: submission.clear,
-                    },
-                )
-            }
+            (
+                SceneContent::Textured(draws),
+                SceneOutput::Postprocessed {
+                    pipeline,
+                    targets,
+                    uniform,
+                },
+            ) => self.draw_textured_scene_postprocessed_and_present(
+                frame,
+                PostprocessedScene {
+                    draws,
+                    postprocess_pipeline: pipeline,
+                    targets,
+                    uniform,
+                    clear: submission.clear,
+                },
+            ),
             (SceneContent::Instanced(batches), SceneOutput::Direct(targets)) => self
                 .draw_instanced_textured_scene_and_present(
                     frame,
@@ -942,12 +959,17 @@ impl Queue<'_> {
                 ),
             (
                 SceneContent::Instanced(batches),
-                SceneOutput::Postprocessed { pipeline, targets },
+                SceneOutput::Postprocessed {
+                    pipeline,
+                    targets,
+                    uniform,
+                },
             ) => self.draw_instanced_textured_scene_postprocessed_and_present(
                 frame,
                 batches,
                 pipeline,
                 targets,
+                uniform,
                 submission.clear,
             ),
             (SceneContent::Material(records), SceneOutput::Direct(targets)) => self
@@ -958,17 +980,23 @@ impl Queue<'_> {
                     targets,
                     submission.clear,
                 ),
-            (SceneContent::Material(records), SceneOutput::Postprocessed { pipeline, targets }) => {
-                self.draw_material_scene_postprocessed_and_present(
-                    frame,
-                    records,
-                    submission.shadow,
-                    submission.overlay,
+            (
+                SceneContent::Material(records),
+                SceneOutput::Postprocessed {
                     pipeline,
                     targets,
-                    submission.clear,
-                )
-            }
+                    uniform,
+                },
+            ) => self.draw_material_scene_postprocessed_and_present(
+                frame,
+                records,
+                submission.shadow,
+                submission.overlay,
+                pipeline,
+                targets,
+                uniform,
+                submission.clear,
+            ),
         }
     }
 
@@ -1051,6 +1079,7 @@ impl Queue<'_> {
                 draws: core::slice::from_ref(&scene_draw),
                 postprocess_pipeline: draw.postprocess_pipeline,
                 targets: draw.targets,
+                uniform: draw.uniform,
                 clear: draw.clear,
             },
         )
@@ -1074,6 +1103,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_postprocess_uniform(scene.postprocess_pipeline, scene.uniform)?;
         let token = frame
             .token
             .take()
@@ -1083,6 +1113,7 @@ impl Queue<'_> {
             scene.draws,
             scene.postprocess_pipeline.lease.id,
             scene.targets.lease.id,
+            scene.uniform,
             scene.clear,
         )
     }
@@ -1129,6 +1160,7 @@ impl Queue<'_> {
         batches: &[TexturedInstanceBatch<'_>],
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
@@ -1137,6 +1169,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_postprocess_uniform(postprocess_pipeline, uniform)?;
         let token = frame
             .token
             .take()
@@ -1146,6 +1179,7 @@ impl Queue<'_> {
             batches,
             postprocess_pipeline.lease.id,
             targets.lease.id,
+            uniform,
             clear,
         )
     }
@@ -1192,6 +1226,7 @@ impl Queue<'_> {
         overlay: Option<&[MaterialRecord<'_>]>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
@@ -1206,6 +1241,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_postprocess_uniform(postprocess_pipeline, uniform)?;
         let token = frame
             .token
             .take()
@@ -1217,6 +1253,7 @@ impl Queue<'_> {
             overlay.unwrap_or(&[]),
             postprocess_pipeline.lease.id,
             targets.lease.id,
+            uniform,
             clear,
             depth_clear,
         )
@@ -2113,10 +2150,42 @@ impl TexturedPipeline {
     }
 }
 
-/// Single-sample fullscreen pipeline that samples resolved scene color.
+/// Single-sample fullscreen pipeline that samples resolved scene color and optionally consumes
+/// application-authored per-submission uniform data.
 #[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessPipeline {
     lease: ResourceLease,
+    /// Zero when the pipeline declares no postprocess uniform.
+    uniform_size: u32,
+}
+
+/// Largest supported postprocess uniform declaration in bytes.
+///
+/// Postprocess uniform data is transient for one submission and follows the same bounded model as
+/// material uniform data, but backends keep its storage independent from scene/material uniforms.
+pub const POSTPROCESS_UNIFORM_SIZE_LIMIT: u32 = 256;
+
+/// Everything needed to create one fullscreen postprocess pipeline.
+///
+/// The pipeline always uses `post_vertex` and `post_fragment`, resolved scene color at group 0,
+/// binding 1, and its pipeline-owned sampler at group 0, binding 2. `uniform_size` declares an
+/// optional application-authored uniform at group 0, binding 0.
+#[derive(Clone, Copy)]
+pub struct PostprocessPipelineDescriptor<'inputs> {
+    /// Offline-compiled shader module containing `post_vertex` and `post_fragment`.
+    pub shader: ShaderArtifact<'inputs>,
+    /// Exact byte size of the optional group-0/binding-0 uniform, from 1 through
+    /// [`POSTPROCESS_UNIFORM_SIZE_LIMIT`]; `None` declares no postprocess uniform.
+    pub uniform_size: Option<u32>,
+}
+
+impl<'inputs> From<ShaderArtifact<'inputs>> for PostprocessPipelineDescriptor<'inputs> {
+    fn from(shader: ShaderArtifact<'inputs>) -> Self {
+        Self {
+            shader,
+            uniform_size: None,
+        }
+    }
 }
 
 /// Largest supported material uniform declaration in bytes.
@@ -2828,6 +2897,9 @@ pub struct PostprocessedDraw<'resources> {
     pub postprocess_pipeline: &'resources PostprocessPipeline,
     /// Offscreen, depth, and optional multisample targets matching the acquired frame.
     pub targets: &'resources PostprocessTargets,
+    /// Uniform data copied for this submission; its length must exactly match the postprocess
+    /// pipeline declaration, and it must be empty when the pipeline declares no uniform.
+    pub uniform: &'resources [u8],
     /// Column-major model-view-projection matrix for the scene draw.
     pub model_view_projection: [[f32; 4]; 4],
     /// Linear scene-pass clear color.
@@ -2843,6 +2915,9 @@ pub struct PostprocessedScene<'resources> {
     pub postprocess_pipeline: &'resources PostprocessPipeline,
     /// Offscreen, depth, and optional multisample targets matching the acquired frame.
     pub targets: &'resources PostprocessTargets,
+    /// Uniform data copied for this submission; its length must exactly match the postprocess
+    /// pipeline declaration, and it must be empty when the pipeline declares no uniform.
+    pub uniform: &'resources [u8],
     /// Linear color used to clear the scene before its first object.
     pub clear: ClearColor,
 }
@@ -2896,7 +2971,16 @@ pub enum SceneOutput<'resources> {
         pipeline: &'resources PostprocessPipeline,
         /// Generation-matched offscreen, depth, and optional multisample targets.
         targets: &'resources PostprocessTargets,
+        /// Uniform data copied for this submission; its length must exactly match the pipeline
+        /// declaration, and it must be empty when the pipeline declares no uniform.
+        uniform: &'resources [u8],
     },
+}
+
+/// Validated postprocess creation inputs handed to the native backends.
+pub(crate) struct PostprocessPipelineConfig {
+    /// Declared group-0/binding-0 byte size, or zero when absent.
+    pub(crate) uniform_size: u32,
 }
 
 /// One acquired native drawable or swapchain image.
@@ -3429,6 +3513,113 @@ fn validate_bindings_against_interface(
         .sampler_bindings
         .sort_unstable_by_key(|slot| slot.binding);
     Ok(declaration)
+}
+
+/// Validates the fixed postprocess entry points and binding recipe against the artifact's
+/// module-wide reflection. The current artifact format does not record per-entry-point binding
+/// reachability, so an absent postprocess uniform cannot reject a module-level binding 0 that is
+/// consumed only by a scene entry point in the same module.
+fn validate_postprocess_interface(
+    shader: ShaderArtifact<'_>,
+    uniform_size: Option<u32>,
+) -> Result<(), GraphicsError> {
+    let interface = shader.parse_interface();
+    find_entry_point(
+        &interface,
+        "post_vertex",
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    find_entry_point(
+        &interface,
+        "post_fragment",
+        shader::INTERFACE_STAGE_FRAGMENT,
+        "fragment",
+    )?;
+
+    let validate_fixed = |binding: u32, kind: u8, label: &str| {
+        let recorded = interface
+            .bindings
+            .iter()
+            .find(|recorded| recorded.group == 0 && recorded.binding == binding)
+            .ok_or_else(|| {
+                GraphicsError::invalid_request(format!(
+                    "postprocess pipeline requires {label} at group 0, binding {binding}, but the \
+                     shader artifact does not record it"
+                ))
+            })?;
+        if recorded.kind != kind {
+            return Err(GraphicsError::invalid_request(format!(
+                "postprocess pipeline requires {label} at group 0, binding {binding}, but the \
+                 shader artifact records {}",
+                interface_binding_label(recorded.kind)
+            )));
+        }
+        Ok(recorded)
+    };
+    validate_fixed(
+        1,
+        shader::INTERFACE_BINDING_SAMPLED_TEXTURE,
+        "resolved scene color",
+    )?;
+    validate_fixed(
+        2,
+        shader::INTERFACE_BINDING_SAMPLER,
+        "the scene-color sampler",
+    )?;
+
+    if let Some(size) = uniform_size {
+        if size == 0 || size > POSTPROCESS_UNIFORM_SIZE_LIMIT {
+            return Err(GraphicsError::invalid_request(format!(
+                "postprocess uniform declares {size} bytes, outside the supported 1 through \
+                 {POSTPROCESS_UNIFORM_SIZE_LIMIT}"
+            )));
+        }
+        let recorded = validate_fixed(0, shader::INTERFACE_BINDING_UNIFORM, "uniform data")?;
+        if recorded.size != size {
+            return Err(GraphicsError::invalid_request(format!(
+                "postprocess uniform at group 0, binding 0 declares {size} bytes but the shader \
+                 artifact records {}",
+                recorded.size
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_postprocess_uniform(
+    pipeline: &PostprocessPipeline,
+    uniform: &[u8],
+) -> Result<(), GraphicsError> {
+    let expected = usize::try_from(pipeline.uniform_size).expect("u32 size fits usize");
+    if uniform.len() == expected {
+        return Ok(());
+    }
+    if uniform.len() > usize::try_from(POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize") {
+        return Err(GraphicsError::invalid_request(format!(
+            "postprocess submission supplies {} uniform bytes, exceeding the {}-byte limit and \
+             its pipeline's declared size {expected}",
+            uniform.len(),
+            POSTPROCESS_UNIFORM_SIZE_LIMIT
+        )));
+    }
+    let message = match (expected, uniform.is_empty()) {
+        (0, _) => format!(
+            "postprocess submission supplies {} unexpected uniform bytes but its pipeline \
+             declares no uniform",
+            uniform.len()
+        ),
+        (_, true) => format!(
+            "postprocess submission supplies no uniform bytes but its pipeline declares \
+             {expected}"
+        ),
+        _ => format!(
+            "postprocess submission supplies {} uniform bytes but its pipeline declares \
+             {expected}",
+            uniform.len()
+        ),
+    };
+    Err(GraphicsError::invalid_request(message))
 }
 
 fn session_ref<'a, 'window>(

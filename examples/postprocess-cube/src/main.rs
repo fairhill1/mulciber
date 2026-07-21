@@ -7,8 +7,8 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessedDraw, RenderScale,
-    SampleCount, ShaderArtifact,
+    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessPipelineDescriptor,
+    PostprocessedDraw, RenderScale, SampleCount, ShaderArtifact,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -48,9 +48,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let scene_pipeline = graphics
         .device
         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
-    let postprocess_pipeline = graphics
-        .device
-        .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
+    let postprocess_pipeline =
+        graphics
+            .device
+            .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                shader: ShaderArtifact::new(SHADER)?,
+                uniform_size: Some(64),
+            })?;
     let render_scale = RenderScale::percent(RENDER_SCALE_PERCENT)?;
     println!("render scale: {} percent", render_scale.as_percent());
     let mut targets = graphics
@@ -72,6 +76,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .create_scaled_postprocess_targets(info, render_scale)?;
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
+                    let elapsed = started.elapsed().as_secs_f32();
+                    let postprocess_uniform = animated_postprocess_uniform(elapsed);
                     graphics.queue.draw_textured_postprocessed_and_present(
                         frame,
                         PostprocessedDraw {
@@ -80,10 +86,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             scene_pipeline: &scene_pipeline,
                             postprocess_pipeline: &postprocess_pipeline,
                             targets: &targets,
-                            model_view_projection: transform(
-                                started.elapsed().as_secs_f32(),
-                                aspect,
-                            ),
+                            uniform: &postprocess_uniform,
+                            model_view_projection: transform(elapsed, aspect),
                             clear: CLEAR,
                         },
                     )?;
@@ -99,4 +103,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     graphics.shutdown()?;
     Ok(())
+}
+
+/// One 64-byte block matching `DrawConstants`. The fullscreen shader interprets the first two
+/// floats as the smooth underwater transition and animation time; the scene pass receives its own
+/// independent transform storage.
+fn animated_postprocess_uniform(elapsed: f32) -> [u8; 64] {
+    let transition = 0.5 - 0.5 * (elapsed * 0.45).cos();
+    let mut bytes = [0_u8; 64];
+    bytes[..4].copy_from_slice(&transition.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&elapsed.to_ne_bytes());
+    bytes
 }

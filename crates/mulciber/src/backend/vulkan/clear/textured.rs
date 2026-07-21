@@ -9,8 +9,8 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, Rgba8TextureFormat, SamplerAddress,
-    SamplerFilter, ShadowPipelineConfig, mip_extent,
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
+    Rgba8TextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -87,6 +87,9 @@ struct PipelineResource {
     pipeline: vk::VkPipeline,
     descriptor_pool: vk::VkDescriptorPool,
     sampler: vk::VkSampler,
+    /// Declared postprocess uniform size; zero for textured pipelines and no-uniform postprocess
+    /// pipelines.
+    uniform_size: u32,
     bindings: Vec<(ResourceId, vk::VkDescriptorSet)>,
 }
 
@@ -266,6 +269,9 @@ pub(crate) struct TexturedSession<'window> {
     gpu_timing: GpuTimingState,
     uniform: Buffer,
     uniform_capacity: usize,
+    /// Dedicated one-submission postprocess uniform storage. It never aliases scene/material
+    /// transforms that may still be consumed by the first pass.
+    postprocess_uniform: Buffer,
     /// Frame-transient read-only storage region for material and shadow records, in bytes.
     storage: Buffer,
     storage_capacity: usize,
@@ -338,6 +344,18 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
+        let postprocess_uniform = match create_buffer(
+            &surface,
+            usize::try_from(crate::POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize"),
+            vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
+            &[],
+        ) {
+            Ok(buffer) => buffer,
+            Err(failure) => {
+                destroy_buffer(&surface, uniform);
+                return Err(failure);
+            }
+        };
         let storage = match create_buffer(
             &surface,
             STORAGE_OFFSET_ALIGNMENT,
@@ -346,6 +364,7 @@ impl<'window> TexturedSession<'window> {
         ) {
             Ok(buffer) => buffer,
             Err(failure) => {
+                destroy_buffer(&surface, postprocess_uniform);
                 destroy_buffer(&surface, uniform);
                 return Err(failure);
             }
@@ -359,6 +378,7 @@ impl<'window> TexturedSession<'window> {
             Ok(buffer) => buffer,
             Err(failure) => {
                 destroy_buffer(&surface, storage);
+                destroy_buffer(&surface, postprocess_uniform);
                 destroy_buffer(&surface, uniform);
                 return Err(failure);
             }
@@ -373,6 +393,7 @@ impl<'window> TexturedSession<'window> {
             Err(failure) => {
                 destroy_buffer(&surface, transient_geometry);
                 destroy_buffer(&surface, storage);
+                destroy_buffer(&surface, postprocess_uniform);
                 destroy_buffer(&surface, uniform);
                 return Err(failure);
             }
@@ -388,6 +409,7 @@ impl<'window> TexturedSession<'window> {
                 destroy_buffer(&surface, instance_transforms);
                 destroy_buffer(&surface, transient_geometry);
                 destroy_buffer(&surface, storage);
+                destroy_buffer(&surface, postprocess_uniform);
                 destroy_buffer(&surface, uniform);
                 return Err(failure);
             }
@@ -404,6 +426,7 @@ impl<'window> TexturedSession<'window> {
                 },
                 uniform,
                 uniform_capacity: 1,
+                postprocess_uniform,
                 storage,
                 storage_capacity: STORAGE_OFFSET_ALIGNMENT,
                 transient_geometry,
@@ -655,8 +678,9 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_postprocess_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
+        config: &PostprocessPipelineConfig,
     ) -> Result<ResourceId, GraphicsError> {
-        let resource = create_postprocess_pipeline(&self.surface, shader.payload())?;
+        let resource = create_postprocess_pipeline(&self.surface, shader.payload(), config)?;
         self.postprocess_pipelines.insert(resource)
     }
 
@@ -968,6 +992,7 @@ impl<'window> TexturedSession<'window> {
         draws: &[TexturedSceneDraw<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline_index =
@@ -987,6 +1012,7 @@ impl<'window> TexturedSession<'window> {
             target_index,
             postprocess_descriptor,
             PreparedScene::Draws,
+            uniform,
             clear,
             DEPTH_CLEAR_FAR,
         )?;
@@ -1023,6 +1049,7 @@ impl<'window> TexturedSession<'window> {
         batches: &[TexturedInstanceBatch<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline_index =
@@ -1042,6 +1069,7 @@ impl<'window> TexturedSession<'window> {
             target_index,
             postprocess_descriptor,
             PreparedScene::Instances,
+            uniform,
             clear,
             DEPTH_CLEAR_FAR,
         )?;
@@ -1126,6 +1154,7 @@ impl<'window> TexturedSession<'window> {
         overlay: &[MaterialRecord<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -1146,6 +1175,7 @@ impl<'window> TexturedSession<'window> {
             target_index,
             postprocess_descriptor,
             PreparedScene::Materials,
+            uniform,
             clear,
             depth_clear,
         )?;
@@ -2189,7 +2219,7 @@ impl<'window> TexturedSession<'window> {
                 .update_descriptor_sets
                 .expect("loaded function")(
                 self.surface.device().handle,
-                3,
+                u32::try_from(writes.len()).expect("texture descriptor write count fits u32"),
                 writes.as_ptr(),
                 0,
                 ptr::null(),
@@ -2399,9 +2429,9 @@ impl<'window> TexturedSession<'window> {
             "vkAllocateDescriptorSets for postprocess target",
         )?;
         let buffer = vk::VkDescriptorBufferInfo {
-            buffer: self.uniform.handle,
+            buffer: self.postprocess_uniform.handle,
             offset: 0,
-            range: 64,
+            range: u64::from(pipeline.uniform_size),
         };
         let image = vk::VkDescriptorImageInfo {
             sampler: ptr::null_mut(),
@@ -2412,13 +2442,16 @@ impl<'window> TexturedSession<'window> {
             sampler: pipeline.sampler,
             ..Default::default()
         };
-        let writes = [
-            descriptor_write(
+        let mut writes = Vec::with_capacity(3);
+        if pipeline.uniform_size != 0 {
+            writes.push(descriptor_write(
                 set,
                 0,
                 vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 (&raw const buffer).cast(),
-            ),
+            ));
+        }
+        writes.extend([
             descriptor_write(
                 set,
                 1,
@@ -2431,7 +2464,7 @@ impl<'window> TexturedSession<'window> {
                 vk::VK_DESCRIPTOR_TYPE_SAMPLER,
                 (&raw const sampler).cast(),
             ),
-        ];
+        ]);
         unsafe {
             self.surface
                 .device()
@@ -2439,7 +2472,7 @@ impl<'window> TexturedSession<'window> {
                 .update_descriptor_sets
                 .expect("loaded function")(
                 self.surface.device().handle,
-                3,
+                u32::try_from(writes.len()).expect("postprocess descriptor write count fits u32"),
                 writes.as_ptr(),
                 0,
                 ptr::null(),
@@ -3069,6 +3102,7 @@ impl<'window> TexturedSession<'window> {
         target_index: usize,
         postprocess_descriptor: vk::VkDescriptorSet,
         scene: PreparedScene,
+        uniform: &[u8],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<(), GraphicsError> {
@@ -3091,6 +3125,9 @@ impl<'window> TexturedSession<'window> {
         };
         self.surface.wait_for_frame()?;
         self.collect_gpu_timing()?;
+        if !uniform.is_empty() {
+            write_postprocess_uniform(&self.surface, &self.postprocess_uniform, uniform)?;
+        }
         let device = self.surface.device();
         check(
             unsafe {
@@ -3663,6 +3700,7 @@ impl<'window> TexturedSession<'window> {
         }
         unsafe {
             destroy_buffer_device(device, mem::take(&mut self.uniform));
+            destroy_buffer_device(device, mem::take(&mut self.postprocess_uniform));
             destroy_buffer_device(device, mem::take(&mut self.storage));
             destroy_buffer_device(device, mem::take(&mut self.transient_geometry));
             destroy_buffer_device(device, mem::take(&mut self.instance_transforms));
@@ -3775,6 +3813,7 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
             pipeline: pipeline.pipeline,
             descriptor_pool: pipeline.descriptor_pool,
             sampler: ptr::null_mut(),
+            uniform_size: 0,
             bindings: Vec::new(),
         },
     );
@@ -3833,6 +3872,7 @@ fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipeli
             pipeline: pipeline.pipeline,
             descriptor_pool: pipeline.descriptor_pool,
             sampler: ptr::null_mut(),
+            uniform_size: 0,
             bindings: Vec::new(),
         },
     );
@@ -4525,6 +4565,38 @@ fn write_instance_transforms(
     Ok(())
 }
 
+fn write_postprocess_uniform(
+    surface: &ClearSurface<'_>,
+    buffer: &Buffer,
+    uniform: &[u8],
+) -> Result<(), GraphicsError> {
+    if u64::try_from(uniform.len()).map_err(|_| error("postprocess uniform length exceeds u64"))?
+        > buffer.size
+    {
+        return Err(error("postprocess uniform write exceeds allocation"));
+    }
+    let device = surface.device();
+    let mut mapped = ptr::null_mut();
+    check(
+        unsafe {
+            device.functions.map_memory.expect("loaded function")(
+                device.handle,
+                buffer.memory,
+                0,
+                u64::try_from(uniform.len()).expect("validated uniform length fits u64"),
+                0,
+                &raw mut mapped,
+            )
+        },
+        "vkMapMemory for postprocess uniform",
+    )?;
+    unsafe {
+        ptr::copy_nonoverlapping(uniform.as_ptr(), mapped.cast::<u8>(), uniform.len());
+        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_image(
     surface: &ClearSurface<'_>,
@@ -4846,6 +4918,7 @@ fn create_pipeline(
         pipeline: ptr::null_mut(),
         descriptor_pool: ptr::null_mut(),
         sampler: ptr::null_mut(),
+        uniform_size: 0,
         bindings: Vec::new(),
     };
     check(
@@ -5822,28 +5895,37 @@ fn create_shadow_pipeline(
 fn create_postprocess_pipeline(
     surface: &ClearSurface<'_>,
     bytes: &[u8],
+    config: &PostprocessPipelineConfig,
 ) -> Result<PipelineResource, GraphicsError> {
     let device = surface.device();
-    let bindings = [
-        layout_binding(
-            0,
-            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
-        ),
-        layout_binding(
-            1,
-            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-        ),
-        layout_binding(
-            2,
-            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
-            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-        ),
-    ];
+    let uniform_binding = layout_binding(
+        0,
+        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        (vk::VK_SHADER_STAGE_VERTEX_BIT | vk::VK_SHADER_STAGE_FRAGMENT_BIT) as u32,
+    );
+    let image_binding = layout_binding(
+        1,
+        vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+    );
+    let sampler_binding = layout_binding(
+        2,
+        vk::VK_DESCRIPTOR_TYPE_SAMPLER,
+        vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
+    );
+    let bindings = if config.uniform_size == 0 {
+        [
+            image_binding,
+            sampler_binding,
+            vk::VkDescriptorSetLayoutBinding::default(),
+        ]
+    } else {
+        [uniform_binding, image_binding, sampler_binding]
+    };
+    let binding_count = if config.uniform_size == 0 { 2 } else { 3 };
     let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        bindingCount: 3,
+        bindingCount: binding_count,
         pBindings: bindings.as_ptr(),
         ..Default::default()
     };
@@ -5853,6 +5935,7 @@ fn create_postprocess_pipeline(
         pipeline: ptr::null_mut(),
         descriptor_pool: ptr::null_mut(),
         sampler: ptr::null_mut(),
+        uniform_size: config.uniform_size,
         bindings: Vec::new(),
     };
     check(

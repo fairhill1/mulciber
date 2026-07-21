@@ -18,7 +18,7 @@ fn main() {
         }
         "artifacts/postprocess.metal.shaderbin"
     } else if target_os == OsStr::new("windows") || target_os == OsStr::new("linux") {
-        "artifacts/postprocess.vulkan.shaderbin"
+        "artifacts/postprocess-uniform.vulkan.shaderbin"
     } else {
         panic!("the postprocess cube supports macOS, Windows, and Linux targets");
     };

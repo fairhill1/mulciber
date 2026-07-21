@@ -277,7 +277,11 @@ remain open, so no stable cross-platform input support is claimed. See the
 
 Two-pass postprocess: dedicated target/pipeline handles and one fixed two-pass queue operation
 render the scene into generation-bound resolved color and sample it in a fullscreen grade/vignette
-pass, deliberately not generalized into a command encoder. Passed validation-layer visual smokes on
+pass. An optional creation-declared, submission-borrowed uniform at group 0/binding 0 now drives
+per-frame effects without aliasing scene/material uniform storage, deliberately not generalized
+into a command encoder. The addition passed the 88-case native-Wayland Vulkan conformance probe on
+the current Nvidia tier with validation enabled and cross-compiles for Metal, whose new path remains
+physically unverified. The earlier static path passed validation-layer visual smokes on
 the Apple M2 tier, plus 100 automated rapid resizes and a manual drag-resize/close pass on Intel UHD
 620 / Vulkan 1.3.215. See the [experimental postprocess contract](postprocess-contract.md).
 

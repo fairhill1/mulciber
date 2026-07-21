@@ -200,6 +200,19 @@ Scales above native supersample. Sharpening or reconstruction filters beyond lin
 and scaling of the direct (non-postprocessed) output stay open until a slice forces them.
 Recorded in the [postprocess contract](postprocess-contract.md).
 
+## Postprocess per-submission uniform
+
+Decided as one optional creation-fixed uniform at group 0, binding 0, not as reuse of material
+records or a general bind-group API. `PostprocessPipelineDescriptor` declares an exact size of one
+through 256 bytes; the existing shader-only pipeline constructor remains the no-uniform convenience
+form. Every postprocessed output supplies a borrowed byte slice whose length must match exactly,
+validated before frame consumption. Resolved scene color and its fixed sampler remain bindings 1
+and 2. Vulkan owns a dedicated fence-reused buffer so postprocess writes cannot overwrite scene or
+material data still consumed by the first pass; Metal copies the bytes at fragment buffer index 0.
+The application owns layout and animation semantics, matching material uniforms. Persistent
+postprocess buffers, multiple slots/groups, and a general effect-parameter system stay closed.
+Recorded in the [postprocess contract](postprocess-contract.md).
+
 ## Native-resolution overlay
 
 Decided as an optional second material record list on `SceneSubmission` rather than a general

@@ -13,7 +13,10 @@ postprocess pass whose offscreen targets accept a render scale. Applications aut
 materials — WGSL modules compiled offline by `mulciber-shader`, with declared vertex layouts
 and binding slots validated against the interface recorded in the artifact — and supply
 per-record uniform, read-only storage, and frame-transient geometry as plain bytes: the
-application owns the layouts, the engine sees bytes. Policy that engines commonly absorb
+application owns the layouts, the engine sees bytes. Fullscreen postprocess pipelines likewise
+declare an optional group-0/binding-0 uniform of at most 256 bytes and borrow exactly that many
+bytes per submission, independently from scene/material uniform storage. Policy that engines
+commonly absorb
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
 application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
 normal maps, with either one level or a complete application-authored mip chain.

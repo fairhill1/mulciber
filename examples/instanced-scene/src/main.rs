@@ -110,6 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     output: SceneOutput::Postprocessed {
                         pipeline: &postprocess_pipeline,
                         targets: &targets,
+                        uniform: &[],
                     },
                     shadow: None,
                     overlay: None,

@@ -9,8 +9,8 @@ use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, Rgba8TextureFormat, SamplerAddress,
-    SamplerFilter, ShadowPipelineConfig, mip_extent,
+    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
+    Rgba8TextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -112,6 +112,7 @@ struct PipelineResource {
 struct PostprocessPipelineResource {
     pipeline: Object,
     sampler: Object,
+    uniform_size: u32,
 }
 
 struct MaterialPipelineResource {
@@ -611,11 +612,13 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_postprocess_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
+        config: &PostprocessPipelineConfig,
     ) -> Result<ResourceId, GraphicsError> {
         self.postprocess_pipelines
             .insert(create_postprocess_pipeline(
                 self.surface.device,
                 shader.payload(),
+                config,
             )?)
     }
 
@@ -884,6 +887,7 @@ impl<'window> TexturedSession<'window> {
         draws: &[TexturedSceneDraw<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
@@ -906,6 +910,7 @@ impl<'window> TexturedSession<'window> {
             &[],
             postprocess_pipeline,
             target,
+            uniform,
             clear,
             DEPTH_CLEAR_FAR,
         )
@@ -946,6 +951,7 @@ impl<'window> TexturedSession<'window> {
         batches: &[TexturedInstanceBatch<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
@@ -968,6 +974,7 @@ impl<'window> TexturedSession<'window> {
             &[],
             postprocess_pipeline,
             target,
+            uniform,
             clear,
             DEPTH_CLEAR_FAR,
         )
@@ -1056,6 +1063,7 @@ impl<'window> TexturedSession<'window> {
         overlay: &[MaterialRecord<'_>],
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
+        uniform: &[u8],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -1079,6 +1087,7 @@ impl<'window> TexturedSession<'window> {
             overlay,
             postprocess_pipeline,
             target,
+            uniform,
             clear,
             depth_clear,
         )
@@ -1942,6 +1951,7 @@ impl<'window> TexturedSession<'window> {
         overlay: &[MaterialRecord<'_>],
         postprocess_pipeline: usize,
         target: usize,
+        uniform: &[u8],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -2071,6 +2081,15 @@ impl<'window> TexturedSession<'window> {
                 postprocess.sampler,
                 2,
             );
+            if postprocess.uniform_size != 0 {
+                objc::void_bytes_usize_usize(
+                    post_encoder,
+                    c"setFragmentBytes:length:atIndex:",
+                    uniform.as_ptr().cast(),
+                    uniform.len(),
+                    0,
+                );
+            }
             objc::void_three_usizes(
                 post_encoder,
                 c"drawPrimitives:vertexStart:vertexCount:",
@@ -2580,7 +2599,11 @@ fn release_pipeline(pipeline: PipelineResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
-    let PostprocessPipelineResource { pipeline, sampler } = pipeline;
+    let PostprocessPipelineResource {
+        pipeline,
+        sampler,
+        uniform_size: _,
+    } = pipeline;
     unsafe {
         objc::void(sampler, c"release");
         objc::void(pipeline, c"release");
@@ -3485,6 +3508,7 @@ fn create_shadow_pipeline(
 fn create_postprocess_pipeline(
     device: Object,
     bytes: &[u8],
+    config: &PostprocessPipelineConfig,
 ) -> Result<PostprocessPipelineResource, GraphicsError> {
     unsafe {
         let data = required(
@@ -3571,7 +3595,11 @@ fn create_postprocess_pipeline(
         for object in [sampler_descriptor, descriptor, fragment, vertex, library] {
             objc::void(object, c"release");
         }
-        Ok(PostprocessPipelineResource { pipeline, sampler })
+        Ok(PostprocessPipelineResource {
+            pipeline,
+            sampler,
+            uniform_size: config.uniform_size,
+        })
     }
 }
 

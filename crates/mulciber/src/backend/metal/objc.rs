@@ -230,6 +230,18 @@ pub unsafe fn void_object_usize(receiver: Object, name: &CStr, object: Object, i
     unsafe { function(receiver, selector(name), object, index) };
 }
 
+pub unsafe fn void_bytes_usize_usize(
+    receiver: Object,
+    name: &CStr,
+    bytes: *const c_void,
+    length: usize,
+    index: usize,
+) {
+    let function: unsafe extern "C" fn(Object, Selector, *const c_void, usize, usize) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), bytes, length, index) };
+}
+
 pub unsafe fn void_bool(receiver: Object, name: &CStr, argument: bool) {
     let function: unsafe extern "C" fn(Object, Selector, bool) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };

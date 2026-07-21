@@ -182,6 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             scene_pipeline: &scene_pipeline,
                             postprocess_pipeline: &postprocess_pipeline,
                             targets: &targets,
+                            uniform: &[],
                             model_view_projection: interactive_transform(
                                 animation_seconds,
                                 aspect,

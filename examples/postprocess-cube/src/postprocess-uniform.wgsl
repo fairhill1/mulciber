@@ -1,0 +1,69 @@
+struct DrawConstants {
+    model_view_projection: mat4x4<f32>,
+}
+
+@group(0) @binding(0) var<uniform> draw: DrawConstants;
+@group(0) @binding(1) var color_texture: texture_2d<f32>;
+@group(0) @binding(2) var color_sampler: sampler;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+}
+
+struct RasterData {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+}
+
+@vertex
+fn cube_vertex(input: VertexInput) -> RasterData {
+    var output: RasterData;
+    output.clip_position = draw.model_view_projection * vec4<f32>(input.position, 1.0);
+    output.color = input.color;
+    output.uv = input.uv;
+    return output;
+}
+
+@fragment
+fn cube_fragment(input: RasterData) -> @location(0) vec4<f32> {
+    return textureSample(color_texture, color_sampler, input.uv) * vec4<f32>(input.color, 1.0);
+}
+
+struct PostRasterData {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn post_vertex(@builtin(vertex_index) index: u32) -> PostRasterData {
+    let positions = array(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    let position = positions[index];
+    var output: PostRasterData;
+    output.clip_position = vec4<f32>(position, 0.0, 1.0);
+    output.uv = vec2<f32>(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+    return output;
+}
+
+@fragment
+fn post_fragment(input: PostRasterData) -> @location(0) vec4<f32> {
+    let transition = clamp(draw.model_view_projection[0].x, 0.0, 1.0);
+    let time = draw.model_view_projection[0].y;
+    let wave = vec2<f32>(
+        sin(input.uv.y * 31.0 + time * 1.7),
+        cos(input.uv.x * 27.0 - time * 1.3),
+    ) * (0.006 * transition);
+    let source = textureSample(color_texture, color_sampler, input.uv + wave);
+    let luminance = dot(source.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let neutral = mix(source.rgb, vec3<f32>(luminance), 0.35) * vec3<f32>(1.08, 0.98, 1.12);
+    let underwater = mix(source.rgb, vec3<f32>(0.02, 0.28, 0.42), 0.38);
+    let centered = input.uv * 2.0 - vec2<f32>(1.0);
+    let vignette = 1.0 - mix(0.22, 0.36, transition) * dot(centered, centered);
+    return vec4<f32>(mix(neutral, underwater, transition) * vignette, source.a);
+}

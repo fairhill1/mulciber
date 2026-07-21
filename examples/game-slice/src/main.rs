@@ -116,6 +116,7 @@ impl Resources {
                 output: SceneOutput::Postprocessed {
                     pipeline: &self.postprocess_pipeline,
                     targets: &self.targets,
+                    uniform: &[],
                 },
                 shadow: None,
                 overlay: None,

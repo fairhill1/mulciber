@@ -13,11 +13,11 @@ use std::time::Instant;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices,
-    OpenedGraphics, PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter,
-    SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass,
-    ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch,
-    TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat,
-    VertexLayout,
+    OpenedGraphics, PostprocessPipelineDescriptor, PostprocessedDraw, PostprocessedScene,
+    RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
+    SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord, ShadowSource,
+    TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch, TexturedScene,
+    TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -307,6 +307,7 @@ struct Cases<'window> {
     instanced_pipeline: Option<mulciber::InstancedTexturedPipeline>,
     targets: Option<mulciber::RenderTargets>,
     postprocess_pipeline: Option<mulciber::PostprocessPipeline>,
+    postprocess_uniform_pipeline: Option<mulciber::PostprocessPipeline>,
     postprocess_targets: Option<mulciber::PostprocessTargets>,
     material_pipeline: Option<mulciber::MaterialPipeline>,
     foreign_material_pipeline: Option<mulciber::MaterialPipeline>,
@@ -341,6 +342,7 @@ impl<'window> Cases<'window> {
             instanced_pipeline: None,
             targets: None,
             postprocess_pipeline: None,
+            postprocess_uniform_pipeline: None,
             postprocess_targets: None,
             material_pipeline: None,
             foreign_material_pipeline: None,
@@ -604,6 +606,13 @@ impl<'window> Cases<'window> {
                         .device
                         .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?,
                 );
+                self.postprocess_uniform_pipeline =
+                    Some(graphics.device.create_postprocess_pipeline(
+                        PostprocessPipelineDescriptor {
+                            shader: ShaderArtifact::new(SHADER)?,
+                            uniform_size: Some(64),
+                        },
+                    )?);
                 self.postprocess_targets = Some(
                     graphics
                         .device
@@ -665,6 +674,7 @@ impl<'window> Cases<'window> {
                                 .postprocess_targets
                                 .as_ref()
                                 .expect("postprocess targets exist"),
+                            uniform: &[],
                             clear: ClearColor::BLACK,
                         },
                     )?;
@@ -733,6 +743,7 @@ impl<'window> Cases<'window> {
                                 .postprocess_targets
                                 .as_ref()
                                 .expect("postprocess targets exist"),
+                            uniform: &[],
                         },
                         shadow: None,
                         overlay: None,
@@ -751,6 +762,30 @@ impl<'window> Cases<'window> {
                 let shader = ShaderArtifact::new(MATERIAL_SHADER)?;
                 {
                     let graphics = self.graphics.as_ref().expect("session A is open");
+                    expect_error(
+                        graphics
+                            .device
+                            .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                                shader: ShaderArtifact::new(SHADER)?,
+                                uniform_size: Some(32),
+                            })
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "declares 32 bytes but the shader artifact records 64",
+                        "postprocess uniform interface mismatch rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
+                            .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                                shader: ShaderArtifact::new(SHADER)?,
+                                uniform_size: Some(257),
+                            })
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "outside the supported 1 through 256",
+                        "oversized postprocess uniform declaration rejected",
+                    )?;
                     expect_error(
                         graphics
                             .device
@@ -867,6 +902,8 @@ impl<'window> Cases<'window> {
                     )?;
                 }
                 self.pass("material uniform size mismatch rejected");
+                self.pass("postprocess uniform interface mismatch rejected");
+                self.pass("oversized postprocess uniform declaration rejected");
                 self.pass("missing entry point rejected");
                 self.pass("undeclared vertex input rejected");
                 self.pass("undeclared binding slot rejected");
@@ -1447,6 +1484,7 @@ impl<'window> Cases<'window> {
                                         .postprocess_targets
                                         .as_ref()
                                         .expect("postprocess targets exist"),
+                                    uniform: &[],
                                 },
                                 shadow: None,
                                 overlay: Some(&records),
@@ -1583,6 +1621,7 @@ impl<'window> Cases<'window> {
                                 .postprocess_targets
                                 .as_ref()
                                 .expect("postprocess targets exist"),
+                            uniform: &[],
                         },
                         shadow: None,
                         overlay: Some(&overlay_records),
@@ -2928,11 +2967,204 @@ impl<'window> Cases<'window> {
                 self.step = 43;
                 Ok(false)
             }
-            // Session A shuts down cleanly; session B reopens the same window with the forced
-            // one-sample path and keeps a session-A handle for the mixed-session case.
+            // The direct single-draw helper accepts exactly the declared postprocess uniform.
             43 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let uniform = [0_u8; 64];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.draw_textured_postprocessed_and_present(
+                    frame,
+                    PostprocessedDraw {
+                        mesh: self.mesh.as_ref().expect("mesh exists"),
+                        texture: self.texture.as_ref().expect("texture exists"),
+                        scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                        postprocess_pipeline: self
+                            .postprocess_uniform_pipeline
+                            .as_ref()
+                            .expect("uniform postprocess pipeline exists"),
+                        targets: self
+                            .postprocess_targets
+                            .as_ref()
+                            .expect("postprocess targets exist"),
+                        uniform: &uniform,
+                        model_view_projection: IDENTITY,
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                self.pass("exact-size postprocess uniform accepted by direct helper");
+                self.step = 44;
+                Ok(false)
+            }
+            // A declared postprocess uniform may not be omitted.
+            44 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .draw_textured_postprocessed_and_present(
+                            frame,
+                            PostprocessedDraw {
+                                mesh: self.mesh.as_ref().expect("mesh exists"),
+                                texture: self.texture.as_ref().expect("texture exists"),
+                                scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                                postprocess_pipeline: self
+                                    .postprocess_uniform_pipeline
+                                    .as_ref()
+                                    .expect("uniform postprocess pipeline exists"),
+                                targets: self
+                                    .postprocess_targets
+                                    .as_ref()
+                                    .expect("postprocess targets exist"),
+                                uniform: &[],
+                                model_view_projection: IDENTITY,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "supplies no uniform bytes but its pipeline declares 64",
+                    "missing postprocess uniform rejected",
+                )?;
+                self.pass("missing postprocess uniform rejected");
+                self.step = 45;
+                Ok(false)
+            }
+            // SceneSubmission rejects bytes supplied to a no-uniform postprocess pipeline.
+            45 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let draws = scene_draws(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                );
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Textured(&draws),
+                                output: SceneOutput::Postprocessed {
+                                    pipeline: self
+                                        .postprocess_pipeline
+                                        .as_ref()
+                                        .expect("postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &[1],
+                                },
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "unexpected uniform bytes but its pipeline declares no uniform",
+                    "unexpected postprocess uniform rejected",
+                )?;
+                self.pass("unexpected postprocess uniform rejected through SceneSubmission");
+                self.step = 46;
+                Ok(false)
+            }
+            // SceneSubmission also rejects a non-empty but wrong-size declared uniform.
+            46 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let draws = scene_draws(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                );
+                let uniform = [0_u8; 32];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Textured(&draws),
+                                output: SceneOutput::Postprocessed {
+                                    pipeline: self
+                                        .postprocess_uniform_pipeline
+                                        .as_ref()
+                                        .expect("uniform postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &uniform,
+                                },
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "supplies 32 uniform bytes but its pipeline declares 64",
+                    "wrong-size postprocess uniform rejected",
+                )?;
+                self.pass("wrong-size postprocess uniform rejected through SceneSubmission");
+                self.step = 47;
+                Ok(false)
+            }
+            // The submission-side bound is independently observable for oversized data.
+            47 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let oversized = [0_u8; 257];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .draw_textured_postprocessed_and_present(
+                            frame,
+                            PostprocessedDraw {
+                                mesh: self.mesh.as_ref().expect("mesh exists"),
+                                texture: self.texture.as_ref().expect("texture exists"),
+                                scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                                postprocess_pipeline: self
+                                    .postprocess_uniform_pipeline
+                                    .as_ref()
+                                    .expect("uniform postprocess pipeline exists"),
+                                targets: self
+                                    .postprocess_targets
+                                    .as_ref()
+                                    .expect("postprocess targets exist"),
+                                uniform: &oversized,
+                                model_view_projection: IDENTITY,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "exceeding the 256-byte limit",
+                    "oversized postprocess uniform rejected",
+                )?;
+                self.pass("oversized postprocess uniform rejected");
+                self.step = 48;
+                Ok(false)
+            }
+            // Session A shuts down cleanly; session B reopens the same window with the forced
+            // one-sample path and keeps session-A handles for mixed-session cases.
+            48 => {
                 self.instanced_pipeline = None;
-                self.postprocess_pipeline = None;
+                self.postprocess_uniform_pipeline = None;
                 self.postprocess_targets = None;
                 let graphics = self.graphics.take().expect("session A is open");
                 graphics.shutdown()?;
@@ -2970,12 +3202,17 @@ impl<'window> Cases<'window> {
                         .device
                         .create_render_targets(reopened.surface.info()?)?,
                 );
+                self.postprocess_targets = Some(
+                    reopened
+                        .device
+                        .create_postprocess_targets(reopened.surface.info()?)?,
+                );
                 self.graphics = Some(reopened);
-                self.step = 44;
+                self.step = 49;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            44 => {
+            49 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2998,11 +3235,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 45;
+                self.step = 50;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            45 => {
+            50 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -3045,7 +3282,50 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 46;
+                self.step = 51;
+                Ok(false)
+            }
+            // Postprocess uniform validation does not mask a mixed-session pipeline error.
+            51 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let draws = scene_draws(
+                    self.mesh.as_ref().expect("session B mesh exists"),
+                    self.texture.as_ref().expect("session B texture exists"),
+                    self.pipeline.as_ref().expect("session B pipeline exists"),
+                );
+                let graphics = self.graphics.as_mut().expect("session B is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Textured(&draws),
+                                output: SceneOutput::Postprocessed {
+                                    pipeline: self
+                                        .postprocess_pipeline
+                                        .as_ref()
+                                        .expect("session A postprocess pipeline kept"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("session B postprocess targets exist"),
+                                    uniform: &[1],
+                                },
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "postprocess pipeline belongs to a different graphics session",
+                    "mixed-session postprocess pipeline rejected before uniform data",
+                )?;
+                self.pass("mixed-session postprocess validation precedence retained");
+                self.step = 52;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.

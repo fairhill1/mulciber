@@ -44,9 +44,24 @@ backend rasterizes overlay records through a single-sample no-depth pipeline var
 alongside every depth-off material pipeline, so `Cutout` blending degrades to a hard alpha
 threshold in the overlay.
 
-`Device::create_postprocess_pipeline` loads `post_vertex` and `post_fragment` from the same offline
-artifact as the scene pipeline. The post pipeline is always single-sampled and samples resolved
-scene color through the shader's texture and sampler bindings.
+`Device::create_postprocess_pipeline` accepts either a `ShaderArtifact` as the no-uniform
+convenience form or a `PostprocessPipelineDescriptor`. The descriptor optionally declares an exact
+uniform byte size at group 0, binding 0, capped at 256 bytes. The post pipeline is always
+single-sampled, loads `post_vertex` and `post_fragment`, samples resolved scene color at group 0,
+binding 1, and uses its pipeline-owned sampler at group 0, binding 2. Pipeline creation checks the
+fixed entry points and resource kinds against the artifact's offline interface record; when a
+uniform is declared, its recorded kind and byte size must match exactly. The current artifact
+format records bindings module-wide rather than per entry point, so the no-uniform form cannot
+reject a binding 0 used only by a scene entry point in the same module.
+
+Every postprocessed submission carries a borrowed `uniform: &[u8]`: `PostprocessedDraw`,
+`PostprocessedScene`, and `SceneOutput::Postprocessed`, which covers textured, instanced, and
+material content through `SceneSubmission`. Its length must exactly equal the pipeline declaration.
+A no-uniform pipeline accepts only an empty slice. Missing, unexpected, wrong-size, and over-limit
+data return `GraphicsErrorKind::InvalidRequest` before the acquired frame is consumed; session and
+generation validation retains precedence so those diagnostics are not hidden by uniform data.
+Applications retain the bytes only for the submission call, and Mulciber copies them into native
+command or frame-safe storage.
 
 `Queue::draw_textured_postprocessed_and_present` consumes a frame plus `PostprocessedDraw`. It
 validates session identity, target generation, and finite transform data, then records the fixed
@@ -70,19 +85,40 @@ explicit synchronization. See the [multi-object scene contract](scene-contract.m
 
 Metal places both render encoders in one command buffer. A memoryless four-sample texture resolves
 into private single-sample scene color; command-encoder ordering makes that color available to the
-fullscreen pass. The drawable is presented by the same retained command buffer and checked during
-fallible shutdown.
+fullscreen pass. A declared postprocess uniform is copied with
+`setFragmentBytes:length:atIndex:` at fragment buffer index 0 immediately before the fullscreen
+draw; no buffer binding is issued for the no-uniform form. Texture index 1 and sampler index 2 stay
+unchanged. The drawable is presented by the same retained command buffer and checked during
+fallible shutdown. This implementation was cross-compiled from Linux for Apple silicon; no new
+physical Metal validation is claimed for the uniform path.
 
 Vulkan allocates scene color with color-attachment and sampled usage. Dynamic rendering writes or
 resolves it, then a synchronization2 image barrier changes it from color-attachment output/write to
 fragment-shader sampled/read before the fullscreen pass. The swapchain image follows its existing
-acquire, color-attachment, present, and retirement path. The Vulkan implementation compiles and
-lints for the Windows target and has automated physical execution evidence on the Intel Vulkan 1.3
-tier described below.
+acquire, color-attachment, present, and retirement path. Postprocess uniforms use a dedicated
+host-visible 256-byte buffer rather than the shared scene/material uniform region. The one-frame
+fence is complete before submitted bytes overwrite that buffer. A uniform descriptor exists only
+when declared, exposes binding 0 to vertex and fragment stages, and uses the exact declared range;
+bindings 1 and 2 remain the resolved image and sampler. Target-keyed descriptor sets keep the stable
+uniform buffer binding, and the existing pool-reset paths rebuild caches when target reclamation or
+generation replacement invalidates sampled-image views. The Vulkan implementation compiles and
+lints on Linux. On 2026-07-21 the native-Wayland `mulciber-api-conformance` probe completed all 88
+cases on the current Linux/Nvidia tier with `VK_LAYER_KHRONOS_validation` enabled and no message,
+including exact, missing, unexpected, wrong-size, oversized, and mixed-session-precedence
+postprocess-uniform cases. The animated example artifact was compiled and shader-validated but was
+not visually inspected in that run.
 
-The single WGSL source is compiled offline by Naga 30.0.0. The Vulkan module was validated for
+The postprocess WGSL sources are compiled offline by Naga 30.0.0. Vulkan modules are validated for
 `vulkan1.3` with the repository-pinned SPIRV-Tools v2026.2 build; source and native artifact hashes
 are recorded in `vulkan-toolchain.lock.toml`.
+
+The Vulkan `mulciber-postprocess-cube` artifact additionally demonstrates a submitted 64-byte block:
+the first two floats smoothly animate an underwater transition and distortion independently of the
+scene transform. Existing no-uniform artifacts and examples continue to use the shader-only
+constructor plus empty slices. The separately pinned uniform artifact was compiled and validated
+offline on Linux; its Metal peer awaits regeneration on a macOS/Xcode host, so the checked-in Metal
+example artifact retains its prior static grade and this document claims no new Metal visual
+evidence.
 
 ## Windows Vulkan checkpoint
 

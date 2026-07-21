@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         draws: &draws,
                         postprocess_pipeline: &postprocess_pipeline,
                         targets: &targets,
+                        uniform: &[],
                         clear: CLEAR,
                     },
                 )?;

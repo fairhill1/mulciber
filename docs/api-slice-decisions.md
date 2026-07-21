@@ -114,15 +114,25 @@ and [custom-material contract](material-contract.md).
 Decided for the material slice as a fixed mode set, not a general state object. Material pipeline
 creation declares a `BlendMode` — `Opaque`, `Cutout` (alpha-to-coverage, degrading to a hard alpha
 threshold at one sample), or `PremultipliedTranslucent` (source-over with premultiplied alpha) —
-and a `DepthMode` (`TestWrite`, `TestOnly`, `Off` — off never writes). The set matches the material
-taxonomy a voxel-style dogfood needs (opaque terrain, foliage cutouts, translucent water, skybox
-and overlay depth control) without opening arbitrary blend equations, factors, per-attachment
-state, or comparison functions; both backends bake the modes into creation-time native pipeline
-state. Draw ordering stays application-owned through record order: translucent records composite
-over whatever the target holds when they draw. wgpu-style freeform state objects were considered
-and rejected — no slice has forced any combination outside these six values. The fixed pipeline
-recipes keep their recorded opaque test-write behavior. Recorded in the
-[material contract](material-contract.md).
+and a `DepthMode` (`TestWrite`, `TestOnly`, `TestWriteGreater`, `TestOnlyGreater`, `Off` — off
+never writes). The set matches the material taxonomy a voxel-style dogfood needs (opaque terrain,
+foliage cutouts, translucent water, skybox and overlay depth control) without opening arbitrary
+blend equations, factors, per-attachment state, or comparison functions; both backends bake the
+modes into creation-time native pipeline state. Draw ordering stays application-owned through
+record order: translucent records composite over whatever the target holds when they draw.
+wgpu-style freeform state objects were considered and rejected — no slice has forced any
+combination outside these values. The fixed pipeline recipes keep their recorded opaque
+test-write behavior. Recorded in the [material contract](material-contract.md).
+
+The greater-compare pair was forced by consumer evidence, not speculation: a game-slice sky pass
+drawn at depth 0.9999 silently overwrote all opaque geometry past roughly 45% of the far plane,
+the conventional-Z symptom of `Depth32Float` precision collapsing near the far plane. Reversed-Z
+(greater compare, depth cleared to 0.0, near plane at depth 1.0) is the standard durable fix, so
+`TestWriteGreater`/`TestOnlyGreater` open exactly that one compare direction rather than a general
+comparison-function axis. The depth-clear value stays out of the public submission vocabulary:
+each material scene derives 0.0 or 1.0 from its records' declared modes, and mixing compare
+directions against one depth target is rejected by name. The reversed-Z projection matrix itself
+stays application-owned, and shadow passes keep their conventional less-compare recipe.
 
 ## Texture mip chains
 

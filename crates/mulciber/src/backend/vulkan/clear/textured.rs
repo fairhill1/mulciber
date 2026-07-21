@@ -18,6 +18,9 @@ use crate::{
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
+/// Far-plane depth clear for conventional less-compare scenes; reversed-Z material scenes
+/// clear to 0.0 instead, selected per submission by the validated `depth_clear` argument.
+const DEPTH_CLEAR_FAR: f32 = 1.0;
 /// The specification's `VK_LOD_CLAMP_NONE`, absent from the generated bindings.
 const LOD_CLAMP_NONE: f32 = 1000.0;
 const DRAW_UNIFORM_SIZE: usize = 64;
@@ -836,7 +839,13 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_scene(draws)?;
-        self.record_draw(token.image_index, target_index, PreparedScene::Draws, clear)?;
+        self.record_draw(
+            token.image_index,
+            target_index,
+            PreparedScene::Draws,
+            clear,
+            DEPTH_CLEAR_FAR,
+        )?;
         self.surface.submit_recorded(token.image_index)
     }
 
@@ -866,6 +875,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_descriptor,
             PreparedScene::Draws,
             clear,
+            DEPTH_CLEAR_FAR,
         )?;
         self.surface.submit_recorded(token.image_index)
     }
@@ -889,6 +899,7 @@ impl<'window> TexturedSession<'window> {
             target_index,
             PreparedScene::Instances,
             clear,
+            DEPTH_CLEAR_FAR,
         )?;
         self.surface.submit_recorded(token.image_index)
     }
@@ -919,6 +930,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_descriptor,
             PreparedScene::Instances,
             clear,
+            DEPTH_CLEAR_FAR,
         )?;
         self.surface.submit_recorded(token.image_index)
     }
@@ -973,6 +985,7 @@ impl<'window> TexturedSession<'window> {
         shadow: Option<&ShadowPrepass<'_>>,
         targets: ResourceId,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target_index = self.targets.index_of(targets)?;
         if self.targets[target_index].info != token.info {
@@ -986,10 +999,12 @@ impl<'window> TexturedSession<'window> {
             target_index,
             PreparedScene::Materials,
             clear,
+            depth_clear,
         )?;
         self.surface.submit_recorded(token.image_index)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_material_scene_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
@@ -998,6 +1013,7 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
@@ -1017,6 +1033,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_descriptor,
             PreparedScene::Materials,
             clear,
+            depth_clear,
         )?;
         self.surface.submit_recorded(token.image_index)
     }
@@ -2392,6 +2409,7 @@ impl<'window> TexturedSession<'window> {
         target_index: usize,
         scene: PreparedScene,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<(), GraphicsError> {
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
         let target_depth = self.targets[target_index]
@@ -2521,7 +2539,7 @@ impl<'window> TexturedSession<'window> {
             storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
             clearValue: vk::VkClearValue {
                 depthStencil: vk::VkClearDepthStencilValue {
-                    depth: 1.0,
+                    depth: depth_clear,
                     stencil: 0,
                 },
             },
@@ -2591,7 +2609,11 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        clippy::too_many_arguments
+    )]
     fn record_postprocessed_draw(
         &mut self,
         image_index: u32,
@@ -2600,6 +2622,7 @@ impl<'window> TexturedSession<'window> {
         postprocess_descriptor: vk::VkDescriptorSet,
         scene: PreparedScene,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<(), GraphicsError> {
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
         let target = &self.postprocess_targets[target_index];
@@ -2753,7 +2776,7 @@ impl<'window> TexturedSession<'window> {
             storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
             clearValue: vk::VkClearValue {
                 depthStencil: vk::VkClearDepthStencilValue {
-                    depth: 1.0,
+                    depth: depth_clear,
                     stencil: 0,
                 },
             },
@@ -4580,16 +4603,18 @@ fn create_material_pipeline(
         },
         ..Default::default()
     };
-    let (depth_test, depth_write) = match config.depth {
-        DepthMode::TestWrite => (vk::VK_TRUE, vk::VK_TRUE),
-        DepthMode::TestOnly => (vk::VK_TRUE, vk::VK_FALSE),
-        DepthMode::Off => (vk::VK_FALSE, vk::VK_FALSE),
+    let (depth_test, depth_write, depth_compare) = match config.depth {
+        DepthMode::TestWrite => (vk::VK_TRUE, vk::VK_TRUE, vk::VK_COMPARE_OP_LESS),
+        DepthMode::TestOnly => (vk::VK_TRUE, vk::VK_FALSE, vk::VK_COMPARE_OP_LESS),
+        DepthMode::TestWriteGreater => (vk::VK_TRUE, vk::VK_TRUE, vk::VK_COMPARE_OP_GREATER),
+        DepthMode::TestOnlyGreater => (vk::VK_TRUE, vk::VK_FALSE, vk::VK_COMPARE_OP_GREATER),
+        DepthMode::Off => (vk::VK_FALSE, vk::VK_FALSE, vk::VK_COMPARE_OP_LESS),
     };
     let depth = vk::VkPipelineDepthStencilStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         depthTestEnable: depth_test,
         depthWriteEnable: depth_write,
-        depthCompareOp: vk::VK_COMPARE_OP_LESS,
+        depthCompareOp: depth_compare,
         minDepthBounds: 0.0,
         maxDepthBounds: 1.0,
         ..Default::default()

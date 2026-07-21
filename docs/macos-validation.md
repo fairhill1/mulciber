@@ -1,5 +1,32 @@
 # macOS AppKit/Metal validation runbook
 
+## Reversed-Z depth modes checkpoint
+
+On 2026-07-21, on an uncommitted working tree based on `061d804`, the reversed-Z depth-mode
+extension (see the [material contract](material-contract.md) and the
+[decision ledger](api-slice-decisions.md)) ran on the Apple M2 / macOS 15.7.7 machine. No
+shader artifacts changed: the greater compare direction and the derived 0.0 depth clear are
+pipeline and pass state, not shader interface. The structural preflight (fmt, workspace check,
+clippy `-D warnings`, workspace tests, `git diff --check`) passed natively — clippy required
+the repository's established argument-count allow on the postprocessed material entry points
+and encoders, grown by the threaded depth-clear parameter — and the Vulkan backend's peer
+implementation additionally passed `cargo check` and clippy `-D warnings` for the
+`x86_64-pc-windows-msvc` target from this host.
+
+With `MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` passed all 67 Metal cases — including the
+three new cases: a reversed-Z scene presenting an opaque `TestWriteGreater` record, a
+translucent `TestOnlyGreater` record, and a depth-off record together against the derived 0.0
+depth clear, plus a submission mixing less-compare and greater-compare records rejected by its
+exact message — with exit zero and no diagnostic beyond the validation-enabled banner.
+
+`mulciber-material-scene` (unchanged by this slice, still conventional-Z) ran under
+`MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly eighteen seconds of
+frames, and closed through an agent-scripted titlebar close, exiting zero with no validation
+output beyond the banner. This is agent-driven automated execution evidence; no visual claim
+is made for reversed-Z output beyond validation-clean presentation, and all physical Vulkan
+evidence for the new modes (validation layers, visuals, lifecycle) remains outstanding on the
+Linux/Windows machines.
+
 ## Frame-transient geometry (streaming HUD) checkpoint
 
 On 2026-07-21, on the working tree committed as `fe277f2` and `effbdef`, the

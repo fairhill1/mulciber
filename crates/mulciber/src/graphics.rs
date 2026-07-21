@@ -410,6 +410,7 @@ impl Device<'_> {
             } else {
                 None
             },
+            depth: descriptor.depth,
         })
     }
 
@@ -993,6 +994,7 @@ impl Queue<'_> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        let depth_clear = material_scene_depth_clear(records)?;
         self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
         session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
         let token = frame
@@ -1005,6 +1007,7 @@ impl Queue<'_> {
             shadow.as_ref(),
             targets.lease.id,
             clear,
+            depth_clear,
         )
     }
 
@@ -1021,6 +1024,7 @@ impl Queue<'_> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        let depth_clear = material_scene_depth_clear(records)?;
         self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
         session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
         if postprocess_pipeline.lease.session != self.shared.id {
@@ -1039,6 +1043,7 @@ impl Queue<'_> {
             postprocess_pipeline.lease.id,
             targets.lease.id,
             clear,
+            depth_clear,
         )
     }
 
@@ -1857,14 +1862,43 @@ pub enum BlendMode {
 }
 
 /// How a material pipeline interacts with the scene depth target.
+///
+/// The testing modes come in two compare directions. `TestWrite` and `TestOnly` use the
+/// conventional less-than compare against a depth target cleared to the far plane (1.0).
+/// `TestWriteGreater` and `TestOnlyGreater` use a greater-than compare against a depth target
+/// cleared to 0.0, for reversed-Z projections that map the near plane to depth 1.0 — the
+/// standard fix for far-field precision collapse on the float depth target. The projection
+/// matrix that produces reversed-Z clip depth stays application-owned.
+///
+/// A scene submission derives its depth-clear value from its records' declared modes, so one
+/// submission may not mix less-compare and greater-compare testing modes; `Off` composes with
+/// either direction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DepthMode {
     /// Test against the depth target and write surviving fragment depth (opaque geometry).
     TestWrite,
     /// Test against the depth target without writing (translucents occluded by opaque geometry).
     TestOnly,
+    /// Test with a greater-than compare and write surviving fragment depth (opaque geometry
+    /// under a reversed-Z projection).
+    TestWriteGreater,
+    /// Test with a greater-than compare without writing (translucents under a reversed-Z
+    /// projection).
+    TestOnlyGreater,
     /// Neither test nor write (skyboxes drawn first, overlays drawn last).
     Off,
+}
+
+impl DepthMode {
+    /// Whether this mode tests with the conventional less-than compare.
+    pub(crate) const fn tests_less(self) -> bool {
+        matches!(self, Self::TestWrite | Self::TestOnly)
+    }
+
+    /// Whether this mode tests with the reversed-Z greater-than compare.
+    pub(crate) const fn tests_greater(self) -> bool {
+        matches!(self, Self::TestWriteGreater | Self::TestOnlyGreater)
+    }
 }
 
 /// One declared sampler slot handed to the native backends.
@@ -1975,6 +2009,9 @@ pub struct MaterialPipeline {
     texture_count: usize,
     /// The kind of depth-texture slot the pipeline declares, fed per record.
     shadow_slot: Option<ShadowSlotKind>,
+    /// Declared depth mode, retained so a scene submission can derive its depth-clear value
+    /// and reject mixed compare directions.
+    depth: DepthMode,
 }
 
 /// Which depth-texture slot kind a material pipeline declares.
@@ -2548,6 +2585,28 @@ fn validate_mip_level(
         )));
     }
     Ok(())
+}
+
+/// Derives the scene depth-clear value from the records' declared depth modes.
+///
+/// Greater-compare (reversed-Z) records select a 0.0 clear and conventional less-compare
+/// records select the 1.0 far-plane clear; one depth target cannot serve both conventions,
+/// so mixing the directions in a single scene is rejected. A scene of only [`DepthMode::Off`]
+/// records keeps the conventional far-plane clear.
+fn material_scene_depth_clear(records: &[MaterialRecord<'_>]) -> Result<f32, GraphicsError> {
+    let mut less = false;
+    let mut greater = false;
+    for record in records {
+        less |= record.pipeline.depth.tests_less();
+        greater |= record.pipeline.depth.tests_greater();
+    }
+    if less && greater {
+        return Err(GraphicsError::invalid_request(
+            "material scene mixes less-compare and greater-compare depth modes against one \
+             depth target",
+        ));
+    }
+    Ok(if greater { 0.0 } else { 1.0 })
 }
 
 /// Checks stride and attribute fit, and returns the location-sorted owned layout.

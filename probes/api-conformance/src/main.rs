@@ -1084,11 +1084,188 @@ impl<'window> Cases<'window> {
                 self.step = 15;
                 Ok(false)
             }
+            // A reversed-Z scene: an opaque greater-compare depth-write record, a translucent
+            // greater-compare read-only record, and a depth-off record present together, so both
+            // greater modes reach native pipeline state and the submission derives the 0.0
+            // depth clear.
+            15 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let (greater_write_pipeline, greater_only_pipeline, off_pipeline) = {
+                    let graphics = self.graphics.as_ref().expect("session A is open");
+                    let greater_write = graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWriteGreater,
+                        },
+                    )?;
+                    let greater_only = graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::PremultipliedTranslucent,
+                            depth: DepthMode::TestOnlyGreater,
+                        },
+                    )?;
+                    let off = graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::Off,
+                        },
+                    )?;
+                    (greater_write, greater_only, off)
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [
+                    MaterialRecord {
+                        pipeline: &off_pipeline,
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                    MaterialRecord {
+                        pipeline: &greater_write_pipeline,
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                    MaterialRecord {
+                        pipeline: &greater_only_pipeline,
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                ];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        content: SceneContent::Material(&records),
+                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                        shadow: None,
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
+                assert_presented(disposition)?;
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics
+                    .device
+                    .destroy_material_pipeline(greater_write_pipeline)?;
+                graphics
+                    .device
+                    .destroy_material_pipeline(greater_only_pipeline)?;
+                graphics.device.destroy_material_pipeline(off_pipeline)?;
+                self.pass("reversed-z greater depth-write material presentation");
+                self.pass("reversed-z greater depth-test-only material presentation");
+                self.step = 16;
+                Ok(false)
+            }
+            // A scene mixing a less-compare record with a greater-compare record is rejected:
+            // one depth target cannot serve both clear conventions in a single pass.
+            16 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let greater_pipeline = {
+                    let graphics = self.graphics.as_ref().expect("session A is open");
+                    graphics.device.create_material_pipeline(
+                        mulciber::MaterialPipelineDescriptor {
+                            shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                            vertex_entry: "crystal_vertex",
+                            fragment_entry: "crystal_fragment",
+                            vertex_layout: MATERIAL_LAYOUT,
+                            bindings: &MATERIAL_BINDINGS,
+                            blend: BlendMode::Opaque,
+                            depth: DepthMode::TestWriteGreater,
+                        },
+                    )?
+                };
+                let texture = self.texture.as_ref().expect("texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [
+                    MaterialRecord {
+                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                    MaterialRecord {
+                        pipeline: &greater_pipeline,
+                        geometry: GeometrySource::Mesh(
+                            self.material_mesh.as_ref().expect("material mesh"),
+                        ),
+                        textures: &textures,
+                        shadow_map: None,
+                        uniform: &uniform,
+                        storage: &[],
+                    },
+                ];
+                let graphics = self.graphics.as_mut().expect("session A is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "mixes less-compare and greater-compare",
+                    "mixed depth compare directions rejected",
+                )?;
+                let graphics = self.graphics.as_ref().expect("session A is open");
+                graphics
+                    .device
+                    .destroy_material_pipeline(greater_pipeline)?;
+                self.pass("mixed depth compare directions rejected");
+                self.step = 17;
+                Ok(false)
+            }
             // The material path remains valid through resolved color and post-processing — with
             // one sampled texture carrying an application-supplied mip chain — and the new handle
             // kind supports explicit destruction plus drop-driven reclamation. Chains that stop
             // short of 1x1 and levels with mismatched byte counts are rejected by name.
-            15 => {
+            17 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1197,7 +1374,7 @@ impl<'window> Cases<'window> {
                     },
                 )?);
                 self.pass("material destruction and drop reclamation");
-                self.step = 16;
+                self.step = 18;
                 Ok(false)
             }
             // Shadow vocabulary creation: an out-of-range extent, out-of-range array layer
@@ -1205,7 +1382,7 @@ impl<'window> Cases<'window> {
             // then the shadow map, the two-layer shadow map array, the depth-only pipeline
             // (consuming only the position attribute of the crystal layout), the
             // array-sampling lava pipeline, and their meshes are created for the cases below.
-            16 => {
+            18 => {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 expect_error(
                     graphics.device.create_shadow_map(0).map(|_| ()),
@@ -1288,11 +1465,11 @@ impl<'window> Cases<'window> {
                 self.pass("zero-layer shadow map array rejected");
                 self.pass("over-limit shadow map array layers rejected");
                 self.pass("non-uniform shadow binding rejected");
-                self.step = 17;
+                self.step = 19;
                 Ok(false)
             }
             // A record on a shadow-sampling pipeline must supply the source.
-            17 => {
+            19 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1329,11 +1506,11 @@ impl<'window> Cases<'window> {
                     "missing shadow map supply rejected",
                 )?;
                 self.pass("missing shadow map supply rejected");
-                self.step = 18;
+                self.step = 20;
                 Ok(false)
             }
             // A record may not supply a map its pipeline never declared a slot for.
-            18 => {
+            20 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1373,11 +1550,11 @@ impl<'window> Cases<'window> {
                     "undeclared shadow map supply rejected",
                 )?;
                 self.pass("undeclared shadow map supply rejected");
-                self.step = 19;
+                self.step = 21;
                 Ok(false)
             }
             // A record may not supply a single map to a pipeline declaring the array slot.
-            19 => {
+            21 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1416,12 +1593,12 @@ impl<'window> Cases<'window> {
                     "single-map source on array pipeline rejected",
                 )?;
                 self.pass("single-map source on array pipeline rejected");
-                self.step = 20;
+                self.step = 22;
                 Ok(false)
             }
             // Sampling an array no cascaded shadow pass has rendered is rejected rather than
             // reading undefined depth.
-            20 => {
+            22 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1460,11 +1637,11 @@ impl<'window> Cases<'window> {
                     "unrendered shadow map sampling rejected",
                 )?;
                 self.pass("unrendered shadow map sampling rejected");
-                self.step = 21;
+                self.step = 23;
                 Ok(false)
             }
             // A cascaded pass must supply exactly one record list per layer of its map.
-            21 => {
+            23 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1513,11 +1690,11 @@ impl<'window> Cases<'window> {
                     "cascade list count mismatch rejected",
                 )?;
                 self.pass("cascade list count mismatch rejected");
-                self.step = 22;
+                self.step = 24;
                 Ok(false)
             }
             // A shadow record's uniform bytes must match its pipeline's declared size.
-            22 => {
+            24 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1565,13 +1742,13 @@ impl<'window> Cases<'window> {
                     "shadow uniform length mismatch rejected",
                 )?;
                 self.pass("shadow uniform length mismatch rejected");
-                self.step = 23;
+                self.step = 25;
                 Ok(false)
             }
             // Render-scale vocabulary: out-of-range percentages on both sides of the supported
             // range are rejected by name, and scaled postprocess targets create and destroy at
             // half the presentable extent.
-            23 => {
+            25 => {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 expect_error(
                     RenderScale::percent(24).map(|_| ()),
@@ -1594,14 +1771,14 @@ impl<'window> Cases<'window> {
                     .destroy_postprocess_targets(scaled_targets)?;
                 self.pass("out-of-range render scale rejected");
                 self.pass("scaled postprocess targets created and destroyed");
-                self.step = 24;
+                self.step = 26;
                 Ok(false)
             }
             // Storage vocabulary creation: a second storage slot, an oversized declaration, and
             // a size that disagrees with the recorded WGSL type are rejected by name, then the
             // skinned pipeline pair (the shadow variant consuming a subset of the skinned
             // layout) and a skinned triangle are created for the cases below.
-            24 => {
+            26 => {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 expect_error(
                     graphics
@@ -1712,11 +1889,11 @@ impl<'window> Cases<'window> {
                 self.pass("second storage slot rejected");
                 self.pass("oversized storage declaration rejected");
                 self.pass("storage size mismatch rejected");
-                self.step = 25;
+                self.step = 27;
                 Ok(false)
             }
             // A material record's storage bytes must match its pipeline's declared size.
-            25 => {
+            27 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1753,11 +1930,11 @@ impl<'window> Cases<'window> {
                     "material storage length mismatch rejected",
                 )?;
                 self.pass("material storage length mismatch rejected");
-                self.step = 26;
+                self.step = 28;
                 Ok(false)
             }
             // A shadow record's storage bytes must match its pipeline's declared size.
-            26 => {
+            28 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1806,12 +1983,12 @@ impl<'window> Cases<'window> {
                     "shadow storage length mismatch rejected",
                 )?;
                 self.pass("shadow storage length mismatch rejected");
-                self.step = 27;
+                self.step = 29;
                 Ok(false)
             }
             // The skinned record renders with its palette flowing through both the shadow and
             // the material path, then the skinned resources destroy explicitly.
-            27 => {
+            29 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1864,13 +2041,13 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.skinned_mesh.take().expect("skinned mesh"))?;
                 self.pass("skinned resource destruction");
-                self.step = 28;
+                self.step = 30;
                 Ok(false)
             }
             // A record supplying frame-transient geometry against the crystal pipeline's
             // declared layout presents validation-clean alongside an uploaded-mesh record, with
             // no Mesh handle backing the transient supply.
-            28 => {
+            30 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1913,11 +2090,11 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("transient geometry presentation");
-                self.step = 29;
+                self.step = 31;
                 Ok(false)
             }
             // The same transient supply presents through the 32-bit index path.
-            29 => {
+            31 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1948,12 +2125,12 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("u32-indexed transient geometry presentation");
-                self.step = 30;
+                self.step = 32;
                 Ok(false)
             }
             // Transient vertex bytes that are not a multiple of the pipeline's declared layout
             // stride are rejected.
-            30 => {
+            32 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -1993,11 +2170,11 @@ impl<'window> Cases<'window> {
                     "transient vertex stride mismatch rejected",
                 )?;
                 self.pass("transient vertex stride mismatch rejected");
-                self.step = 31;
+                self.step = 33;
                 Ok(false)
             }
             // A transient supply with no indices is rejected.
-            31 => {
+            33 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2037,11 +2214,11 @@ impl<'window> Cases<'window> {
                     "empty transient indices rejected",
                 )?;
                 self.pass("empty transient indices rejected");
-                self.step = 32;
+                self.step = 34;
                 Ok(false)
             }
             // A transient index past the supplied vertex count is rejected.
-            32 => {
+            34 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2081,13 +2258,13 @@ impl<'window> Cases<'window> {
                     "out-of-range transient index rejected",
                 )?;
                 self.pass("out-of-range transient index rejected");
-                self.step = 33;
+                self.step = 35;
                 Ok(false)
             }
             // A combined vertex-plus-index supply just over the transient limit is rejected:
             // 116,508 crystal-stride vertices occupy 4,194,288 bytes, and nine 16-bit indices
             // push the total to 4,194,306 — two bytes past the limit.
-            33 => {
+            35 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2127,13 +2304,13 @@ impl<'window> Cases<'window> {
                     "over-limit transient supply rejected",
                 )?;
                 self.pass("over-limit transient supply rejected");
-                self.step = 34;
+                self.step = 36;
                 Ok(false)
             }
             // The cascaded depth-only pass renders the crystal-layout mesh into both layers of
             // the array, the floor record samples the array through the comparison sampler in
             // the same frame, and every shadow resource kind then destroys explicitly.
-            34 => {
+            36 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2213,12 +2390,12 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_mesh(self.material_mesh.take().expect("material mesh"))?;
                 self.pass("shadow resource destruction");
-                self.step = 35;
+                self.step = 37;
                 Ok(false)
             }
             // Session A shuts down cleanly; session B reopens the same window with the forced
             // one-sample path and keeps a session-A handle for the mixed-session case.
-            35 => {
+            37 => {
                 self.instanced_pipeline = None;
                 self.postprocess_pipeline = None;
                 self.postprocess_targets = None;
@@ -2259,11 +2436,11 @@ impl<'window> Cases<'window> {
                         .create_render_targets(reopened.surface.info()?)?,
                 );
                 self.graphics = Some(reopened);
-                self.step = 36;
+                self.step = 38;
                 Ok(false)
             }
             // A handle from the shut-down session is rejected by the new session.
-            36 => {
+            38 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2286,11 +2463,11 @@ impl<'window> Cases<'window> {
                     "mixed-session handles rejected",
                 )?;
                 self.pass("mixed-session handles rejected");
-                self.step = 37;
+                self.step = 39;
                 Ok(false)
             }
             // The mixed-session diagnostic also names the material pipeline handle kind.
-            37 => {
+            39 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -2331,7 +2508,7 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 38;
+                self.step = 40;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.

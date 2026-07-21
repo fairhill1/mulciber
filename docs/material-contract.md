@@ -59,10 +59,16 @@ pipeline, a layout-matching mesh, one texture per declared texture slot in ascen
 order, and its uniform bytes. Each sampler slot declares its filter (`Nearest`/`Linear`) and
 address mode (`Repeat`/`ClampToEdge`); the pipeline owns one native sampler per declared slot.
 The descriptor also declares the pipeline's `BlendMode` — `Opaque`, alpha-to-coverage `Cutout`,
-or `PremultipliedTranslucent` source-over — and `DepthMode` (`TestWrite`, `TestOnly`, `Off`), a
-fixed mode set baked into the native pipeline at creation rather than a general state object;
-ordering translucent records after the opaque geometry they composite over stays
-application-owned through record order.
+or `PremultipliedTranslucent` source-over — and `DepthMode` (`TestWrite`, `TestOnly`,
+`TestWriteGreater`, `TestOnlyGreater`, `Off`), a fixed mode set baked into the native pipeline
+at creation rather than a general state object; ordering translucent records after the opaque
+geometry they composite over stays application-owned through record order. The greater-compare
+modes serve reversed-Z projections: a material scene whose testing records declare them clears
+its depth target to 0.0 instead of the conventional 1.0 far plane, the clear derived per
+submission from the records' declared modes, and a submission mixing less-compare and
+greater-compare testing modes against one depth target is rejected by name (`Off` composes with
+either direction). Shadow passes and their less-or-equal comparison samplers stay
+conventional-Z.
 `MaterialPipeline` joins the existing explicit-destroy and drop-reclamation paths, and
 mixed-session diagnostics name the new handle kind.
 
@@ -221,3 +227,12 @@ close. On the same date, at `cf75bb7`, the operator ran the skinned material sce
 confirmed the swaying kelp strand with its shadow animating correctly on both backends;
 per-session details stay in the [macOS](macos-validation.md) and [Linux](linux-validation.md)
 runbooks.
+
+On 2026-07-21, an uncommitted tree based on `061d804` added the reversed-Z depth modes on the
+same M2 tier: no shader artifacts changed (the compare direction and depth clear are pipeline
+and pass state, not shader interface), all 67 Metal conformance cases (including the two
+reversed-Z presentation cases and the mixed-compare-direction rejection) passed under Metal API
+Validation, and the material-scene example ran validation-clean (Metal, four samples) through a
+scripted titlebar close. The Vulkan peer implementation passed check and clippy for the Windows
+target from the same host; its physical validation-layer, visual, and lifecycle evidence
+remains outstanding, per the [macOS runbook](macos-validation.md).

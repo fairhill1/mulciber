@@ -55,7 +55,11 @@ const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
 const COMPARE_FUNCTION_LESS_EQUAL: usize = 3;
+const COMPARE_FUNCTION_GREATER: usize = 4;
 const COMPARE_FUNCTION_ALWAYS: usize = 7;
+/// Far-plane depth clear for conventional less-compare scenes; reversed-Z material scenes
+/// clear to 0.0 instead, selected per submission by the validated `depth_clear` argument.
+const DEPTH_CLEAR_FAR: f32 = 1.0;
 const BLEND_FACTOR_ONE: usize = 1;
 const BLEND_FACTOR_ONE_MINUS_SOURCE_ALPHA: usize = 5;
 const SAMPLER_FILTER_NEAREST: usize = 0;
@@ -798,7 +802,14 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_scene(draws)?;
-        self.encode_present(token, PreparedScene::Draws(draws), None, target, clear)
+        self.encode_present(
+            token,
+            PreparedScene::Draws(draws),
+            None,
+            target,
+            clear,
+            DEPTH_CLEAR_FAR,
+        )
     }
 
     pub(crate) fn draw_scene_postprocessed_and_present(
@@ -829,6 +840,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_pipeline,
             target,
             clear,
+            DEPTH_CLEAR_FAR,
         )
     }
 
@@ -851,7 +863,14 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_instanced_scene(batches)?;
-        self.encode_present(token, PreparedScene::Instances, None, target, clear)
+        self.encode_present(
+            token,
+            PreparedScene::Instances,
+            None,
+            target,
+            clear,
+            DEPTH_CLEAR_FAR,
+        )
     }
 
     pub(crate) fn draw_instanced_scene_postprocessed_and_present(
@@ -882,6 +901,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_pipeline,
             target,
             clear,
+            DEPTH_CLEAR_FAR,
         )
     }
 
@@ -935,6 +955,7 @@ impl<'window> TexturedSession<'window> {
         shadow: Option<&ShadowPrepass<'_>>,
         targets: ResourceId,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target = self.targets.index_of(targets)?;
         if self.targets[target].info != token.info() {
@@ -954,9 +975,11 @@ impl<'window> TexturedSession<'window> {
             shadow,
             target,
             clear,
+            depth_clear,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_material_scene_postprocessed_and_present(
         &mut self,
         token: TexturedFrameToken,
@@ -965,6 +988,7 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target = self.postprocess_targets.index_of(targets)?;
@@ -986,6 +1010,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_pipeline,
             target,
             clear,
+            depth_clear,
         )
     }
 
@@ -1608,6 +1633,7 @@ impl<'window> TexturedSession<'window> {
         shadow: Option<&ShadowPrepass<'_>>,
         target: usize,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         unsafe {
             let drawable = token.0.drawable;
@@ -1653,7 +1679,7 @@ impl<'window> TexturedSession<'window> {
             objc::void_object(depth, c"setTexture:", targets.depth);
             objc::void_usize(depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
             objc::void_usize(depth, c"setStoreAction:", STORE_ACTION_DONT_CARE);
-            objc::void_f64(depth, c"setClearDepth:", 1.0);
+            objc::void_f64(depth, c"setClearDepth:", f64::from(depth_clear));
             let command = required(
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal cube command buffer",
@@ -1678,7 +1704,7 @@ impl<'window> TexturedSession<'window> {
         Ok(FrameDisposition::Presented(token.info().generation()))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn encode_postprocessed_present(
         &mut self,
         mut token: TexturedFrameToken,
@@ -1687,6 +1713,7 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline: usize,
         target: usize,
         clear: ClearColor,
+        depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         unsafe {
             let drawable = token.0.drawable;
@@ -1741,7 +1768,7 @@ impl<'window> TexturedSession<'window> {
             objc::void_object(scene_depth, c"setTexture:", targets.depth);
             objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
             objc::void_usize(scene_depth, c"setStoreAction:", STORE_ACTION_DONT_CARE);
-            objc::void_f64(scene_depth, c"setClearDepth:", 1.0);
+            objc::void_f64(scene_depth, c"setClearDepth:", f64::from(depth_clear));
 
             let post_pass = required(
                 objc::object(
@@ -2665,6 +2692,8 @@ fn create_material_pipeline(
         let (compare_function, depth_write) = match config.depth {
             DepthMode::TestWrite => (COMPARE_FUNCTION_LESS, true),
             DepthMode::TestOnly => (COMPARE_FUNCTION_LESS, false),
+            DepthMode::TestWriteGreater => (COMPARE_FUNCTION_GREATER, true),
+            DepthMode::TestOnlyGreater => (COMPARE_FUNCTION_GREATER, false),
             DepthMode::Off => (COMPARE_FUNCTION_ALWAYS, false),
         };
         objc::void_usize(

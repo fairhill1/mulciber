@@ -20,6 +20,9 @@ commonly absorb
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
 application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
 normal maps, with either one level or a complete application-authored mip chain.
+Immutable meshes may keep one vertex region with multiple mixed-width indexed parts; material and
+shadow records borrow a selected part without creating another resource lease or allocation, while
+the existing mesh APIs remain the one-part/default-part path.
 
 Optional GPU diagnostics correlate completed durations with presentation frame indices. Metal
 reports whole-command-buffer time; Vulkan additionally reports the fixed shadow, scene, and

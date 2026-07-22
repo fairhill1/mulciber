@@ -196,7 +196,7 @@ fallback, and acquired-frame abandonment/recovery controls.
   ordinary backend branches or application `unsafe`.
 - [x] Establish baseline, optional-capability, invalid-usage, surface-generation, frame-abandonment,
   resource-reclamation, multi-draw, instancing, material-declaration, and shutdown conformance
-  tests: `probes/api-conformance` currently asserts seventy-nine shared cases across those
+  tests: `probes/api-conformance` currently asserts ninety-four shared cases across those
   categories (plus the Vulkan-only superseded-generation branch) and exits nonzero on divergence;
   per-platform runs are recorded in the validation ledgers as they are exercised.
   `create_mesh_with_layout` additionally accepts 32-bit indices (`MeshIndices::U32`), exercised
@@ -223,6 +223,12 @@ fallback, and acquired-frame abandonment/recovery controls.
   resampling through its linear sampler. Material records additionally supply their geometry
   through `GeometrySource` — an uploaded mesh, or frame-transient vertex and index bytes for
   per-frame-authored overlays such as HUDs — per the same ledger.
+  The Skyrimlike character-dismemberment workload additionally forces immutable
+  [shared-vertex mesh parts](mesh-parts-contract.md): one parent `Mesh` owns one vertex region
+  and mixed-`u16`/`u32` indexed parts; material and shadow records, including instance-layout
+  records, can select a lease-free borrowed part while part zero preserves every existing path.
+  The native-Wayland 94-case Vulkan conformance run physically exercised the path with validation
+  enabled on 2026-07-22; Metal cross-target checks pass and native Metal evidence remains open.
 - [x] Prove that a Metal-only and Vulkan-only build neither links nor initializes the unused backend
   and does not add portability-only dispatch to the ordinary frame path; symbol, linkage,
   dependency-tree, size, and clean-build measurements are recorded in the

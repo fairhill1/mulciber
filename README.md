@@ -49,8 +49,8 @@ evaluated against the pre-registered comparisons in the
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
   generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
   feedback, opt-in correlated GPU duration feedback, RGBA8 sRGB and linear-UNORM sampled-texture
-  uploads with optional application-authored mip chains, bounded completed-frame lazy resource
-  reclamation, and recovery-oriented errors
+  uploads with optional application-authored mip chains, immutable shared-vertex indexed mesh
+  parts, bounded completed-frame lazy resource reclamation, and recovery-oriented errors
   ([graphics contract](docs/api-graphics-contract.md),
   [decision ledger](docs/api-slice-decisions.md)).
 - `mulciber-runtime` provides input snapshots with focus-loss clearing, a configurable fixed-step
@@ -97,7 +97,7 @@ cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
 
 `mulciber-api-conformance` additionally asserts invalid use, resource destruction/drop churn,
 replacement rendering, direct and postprocessed multi-draw and instancing, mixed-session rejection,
-and fallible shutdown.
+shared-vertex mixed-width mesh parts in material and shadow passes, and fallible shutdown.
 
 ### Writing your own program
 
@@ -157,6 +157,7 @@ documented in the [pipeline cache policy](docs/vulkan-pipeline-cache.md),
   [support contract](docs/support-contract.md)
 - [Architecture decisions](docs/architecture.md) and
   [backend contract ledger](docs/backend-contracts.md)
+- [Shared-vertex mesh-parts contract](docs/mesh-parts-contract.md)
 - [Implementation roadmap](docs/roadmap.md) and
   [API extraction and comparison plan](docs/api-extraction-plan.md)
 - [macOS](docs/macos-validation.md), [Windows](docs/windows-validation.md), and

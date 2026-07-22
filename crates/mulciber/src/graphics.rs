@@ -16,8 +16,8 @@ use crate::{
 };
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
-/// Maximum lazy resource handles reclaimed at one completed-frame boundary. Vulkan meshes own
-/// three allocations, so the native destruction count may be a small multiple of this budget.
+/// Maximum lazy resource handles reclaimed at one completed-frame boundary. A mesh and all of its
+/// immutable index parts are one handle and one parent allocation/reclamation unit.
 const LAZY_RECLAIM_BUDGET: usize = 8;
 
 /// Multisample count supported by the first textured rendering slice.
@@ -194,7 +194,7 @@ pub struct Device<'window> {
 }
 
 impl Device<'_> {
-    /// Uploads fixed-layout vertices and `u16` indices.
+    /// Uploads fixed-layout vertices and one default `u16` index part.
     ///
     /// Meshes that need 32-bit indices declare their layout and pass [`MeshIndices::U32`]
     /// through [`Device::create_mesh_with_layout`].
@@ -204,23 +204,35 @@ impl Device<'_> {
     /// Returns an error for empty geometry, an out-of-range index, or native allocation/upload
     /// failure.
     pub fn create_mesh(&self, vertices: &[Vertex], indices: &[u16]) -> Result<Mesh, GraphicsError> {
-        if vertices.is_empty() || indices.is_empty() {
+        self.create_mesh_with_parts(vertices, &[MeshIndices::U16(indices)])
+    }
+
+    /// Uploads fixed-layout vertices once and one or more immutable indexed parts.
+    ///
+    /// Every part references the same vertex storage. Part zero is the default selected by
+    /// existing whole-mesh draw paths; use [`Mesh::part`] with a material or shadow record to
+    /// select another part.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty vertices, no parts, an empty part, an out-of-range index, too
+    /// many parts, or native allocation/upload failure. Diagnostics identify the invalid part.
+    pub fn create_mesh_with_parts(
+        &self,
+        vertices: &[Vertex],
+        parts: &[MeshIndices<'_>],
+    ) -> Result<Mesh, GraphicsError> {
+        if vertices.is_empty() {
             return Err(GraphicsError::invalid_request(
-                "mesh vertices and indices must be non-empty",
+                "mesh vertex data must be non-empty",
             ));
         }
-        if indices
-            .iter()
-            .any(|&index| usize::from(index) >= vertices.len())
-        {
-            return Err(GraphicsError::invalid_request(
-                "mesh contains an out-of-range index",
-            ));
-        }
-        let id = session_mut(&self.shared)?.create_mesh(vertices, indices)?;
+        let part_count = validate_mesh_parts(vertices.len(), parts)?;
+        let id = session_mut(&self.shared)?.create_mesh(vertices, parts)?;
         Ok(Mesh {
             lease: self.lease(id, ResourceKind::Mesh),
             layout: VertexLayout::VERTEX.to_owned_layout(),
+            part_count,
         })
     }
 
@@ -239,6 +251,27 @@ impl Device<'_> {
         vertices: &[u8],
         indices: MeshIndices<'_>,
     ) -> Result<Mesh, GraphicsError> {
+        self.create_mesh_with_layout_and_parts(layout, vertices, &[indices])
+    }
+
+    /// Uploads raw vertex bytes once and one or more immutable indexed parts against a declared
+    /// layout.
+    ///
+    /// Each part may independently use 16- or 32-bit indices. The layout and graphics-session
+    /// identity belong to the parent mesh and therefore apply to every borrowed [`MeshPart`]. Part
+    /// zero is the default selected by [`GeometrySource::Mesh`] and the compatibility draw APIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid layout, vertex bytes that are empty or not a multiple of
+    /// the stride, no parts, an empty part, an out-of-range index, too many parts, or native
+    /// allocation/upload failure. Diagnostics identify the invalid part.
+    pub fn create_mesh_with_layout_and_parts(
+        &self,
+        layout: VertexLayout<'_>,
+        vertices: &[u8],
+        parts: &[MeshIndices<'_>],
+    ) -> Result<Mesh, GraphicsError> {
         let owned = validate_vertex_layout(layout)?;
         let stride = usize::try_from(layout.stride).map_err(|_| {
             GraphicsError::invalid_request("vertex layout stride exceeds this target")
@@ -249,20 +282,12 @@ impl Device<'_> {
             ));
         }
         let vertex_count = vertices.len() / stride;
-        if indices.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "mesh vertices and indices must be non-empty",
-            ));
-        }
-        if indices.out_of_range(vertex_count) {
-            return Err(GraphicsError::invalid_request(
-                "mesh contains an out-of-range index",
-            ));
-        }
-        let id = session_mut(&self.shared)?.create_mesh_from_bytes(vertices, indices)?;
+        let part_count = validate_mesh_parts(vertex_count, parts)?;
+        let id = session_mut(&self.shared)?.create_mesh_from_bytes(vertices, parts)?;
         Ok(Mesh {
             lease: self.lease(id, ResourceKind::Mesh),
             layout: owned,
+            part_count,
         })
     }
 
@@ -1295,7 +1320,7 @@ impl Queue<'_> {
             .flat_map(|record| {
                 [
                     ("shadow pipeline", record.pipeline.lease.session),
-                    ("mesh", record.mesh.lease.session),
+                    ("mesh", record.geometry.mesh().lease.session),
                 ]
                 .into_iter()
                 .chain(
@@ -1331,7 +1356,7 @@ impl Queue<'_> {
                     record.storage.len()
                 )));
             }
-            if record.mesh.layout != record.pipeline.layout {
+            if record.geometry.mesh().layout != record.pipeline.layout {
                 return Err(GraphicsError::invalid_request(
                     "shadow record's mesh vertex layout does not match its pipeline's declared \
                      layout",
@@ -1407,10 +1432,7 @@ impl Queue<'_> {
         records: &[MaterialRecord<'_>],
     ) -> Result<(), GraphicsError> {
         for record in records {
-            let mesh = match record.geometry {
-                GeometrySource::Mesh(mesh) => Some(mesh),
-                GeometrySource::Transient(_) => None,
-            };
+            let mesh = record.geometry.uploaded_mesh();
             let handles = [("material pipeline", record.pipeline.lease.session)]
                 .into_iter()
                 .chain(mesh.map(|mesh| ("mesh", mesh.lease.session)))
@@ -1491,6 +1513,14 @@ impl Queue<'_> {
             match record.geometry {
                 GeometrySource::Mesh(mesh) => {
                     if mesh.layout != record.pipeline.layout {
+                        return Err(GraphicsError::invalid_request(
+                            "material record's mesh vertex layout does not match its pipeline's \
+                             declared layout",
+                        ));
+                    }
+                }
+                GeometrySource::MeshPart(part) => {
+                    if part.mesh().layout != record.pipeline.layout {
                         return Err(GraphicsError::invalid_request(
                             "material record's mesh vertex layout does not match its pipeline's \
                              declared layout",
@@ -2067,6 +2097,49 @@ impl MeshIndices<'_> {
             Self::U32(indices) => indices.len() * 4,
         }
     }
+
+    const fn byte_len_checked(&self) -> Option<usize> {
+        match *self {
+            Self::U16(indices) => indices.len().checked_mul(2),
+            Self::U32(indices) => indices.len().checked_mul(4),
+        }
+    }
+}
+
+fn validate_mesh_parts(
+    vertex_count: usize,
+    parts: &[MeshIndices<'_>],
+) -> Result<u32, GraphicsError> {
+    if parts.is_empty() {
+        return Err(GraphicsError::invalid_request(
+            "mesh must supply at least one indexed part",
+        ));
+    }
+    let part_count = u32::try_from(parts.len())
+        .map_err(|_| GraphicsError::invalid_request("mesh part count exceeds u32"))?;
+    for (part_index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            return Err(GraphicsError::invalid_request(format!(
+                "mesh index part {part_index} must be non-empty"
+            )));
+        }
+        if part.out_of_range(vertex_count) {
+            return Err(GraphicsError::invalid_request(format!(
+                "mesh index part {part_index} contains an out-of-range index"
+            )));
+        }
+        u32::try_from(part.len()).map_err(|_| {
+            GraphicsError::invalid_request(format!(
+                "mesh index part {part_index} count exceeds u32"
+            ))
+        })?;
+        part.byte_len_checked().ok_or_else(|| {
+            GraphicsError::invalid_request(format!(
+                "mesh index part {part_index} byte length overflows"
+            ))
+        })?;
+    }
+    Ok(part_count)
 }
 
 /// Uploaded indexed geometry.
@@ -2074,11 +2147,69 @@ impl MeshIndices<'_> {
 pub struct Mesh {
     lease: ResourceLease,
     layout: OwnedVertexLayout,
+    part_count: u32,
 }
 
 impl Mesh {
     pub(crate) const fn id(&self) -> ResourceId {
         self.lease.id
+    }
+
+    /// Number of immutable indexed parts that share this mesh's vertex storage.
+    #[must_use]
+    pub const fn part_count(&self) -> usize {
+        self.part_count as usize
+    }
+
+    /// Borrows one immutable indexed part of this mesh.
+    ///
+    /// The returned value owns no resource lease or GPU allocation. Its parent mesh must remain
+    /// alive for the duration of the borrow, and all session, layout, and generational validation
+    /// continues to use that parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-request error when `index` is outside `0..self.part_count()`.
+    pub fn part(&self, index: usize) -> Result<MeshPart<'_>, GraphicsError> {
+        if index >= self.part_count() {
+            return Err(GraphicsError::invalid_request(format!(
+                "mesh part index {index} is out of range for {} parts",
+                self.part_count()
+            )));
+        }
+        let index = u32::try_from(index).map_err(|_| {
+            GraphicsError::invalid_request("mesh part index exceeds the supported u32 range")
+        })?;
+        Ok(MeshPart { mesh: self, index })
+    }
+}
+
+/// Lightweight borrowed selection of one immutable index part in a parent [`Mesh`].
+///
+/// A mesh part contains no resource lease and creates no independent destruction or reclamation
+/// entry. Dropping or explicitly destroying the parent retires its shared vertex storage and every
+/// index part together.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MeshPart<'mesh> {
+    mesh: &'mesh Mesh,
+    index: u32,
+}
+
+impl<'mesh> MeshPart<'mesh> {
+    /// Parent mesh that owns this part's storage and identity.
+    #[must_use]
+    pub const fn mesh(self) -> &'mesh Mesh {
+        self.mesh
+    }
+
+    /// Zero-based part number within the parent mesh.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.index as usize
+    }
+
+    pub(crate) const fn index_u32(self) -> u32 {
+        self.index
     }
 }
 
@@ -2103,8 +2234,45 @@ pub struct TransientGeometry<'resources> {
 pub enum GeometrySource<'resources> {
     /// Uploaded geometry whose retained vertex layout must match the pipeline's declaration.
     Mesh(&'resources Mesh),
+    /// One immutable indexed part borrowing an uploaded parent mesh.
+    MeshPart(MeshPart<'resources>),
     /// Frame-transient geometry staged with this submission against the pipeline's declaration.
     Transient(TransientGeometry<'resources>),
+}
+
+impl<'resources> GeometrySource<'resources> {
+    pub(crate) const fn uploaded_mesh(self) -> Option<&'resources Mesh> {
+        match self {
+            Self::Mesh(mesh) => Some(mesh),
+            Self::MeshPart(part) => Some(part.mesh()),
+            Self::Transient(_) => None,
+        }
+    }
+}
+
+/// Uploaded mesh geometry selected by one shadow record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MeshSource<'resources> {
+    /// The parent mesh's default part (part zero).
+    Mesh(&'resources Mesh),
+    /// One explicitly selected immutable indexed part.
+    MeshPart(MeshPart<'resources>),
+}
+
+impl<'resources> MeshSource<'resources> {
+    pub(crate) const fn mesh(self) -> &'resources Mesh {
+        match self {
+            Self::Mesh(mesh) => mesh,
+            Self::MeshPart(part) => part.mesh(),
+        }
+    }
+
+    pub(crate) const fn part_index(self) -> u32 {
+        match self {
+            Self::Mesh(_) => 0,
+            Self::MeshPart(part) => part.index_u32(),
+        }
+    }
 }
 
 /// Uploaded RGBA8 sampled texture, interpreted as sRGB or linear UNORM according to its creation
@@ -2555,8 +2723,8 @@ impl ShadowPipeline {
 pub struct ShadowRecord<'resources> {
     /// Shadow pipeline whose declared layout matches the mesh.
     pub pipeline: &'resources ShadowPipeline,
-    /// Geometry to render into the shadow map.
-    pub mesh: &'resources Mesh,
+    /// Uploaded parent mesh or one immutable indexed part to render into the shadow map.
+    pub geometry: MeshSource<'resources>,
     /// Uniform data matching the pipeline's declared uniform size (typically the light's
     /// view-projection times the record's model transform); empty when no uniform is declared.
     pub uniform: &'resources [u8],

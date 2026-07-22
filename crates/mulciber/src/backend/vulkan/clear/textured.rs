@@ -88,15 +88,79 @@ struct MeshBufferArena {
     blocks: Vec<MeshBufferBlock>,
 }
 
-#[derive(Clone, Copy)]
 struct MeshResource {
     buffer: vk::VkBuffer,
     allocation: MeshAllocation,
     vertex_offset: u64,
+    parts: Vec<MeshPartResource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MeshPartResource {
     index_offset: u64,
     indirect_offset: u64,
     index_count: u32,
     index_type: vk::VkIndexType,
+}
+
+#[derive(Clone, Copy)]
+struct MeshIndexData<'indices> {
+    bytes: &'indices [u8],
+    count: u32,
+    index_type: vk::VkIndexType,
+}
+
+fn plan_mesh_storage(
+    vertex_size: u64,
+    index_parts: &[MeshIndexData<'_>],
+) -> Result<(Vec<MeshPartResource>, u64), GraphicsError> {
+    let mut cursor =
+        align_up(vertex_size, 4).ok_or_else(|| error("mesh index offsets overflow"))?;
+    let mut parts = Vec::new();
+    parts
+        .try_reserve_exact(index_parts.len())
+        .map_err(|_| error("mesh part metadata allocation could not be reserved"))?;
+    for (part_index, part) in index_parts.iter().enumerate() {
+        let index_size = u64::try_from(part.bytes.len()).map_err(|_| {
+            error(format!(
+                "mesh index part {part_index} bytes exceed Vulkan address space"
+            ))
+        })?;
+        let index_offset = cursor;
+        cursor = cursor
+            .checked_add(index_size)
+            .ok_or_else(|| error(format!("mesh index part {part_index} end offset overflows")))?;
+        cursor = align_up(cursor, 4)
+            .ok_or_else(|| error(format!("mesh index part {part_index} alignment overflows")))?;
+        parts.push(MeshPartResource {
+            index_offset,
+            indirect_offset: 0,
+            index_count: part.count,
+            index_type: part.index_type,
+        });
+    }
+    let indirect_relative = cursor;
+    let indirect_stride = u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
+        .expect("indirect command size fits u64");
+    for (part_index, part) in parts.iter_mut().enumerate() {
+        part.indirect_offset = u64::try_from(part_index)
+            .ok()
+            .and_then(|index| index.checked_mul(indirect_stride))
+            .and_then(|offset| indirect_relative.checked_add(offset))
+            .ok_or_else(|| error("mesh indirect part offsets overflow"))?;
+    }
+    let indirect_size = u64::try_from(index_parts.len())
+        .ok()
+        .and_then(|count| count.checked_mul(indirect_stride))
+        .ok_or_else(|| error("mesh indirect region size overflows"))?;
+    let allocation_size = align_up(
+        indirect_relative
+            .checked_add(indirect_size)
+            .ok_or_else(|| error("mesh buffer offsets overflow"))?,
+        MESH_ALLOCATION_ALIGNMENT,
+    )
+    .ok_or_else(|| error("mesh buffer offsets overflow"))?;
+    Ok((parts, allocation_size))
 }
 
 impl MeshBufferArena {
@@ -108,33 +172,11 @@ impl MeshBufferArena {
         &mut self,
         surface: &ClearSurface<'_>,
         vertex_bytes: &[u8],
-        index_bytes: &[u8],
-        index_count: u32,
-        index_type: vk::VkIndexType,
-        indirect_bytes: &[u8],
+        index_parts: &[MeshIndexData<'_>],
     ) -> Result<MeshResource, GraphicsError> {
         let vertex_size = u64::try_from(vertex_bytes.len())
             .map_err(|_| error("mesh vertex bytes exceed Vulkan address space"))?;
-        let index_size = u64::try_from(index_bytes.len())
-            .map_err(|_| error("mesh index bytes exceed Vulkan address space"))?;
-        let indirect_size = u64::try_from(indirect_bytes.len())
-            .map_err(|_| error("mesh indirect bytes exceed Vulkan address space"))?;
-        let index_relative =
-            align_up(vertex_size, 4).ok_or_else(|| error("mesh buffer offsets overflow"))?;
-        let indirect_relative = align_up(
-            index_relative
-                .checked_add(index_size)
-                .ok_or_else(|| error("mesh buffer offsets overflow"))?,
-            4,
-        )
-        .ok_or_else(|| error("mesh buffer offsets overflow"))?;
-        let allocation_size = align_up(
-            indirect_relative
-                .checked_add(indirect_size)
-                .ok_or_else(|| error("mesh buffer offsets overflow"))?,
-            MESH_ALLOCATION_ALIGNMENT,
-        )
-        .ok_or_else(|| error("mesh buffer offsets overflow"))?;
+        let (mut parts, allocation_size) = plan_mesh_storage(vertex_size, index_parts)?;
         let allocation = self.allocate(surface, allocation_size)?;
         let block = &self.blocks[allocation.block];
         unsafe {
@@ -146,31 +188,47 @@ impl MeshBufferArena {
                 ),
                 vertex_bytes.len(),
             );
-            ptr::copy_nonoverlapping(
-                index_bytes.as_ptr(),
-                block.mapped.add(
-                    usize::try_from(allocation.offset + index_relative)
-                        .expect("mesh index offset came from a usize-sized buffer"),
-                ),
-                index_bytes.len(),
-            );
-            ptr::copy_nonoverlapping(
-                indirect_bytes.as_ptr(),
-                block.mapped.add(
-                    usize::try_from(allocation.offset + indirect_relative)
-                        .expect("mesh indirect offset came from a usize-sized buffer"),
-                ),
-                indirect_bytes.len(),
-            );
+            for (part, metadata) in index_parts.iter().zip(&parts) {
+                ptr::copy_nonoverlapping(
+                    part.bytes.as_ptr(),
+                    block.mapped.add(
+                        usize::try_from(allocation.offset + metadata.index_offset)
+                            .expect("mesh index offset came from a usize-sized buffer"),
+                    ),
+                    part.bytes.len(),
+                );
+                let draw = vk::VkDrawIndexedIndirectCommand {
+                    indexCount: metadata.index_count,
+                    instanceCount: 1,
+                    firstIndex: 0,
+                    vertexOffset: 0,
+                    firstInstance: 0,
+                };
+                ptr::copy_nonoverlapping(
+                    ptr::from_ref(&draw).cast::<u8>(),
+                    block.mapped.add(
+                        usize::try_from(allocation.offset + metadata.indirect_offset)
+                            .expect("mesh indirect offset came from a usize-sized buffer"),
+                    ),
+                    mem::size_of_val(&draw),
+                );
+            }
+        }
+        for part in &mut parts {
+            part.index_offset = allocation
+                .offset
+                .checked_add(part.index_offset)
+                .ok_or_else(|| error("mesh index allocation offset overflows"))?;
+            part.indirect_offset = allocation
+                .offset
+                .checked_add(part.indirect_offset)
+                .ok_or_else(|| error("mesh indirect allocation offset overflows"))?;
         }
         Ok(MeshResource {
             buffer: block.buffer.handle,
             allocation,
             vertex_offset: allocation.offset,
-            index_offset: allocation.offset + index_relative,
-            indirect_offset: allocation.offset + indirect_relative,
-            index_count,
-            index_type,
+            parts,
         })
     }
 
@@ -370,7 +428,10 @@ struct ResolvedInstanceBatch {
 /// offsets into the frame's transient-geometry region recomputed in staging order.
 #[derive(Clone, Copy)]
 enum ResolvedGeometry {
-    Mesh(usize),
+    Mesh {
+        mesh: usize,
+        part: usize,
+    },
     Transient {
         vertex_offset: u64,
         index_offset: u64,
@@ -397,6 +458,7 @@ struct ResolvedMaterialDraw {
 #[derive(Clone, Copy)]
 struct ResolvedShadowDraw {
     mesh: usize,
+    part: usize,
     pipeline: usize,
     descriptor: vk::VkDescriptorSet,
     /// Uniform and storage dynamic offsets in ascending binding-number order, matching how
@@ -690,40 +752,45 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_mesh(
         &mut self,
         vertices: &[Vertex],
-        indices: &[u16],
+        parts: &[MeshIndices<'_>],
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_mesh_from_bytes(bytes_of_slice(vertices), MeshIndices::U16(indices))
+        self.create_mesh_from_bytes(bytes_of_slice(vertices), parts)
     }
 
     pub(crate) fn create_mesh_from_bytes(
         &mut self,
         vertex_bytes: &[u8],
-        indices: MeshIndices<'_>,
+        parts: &[MeshIndices<'_>],
     ) -> Result<ResourceId, GraphicsError> {
-        let (index_bytes, index_type) = match indices {
-            MeshIndices::U16(indices) => (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT16),
-            MeshIndices::U32(indices) => (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT32),
-        };
-        let draw = vk::VkDrawIndexedIndirectCommand {
-            indexCount: u32::try_from(indices.len())
-                .map_err(|_| error("mesh index count exceeds u32"))?,
-            instanceCount: 1,
-            firstIndex: 0,
-            vertexOffset: 0,
-            firstInstance: 0,
-        };
-        let mesh = self.mesh_buffers.create_mesh(
-            &self.surface,
-            vertex_bytes,
-            index_bytes,
-            draw.indexCount,
-            index_type,
-            bytes_of(&draw),
-        )?;
+        let index_parts = parts
+            .iter()
+            .enumerate()
+            .map(|(part_index, indices)| {
+                let (bytes, index_type) = match indices {
+                    MeshIndices::U16(indices) => {
+                        (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT16)
+                    }
+                    MeshIndices::U32(indices) => {
+                        (bytes_of_slice(indices), vk::VK_INDEX_TYPE_UINT32)
+                    }
+                };
+                Ok(MeshIndexData {
+                    bytes,
+                    count: u32::try_from(indices.len()).map_err(|_| {
+                        error(format!("mesh index part {part_index} count exceeds u32"))
+                    })?,
+                    index_type,
+                })
+            })
+            .collect::<Result<Vec<_>, GraphicsError>>()?;
+        let mesh = self
+            .mesh_buffers
+            .create_mesh(&self.surface, vertex_bytes, &index_parts)?;
+        let allocation = mesh.allocation;
         match self.meshes.insert(mesh) {
             Ok(id) => Ok(id),
             Err(failure) => {
-                self.mesh_buffers.free(mesh.allocation);
+                self.mesh_buffers.free(allocation);
                 Err(failure)
             }
         }
@@ -1394,7 +1461,9 @@ impl<'window> TexturedSession<'window> {
             let mut shadow_sampled_ids = Vec::new();
             let mut shadow_texture_indices = Vec::new();
             for (index, record) in shadow.records().enumerate() {
-                let mesh = self.meshes.index_of(record.mesh.id())?;
+                let mesh = self.meshes.index_of(record.geometry.mesh().id())?;
+                let part = usize::try_from(record.geometry.part_index())
+                    .expect("validated mesh part index fits usize");
                 let pipeline = self.shadow_pipelines.index_of(record.pipeline.id())?;
                 shadow_sampled_ids.clear();
                 shadow_texture_indices.clear();
@@ -1423,6 +1492,7 @@ impl<'window> TexturedSession<'window> {
                 )?;
                 self.resolved_shadow_draws.push(ResolvedShadowDraw {
                     mesh,
+                    part,
                     pipeline,
                     descriptor,
                     dynamic_offsets,
@@ -1439,9 +1509,14 @@ impl<'window> TexturedSession<'window> {
         let mut transient_offset = 0_usize;
         for (index, record) in records.iter().chain(overlay).enumerate() {
             let geometry = match record.geometry {
-                GeometrySource::Mesh(mesh) => {
-                    ResolvedGeometry::Mesh(self.meshes.index_of(mesh.id())?)
-                }
+                GeometrySource::Mesh(mesh) => ResolvedGeometry::Mesh {
+                    mesh: self.meshes.index_of(mesh.id())?,
+                    part: 0,
+                },
+                GeometrySource::MeshPart(part) => ResolvedGeometry::Mesh {
+                    mesh: self.meshes.index_of(part.mesh().id())?,
+                    part: part.index(),
+                },
                 GeometrySource::Transient(supply) => {
                     let vertex_offset = transient_offset;
                     let index_offset = vertex_offset
@@ -1574,7 +1649,7 @@ impl<'window> TexturedSession<'window> {
             .chain(overlay)
             .filter_map(|record| match record.geometry {
                 GeometrySource::Transient(geometry) => Some(geometry),
-                GeometrySource::Mesh(_) => None,
+                GeometrySource::Mesh(_) | GeometrySource::MeshPart(_) => None,
             })
             .try_fold(0_usize, |total, geometry| {
                 geometry
@@ -2954,6 +3029,7 @@ impl<'window> TexturedSession<'window> {
             );
             for draw in draws {
                 let mesh = &self.meshes[draw.mesh];
+                let part = &mesh.parts[draw.part];
                 let pipeline = &self.shadow_pipelines[draw.pipeline];
                 functions.cmd_bind_pipeline.expect("loaded function")(
                     self.surface.command_buffer,
@@ -2992,13 +3068,13 @@ impl<'window> TexturedSession<'window> {
                 functions.cmd_bind_index_buffer.expect("loaded function")(
                     self.surface.command_buffer,
                     mesh.buffer,
-                    mesh.index_offset,
-                    mesh.index_type,
+                    part.index_offset,
+                    part.index_type,
                 );
                 if let Some((_, instance_count)) = draw.instances {
                     functions.cmd_draw_indexed.expect("loaded function")(
                         self.surface.command_buffer,
-                        mesh.index_count,
+                        part.index_count,
                         instance_count,
                         0,
                         0,
@@ -3010,7 +3086,7 @@ impl<'window> TexturedSession<'window> {
                         .expect("loaded function")(
                         self.surface.command_buffer,
                         mesh.buffer,
-                        mesh.indirect_offset,
+                        part.indirect_offset,
                         1,
                         u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                             .expect("indirect command size fits u32"),
@@ -3615,7 +3691,7 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offsets.as_ptr(),
                 );
                 let (vertex_buffer, vertex_offset, geometry) = match draw.geometry {
-                    ResolvedGeometry::Mesh(mesh) => (
+                    ResolvedGeometry::Mesh { mesh, .. } => (
                         self.meshes[mesh].buffer,
                         self.meshes[mesh].vertex_offset,
                         draw.geometry,
@@ -3644,18 +3720,19 @@ impl<'window> TexturedSession<'window> {
                     );
                 }
                 match geometry {
-                    ResolvedGeometry::Mesh(mesh) => {
+                    ResolvedGeometry::Mesh { mesh, part } => {
                         let mesh = &self.meshes[mesh];
+                        let part = &mesh.parts[part];
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
                             mesh.buffer,
-                            mesh.index_offset,
-                            mesh.index_type,
+                            part.index_offset,
+                            part.index_type,
                         );
                         if let Some((_, instance_count)) = draw.instances {
                             functions.cmd_draw_indexed.expect("loaded function")(
                                 self.surface.command_buffer,
-                                mesh.index_count,
+                                part.index_count,
                                 instance_count,
                                 0,
                                 0,
@@ -3667,7 +3744,7 @@ impl<'window> TexturedSession<'window> {
                                 .expect("loaded function")(
                                 self.surface.command_buffer,
                                 mesh.buffer,
-                                mesh.indirect_offset,
+                                part.indirect_offset,
                                 1,
                                 u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                                     .expect("indirect command size fits u32"),
@@ -3708,6 +3785,7 @@ impl<'window> TexturedSession<'window> {
                 PreparedScene::Draws => {
                     for draw in &self.resolved_draws {
                         let mesh = &self.meshes[draw.mesh];
+                        let part = &mesh.parts[0];
                         let pipeline = &self.pipelines[draw.pipeline];
                         functions.cmd_bind_pipeline.expect("loaded function")(
                             self.surface.command_buffer,
@@ -3734,15 +3812,15 @@ impl<'window> TexturedSession<'window> {
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
                             mesh.buffer,
-                            mesh.index_offset,
-                            mesh.index_type,
+                            part.index_offset,
+                            part.index_type,
                         );
                         functions
                             .cmd_draw_indexed_indirect
                             .expect("loaded function")(
                             self.surface.command_buffer,
                             mesh.buffer,
-                            mesh.indirect_offset,
+                            part.indirect_offset,
                             1,
                             u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
                                 .expect("indirect command size fits u32"),
@@ -3756,6 +3834,7 @@ impl<'window> TexturedSession<'window> {
                     let dynamic_offset = 0_u32;
                     for batch in &self.resolved_instance_batches {
                         let mesh = &self.meshes[batch.mesh];
+                        let part = &mesh.parts[0];
                         let pipeline = &self.instanced_pipelines[batch.pipeline];
                         functions.cmd_bind_pipeline.expect("loaded function")(
                             self.surface.command_buffer,
@@ -3784,12 +3863,12 @@ impl<'window> TexturedSession<'window> {
                         functions.cmd_bind_index_buffer.expect("loaded function")(
                             self.surface.command_buffer,
                             mesh.buffer,
-                            mesh.index_offset,
-                            mesh.index_type,
+                            part.index_offset,
+                            part.index_type,
                         );
                         functions.cmd_draw_indexed.expect("loaded function")(
                             self.surface.command_buffer,
-                            mesh.index_count,
+                            part.index_count,
                             batch.instance_count,
                             0,
                             0,
@@ -4675,7 +4754,7 @@ fn write_transient_geometry(
     if records
         .iter()
         .chain(overlay)
-        .all(|record| matches!(record.geometry, GeometrySource::Mesh(_)))
+        .all(|record| !matches!(record.geometry, GeometrySource::Transient(_)))
     {
         return Ok(());
     }
@@ -6448,9 +6527,6 @@ unsafe fn destroy_image_device(device: &super::Device, image: Image) {
     }
 }
 
-fn bytes_of<T>(value: &T) -> &[u8] {
-    unsafe { slice::from_raw_parts(ptr::from_ref(value).cast(), mem::size_of::<T>()) }
-}
 fn bytes_of_slice<T>(values: &[T]) -> &[u8] {
     unsafe { slice::from_raw_parts(values.as_ptr().cast(), mem::size_of_val(values)) }
 }
@@ -6595,7 +6671,10 @@ fn shader_stage(
 mod tests {
     use std::vec::Vec;
 
-    use super::{insert_free_range, take_free_range, timestamp_tick_delta};
+    use super::{
+        MeshIndexData, insert_free_range, plan_mesh_storage, take_free_range, timestamp_tick_delta,
+        vk,
+    };
 
     #[test]
     fn timestamp_delta_handles_queue_counter_wraparound() {
@@ -6614,5 +6693,40 @@ mod tests {
         insert_free_range(&mut free, 32..48);
         assert_eq!(free.len(), 1);
         assert_eq!(free[0], 0..128);
+    }
+
+    #[test]
+    fn mixed_width_mesh_parts_pack_aligned_offsets_counts_and_types() {
+        let u16_bytes = [0_u8; 6];
+        let u32_bytes = [0_u8; 12];
+        let (parts, allocation_size) = plan_mesh_storage(
+            7,
+            &[
+                MeshIndexData {
+                    bytes: &u16_bytes,
+                    count: 3,
+                    index_type: vk::VK_INDEX_TYPE_UINT16,
+                },
+                MeshIndexData {
+                    bytes: &u32_bytes,
+                    count: 3,
+                    index_type: vk::VK_INDEX_TYPE_UINT32,
+                },
+            ],
+        )
+        .expect("valid mixed-width layout");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].index_offset, 8);
+        assert_eq!(parts[0].index_count, 3);
+        assert_eq!(parts[0].index_type, vk::VK_INDEX_TYPE_UINT16);
+        assert_eq!(parts[0].indirect_offset, 28);
+        assert_eq!(parts[1].index_offset, 16);
+        assert_eq!(parts[1].index_count, 3);
+        assert_eq!(parts[1].index_type, vk::VK_INDEX_TYPE_UINT32);
+        assert_eq!(parts[1].indirect_offset, 48);
+        assert_eq!(allocation_size, 80);
+        assert!(parts.iter().all(|part| part.index_offset % 4 == 0));
+        assert!(parts.iter().all(|part| part.indirect_offset % 4 == 0));
     }
 }

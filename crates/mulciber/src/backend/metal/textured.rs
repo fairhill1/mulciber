@@ -92,11 +92,111 @@ unsafe extern "C" {
 }
 
 struct MeshResource {
-    vertices: Object,
-    indices: Object,
-    indirect: Object,
+    storage: Object,
+    parts: Vec<MeshPartResource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MeshPartResource {
+    index_offset: usize,
+    indirect_offset: usize,
     index_count: u32,
     index_type: usize,
+}
+
+fn pack_mesh_storage(
+    vertices: &[u8],
+    index_parts: &[MeshIndices<'_>],
+) -> Result<(Vec<u8>, Vec<MeshPartResource>), GraphicsError> {
+    let mut cursor = vertices
+        .len()
+        .checked_next_multiple_of(4)
+        .ok_or_else(|| GraphicsError::new("Metal mesh index offsets overflow"))?;
+    let mut parts = Vec::new();
+    parts.try_reserve_exact(index_parts.len()).map_err(|_| {
+        GraphicsError::new("Metal mesh part metadata allocation could not be reserved")
+    })?;
+    for (part_index, indices) in index_parts.iter().enumerate() {
+        let bytes = mesh_index_bytes(*indices);
+        let index_offset = cursor;
+        cursor = cursor.checked_add(bytes.len()).ok_or_else(|| {
+            GraphicsError::new(format!(
+                "Metal mesh index part {part_index} end offset overflows"
+            ))
+        })?;
+        cursor = cursor.checked_next_multiple_of(4).ok_or_else(|| {
+            GraphicsError::new(format!(
+                "Metal mesh index part {part_index} alignment overflows"
+            ))
+        })?;
+        parts.push(MeshPartResource {
+            index_offset,
+            indirect_offset: 0,
+            index_count: u32::try_from(indices.len()).map_err(|_| {
+                GraphicsError::new(format!(
+                    "Metal mesh index part {part_index} count exceeds u32"
+                ))
+            })?,
+            index_type: match indices {
+                MeshIndices::U16(_) => INDEX_TYPE_UINT16,
+                MeshIndices::U32(_) => INDEX_TYPE_UINT32,
+            },
+        });
+    }
+    for part in &mut parts {
+        part.indirect_offset = cursor;
+        cursor = cursor
+            .checked_add(mem::size_of::<IndexedIndirectArguments>())
+            .ok_or_else(|| GraphicsError::new("Metal mesh indirect offsets overflow"))?;
+    }
+    let allocation_size = cursor
+        .checked_next_multiple_of(16)
+        .ok_or_else(|| GraphicsError::new("Metal mesh allocation size overflows"))?;
+    let mut packed = Vec::new();
+    packed
+        .try_reserve_exact(allocation_size)
+        .map_err(|_| GraphicsError::new("Metal mesh storage allocation could not be reserved"))?;
+    packed.resize(allocation_size, 0);
+    packed[..vertices.len()].copy_from_slice(vertices);
+    for ((indices, part), part_index) in index_parts.iter().zip(&parts).zip(0..) {
+        let bytes = mesh_index_bytes(*indices);
+        let index_end = part
+            .index_offset
+            .checked_add(bytes.len())
+            .ok_or_else(|| GraphicsError::new("Metal mesh index copy range overflows"))?;
+        packed[part.index_offset..index_end].copy_from_slice(bytes);
+        let draw = IndexedIndirectArguments {
+            index_count: part.index_count,
+            instance_count: 1,
+            index_start: 0,
+            base_vertex: 0,
+            base_instance: 0,
+        };
+        let draw_bytes = unsafe {
+            core::slice::from_raw_parts(ptr::from_ref(&draw).cast::<u8>(), mem::size_of_val(&draw))
+        };
+        let indirect_end = part
+            .indirect_offset
+            .checked_add(draw_bytes.len())
+            .ok_or_else(|| {
+                GraphicsError::new(format!(
+                    "Metal mesh indirect part {part_index} copy range overflows"
+                ))
+            })?;
+        packed[part.indirect_offset..indirect_end].copy_from_slice(draw_bytes);
+    }
+    Ok((packed, parts))
+}
+
+fn mesh_index_bytes(indices: MeshIndices<'_>) -> &[u8] {
+    match indices {
+        MeshIndices::U16(indices) => unsafe {
+            core::slice::from_raw_parts(indices.as_ptr().cast(), mem::size_of_val(indices))
+        },
+        MeshIndices::U32(indices) => unsafe {
+            core::slice::from_raw_parts(indices.as_ptr().cast(), mem::size_of_val(indices))
+        },
+    }
 }
 
 struct TextureResource {
@@ -196,7 +296,10 @@ struct ResolvedInstanceBatch {
 /// offsets into the frame's transient-geometry region recomputed in staging order.
 #[derive(Clone, Copy)]
 enum ResolvedGeometry {
-    Mesh(usize),
+    Mesh {
+        mesh: usize,
+        part: usize,
+    },
     Transient {
         vertex_offset: usize,
         index_offset: usize,
@@ -425,77 +528,32 @@ impl<'window> TexturedSession<'window> {
     pub(crate) fn create_mesh(
         &mut self,
         vertices: &[Vertex],
-        indices: &[u16],
+        parts: &[MeshIndices<'_>],
     ) -> Result<ResourceId, GraphicsError> {
         let bytes = unsafe {
             core::slice::from_raw_parts(vertices.as_ptr().cast(), mem::size_of_val(vertices))
         };
-        self.create_mesh_from_bytes(bytes, MeshIndices::U16(indices))
+        self.create_mesh_from_bytes(bytes, parts)
     }
 
     pub(crate) fn create_mesh_from_bytes(
         &mut self,
         vertices: &[u8],
-        indices: MeshIndices<'_>,
+        index_parts: &[MeshIndices<'_>],
     ) -> Result<ResourceId, GraphicsError> {
-        let (index_pointer, index_length, index_type) = match indices {
-            MeshIndices::U16(indices) => (
-                indices.as_ptr().cast(),
-                mem::size_of_val(indices),
-                INDEX_TYPE_UINT16,
-            ),
-            MeshIndices::U32(indices) => (
-                indices.as_ptr().cast(),
-                mem::size_of_val(indices),
-                INDEX_TYPE_UINT32,
-            ),
-        };
-        let draw = IndexedIndirectArguments {
-            index_count: u32::try_from(indices.len())
-                .map_err(|_| GraphicsError::new("mesh index count exceeds u32"))?,
-            instance_count: 1,
-            index_start: 0,
-            base_vertex: 0,
-            base_instance: 0,
-        };
+        let (packed, parts) = pack_mesh_storage(vertices, index_parts)?;
         unsafe {
-            let vertices = required(
+            let storage = required(
                 objc::object_bytes(
                     self.surface.device,
                     c"newBufferWithBytes:length:options:",
-                    vertices.as_ptr().cast(),
-                    vertices.len(),
+                    packed.as_ptr().cast(),
+                    packed.len(),
                     0,
                 ),
-                "Metal cube vertex buffer",
+                "Metal mesh storage buffer",
             )?;
-            let indices = required(
-                objc::object_bytes(
-                    self.surface.device,
-                    c"newBufferWithBytes:length:options:",
-                    index_pointer,
-                    index_length,
-                    0,
-                ),
-                "Metal cube index buffer",
-            )?;
-            let indirect = required(
-                objc::object_bytes(
-                    self.surface.device,
-                    c"newBufferWithBytes:length:options:",
-                    ptr::from_ref(&draw).cast(),
-                    mem::size_of_val(&draw),
-                    0,
-                ),
-                "Metal cube indirect buffer",
-            )?;
-            self.meshes.insert(MeshResource {
-                vertices,
-                indices,
-                indirect,
-                index_count: draw.index_count,
-                index_type,
-            })
+            self.meshes.insert(MeshResource { storage, parts })
         }
     }
 
@@ -1113,7 +1171,7 @@ impl<'window> TexturedSession<'window> {
                 }
             }
             for record in shadow.records() {
-                self.meshes.get(record.mesh.id())?;
+                self.meshes.get(record.geometry.mesh().id())?;
                 self.shadow_pipelines.get(record.pipeline.id())?;
                 for texture in record.textures {
                     self.textures.get(texture.id())?;
@@ -1121,7 +1179,7 @@ impl<'window> TexturedSession<'window> {
             }
         }
         for record in records.iter().chain(overlay) {
-            if let GeometrySource::Mesh(mesh) = record.geometry {
+            if let Some(mesh) = record.geometry.uploaded_mesh() {
                 self.meshes.get(mesh.id())?;
             }
             self.material_pipelines.get(record.pipeline.id())?;
@@ -1282,7 +1340,7 @@ impl<'window> TexturedSession<'window> {
             .chain(overlay)
             .filter_map(|record| match record.geometry {
                 GeometrySource::Transient(geometry) => Some(geometry),
-                GeometrySource::Mesh(_) => None,
+                GeometrySource::Mesh(_) | GeometrySource::MeshPart(_) => None,
             })
             .try_fold(0_usize, |total, geometry| {
                 geometry
@@ -1517,7 +1575,9 @@ impl<'window> TexturedSession<'window> {
             for record in records {
                 let pipeline =
                     &self.shadow_pipelines[self.shadow_pipelines.index_of(record.pipeline.id())?];
-                let mesh = &self.meshes[self.meshes.index_of(record.mesh.id())?];
+                let mesh = &self.meshes[self.meshes.index_of(record.geometry.mesh().id())?];
+                let part = &mesh.parts[usize::try_from(record.geometry.part_index())
+                    .expect("validated mesh part index fits usize")];
                 objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                 objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
                 if let Some((binding, _)) = pipeline.uniform {
@@ -1585,7 +1645,7 @@ impl<'window> TexturedSession<'window> {
                 objc::void_object_two_usizes(
                     encoder,
                     c"setVertexBuffer:offset:atIndex:",
-                    mesh.vertices,
+                    mesh.storage,
                     0,
                     MATERIAL_VERTEX_BUFFER_INDEX,
                 );
@@ -1603,10 +1663,10 @@ impl<'window> TexturedSession<'window> {
                         encoder,
                         c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
                         PRIMITIVE_TYPE_TRIANGLE,
-                        usize::try_from(mesh.index_count).expect("u32 index count fits usize"),
-                        mesh.index_type,
-                        mesh.indices,
-                        0,
+                        usize::try_from(part.index_count).expect("u32 index count fits usize"),
+                        part.index_type,
+                        mesh.storage,
+                        part.index_offset,
                         instance_count,
                     );
                 } else {
@@ -1614,11 +1674,11 @@ impl<'window> TexturedSession<'window> {
                         encoder,
                         c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                         PRIMITIVE_TYPE_TRIANGLE,
-                        mesh.index_type,
-                        mesh.indices,
-                        0,
-                        mesh.indirect,
-                        0,
+                        part.index_type,
+                        mesh.storage,
+                        part.index_offset,
+                        mesh.storage,
+                        part.indirect_offset,
                     );
                 }
                 *instance_offset += record
@@ -2128,6 +2188,7 @@ impl<'window> TexturedSession<'window> {
                         let pipeline =
                             &self.pipelines[self.pipelines.index_of(draw.pipeline.id())?];
                         let mesh = &self.meshes[self.meshes.index_of(draw.mesh.id())?];
+                        let part = &mesh.parts[0];
                         let texture = &self.textures[self.textures.index_of(draw.texture.id())?];
                         objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                         objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
@@ -2141,7 +2202,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
-                            mesh.vertices,
+                            mesh.storage,
                             0,
                             1,
                         );
@@ -2161,11 +2222,11 @@ impl<'window> TexturedSession<'window> {
                             encoder,
                             c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                             PRIMITIVE_TYPE_TRIANGLE,
-                            mesh.index_type,
-                            mesh.indices,
-                            0,
-                            mesh.indirect,
-                            0,
+                            part.index_type,
+                            mesh.storage,
+                            part.index_offset,
+                            mesh.storage,
+                            part.indirect_offset,
                         );
                     }
                 }
@@ -2176,13 +2237,14 @@ impl<'window> TexturedSession<'window> {
                     for batch in &self.resolved_instance_batches {
                         let pipeline = &self.instanced_pipelines[batch.pipeline];
                         let mesh = &self.meshes[batch.mesh];
+                        let part = &mesh.parts[0];
                         let texture = &self.textures[batch.texture];
                         objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                         objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
-                            mesh.vertices,
+                            mesh.storage,
                             0,
                             1,
                         );
@@ -2209,10 +2271,10 @@ impl<'window> TexturedSession<'window> {
                             encoder,
                             c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
                             PRIMITIVE_TYPE_TRIANGLE,
-                            usize::try_from(mesh.index_count).expect("u32 index count fits usize"),
-                            mesh.index_type,
-                            mesh.indices,
-                            0,
+                            usize::try_from(part.index_count).expect("u32 index count fits usize"),
+                            part.index_type,
+                            mesh.storage,
+                            part.index_offset,
                             batch.instance_count,
                         );
                     }
@@ -2248,9 +2310,14 @@ impl<'window> TexturedSession<'window> {
                 let pipeline = &self.material_pipelines
                     [self.material_pipelines.index_of(record.pipeline.id())?];
                 let geometry = match record.geometry {
-                    GeometrySource::Mesh(mesh) => {
-                        ResolvedGeometry::Mesh(self.meshes.index_of(mesh.id())?)
-                    }
+                    GeometrySource::Mesh(mesh) => ResolvedGeometry::Mesh {
+                        mesh: self.meshes.index_of(mesh.id())?,
+                        part: 0,
+                    },
+                    GeometrySource::MeshPart(part) => ResolvedGeometry::Mesh {
+                        mesh: self.meshes.index_of(part.mesh().id())?,
+                        part: part.index(),
+                    },
                     GeometrySource::Transient(supply) => {
                         let vertex_offset = transient_offset;
                         let index_offset = vertex_offset
@@ -2328,10 +2395,10 @@ impl<'window> TexturedSession<'window> {
                     .len()
                     .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
                 match geometry {
-                    ResolvedGeometry::Mesh(mesh) => objc::void_object_two_usizes(
+                    ResolvedGeometry::Mesh { mesh, .. } => objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.meshes[mesh].vertices,
+                        self.meshes[mesh].storage,
                         0,
                         MATERIAL_VERTEX_BUFFER_INDEX,
                     ),
@@ -2434,18 +2501,19 @@ impl<'window> TexturedSession<'window> {
                     .len()
                     .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
                 match geometry {
-                    ResolvedGeometry::Mesh(mesh) => {
+                    ResolvedGeometry::Mesh { mesh, part } => {
                         let mesh = &self.meshes[mesh];
+                        let part = &mesh.parts[part];
                         if pipeline.instance_stride > 0 {
                             objc::void_three_usizes_object_two_usizes(
                                 encoder,
                                 c"drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:",
                                 PRIMITIVE_TYPE_TRIANGLE,
-                                usize::try_from(mesh.index_count)
+                                usize::try_from(part.index_count)
                                     .expect("u32 index count fits usize"),
-                                mesh.index_type,
-                                mesh.indices,
-                                0,
+                                part.index_type,
+                                mesh.storage,
+                                part.index_offset,
                                 instance_count,
                             );
                         } else {
@@ -2453,11 +2521,11 @@ impl<'window> TexturedSession<'window> {
                                 encoder,
                                 c"drawIndexedPrimitives:indexType:indexBuffer:indexBufferOffset:indirectBuffer:indirectBufferOffset:",
                                 PRIMITIVE_TYPE_TRIANGLE,
-                                mesh.index_type,
-                                mesh.indices,
-                                0,
-                                mesh.indirect,
-                                0,
+                                part.index_type,
+                                mesh.storage,
+                                part.index_offset,
+                                mesh.storage,
+                                part.indirect_offset,
                             );
                         }
                     }
@@ -2562,17 +2630,9 @@ impl<'window> TexturedSession<'window> {
 // Its fields are raw pointers, so Clippy cannot otherwise observe that ownership transfer.
 #[allow(clippy::needless_pass_by_value)]
 fn release_mesh(mesh: MeshResource) {
-    let MeshResource {
-        vertices,
-        indices,
-        indirect,
-        index_count: _,
-        index_type: _,
-    } = mesh;
+    let MeshResource { storage, parts: _ } = mesh;
     unsafe {
-        objc::void(indirect, c"release");
-        objc::void(indices, c"release");
-        objc::void(vertices, c"release");
+        objc::void(storage, c"release");
     }
 }
 
@@ -3252,7 +3312,7 @@ fn transient_geometry_len(records: &[MaterialRecord<'_>]) -> usize {
                         .byte_len()
                         .next_multiple_of(STORAGE_OFFSET_ALIGNMENT),
             ),
-            GeometrySource::Mesh(_) => None,
+            GeometrySource::Mesh(_) | GeometrySource::MeshPart(_) => None,
         })
         .sum()
 }
@@ -3690,5 +3750,37 @@ fn create_target_texture(
             objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
             "Metal render target texture",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{INDEX_TYPE_UINT16, INDEX_TYPE_UINT32, MeshIndices, pack_mesh_storage};
+
+    #[test]
+    fn mixed_width_mesh_parts_pack_aligned_offsets_counts_and_types() {
+        let u16_indices = [0_u16, 1, 2];
+        let u32_indices = [1_u32, 3, 2];
+        let (packed, parts) = pack_mesh_storage(
+            &[0_u8; 7],
+            &[
+                MeshIndices::U16(&u16_indices),
+                MeshIndices::U32(&u32_indices),
+            ],
+        )
+        .expect("valid mixed-width layout");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].index_offset, 8);
+        assert_eq!(parts[0].index_count, 3);
+        assert_eq!(parts[0].index_type, INDEX_TYPE_UINT16);
+        assert_eq!(parts[0].indirect_offset, 28);
+        assert_eq!(parts[1].index_offset, 16);
+        assert_eq!(parts[1].index_count, 3);
+        assert_eq!(parts[1].index_type, INDEX_TYPE_UINT32);
+        assert_eq!(parts[1].indirect_offset, 48);
+        assert_eq!(packed.len(), 80);
+        assert!(parts.iter().all(|part| part.index_offset % 4 == 0));
+        assert!(parts.iter().all(|part| part.indirect_offset % 4 == 0));
     }
 }

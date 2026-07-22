@@ -37,6 +37,13 @@ data is supplied per record as plain bytes of exactly the declared size — the 
 WGSL memory-layout correctness — and flows through the session's frame-transient per-draw
 uniform region; no persistent application-owned buffer handle was forced by this slice.
 
+The [shared-vertex mesh-parts checkpoint](mesh-parts-contract.md) extends that owner without
+changing the one-part path: `create_mesh_with_parts` and `create_mesh_with_layout_and_parts`
+store one vertex region plus one or more immutable `u16`/`u32` index parts, `Mesh::part` returns
+a lease-free borrow, `GeometrySource::MeshPart` selects it for a material record, and
+`MeshSource::MeshPart` selects it for a shadow record. Part zero remains the whole/default mesh.
+Every part inherits the parent's layout, session, generation, and destruction boundary.
+
 `Device::create_rgba8_srgb_texture_with_mips` and
 `Device::create_rgba8_unorm_texture_with_mips` upload application-supplied mip chains: the base
 level through 1x1, each level halving and flooring at one texel, every level's byte count validated
@@ -131,6 +138,11 @@ cap does. The slot exists for per-frame-authored geometry — HUD text and gauge
 which would otherwise churn mesh creation and destruction every frame; no persistent updatable
 buffer handle enters the vocabulary, and shadow records keep uploaded meshes.
 
+Uploaded mesh parts remain the opposite lifetime choice from transient geometry: immutable index
+variants share retained vertex storage and retire with one parent lease. Both material and shadow
+records, including instance-layout records, select a part without changing pipeline or descriptor
+identity. Mixed index widths are permitted between parts.
+
 ## Native behavior
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
@@ -148,6 +160,11 @@ and draws through the existing indirect encoder path. Both backends bake the dec
 depth modes into native creation-time state: Vulkan through the pipeline's color-blend,
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
+
+For a multi-part mesh, Vulkan stores the shared vertices, aligned index regions, and per-part
+indirect commands in one arena suballocation; Metal stores the same regions in one `MTLBuffer`.
+Encoding binds the parent vertex region and selects only the part's index offset, count, native
+type, and indirect offset. See the mesh-parts contract for exact ownership and validation rules.
 
 Record storage bytes flow through a second shared frame-transient buffer at 256-byte-aligned
 per-record offsets, the specification's cap on `minStorageBufferOffsetAlignment`. Vulkan binds
@@ -189,7 +206,8 @@ or runtime-sized storage, persistent application-owned buffer handles, arbitrary
 equations beyond the fixed mode set, bind-group abstractions, sampled color formats beyond RGBA8
 sRGB and RGBA8 UNORM, packed vertex formats, native mip generation, per-cascade map resolutions,
 engine-side cascade selection or blending, or persistent updatable mesh handles beyond the
-frame-transient geometry supply.
+frame-transient geometry supply. Mesh parts do not add mutable indices, automatic LOD selection,
+automatic instance grouping, visibility masks, or game-specific destructible-geometry policy.
 
 ## Evidence
 

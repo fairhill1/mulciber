@@ -13,11 +13,12 @@ use std::time::Instant;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices,
-    OpenedGraphics, PostprocessPipelineDescriptor, PostprocessedDraw, PostprocessedScene,
-    RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord, ShadowSource,
-    TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch, TexturedScene,
-    TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    MeshSource, OpenedGraphics, PostprocessPipelineDescriptor, PostprocessedDraw,
+    PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
+    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord,
+    ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch,
+    TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -393,6 +394,39 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
+                            .create_mesh_with_parts(&TRIANGLE_VERTICES, &[])
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "at least one indexed part",
+                        "missing mesh parts rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
+                            .create_mesh_with_parts(
+                                &TRIANGLE_VERTICES,
+                                &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[])],
+                            )
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "part 1",
+                        "empty mesh part rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
+                            .create_mesh_with_parts(
+                                &TRIANGLE_VERTICES,
+                                &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 3, 2])],
+                            )
+                            .map(|_| ()),
+                        GraphicsErrorKind::InvalidRequest,
+                        "part 1",
+                        "out-of-range mesh part index rejected",
+                    )?;
+                    expect_error(
+                        graphics
+                            .device
                             .create_rgba8_srgb_texture(4, 4, &[0_u8; 4])
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -411,6 +445,9 @@ impl<'window> Cases<'window> {
                 }
                 self.pass("empty mesh rejected");
                 self.pass("out-of-range index rejected");
+                self.pass("missing mesh parts rejected");
+                self.pass("empty mesh part rejected");
+                self.pass("out-of-range mesh part index rejected");
                 self.pass("texture byte mismatch rejected");
                 self.pass("zero-dimension texture rejected");
 
@@ -418,6 +455,12 @@ impl<'window> Cases<'window> {
                 let mesh = graphics
                     .device
                     .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?;
+                expect_error(
+                    mesh.part(1).map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "part index 1",
+                    "invalid mesh part selection rejected before acquisition",
+                )?;
                 let texture = graphics
                     .device
                     .create_rgba8_srgb_texture(2, 2, &[255_u8; 16])?;
@@ -430,6 +473,7 @@ impl<'window> Cases<'window> {
                 let targets = graphics
                     .device
                     .create_render_targets(graphics.surface.info()?)?;
+                self.pass("invalid mesh part selection rejected before acquisition");
                 self.mesh = Some(mesh);
                 self.texture = Some(texture);
                 self.pipeline = Some(pipeline);
@@ -565,11 +609,10 @@ impl<'window> Cases<'window> {
                     .destroy_mesh(self.mesh.take().expect("mesh exists"))?;
 
                 for _ in 0..32 {
-                    drop(
-                        graphics
-                            .device
-                            .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
-                    );
+                    drop(graphics.device.create_mesh_with_parts(
+                        &TRIANGLE_VERTICES,
+                        &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 2, 1])],
+                    )?);
                 }
 
                 self.foreign_mesh = Some(
@@ -619,7 +662,7 @@ impl<'window> Cases<'window> {
                         .create_postprocess_targets(graphics.surface.info()?)?,
                 );
                 self.pass("explicit destruction for every resource kind");
-                self.pass("drop-driven resource churn");
+                self.pass("drop-driven shared-vertex mesh-part resource churn");
                 self.step = 6;
                 Ok(false)
             }
@@ -1042,8 +1085,11 @@ impl<'window> Cases<'window> {
                 let uniform = [0_u8; 144];
                 let records = [MaterialRecord {
                     pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    geometry: GeometrySource::Mesh(
-                        self.mesh.as_ref().expect("fixed-layout mesh exists"),
+                    geometry: GeometrySource::MeshPart(
+                        self.mesh
+                            .as_ref()
+                            .expect("fixed-layout mesh exists")
+                            .part(0)?,
                     ),
                     textures: &textures,
                     shadow_map: None,
@@ -1753,10 +1799,10 @@ impl<'window> Cases<'window> {
                         instance_layout: None,
                     },
                 )?);
-                self.material_mesh = Some(graphics.device.create_mesh_with_layout(
+                self.material_mesh = Some(graphics.device.create_mesh_with_layout_and_parts(
                     MATERIAL_LAYOUT,
-                    &material_triangle_vertices(),
-                    MeshIndices::U32(&[0, 1, 2]),
+                    &material_part_vertices(),
+                    &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[1, 3, 2])],
                 )?);
                 self.pass("zero-extent shadow map rejected");
                 self.pass("zero-layer shadow map array rejected");
@@ -1967,7 +2013,7 @@ impl<'window> Cases<'window> {
                 let shadow_uniform = matrix_bytes(IDENTITY);
                 let shadow_records = [ShadowRecord {
                     pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: MeshSource::Mesh(self.material_mesh.as_ref().expect("material mesh")),
                     uniform: &shadow_uniform,
                     storage: &[],
                     textures: &[],
@@ -2024,7 +2070,7 @@ impl<'window> Cases<'window> {
                 let short_uniform = [0_u8; 32];
                 let shadow_records = [ShadowRecord {
                     pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
+                    geometry: MeshSource::Mesh(self.material_mesh.as_ref().expect("material mesh")),
                     uniform: &short_uniform,
                     storage: &[],
                     textures: &[],
@@ -2277,7 +2323,7 @@ impl<'window> Cases<'window> {
                         .skinned_shadow_pipeline
                         .as_ref()
                         .expect("skinned shadow pipeline"),
-                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    geometry: MeshSource::Mesh(self.skinned_mesh.as_ref().expect("skinned mesh")),
                     uniform: &uniform,
                     storage: &[],
                     textures: &[],
@@ -2335,7 +2381,7 @@ impl<'window> Cases<'window> {
                         .skinned_shadow_pipeline
                         .as_ref()
                         .expect("skinned shadow pipeline"),
-                    mesh: self.skinned_mesh.as_ref().expect("skinned mesh"),
+                    geometry: MeshSource::Mesh(self.skinned_mesh.as_ref().expect("skinned mesh")),
                     uniform: &uniform,
                     storage: &palette,
                     textures: &[],
@@ -2678,8 +2724,25 @@ impl<'window> Cases<'window> {
                     },
                     MaterialRecord {
                         pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                        geometry: GeometrySource::Mesh(
-                            self.material_mesh.as_ref().expect("material mesh"),
+                        geometry: GeometrySource::MeshPart(
+                            self.material_mesh
+                                .as_ref()
+                                .expect("material mesh")
+                                .part(0)?,
+                        ),
+                        textures: &crystal_textures,
+                        shadow_map: None,
+                        uniform: &crystal_uniform,
+                        storage: &[],
+                        instances: &[],
+                    },
+                    MaterialRecord {
+                        pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
+                        geometry: GeometrySource::MeshPart(
+                            self.material_mesh
+                                .as_ref()
+                                .expect("material mesh")
+                                .part(1)?,
                         ),
                         textures: &crystal_textures,
                         shadow_map: None,
@@ -2689,14 +2752,34 @@ impl<'window> Cases<'window> {
                     },
                 ];
                 let shadow_uniform = matrix_bytes(IDENTITY);
-                let shadow_records = [ShadowRecord {
-                    pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
-                    mesh: self.material_mesh.as_ref().expect("material mesh"),
-                    uniform: &shadow_uniform,
-                    storage: &[],
-                    textures: &[],
-                    instances: &[],
-                }];
+                let shadow_records = [
+                    ShadowRecord {
+                        pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
+                        geometry: MeshSource::MeshPart(
+                            self.material_mesh
+                                .as_ref()
+                                .expect("material mesh")
+                                .part(0)?,
+                        ),
+                        uniform: &shadow_uniform,
+                        storage: &[],
+                        textures: &[],
+                        instances: &[],
+                    },
+                    ShadowRecord {
+                        pipeline: self.shadow_pipeline.as_ref().expect("shadow pipeline"),
+                        geometry: MeshSource::MeshPart(
+                            self.material_mesh
+                                .as_ref()
+                                .expect("material mesh")
+                                .part(1)?,
+                        ),
+                        uniform: &shadow_uniform,
+                        storage: &[],
+                        textures: &[],
+                        instances: &[],
+                    },
+                ];
                 let cascades: [&[ShadowRecord]; 2] = [&shadow_records, &shadow_records];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
@@ -2714,6 +2797,7 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("shadowed material presentation");
+                self.pass("mixed-width shared-vertex parts in material and shadow records");
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 graphics
                     .device
@@ -2805,10 +2889,10 @@ impl<'window> Cases<'window> {
                         bindings: &SPROUT_BINDINGS,
                     },
                 )?);
-                self.sprout_mesh = Some(graphics.device.create_mesh_with_layout(
+                self.sprout_mesh = Some(graphics.device.create_mesh_with_layout_and_parts(
                     SPROUT_LAYOUT,
                     &sprout_triangle_vertices(),
-                    MeshIndices::U16(&[0, 1, 2]),
+                    &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 1, 2])],
                 )?);
                 self.sprout_shadow_map = Some(graphics.device.create_shadow_map(256)?);
                 self.pass("instanced material and cutout shadow pipelines created");
@@ -2826,7 +2910,9 @@ impl<'window> Cases<'window> {
                 let uniform = matrix_bytes(IDENTITY);
                 let records = [MaterialRecord {
                     pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
-                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    geometry: GeometrySource::MeshPart(
+                        self.sprout_mesh.as_ref().expect("sprout mesh").part(1)?,
+                    ),
                     textures: &sprout_textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -2869,7 +2955,9 @@ impl<'window> Cases<'window> {
                 let truncated = [0_u8; 96];
                 let records = [MaterialRecord {
                     pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
-                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    geometry: GeometrySource::MeshPart(
+                        self.sprout_mesh.as_ref().expect("sprout mesh").part(1)?,
+                    ),
                     textures: &sprout_textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -2914,7 +3002,9 @@ impl<'window> Cases<'window> {
                 instances.extend_from_slice(&matrix_bytes(SHIFTED));
                 let records = [MaterialRecord {
                     pipeline: self.sprout_pipeline.as_ref().expect("sprout pipeline"),
-                    geometry: GeometrySource::Mesh(self.sprout_mesh.as_ref().expect("sprout mesh")),
+                    geometry: GeometrySource::MeshPart(
+                        self.sprout_mesh.as_ref().expect("sprout mesh").part(0)?,
+                    ),
                     textures: &sprout_textures,
                     shadow_map: None,
                     uniform: &uniform,
@@ -2926,7 +3016,9 @@ impl<'window> Cases<'window> {
                         .sprout_shadow_pipeline
                         .as_ref()
                         .expect("sprout shadow pipeline"),
-                    mesh: self.sprout_mesh.as_ref().expect("sprout mesh"),
+                    geometry: MeshSource::MeshPart(
+                        self.sprout_mesh.as_ref().expect("sprout mesh").part(1)?,
+                    ),
                     uniform: &uniform,
                     storage: &[],
                     textures: &sprout_textures,
@@ -2947,7 +3039,7 @@ impl<'window> Cases<'window> {
                     },
                 )?;
                 assert_presented(disposition)?;
-                self.pass("instanced records and cutout shadow presentation");
+                self.pass("instanced material and shadow records with selected mesh part");
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 graphics.device.destroy_material_pipeline(
                     self.sprout_pipeline.take().expect("sprout pipeline"),
@@ -3202,6 +3294,18 @@ impl<'window> Cases<'window> {
                         .device
                         .create_render_targets(reopened.surface.info()?)?,
                 );
+                self.material_pipeline = Some(reopened.device.create_material_pipeline(
+                    mulciber::MaterialPipelineDescriptor {
+                        shader: ShaderArtifact::new(MATERIAL_SHADER)?,
+                        vertex_entry: "crystal_vertex",
+                        fragment_entry: "crystal_fragment",
+                        vertex_layout: MATERIAL_LAYOUT,
+                        bindings: &MATERIAL_BINDINGS,
+                        blend: BlendMode::Opaque,
+                        depth: DepthMode::TestWrite,
+                        instance_layout: None,
+                    },
+                )?);
                 self.postprocess_targets = Some(
                     reopened
                         .device
@@ -3238,8 +3342,58 @@ impl<'window> Cases<'window> {
                 self.step = 50;
                 Ok(false)
             }
-            // The mixed-session diagnostic also names the material pipeline handle kind.
+            // A selected part retains its parent mesh's session identity across shutdown.
             50 => {
+                let Some(frame) = self.acquire(metrics)? else {
+                    return Ok(false);
+                };
+                let texture = self.texture.as_ref().expect("session B texture exists");
+                let textures = [texture, texture];
+                let uniform = material_uniform();
+                let records = [MaterialRecord {
+                    pipeline: self
+                        .material_pipeline
+                        .as_ref()
+                        .expect("session B material pipeline"),
+                    geometry: GeometrySource::MeshPart(
+                        self.foreign_mesh
+                            .as_ref()
+                            .expect("session A mesh kept")
+                            .part(0)?,
+                    ),
+                    textures: &textures,
+                    shadow_map: None,
+                    uniform: &uniform,
+                    storage: &[],
+                    instances: &[],
+                }];
+                let graphics = self.graphics.as_mut().expect("session B is open");
+                expect_error(
+                    graphics
+                        .queue
+                        .render_and_present(
+                            frame,
+                            SceneSubmission {
+                                content: SceneContent::Material(&records),
+                                output: SceneOutput::Direct(
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                                shadow: None,
+                                overlay: None,
+                                clear: ClearColor::BLACK,
+                            },
+                        )
+                        .map(|_| ()),
+                    GraphicsErrorKind::InvalidRequest,
+                    "mesh belongs to a different graphics session",
+                    "mixed-session selected mesh part rejected",
+                )?;
+                self.pass("mixed-session selected mesh part rejected");
+                self.step = 51;
+                Ok(false)
+            }
+            // The mixed-session diagnostic also names the material pipeline handle kind.
+            51 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -3282,11 +3436,11 @@ impl<'window> Cases<'window> {
                     "mixed-session material pipeline rejected",
                 )?;
                 self.pass("mixed-session material pipeline rejected");
-                self.step = 51;
+                self.step = 52;
                 Ok(false)
             }
             // Postprocess uniform validation does not mask a mixed-session pipeline error.
-            51 => {
+            52 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
@@ -3325,7 +3479,7 @@ impl<'window> Cases<'window> {
                     "mixed-session postprocess pipeline rejected before uniform data",
                 )?;
                 self.pass("mixed-session postprocess validation precedence retained");
-                self.step = 52;
+                self.step = 53;
                 Ok(false)
             }
             // The one-sample session presents and shuts down cleanly.
@@ -3471,6 +3625,24 @@ fn material_triangle_vertices() -> Vec<u8> {
         [0.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0],
     ];
     let mut bytes = Vec::with_capacity(3 * 36);
+    for vertex in vertices {
+        for value in vertex {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    bytes
+}
+
+/// One quad whose left and right triangles are independently selectable index parts while all
+/// four vertices occupy one parent mesh vertex region.
+fn material_part_vertices() -> Vec<u8> {
+    let vertices: [[f32; 9]; 4] = [
+        [-0.7, -0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+        [0.0, -0.5, 0.0, 0.0, 0.0, 1.0, 0.5, 1.0, 0.5],
+        [0.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0],
+        [0.7, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+    ];
+    let mut bytes = Vec::with_capacity(4 * 36);
     for vertex in vertices {
         for value in vertex {
             bytes.extend_from_slice(&value.to_ne_bytes());

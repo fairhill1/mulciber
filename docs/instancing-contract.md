@@ -28,6 +28,11 @@ stale generation-bound targets, and native count/size overflow before encoding w
 Pipeline creation and explicit destruction remain fallible, and dropping the new pipeline kind
 uses the existing deferred generational reclamation path.
 
+The later [shared-vertex mesh-parts checkpoint](mesh-parts-contract.md) composes with the
+application-authored instance-layout material and shadow records: one CPU-grouped instance byte
+slice selects one borrowed part and issues one native instanced indexed draw. The older
+`TexturedInstanceBatch` compatibility recipe continues to select parent part zero.
+
 ## Native behavior
 
 Each backend packs all matrices for the frame contiguously into one growable 64-byte-stride instance

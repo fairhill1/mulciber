@@ -23,9 +23,9 @@ use glam::Vec3;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
-    OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord,
-    ShadowSource, TransientGeometry,
+    MeshSource, OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
+    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass,
+    ShadowRecord, ShadowSource, TransientGeometry,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -345,7 +345,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 .iter()
                                 .map(|uniform| ShadowRecord {
                                     pipeline: &shadow_pipeline,
-                                    mesh: &crystal_mesh,
+                                    geometry: MeshSource::Mesh(&crystal_mesh),
                                     uniform,
                                     storage: &[],
                                     textures: &[],
@@ -354,7 +354,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 .collect();
                             records.push(ShadowRecord {
                                 pipeline: &skinned_shadow_pipeline,
-                                mesh: &kelp_mesh,
+                                geometry: MeshSource::Mesh(&kelp_mesh),
                                 uniform: kelp_uniform,
                                 storage: &kelp_palette,
                                 textures: &[],
@@ -364,7 +364,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             // fragment stage alpha-tests the leaf texture per cascade.
                             records.push(ShadowRecord {
                                 pipeline: &sprout_shadow_pipeline,
-                                mesh: &sprout_mesh,
+                                geometry: MeshSource::Mesh(&sprout_mesh),
                                 uniform: sprout_uniform,
                                 storage: &[],
                                 textures: &sprout_textures,

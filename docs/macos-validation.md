@@ -759,6 +759,16 @@ SHA-256 `0cd30bcb6ad2540632362ccdce2ab46f8f44466587cdb2196e22115551a3c3fb`. It c
 environment, display inventory, capability reports, and all run logs, including the interactive
 session.
 
+### Shared-vertex mesh-parts status
+
+The 2026-07-22 shared-vertex mesh-parts implementation packs one parent `MTLBuffer` with shared
+vertices, aligned mixed-width index regions, and per-part indirect arguments. Its focused packing
+test and the complete workspace type-check for `aarch64-apple-darwin` pass from Linux with
+`MULCIBER_METAL_TYPECHECK_ONLY=1`. That mode deliberately skips native MSL compilation and cannot
+execute Metal, so it is structural evidence only. A macOS operator must run the 94-case conformance
+probe below with Metal API Validation, preserve its output, and visually inspect the two-part quad
+before this checkpoint gains native Metal evidence.
+
 ## Machine requirements
 
 - Apple silicon Mac on a supported macOS release (Metal 3 baseline).
@@ -813,6 +823,7 @@ Run the finite matrix with Apple's Metal API validation layer enabled:
 ```sh
 MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- --rebuild-binary-archive --frames 600
 MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle -- --frames 600
+MTL_DEBUG_LAYER=1 cargo run -p mulciber-api-conformance
 ```
 
 The first run must report that it generated the binary archive with strict hits for all four

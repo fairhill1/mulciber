@@ -277,6 +277,25 @@ pools before native destruction. This settles bounded lifetime for the current s
 single-in-flight slice, not general multi-queue dependency tracking, externally owned resources, or
 allocator policy. Recorded in the [textured-cube contract](api-cube-contract.md).
 
+## Shared-vertex indexed mesh parts
+
+Decided as immutable borrowed selections inside one owning `Mesh`, forced by Skyrimlike's four
+character index variants. `Device::create_mesh_with_parts` and
+`create_mesh_with_layout_and_parts` upload one vertex region with one or more `MeshIndices`
+parts; each part may independently be `u16` or `u32`. Part zero preserves every existing
+whole-mesh path. `Mesh::part` returns a `MeshPart` containing only a parent borrow and validated
+part number; it owns no lease, allocation, or deferred-drop entry. Material records select it
+through `GeometrySource::MeshPart`, shadow records through `MeshSource::MeshPart`, and both
+non-instanced and instance-layout paths use the same selection. Layout, session, generational
+validation, explicit destruction, and completed-frame reclamation all remain parent facts.
+
+One mesh-part owner was selected over independent mesh resources because the forcing workload must
+not duplicate/re-upload the skinned vertex set or multiply ownership. It was selected over vertex
+attributes or instance masks because triangle inclusion is immutable index data and shader-side
+visibility measurably regressed the consumer's total and shadow GPU time. This decision adds no
+dismemberment vocabulary, mutable mesh system, public buffer API, automatic grouping, render graph,
+or application synchronization. Recorded in the [mesh-parts contract](mesh-parts-contract.md).
+
 ## Capabilities and fallbacks
 
 Decided for the slice. `DeviceRequest` carries the preferred sample count; unsupported four-sample

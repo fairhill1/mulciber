@@ -322,6 +322,27 @@ clippy-with-warnings-denied, tests, and diff checks passed, and the Metal peer t
 binding, presentation, and destruction evidence on one Vulkan machine; it is not visual normal-map
 correctness, lifecycle, multi-display, broader hardware, or physical Metal evidence.
 
+### Shared-vertex mesh-parts evidence
+
+On 2026-07-22, the shared-vertex mesh-parts tree ran on the same native KDE Plasma Wayland /
+Nvidia RTX 3060 Ti tier. Host `vulkaninfo --summary` reported loader and Khronos validation
+1.4.350, device API 1.4.341, and driver 610.43.03. `cargo run -p
+mulciber-api-conformance` selected native Wayland, exited zero, and passed all 94 cases with no
+validation warning/error output.
+
+The added cases rejected no parts, an empty named part, an out-of-range index in part one, an
+out-of-range part selection before acquisition, a selected part whose parent layout mismatched the
+pipeline, and a selected part from the prior graphics session. The rendered cases submitted two
+mixed-width (`u16`/`u32`) triangle parts of one four-vertex quad independently in both material and
+shadow records, then selected a part for two-instance material and cutout-shadow records. Explicit
+parent destruction and 32 rounds of multi-part create/drop churn completed before replacement draws
+and both fallible shutdowns. A focused Vulkan unit test pinned index offsets 8 and 16, indirect
+offsets 28 and 48, counts/types, four-byte region alignment, and the 80-byte parent allocation.
+
+This is automated native Vulkan API, validation-layer, presentation, and reclamation evidence on
+one machine and display. The two-part workload was not visually inspected, and it does not claim
+Windows, other driver, lifecycle interaction, multi-display, or Metal execution coverage.
+
 ### Pacing policy evidence
 
 Later on 2026-07-20, an instrumented Skyrimlike walkaround (auto strafe-plus-yaw, per-frame

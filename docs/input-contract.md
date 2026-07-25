@@ -10,7 +10,8 @@ The first slice delivers gameplay-oriented transitions through the existing fall
 `Application::pump_events` callback:
 
 - physical keyboard key press, release, and repeat;
-- aggregate Shift, Control, Alt/Option, Command/Super, Caps Lock, and Function modifiers;
+- aggregate Shift, Control, Alt/Option, Command/Super, and Caps Lock modifiers, plus the physical
+  Fn/globe key where the window system reports it (macOS only);
 - pointer motion in top-left-origin logical client coordinates;
 - primary, secondary, middle, and numbered extra pointer buttons;
 - precise trackpad and coarse wheel scroll deltas without collapsing their units; and
@@ -102,6 +103,18 @@ The AppKit backend inspects each `NSEvent` from the same queue it already owns, 
 enabled explicitly on the window. The existing delegate also records key-window transitions so focus
 changes remain tied to the owned window and creating main thread.
 
+The function modifier is the one modifier that cannot be read off an event's flags. AppKit sets
+`NSEventModifierFlagFunction` for the arrow keys, page up/down, home/end, forward delete, and the
+whole F-row as well as for the physical Fn/globe key, so the flag answers "is this a navigation key"
+rather than "is Fn held". The backend therefore tracks the key from its own `flagsChanged`
+transitions, which are the only events that name `kVK_Function`, and takes `Modifiers::function()`
+from that tracked state on every event instead of from the flag. Holding an arrow key no longer
+reports Fn as held. Because macOS delivers those transitions only to the focused application, the
+tracked state is cleared on focus loss alongside the pointer capture and held-state invalidation
+already documented above; a key physically held across focus loss reads as released until its next
+transition. Win32 and both Linux backends never raise this modifier at all, because the key is
+resolved in keyboard firmware and never reaches the window system.
+
 The separate `mulciber-input-cube` example dogfoods the candidate contract: W/A/S/D and arrow key
 transitions rotate the cube, primary-button dragging orbits it, scrolling zooms, Space toggles
 automatic spin (initially paused), and R resets the interaction offsets. The minimal graphics-only
@@ -172,7 +185,8 @@ never destroyed again during drop, which Xlib would treat as fatal.
 
 ## Evidence and next pressure tests
 
-Unit tests cover the AppKit physical-key table, modifier translation, extra pointer-button identity,
+Unit tests cover the AppKit physical-key table, modifier translation, the physical-Fn transition
+filter and its exclusion of the shared navigation flag, extra pointer-button identity,
 focus delegate state, Win32 scan-code navigation/numpad distinctions, signed pointer coordinates,
 extended-button identity, and existing lifecycle behavior. On 2026-07-18, the combined showcase was
 physically exercised on Windows 11 / Intel UHD 620: W/A/S/D and arrow rotation, Space pause/resume,
@@ -202,7 +216,11 @@ Before stabilizing names or snapshot behavior:
    release, focus-loss release with refocus reapply, teardown while captured, and the
    absolute-mode delta path that remote desktop exercises) so the capture contract has evidence
    on all four backends;
-4. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
+4. physically exercise the AppKit function modifier on a machine with an Fn/globe key (press and
+   release Fn alone, hold an arrow key and the F-row without Fn, and hold Fn across focus loss),
+   since the tracking is covered only by unit tests over the pure transition filter and has never
+   run against a real `flagsChanged` stream;
+5. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
    application ergonomics with the equivalent `wgpu-input-cube`, direct native stacks, and SDL3;
    and
-5. build snapshots only as part of the Gate 5 runtime dogfood slice.
+6. build snapshots only as part of the Gate 5 runtime dogfood slice.

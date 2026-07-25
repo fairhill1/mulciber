@@ -42,6 +42,8 @@ const MODIFIER_CONTROL: usize = 1 << 18;
 const MODIFIER_OPTION: usize = 1 << 19;
 const MODIFIER_COMMAND: usize = 1 << 20;
 const MODIFIER_FUNCTION: usize = 1 << 23;
+/// `kVK_Function`: the physical Fn/globe key's own code in a `flagsChanged` event.
+const KEY_CODE_FUNCTION: u16 = 63;
 static WINDOW_STATE_KEY: u8 = 0;
 
 struct WindowDelegateState {
@@ -244,6 +246,7 @@ impl Application {
                 cursor_mode: Cell::new(CursorMode::Normal),
                 capture_applied: Cell::new(false),
                 pending_warp_delta: Cell::new((0.0, 0.0)),
+                function_key_held: Cell::new(false),
                 fullscreen_requested: Cell::new(false),
                 fullscreen_confirmed: Cell::new(false),
                 delegate,
@@ -365,6 +368,10 @@ pub struct Window {
     // event instead of delivering it separately, so each warp accumulates its
     // vector here and the next motion event subtracts it.
     pending_warp_delta: Cell<(f64, f64)>,
+    // AppKit's function modifier flag describes the navigation and F-key cluster as much as the
+    // physical Fn/globe key, so the key's own transitions are tracked here instead of read back
+    // off each event. See `function_key_transition`.
+    function_key_held: Cell<bool>,
     fullscreen_requested: Cell<bool>,
     fullscreen_confirmed: Cell<bool>,
     delegate: NonNull<c_void>,
@@ -571,9 +578,33 @@ impl Window {
             }
         } else {
             self.captured_pointer_buttons.set(0);
+            // Fn transitions are only delivered to the focused application, so a key held across
+            // focus loss would otherwise stay reported as held forever. Consumers are already told
+            // to invalidate held state here.
+            self.function_key_held.set(false);
             let _ = self.release_pointer_capture();
         }
         Some(InputEvent::FocusChanged { focused })
+    }
+
+    /// Resolves an event's modifier state, advancing the separately tracked physical Fn key when
+    /// this event is the one that reports it.
+    ///
+    /// # Safety
+    ///
+    /// `event` must be a live `NSEvent` and `event_type` must be its own type.
+    unsafe fn event_modifiers(&self, event: Object, event_type: usize) -> Modifiers {
+        // SAFETY: The caller guarantees a live NSEvent. `keyCode` is only defined for key and
+        // modifier events, and is read solely from the modifier event that carries Fn's identity.
+        unsafe {
+            let flags = usize_value(event, c"modifierFlags");
+            if event_type == EVENT_FLAGS_CHANGED
+                && let Some(held) = function_key_transition(u16_value(event, c"keyCode"), flags)
+            {
+                self.function_key_held.set(held);
+            }
+            appkit_modifiers(flags, self.function_key_held.get())
+        }
     }
 
     fn translate_input_event(&self, event: Object) -> Option<InputEvent> {
@@ -583,8 +614,9 @@ impl Window {
             if object(event, c"window") != self.raw.as_ptr() {
                 return None;
             }
-            let modifiers = appkit_modifiers(usize_value(event, c"modifierFlags"));
-            match usize_value(event, c"type") {
+            let event_type = usize_value(event, c"type");
+            let modifiers = self.event_modifiers(event, event_type);
+            match event_type {
                 EVENT_KEY_DOWN => Some(InputEvent::Keyboard {
                     key: appkit_key_code(u16_value(event, c"keyCode")),
                     state: ButtonState::Pressed,
@@ -1264,7 +1296,24 @@ fn physical_dimension(value: f64) -> Option<u32> {
     Some(rounded as u32)
 }
 
-fn appkit_modifiers(flags: usize) -> Modifiers {
+/// Reports the physical Fn/globe key's new state when `flagsChanged` describes that key.
+///
+/// `AppKit` sets `NSEventModifierFlagFunction` for the arrow keys, page up/down, home/end, forward
+/// delete, and the whole F-row as well as for Fn itself, so the flag on an arbitrary event answers
+/// "is this a navigation key" rather than "is Fn held". Only a `flagsChanged` event naming
+/// `kVK_Function` describes the physical key, and its flag bit then carries the transition's
+/// direction.
+const fn function_key_transition(key_code: u16, flags: usize) -> Option<bool> {
+    if key_code == KEY_CODE_FUNCTION {
+        Some(flags & MODIFIER_FUNCTION != 0)
+    } else {
+        None
+    }
+}
+
+/// Translates `AppKit`'s modifier flags, taking the function modifier from the separately tracked
+/// physical key state rather than from the overloaded flag bit.
+fn appkit_modifiers(flags: usize, function_key_held: bool) -> Modifiers {
     let mut bits = 0;
     if flags & MODIFIER_SHIFT != 0 {
         bits |= Modifiers::SHIFT;
@@ -1281,7 +1330,7 @@ fn appkit_modifiers(flags: usize) -> Modifiers {
     if flags & MODIFIER_CAPS_LOCK != 0 {
         bits |= Modifiers::CAPS_LOCK;
     }
-    if flags & MODIFIER_FUNCTION != 0 {
+    if function_key_held {
         bits |= Modifiers::FUNCTION;
     }
     Modifiers::from_bits(bits)
@@ -1412,10 +1461,11 @@ mod tests {
     };
 
     use super::{
-        MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_OPTION, MODIFIER_SHIFT, Size,
-        WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers, appkit_pointer_button,
-        bool_object, bool_value, create_content_view, create_window_delegate, metrics_transition,
-        physical_dimension, void, void_object,
+        KEY_CODE_FUNCTION, MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_FUNCTION, MODIFIER_OPTION,
+        MODIFIER_SHIFT, Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
+        appkit_pointer_button, bool_object, bool_value, create_content_view,
+        create_window_delegate, function_key_transition, metrics_transition, physical_dimension,
+        void, void_object,
     };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
@@ -1538,11 +1588,37 @@ mod tests {
     fn appkit_modifiers_preserve_gameplay_flags() {
         let modifiers = appkit_modifiers(
             MODIFIER_SHIFT | MODIFIER_CONTROL | MODIFIER_OPTION | MODIFIER_COMMAND,
+            false,
         );
         assert!(modifiers.shift());
         assert!(modifiers.control());
         assert!(modifiers.alt());
         assert!(modifiers.super_key());
+        assert!(!modifiers.function());
+    }
+
+    #[test]
+    fn navigation_key_function_flag_is_not_reported_as_a_held_function_key() {
+        // AppKit sets the function flag on every arrow-key, F-row, and navigation event; only the
+        // tracked physical key may raise the modifier.
+        assert!(!appkit_modifiers(MODIFIER_FUNCTION, false).function());
+        assert!(appkit_modifiers(MODIFIER_FUNCTION, true).function());
+        assert!(appkit_modifiers(0, true).function());
+    }
+
+    #[test]
+    fn function_key_transitions_come_only_from_the_physical_key() {
+        assert_eq!(
+            function_key_transition(KEY_CODE_FUNCTION, MODIFIER_FUNCTION),
+            Some(true)
+        );
+        assert_eq!(function_key_transition(KEY_CODE_FUNCTION, 0), Some(false));
+        // A Shift `flagsChanged` while Fn is held reports the flag too, but says nothing about Fn.
+        assert_eq!(
+            function_key_transition(56, MODIFIER_SHIFT | MODIFIER_FUNCTION),
+            None
+        );
+        assert_eq!(function_key_transition(123, MODIFIER_FUNCTION), None);
     }
 
     #[test]

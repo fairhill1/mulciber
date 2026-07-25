@@ -370,7 +370,14 @@ impl Modifiers {
         self.0 & Self::CAPS_LOCK != 0
     }
 
-    /// Returns whether the platform function modifier is active.
+    /// Returns whether the physical Fn/globe key is held.
+    ///
+    /// This is a macOS-only modifier. `AppKit` is the only backend that reports the key at all, and
+    /// it is reported for the key itself rather than for the arrow, navigation, and F-row keys that
+    /// share `AppKit`'s function flag. Windows and Linux never raise it: there the key is resolved in
+    /// keyboard firmware and never reaches the window system. Because macOS delivers the key's
+    /// transitions only to the focused application, a key held across focus loss reads as released
+    /// until its next transition.
     #[must_use]
     pub const fn function(self) -> bool {
         self.0 & Self::FUNCTION != 0

@@ -4,12 +4,15 @@
 stack. It owns native application connections, windows, event pumping, drawable metrics, and
 borrowed graphics surface targets without imposing a cross-platform windowing framework.
 
-Version 0.5.0 contains peer native AppKit, Win32, Wayland, and X11 implementations exercised by
-Mulciber's Metal and Vulkan probes. New in this version, `Window::set_window_mode` and
-`Window::window_mode` add a Windowed/Fullscreen intent on all four backends — borderless or
+Version 0.5.2 contains peer native AppKit, Win32, Wayland, and X11 implementations exercised by
+Mulciber's Metal and Vulkan probes. `Window::set_window_mode` and
+`Window::window_mode` carry a Windowed/Fullscreen intent on all four backends — borderless or
 native fullscreen on the window's current display, never an exclusive mode — with the reported
 mode following window-system-confirmed transitions so an application toggle stays correct when
-the window system enters or leaves fullscreen on its own. The Wayland and X11 fullscreen paths
+the window system enters or leaves fullscreen on its own. Input reports physical key positions
+and aggregate modifiers; `Modifiers::function` is macOS-only and tracks the physical Fn/globe key
+rather than the AppKit flag that the arrow, navigation, and F-row keys share.
+The Wayland and X11 fullscreen paths
 have a tool-automated Linux checkpoint (the native Wayland request path is unit-tested only);
 the AppKit path is unvalidated, and the Win32 backend — pointer capture and fullscreen alike —
 is cross-compiled and linted from Linux only and has not yet executed on a Windows machine, so

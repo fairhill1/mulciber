@@ -690,17 +690,12 @@ impl Window {
                 EVENT_SCROLL_WHEEL => {
                     let (position, inside) = self.pointer_position(event);
                     inside.then_some(InputEvent::Scroll {
-                        delta: if bool_value(event, c"hasPreciseScrollingDeltas") {
-                            ScrollDelta::Precise {
-                                x: f64_value(event, c"scrollingDeltaX"),
-                                y: f64_value(event, c"scrollingDeltaY"),
-                            }
-                        } else {
-                            ScrollDelta::Coarse {
-                                x: f64_value(event, c"scrollingDeltaX"),
-                                y: f64_value(event, c"scrollingDeltaY"),
-                            }
-                        },
+                        delta: scroll_delta(
+                            bool_value(event, c"hasPreciseScrollingDeltas"),
+                            modifiers.shift(),
+                            f64_value(event, c"scrollingDeltaX"),
+                            f64_value(event, c"scrollingDeltaY"),
+                        ),
                         position,
                         modifiers,
                     })
@@ -1452,12 +1447,38 @@ fn appkit_pointer_button(number: usize) -> PointerButton {
     }
 }
 
+/// Restores the vertical axis `AppKit` moves aside while Shift is held on a discrete wheel.
+///
+/// `AppKit` reports a coarse wheel's vertical delta on `scrollingDeltaX` whenever Shift is down, an
+/// undocumented document-scrolling convention that no other backend applies: X11 derives the axis
+/// from the button number, Win32 from the message, and Wayland from the axis the compositor names,
+/// none of which consult modifier state. Forwarding it verbatim would make one gesture report a
+/// different axis on macOS
+/// alone, so every Shift-modified wheel binding a game holds would silently stop firing.
+///
+/// Precise deltas keep their axes untouched, because a trackpad's horizontal component is a real
+/// part of a two-axis gesture rather than a relocated vertical one. The cost on a coarse wheel is
+/// that a tilt wheel's genuine horizontal step is indistinguishable from a relocated vertical one
+/// and therefore reads as vertical while Shift is held.
+fn scroll_delta(precise: bool, shift: bool, x: f64, y: f64) -> ScrollDelta {
+    if precise {
+        return ScrollDelta::Precise { x, y };
+    }
+    if shift && y == 0.0 && x != 0.0 {
+        // The relocation does not negate, so wheel-forward stays positive; a physical wheel run
+        // recorded in the macOS runbook confirmed both directions.
+        return ScrollDelta::Coarse { x: 0.0, y: x };
+    }
+    ScrollDelta::Coarse { x, y }
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
 
     use crate::{
-        KeyCode, PhysicalExtent, PointerButton, WindowEvent, WindowMetrics, WindowRevision,
+        KeyCode, PhysicalExtent, PointerButton, ScrollDelta, WindowEvent, WindowMetrics,
+        WindowRevision,
     };
 
     use super::{
@@ -1465,7 +1486,7 @@ mod tests {
         MODIFIER_SHIFT, Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
         appkit_pointer_button, bool_object, bool_value, create_content_view,
         create_window_delegate, function_key_transition, metrics_transition, physical_dimension,
-        void, void_object,
+        scroll_delta, void, void_object,
     };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
@@ -1619,6 +1640,41 @@ mod tests {
             None
         );
         assert_eq!(function_key_transition(123, MODIFIER_FUNCTION), None);
+    }
+
+    #[test]
+    fn shift_held_wheel_steps_stay_on_the_vertical_axis() {
+        // AppKit hands a Shift-modified wheel step to the horizontal axis; the portable event has
+        // to name the axis the wheel was physically turned on, in both directions.
+        assert_eq!(
+            scroll_delta(false, true, 1.0, 0.0),
+            ScrollDelta::Coarse { x: 0.0, y: 1.0 }
+        );
+        assert_eq!(
+            scroll_delta(false, true, -1.0, 0.0),
+            ScrollDelta::Coarse { x: 0.0, y: -1.0 }
+        );
+    }
+
+    #[test]
+    fn unmodified_and_precise_scroll_axes_are_forwarded_verbatim() {
+        assert_eq!(
+            scroll_delta(false, false, 1.0, 0.0),
+            ScrollDelta::Coarse { x: 1.0, y: 0.0 }
+        );
+        assert_eq!(
+            scroll_delta(false, true, 0.0, 1.0),
+            ScrollDelta::Coarse { x: 0.0, y: 1.0 }
+        );
+        // A trackpad's horizontal component belongs to a real two-axis gesture even under Shift.
+        assert_eq!(
+            scroll_delta(true, true, 2.5, 0.0),
+            ScrollDelta::Precise { x: 2.5, y: 0.0 }
+        );
+        assert_eq!(
+            scroll_delta(true, true, 2.5, -7.5),
+            ScrollDelta::Precise { x: 2.5, y: -7.5 }
+        );
     }
 
     #[test]

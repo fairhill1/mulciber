@@ -115,6 +115,22 @@ already documented above; a key physically held across focus loss reads as relea
 transition. Win32 and both Linux backends never raise this modifier at all, because the key is
 resolved in keyboard firmware and never reaches the window system.
 
+Scroll axes are the one place the backend rewrites what AppKit reports. While Shift is held, AppKit
+moves a discrete wheel's vertical delta onto `scrollingDeltaX`, an undocumented document-scrolling
+convention that X11 (axis from the button number), Win32 (axis from the message), and Wayland (axis
+named by the compositor) all lack, because none of those window systems consult modifier state.
+Forwarded verbatim, one physical gesture would
+name a different axis on macOS alone and every Shift-modified wheel binding would silently stop
+firing, so the AppKit backend puts a Shift-held coarse step back on the vertical axis. Precise deltas
+are never rewritten: a trackpad's horizontal component belongs to a real two-axis gesture rather than
+a relocated vertical one. The accepted cost is that a tilt wheel's genuine horizontal step is
+indistinguishable from a relocated vertical one and therefore reads as vertical while Shift is held.
+The relocation does not negate, so wheel-forward stays positive: a physical wheel run on the Apple
+M2 machine exercised both directions under Shift and is recorded in the
+[macOS runbook](macos-validation.md). Whether AppKit applies the same convention to a trackpad's
+precise deltas is still unmeasured, so the untouched precise path rests on the reading that a
+horizontal component there belongs to a real gesture.
+
 The separate `mulciber-input-cube` example dogfoods the candidate contract: W/A/S/D and arrow key
 transitions rotate the cube, primary-button dragging orbits it, scrolling zooms, Space toggles
 automatic spin (initially paused), and R resets the interaction offsets. The minimal graphics-only
@@ -186,7 +202,8 @@ never destroyed again during drop, which Xlib would treat as fatal.
 ## Evidence and next pressure tests
 
 Unit tests cover the AppKit physical-key table, modifier translation, the physical-Fn transition
-filter and its exclusion of the shared navigation flag, extra pointer-button identity,
+filter and its exclusion of the shared navigation flag, extra pointer-button identity, the
+Shift-held wheel axis restoration and the precise deltas it leaves alone,
 focus delegate state, Win32 scan-code navigation/numpad distinctions, signed pointer coordinates,
 extended-button identity, and existing lifecycle behavior. On 2026-07-18, the combined showcase was
 physically exercised on Windows 11 / Intel UHD 620: W/A/S/D and arrow rotation, Space pause/resume,
@@ -220,7 +237,10 @@ Before stabilizing names or snapshot behavior:
    release Fn alone, hold an arrow key and the F-row without Fn, and hold Fn across focus loss),
    since the tracking is covered only by unit tests over the pure transition filter and has never
    run against a real `flagsChanged` stream;
-5. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
+5. measure whether AppKit applies the Shift-held scroll swap to a trackpad's precise deltas as
+   well, since only the coarse wheel path has a physical reading and the precise path is left
+   untouched on the strength of an argument rather than evidence;
+6. compare event loss, repeat, focus invalidation, coordinate spaces, wheel/trackpad units, and
    application ergonomics with the equivalent `wgpu-input-cube`, direct native stacks, and SDL3;
    and
-6. build snapshots only as part of the Gate 5 runtime dogfood slice.
+7. build snapshots only as part of the Gate 5 runtime dogfood slice.

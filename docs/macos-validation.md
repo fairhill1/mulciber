@@ -389,6 +389,17 @@ Implementation and unit-test evidence alone must not be recorded as physical inp
 IME input, gestures, pressure, gamepads, relative-pointer capture, multi-display behavior, and input
 on Win32/Wayland/X11 remain outside this checkpoint.
 
+The scroll pass also carries a Shift-modified reading. AppKit reports a Shift-held discrete wheel
+step on the horizontal axis, and the backend puts it back on the vertical one so wheel bindings
+survive the modifier (see the [input contract](input-contract.md)). On 2026-07-25, on the Apple M2
+machine, the operator physically exercised Shift plus a wheel mouse in both directions and confirmed
+the restored vertical direction was correct each way, which establishes that AppKit relocates the
+delta without negating it. That run says nothing about a trackpad: whether AppKit applies the same
+convention to precise deltas is unmeasured, and the backend leaves precise axes untouched on the
+argument that a horizontal component there belongs to a real two-axis gesture. Settling it needs the
+built-in trackpad with raw `scrollingDeltaX`/`scrollingDeltaY`, `hasPreciseScrollingDeltas`, and
+modifier values observed with and without Shift.
+
 On 2026-07-17, an uncommitted development tree based on `6eccf2e` ran the new input cube repeatedly
 under `MTL_DEBUG_LAYER=1` while the operator physically reviewed it. Every process closed through the
 titlebar with exit code zero and Metal emitted only its validation-enabled banner. The first pass

@@ -53,7 +53,11 @@ struct PendingGpuTiming {
 struct GpuTimingState {
     enabled: bool,
     query_pool: vk::VkQueryPool,
-    pending: Option<PendingGpuTiming>,
+    /// One entry per frame slot. Timestamps are written by the GPU and read
+    /// back a frame later, so two frames in flight need two sets of them; one
+    /// shared entry has the newer frame resetting queries the older one is
+    /// still writing.
+    pending: [Option<PendingGpuTiming>; super::ClearSurface::frames_in_flight()],
     completed: VecDeque<GpuFrameTiming>,
 }
 
@@ -318,7 +322,13 @@ struct PipelineResource {
     /// Declared postprocess uniform size; zero for textured pipelines and no-uniform postprocess
     /// pipelines.
     uniform_size: u32,
-    bindings: Vec<(ResourceId, vk::VkDescriptorSet)>,
+    /// Cached sets keyed by resource and by frame slot.
+    ///
+    /// The slot matters only for postprocess sets, which name a byte offset
+    /// into the postprocess uniform and so differ per slot. Scene sets bind a
+    /// dynamic uniform whose offset is supplied at draw time, so they are the
+    /// same set for every slot and always key on zero.
+    bindings: Vec<((ResourceId, usize), vk::VkDescriptorSet)>,
 }
 
 struct MaterialPipelineResource {
@@ -573,13 +583,14 @@ impl<'window> TexturedSession<'window> {
         };
         let uniform = create_buffer(
             &surface,
-            DRAW_UNIFORM_STRIDE,
+            DRAW_UNIFORM_STRIDE * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
         let postprocess_uniform = match create_buffer(
             &surface,
-            usize::try_from(crate::POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize"),
+            usize::try_from(crate::POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize")
+                * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         ) {
@@ -654,7 +665,7 @@ impl<'window> TexturedSession<'window> {
                 gpu_timing: GpuTimingState {
                     enabled: false,
                     query_pool: ptr::null_mut(),
-                    pending: None,
+                    pending: [None; super::ClearSurface::frames_in_flight()],
                     completed: VecDeque::new(),
                 },
                 uniform,
@@ -1421,9 +1432,27 @@ impl<'window> TexturedSession<'window> {
         u32::try_from(last_offset)
             .map_err(|_| error("Vulkan material uniform offsets exceed u32"))?;
         self.ensure_uniform_capacity(uniform_slots)?;
-        write_material_uniforms(&self.surface, &self.uniform, records, overlay, shadow)?;
-        let (storage_offsets, storage_bytes) = material_storage_offsets(records, overlay, shadow)?;
+        let uniform_base = self.uniform_base();
+        write_material_uniforms(
+            &self.surface,
+            &self.uniform,
+            uniform_base,
+            records,
+            overlay,
+            shadow,
+        )?;
+        let (mut storage_offsets, storage_bytes) =
+            material_storage_offsets(records, overlay, shadow)?;
         self.ensure_storage_capacity(storage_bytes)?;
+        // Shifted after the capacity call, because growing the buffer moves
+        // where every slot's region starts.
+        let storage_base = u32::try_from(self.storage_base())
+            .map_err(|_| error("Vulkan storage slot base exceeds u32"))?;
+        for offset in &mut storage_offsets {
+            *offset = offset
+                .checked_add(storage_base)
+                .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
+        }
         write_material_storage(
             &self.surface,
             &self.storage,
@@ -1433,8 +1462,15 @@ impl<'window> TexturedSession<'window> {
             &storage_offsets,
         )?;
         self.stage_transient_geometry(records, overlay)?;
-        let (instance_offsets, instance_bytes) = record_instance_offsets(records, overlay, shadow)?;
+        let (mut instance_offsets, instance_bytes) =
+            record_instance_offsets(records, overlay, shadow)?;
         self.ensure_record_instance_capacity(instance_bytes)?;
+        let record_instance_base = self.record_instance_base();
+        for offset in &mut instance_offsets {
+            *offset = offset
+                .checked_add(record_instance_base)
+                .ok_or_else(|| error("Vulkan record instance offsets overflow"))?;
+        }
         write_record_instances(
             &self.surface,
             &self.record_instances,
@@ -1477,8 +1513,8 @@ impl<'window> TexturedSession<'window> {
                     &shadow_texture_indices,
                 )?;
                 let slot = records.len() + overlay.len() + index;
-                let uniform_offset =
-                    u32::try_from(slot * DRAW_UNIFORM_STRIDE).expect("shadow offset was validated");
+                let uniform_offset = u32::try_from(uniform_base + slot * DRAW_UNIFORM_STRIDE)
+                    .expect("shadow offset was validated");
                 let (dynamic_offsets, dynamic_offset_count) = dynamic_offsets_in_binding_order(
                     self.shadow_pipelines[pipeline].uniform,
                     self.shadow_pipelines[pipeline].storage,
@@ -1506,7 +1542,7 @@ impl<'window> TexturedSession<'window> {
         self.resolved_overlay_draws.clear();
         let mut sampled_ids = Vec::new();
         let mut texture_indices = Vec::new();
-        let mut transient_offset = 0_usize;
+        let mut transient_offset = self.transient_base();
         for (index, record) in records.iter().chain(overlay).enumerate() {
             let geometry = match record.geometry {
                 GeometrySource::Mesh(mesh) => ResolvedGeometry::Mesh {
@@ -1579,8 +1615,8 @@ impl<'window> TexturedSession<'window> {
                 &texture_indices,
                 shadow_view,
             )?;
-            let uniform_offset =
-                u32::try_from(index * DRAW_UNIFORM_STRIDE).expect("material offset was validated");
+            let uniform_offset = u32::try_from(uniform_base + index * DRAW_UNIFORM_STRIDE)
+                .expect("material offset was validated");
             let (dynamic_offsets, dynamic_offset_count) = dynamic_offsets_in_binding_order(
                 self.material_pipelines[pipeline].uniform,
                 self.material_pipelines[pipeline].storage,
@@ -1616,10 +1652,10 @@ impl<'window> TexturedSession<'window> {
         let capacity = required
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan record storage capacity overflow"))?;
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let replacement = create_buffer(
             &self.surface,
-            capacity,
+            capacity * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
             &[],
         )?;
@@ -1667,7 +1703,14 @@ impl<'window> TexturedSession<'window> {
                     .ok_or_else(|| error("Vulkan transient geometry offsets overflow"))
             })?;
         self.ensure_transient_capacity(geometry_bytes)?;
-        write_transient_geometry(&self.surface, &self.transient_geometry, records, overlay)
+        let base = self.transient_base();
+        write_transient_geometry(
+            &self.surface,
+            &self.transient_geometry,
+            base,
+            records,
+            overlay,
+        )
     }
 
     fn ensure_record_instance_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
@@ -1677,10 +1720,10 @@ impl<'window> TexturedSession<'window> {
         let capacity = required
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan record instance capacity overflow"))?;
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let replacement = create_buffer(
             &self.surface,
-            capacity,
+            capacity * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
             &[],
         )?;
@@ -1697,10 +1740,10 @@ impl<'window> TexturedSession<'window> {
         let capacity = required
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan transient geometry capacity overflow"))?;
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let replacement = create_buffer(
             &self.surface,
-            capacity,
+            capacity * super::ClearSurface::frames_in_flight(),
             (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT) as u32,
             &[],
         )?;
@@ -1856,7 +1899,8 @@ impl<'window> TexturedSession<'window> {
         u32::try_from(last_offset)
             .map_err(|_| error("Vulkan scene transform offsets exceed u32"))?;
         self.ensure_uniform_capacity(draws.len())?;
-        write_scene_transforms(&self.surface, &self.uniform, draws)?;
+        let uniform_base = self.uniform_base();
+        write_scene_transforms(&self.surface, &self.uniform, uniform_base, draws)?;
         self.resolved_draws.clear();
         for (index, draw) in draws.iter().enumerate() {
             let mesh = self.meshes.index_of(draw.mesh.id())?;
@@ -1867,7 +1911,7 @@ impl<'window> TexturedSession<'window> {
                 mesh,
                 pipeline,
                 descriptor,
-                dynamic_offset: u32::try_from(index * DRAW_UNIFORM_STRIDE)
+                dynamic_offset: u32::try_from(uniform_base + index * DRAW_UNIFORM_STRIDE)
                     .expect("scene offset was validated"),
             });
         }
@@ -1885,9 +1929,15 @@ impl<'window> TexturedSession<'window> {
                 .ok_or_else(|| error("Vulkan instance count exceeds address space"))
         })?;
         self.ensure_instance_capacity(instance_count)?;
-        write_instance_transforms(&self.surface, &self.instance_transforms, batches)?;
+        let instance_base = self.instance_transform_base();
+        write_instance_transforms(
+            &self.surface,
+            &self.instance_transforms,
+            instance_base,
+            batches,
+        )?;
         self.resolved_instance_batches.clear();
-        let mut transform_offset = 0_usize;
+        let mut transform_offset = instance_base;
         for batch in batches {
             let mesh = self.meshes.index_of(batch.mesh.id())?;
             let texture = self.textures.index_of(batch.texture.id())?;
@@ -1925,10 +1975,10 @@ impl<'window> TexturedSession<'window> {
         let bytes = capacity
             .checked_mul(DRAW_UNIFORM_STRIDE)
             .ok_or_else(|| error("Vulkan scene transform storage is too large"))?;
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let replacement = create_buffer(
             &self.surface,
-            bytes,
+            bytes * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
@@ -1955,10 +2005,10 @@ impl<'window> TexturedSession<'window> {
         let bytes = capacity
             .checked_mul(INSTANCE_TRANSFORM_SIZE)
             .ok_or_else(|| error("Vulkan instance transform storage is too large"))?;
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let replacement = create_buffer(
             &self.surface,
-            bytes,
+            bytes * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
             &[],
         )?;
@@ -1993,7 +2043,7 @@ impl<'window> TexturedSession<'window> {
         if requests.is_empty() {
             return Ok(());
         }
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         let reset_scene_descriptors = requests.iter().any(|request| {
             (request.kind == ResourceKind::Texture && self.textures.get(request.id).is_ok())
                 || (request.kind == ResourceKind::ShadowMap
@@ -2021,7 +2071,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         request: DestroyRequest,
     ) -> Result<(), GraphicsError> {
-        self.surface.wait_for_frame()?;
+        self.surface.wait_for_all_frames()?;
         if request.kind == ResourceKind::Texture {
             self.textures.get(request.id)?;
             self.reset_descriptor_pools(false)?;
@@ -2255,7 +2305,11 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             color_subresource_levels(mip_levels),
         );
-        pipeline_barrier(&self.surface, &to_transfer);
+        pipeline_barrier(
+            &self.surface,
+            self.surface.upload_command_buffer(),
+            &to_transfer,
+        );
         let copy = vk::VkCopyBufferToImageInfo2 {
             sType: vk::VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
             srcBuffer: staging.handle,
@@ -2270,7 +2324,9 @@ impl<'window> TexturedSession<'window> {
                 .device()
                 .functions
                 .cmd_copy_buffer_to_image2
-                .expect("loaded function")(self.surface.command_buffer, &raw const copy);
+                .expect("loaded function")(
+                self.surface.upload_command_buffer(), &raw const copy
+            );
         }
         let to_sampled = image_barrier(
             image.handle,
@@ -2282,19 +2338,30 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             color_subresource_levels(mip_levels),
         );
-        pipeline_barrier(&self.surface, &to_sampled);
+        pipeline_barrier(
+            &self.surface,
+            self.surface.upload_command_buffer(),
+            &to_sampled,
+        );
         self.end_upload()
     }
 
     fn begin_upload(&mut self) -> Result<(), GraphicsError> {
-        self.surface.wait_for_frame()?;
+        // Only the previous upload has to be finished, not the frames in
+        // flight: an upload records into its own command buffer and creates
+        // resources rather than freeing them, so no frame can be reading what
+        // it is about to write. Destruction is what waits on frames, and it
+        // does that in `reclaim_resources`.
+        self.surface.wait_for_upload()?;
+        let upload_fence = self.surface.upload_fence();
+        let command_buffer = self.surface.upload_command_buffer();
         let device = self.surface.device();
         check(
             unsafe {
                 device.functions.reset_fences.expect("loaded function")(
                     device.handle,
                     1,
-                    &raw const self.surface.frame_fence,
+                    &raw const upload_fence,
                 )
             },
             "vkResetFences for resource upload",
@@ -2304,7 +2371,7 @@ impl<'window> TexturedSession<'window> {
                 device
                     .functions
                     .reset_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer, 0)
+                    .expect("loaded function")(command_buffer, 0)
             },
             "vkResetCommandBuffer for resource upload",
         )?;
@@ -2318,28 +2385,28 @@ impl<'window> TexturedSession<'window> {
                 device
                     .functions
                     .begin_command_buffer
-                    .expect("loaded function")(
-                    self.surface.command_buffer, &raw const begin
-                )
+                    .expect("loaded function")(command_buffer, &raw const begin)
             },
             "vkBeginCommandBuffer for resource upload",
         )
     }
 
     fn end_upload(&mut self) -> Result<(), GraphicsError> {
+        let upload_fence = self.surface.upload_fence();
+        let command_buffer = self.surface.upload_command_buffer();
         let device = self.surface.device();
         check(
             unsafe {
                 device
                     .functions
                     .end_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer)
+                    .expect("loaded function")(command_buffer)
             },
             "vkEndCommandBuffer for resource upload",
         )?;
         let command = vk::VkCommandBufferSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            commandBuffer: self.surface.command_buffer,
+            commandBuffer: command_buffer,
             ..Default::default()
         };
         let submit = vk::VkSubmitInfo2 {
@@ -2354,13 +2421,13 @@ impl<'window> TexturedSession<'window> {
                     device.queue,
                     1,
                     &raw const submit,
-                    self.surface.frame_fence,
+                    upload_fence,
                 )
             },
             "vkQueueSubmit2 for resource upload",
         )?;
-        self.surface.frame_pending = true;
-        self.surface.wait_for_frame()
+        self.surface.mark_upload_pending();
+        self.surface.wait_for_upload()
     }
 
     fn descriptor_set(
@@ -2378,7 +2445,7 @@ impl<'window> TexturedSession<'window> {
         if let Some((_, set)) = pipelines[pipeline_index]
             .bindings
             .iter()
-            .find(|(id, _)| *id == texture_id)
+            .find(|(key, _)| *key == (texture_id, 0))
         {
             return Ok(*set);
         }
@@ -2452,7 +2519,7 @@ impl<'window> TexturedSession<'window> {
                 ptr::null(),
             );
         };
-        pipeline.bindings.push((texture_id, set));
+        pipeline.bindings.push(((texture_id, 0), set));
         Ok(set)
     }
 
@@ -2622,13 +2689,15 @@ impl<'window> TexturedSession<'window> {
         target_index: usize,
         target_id: ResourceId,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
+        let slot = self.surface.frame_slot_index();
         if let Some((_, set)) = self.postprocess_pipelines[pipeline_index]
             .bindings
             .iter()
-            .find(|(id, _)| *id == target_id)
+            .find(|(key, _)| *key == (target_id, slot))
         {
             return Ok(*set);
         }
+        let postprocess_base = self.postprocess_uniform_base();
         let scene_color = self.postprocess_targets[target_index]
             .scene_color
             .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
@@ -2657,7 +2726,8 @@ impl<'window> TexturedSession<'window> {
         )?;
         let buffer = vk::VkDescriptorBufferInfo {
             buffer: self.postprocess_uniform.handle,
-            offset: 0,
+            offset: u64::try_from(postprocess_base)
+                .map_err(|_| error("Vulkan postprocess slot base exceeds u64"))?,
             range: u64::from(pipeline.uniform_size),
         };
         let image = vk::VkDescriptorImageInfo {
@@ -2705,14 +2775,19 @@ impl<'window> TexturedSession<'window> {
                 ptr::null(),
             );
         }
-        pipeline.bindings.push((target_id, set));
+        pipeline.bindings.push(((target_id, slot), set));
         Ok(set)
     }
 
     fn collect_gpu_timing(&mut self) -> Result<(), GraphicsError> {
-        let Some(pending) = self.gpu_timing.pending.take() else {
+        let slot = self.surface.frame_slot_index();
+        let Some(pending) = self.gpu_timing.pending[slot].take() else {
             return Ok(());
         };
+        // Reads this slot's own block. The frame that wrote it is the one that
+        // last held this slot, and acquisition already waited on its fence, so
+        // the results are complete without a wait here.
+        let base = self.gpu_query_base();
         let mut values = [0_u64; GPU_QUERY_COUNT as usize];
         let device = self.surface.device();
         check(
@@ -2723,7 +2798,7 @@ impl<'window> TexturedSession<'window> {
                     .expect("loaded function")(
                     device.handle,
                     self.gpu_timing.query_pool,
-                    0,
+                    base,
                     GPU_QUERY_COUNT,
                     mem::size_of_val(&values),
                     values.as_mut_ptr().cast(),
@@ -2782,10 +2857,53 @@ impl<'window> TexturedSession<'window> {
         GpuScopeTiming::new(scope, Duration::from_secs_f64(seconds))
     }
 
+    /// Byte offset of the frame slot's own region within a per-frame buffer.
+    ///
+    /// Every per-frame buffer holds one region per slot, because the CPU writes
+    /// the next frame's contents while the GPU is still reading the previous
+    /// frame's. Offsets recorded during preparation already include this, so
+    /// binding and writing cannot disagree about where a frame's data is.
+    fn slot_base(&self, region_bytes: usize) -> usize {
+        self.surface.frame_slot_index() * region_bytes
+    }
+
+    fn uniform_base(&self) -> usize {
+        self.slot_base(self.uniform_capacity * DRAW_UNIFORM_STRIDE)
+    }
+
+    fn storage_base(&self) -> usize {
+        self.slot_base(self.storage_capacity)
+    }
+
+    fn transient_base(&self) -> usize {
+        self.slot_base(self.transient_capacity)
+    }
+
+    fn instance_transform_base(&self) -> usize {
+        self.slot_base(self.instance_capacity * INSTANCE_TRANSFORM_SIZE)
+    }
+
+    fn record_instance_base(&self) -> usize {
+        self.slot_base(self.record_instance_capacity)
+    }
+
+    fn postprocess_uniform_base(&self) -> usize {
+        self.slot_base(
+            usize::try_from(crate::POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize"),
+        )
+    }
+
+    /// First query index belonging to the frame slot being recorded.
+    fn gpu_query_base(&self) -> u32 {
+        u32::try_from(self.surface.frame_slot_index()).expect("slot index fits u32")
+            * GPU_QUERY_COUNT
+    }
+
     fn begin_gpu_region(&self, name: &core::ffi::CStr, color: [f32; 4], start_query: u32) {
         if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
             return;
         }
+        let start_query = self.gpu_query_base() + start_query;
         let label = vk::VkDebugUtilsLabelEXT {
             sType: vk::VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
             pLabelName: name.as_ptr(),
@@ -2797,10 +2915,10 @@ impl<'window> TexturedSession<'window> {
             functions
                 .cmd_begin_debug_utils_label
                 .expect("loaded function")(
-                self.surface.command_buffer, &raw const label
+                self.surface.frame_command_buffer(), &raw const label
             );
             functions.cmd_write_timestamp2.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 start_query,
@@ -2812,17 +2930,18 @@ impl<'window> TexturedSession<'window> {
         if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
             return;
         }
+        let end_query = self.gpu_query_base() + end_query;
         unsafe {
             let functions = &self.surface.device().functions;
             functions.cmd_write_timestamp2.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 end_query,
             );
             functions
                 .cmd_end_debug_utils_label
-                .expect("loaded function")(self.surface.command_buffer);
+                .expect("loaded function")(self.surface.frame_command_buffer());
         }
     }
 
@@ -2836,9 +2955,9 @@ impl<'window> TexturedSession<'window> {
                 .functions
                 .cmd_reset_query_pool
                 .expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 self.gpu_timing.query_pool,
-                0,
+                self.gpu_query_base(),
                 GPU_QUERY_COUNT,
             );
         }
@@ -2849,6 +2968,7 @@ impl<'window> TexturedSession<'window> {
         if !self.gpu_timing.enabled || self.gpu_timing.query_pool.is_null() {
             return;
         }
+        let start_query = self.gpu_query_base() + start_query;
         unsafe {
             let write = self
                 .surface
@@ -2857,13 +2977,13 @@ impl<'window> TexturedSession<'window> {
                 .cmd_write_timestamp2
                 .expect("loaded function");
             write(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 start_query,
             );
             write(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 start_query + 1,
@@ -2877,9 +2997,10 @@ impl<'window> TexturedSession<'window> {
         has_postprocess: bool,
     ) -> Result<FrameDisposition, GraphicsError> {
         let frame_index = self.surface.presented_count;
+        let slot = self.surface.frame_slot_index();
         let disposition = self.surface.submit_recorded(image_index)?;
         if self.gpu_timing.enabled && !self.gpu_timing.query_pool.is_null() {
-            self.gpu_timing.pending = Some(PendingGpuTiming {
+            self.gpu_timing.pending[slot] = Some(PendingGpuTiming {
                 frame_index,
                 has_shadow: self.recorded_has_shadow,
                 has_postprocess,
@@ -2935,7 +3056,11 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             depth_subresource_layers(layers),
         );
-        pipeline_barrier(&self.surface, &to_attachment);
+        pipeline_barrier(
+            &self.surface,
+            self.surface.frame_command_buffer(),
+            &to_attachment,
+        );
         match target {
             PendingShadowTarget::Map(index) => {
                 let map = &self.shadow_maps[index];
@@ -2965,7 +3090,11 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             depth_subresource_layers(layers),
         );
-        pipeline_barrier(&self.surface, &to_sampled);
+        pipeline_barrier(
+            &self.surface,
+            self.surface.frame_command_buffer(),
+            &to_sampled,
+        );
     }
 
     /// Encodes one depth-only pass into a shadow target view — the whole map, or one array
@@ -3012,17 +3141,17 @@ impl<'window> TexturedSession<'window> {
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 &raw const rendering,
             );
             functions.cmd_set_viewport.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const viewport,
             );
             functions.cmd_set_scissor.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const area,
@@ -3032,12 +3161,12 @@ impl<'window> TexturedSession<'window> {
                 let part = &mesh.parts[draw.part];
                 let pipeline = &self.shadow_pipelines[draw.pipeline];
                 functions.cmd_bind_pipeline.expect("loaded function")(
-                    self.surface.command_buffer,
+                    self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline.pipeline,
                 );
                 functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                    self.surface.command_buffer,
+                    self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline.layout,
                     0,
@@ -3050,7 +3179,7 @@ impl<'window> TexturedSession<'window> {
                     let buffers = [mesh.buffer, self.record_instances.handle];
                     let offsets = [mesh.vertex_offset, instance_offset];
                     functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         0,
                         2,
                         buffers.as_ptr(),
@@ -3058,7 +3187,7 @@ impl<'window> TexturedSession<'window> {
                     );
                 } else {
                     functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         0,
                         1,
                         &raw const mesh.buffer,
@@ -3066,14 +3195,14 @@ impl<'window> TexturedSession<'window> {
                     );
                 }
                 functions.cmd_bind_index_buffer.expect("loaded function")(
-                    self.surface.command_buffer,
+                    self.surface.frame_command_buffer(),
                     mesh.buffer,
                     part.index_offset,
                     part.index_type,
                 );
                 if let Some((_, instance_count)) = draw.instances {
                     functions.cmd_draw_indexed.expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         part.index_count,
                         instance_count,
                         0,
@@ -3084,7 +3213,7 @@ impl<'window> TexturedSession<'window> {
                     functions
                         .cmd_draw_indexed_indirect
                         .expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         mesh.buffer,
                         part.indirect_offset,
                         1,
@@ -3093,7 +3222,9 @@ impl<'window> TexturedSession<'window> {
                     );
                 }
             }
-            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+            functions.cmd_end_rendering.expect("loaded function")(
+                self.surface.frame_command_buffer(),
+            );
         }
     }
 
@@ -3118,15 +3249,18 @@ impl<'window> TexturedSession<'window> {
         } else {
             vk::VK_IMAGE_LAYOUT_UNDEFINED
         };
-        self.surface.wait_for_frame()?;
+        // No wait here. Acquisition waited for the frame that last held this
+        // slot, which is the only work these resets can collide with; waiting
+        // for the frame just submitted is what kept the CPU and GPU serialized.
         self.collect_gpu_timing()?;
+        let frame_fence = self.surface.frame_fence();
         let device = self.surface.device();
         check(
             unsafe {
                 device.functions.reset_fences.expect("loaded function")(
                     device.handle,
                     1,
-                    &raw const self.surface.frame_fence,
+                    &raw const frame_fence,
                 )
             },
             "vkResetFences for textured frame",
@@ -3136,7 +3270,9 @@ impl<'window> TexturedSession<'window> {
                 device
                     .functions
                     .reset_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer, 0)
+                    .expect("loaded function")(
+                    self.surface.frame_command_buffer(), 0
+                )
             },
             "vkResetCommandBuffer for textured frame",
         )?;
@@ -3151,7 +3287,8 @@ impl<'window> TexturedSession<'window> {
                     .functions
                     .begin_command_buffer
                     .expect("loaded function")(
-                    self.surface.command_buffer, &raw const begin
+                    self.surface.frame_command_buffer(),
+                    &raw const begin,
                 )
             },
             "vkBeginCommandBuffer for textured frame",
@@ -3206,10 +3343,15 @@ impl<'window> TexturedSession<'window> {
         if let Some(multisample_barrier) = multisample_barrier {
             pipeline_barriers(
                 &self.surface,
+                self.surface.frame_command_buffer(),
                 &[color_barrier, depth_barrier, multisample_barrier],
             );
         } else {
-            pipeline_barriers(&self.surface, &[color_barrier, depth_barrier]);
+            pipeline_barriers(
+                &self.surface,
+                self.surface.frame_command_buffer(),
+                &[color_barrier, depth_barrier],
+            );
         }
         let color_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -3274,23 +3416,25 @@ impl<'window> TexturedSession<'window> {
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 &raw const rendering,
             );
             functions.cmd_set_viewport.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const viewport,
             );
             functions.cmd_set_scissor.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const area,
             );
             self.record_prepared_scene(scene);
-            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+            functions.cmd_end_rendering.expect("loaded function")(
+                self.surface.frame_command_buffer(),
+            );
         }
         self.end_gpu_region(SCENE_QUERY_START + 1);
         self.write_empty_gpu_region(POSTPROCESS_QUERY_START);
@@ -3304,14 +3448,14 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_NONE,
             color_subresource_range(),
         );
-        pipeline_barrier(&self.surface, &present);
+        pipeline_barrier(&self.surface, self.surface.frame_command_buffer(), &present);
         self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
                 device
                     .functions
                     .end_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer)
+                    .expect("loaded function")(self.surface.frame_command_buffer())
             },
             "vkEndCommandBuffer for textured frame",
         )
@@ -3350,18 +3494,21 @@ impl<'window> TexturedSession<'window> {
         } else {
             vk::VK_IMAGE_LAYOUT_UNDEFINED
         };
-        self.surface.wait_for_frame()?;
+        // As in `record_draw`: acquisition already waited for this slot, and a
+        // wait on the rest is exactly the serialization being removed.
         self.collect_gpu_timing()?;
         if !uniform.is_empty() {
-            write_postprocess_uniform(&self.surface, &self.postprocess_uniform, uniform)?;
+            let base = self.postprocess_uniform_base();
+            write_postprocess_uniform(&self.surface, &self.postprocess_uniform, base, uniform)?;
         }
+        let frame_fence = self.surface.frame_fence();
         let device = self.surface.device();
         check(
             unsafe {
                 device.functions.reset_fences.expect("loaded function")(
                     device.handle,
                     1,
-                    &raw const self.surface.frame_fence,
+                    &raw const frame_fence,
                 )
             },
             "vkResetFences for postprocessed frame",
@@ -3371,7 +3518,9 @@ impl<'window> TexturedSession<'window> {
                 device
                     .functions
                     .reset_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer, 0)
+                    .expect("loaded function")(
+                    self.surface.frame_command_buffer(), 0
+                )
             },
             "vkResetCommandBuffer for postprocessed frame",
         )?;
@@ -3386,7 +3535,8 @@ impl<'window> TexturedSession<'window> {
                     .functions
                     .begin_command_buffer
                     .expect("loaded function")(
-                    self.surface.command_buffer, &raw const begin
+                    self.surface.frame_command_buffer(),
+                    &raw const begin,
                 )
             },
             "vkBeginCommandBuffer for postprocessed frame",
@@ -3451,6 +3601,7 @@ impl<'window> TexturedSession<'window> {
         if let Some(multisample_barrier) = multisample_barrier {
             pipeline_barriers(
                 &self.surface,
+                self.surface.frame_command_buffer(),
                 &[
                     swapchain_barrier,
                     scene_barrier,
@@ -3461,6 +3612,7 @@ impl<'window> TexturedSession<'window> {
         } else {
             pipeline_barriers(
                 &self.surface,
+                self.surface.frame_command_buffer(),
                 &[swapchain_barrier, scene_barrier, depth_barrier],
             );
         }
@@ -3540,23 +3692,25 @@ impl<'window> TexturedSession<'window> {
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 &raw const scene_rendering,
             );
             functions.cmd_set_viewport.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const scene_viewport,
             );
             functions.cmd_set_scissor.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const scene_area,
             );
             self.record_prepared_scene(scene);
-            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+            functions.cmd_end_rendering.expect("loaded function")(
+                self.surface.frame_command_buffer(),
+            );
         }
         self.end_gpu_region(SCENE_QUERY_START + 1);
 
@@ -3570,7 +3724,11 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             color_subresource_range(),
         );
-        pipeline_barrier(&self.surface, &sample_scene);
+        pipeline_barrier(
+            &self.surface,
+            self.surface.frame_command_buffer(),
+            &sample_scene,
+        );
         let post_attachment = vk::VkRenderingAttachmentInfo {
             sType: vk::VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             imageView: view,
@@ -3601,16 +3759,16 @@ impl<'window> TexturedSession<'window> {
         unsafe {
             let functions = &device.functions;
             functions.cmd_begin_rendering.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 &raw const post_rendering,
             );
             functions.cmd_bind_pipeline.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                 post_pipeline.pipeline,
             );
             functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                 post_pipeline.layout,
                 0,
@@ -3620,23 +3778,31 @@ impl<'window> TexturedSession<'window> {
                 ptr::null(),
             );
             functions.cmd_set_viewport.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const viewport,
             );
             functions.cmd_set_scissor.expect("loaded function")(
-                self.surface.command_buffer,
+                self.surface.frame_command_buffer(),
                 0,
                 1,
                 &raw const area,
             );
-            functions.cmd_draw.expect("loaded function")(self.surface.command_buffer, 3, 1, 0, 0);
+            functions.cmd_draw.expect("loaded function")(
+                self.surface.frame_command_buffer(),
+                3,
+                1,
+                0,
+                0,
+            );
             if matches!(scene, PreparedScene::Materials) && !self.resolved_overlay_draws.is_empty()
             {
                 self.record_material_draws(&self.resolved_overlay_draws, true);
             }
-            functions.cmd_end_rendering.expect("loaded function")(self.surface.command_buffer);
+            functions.cmd_end_rendering.expect("loaded function")(
+                self.surface.frame_command_buffer(),
+            );
         }
         self.end_gpu_region(POSTPROCESS_QUERY_START + 1);
         let present = image_barrier(
@@ -3649,14 +3815,14 @@ impl<'window> TexturedSession<'window> {
             vk::VK_ACCESS_2_NONE,
             color_subresource_range(),
         );
-        pipeline_barrier(&self.surface, &present);
+        pipeline_barrier(&self.surface, self.surface.frame_command_buffer(), &present);
         self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
                 device
                     .functions
                     .end_command_buffer
-                    .expect("loaded function")(self.surface.command_buffer)
+                    .expect("loaded function")(self.surface.frame_command_buffer())
             },
             "vkEndCommandBuffer for postprocessed frame",
         )
@@ -3672,7 +3838,7 @@ impl<'window> TexturedSession<'window> {
             for draw in draws {
                 let pipeline = &self.material_pipelines[draw.pipeline];
                 functions.cmd_bind_pipeline.expect("loaded function")(
-                    self.surface.command_buffer,
+                    self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                     if overlay {
                         pipeline.overlay_pipeline
@@ -3681,7 +3847,7 @@ impl<'window> TexturedSession<'window> {
                     },
                 );
                 functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                    self.surface.command_buffer,
+                    self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline.layout,
                     0,
@@ -3704,7 +3870,7 @@ impl<'window> TexturedSession<'window> {
                     let buffers = [vertex_buffer, self.record_instances.handle];
                     let offsets = [vertex_offset, instance_offset];
                     functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         0,
                         2,
                         buffers.as_ptr(),
@@ -3712,7 +3878,7 @@ impl<'window> TexturedSession<'window> {
                     );
                 } else {
                     functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.command_buffer,
+                        self.surface.frame_command_buffer(),
                         0,
                         1,
                         &raw const vertex_buffer,
@@ -3724,14 +3890,14 @@ impl<'window> TexturedSession<'window> {
                         let mesh = &self.meshes[mesh];
                         let part = &mesh.parts[part];
                         functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             mesh.buffer,
                             part.index_offset,
                             part.index_type,
                         );
                         if let Some((_, instance_count)) = draw.instances {
                             functions.cmd_draw_indexed.expect("loaded function")(
-                                self.surface.command_buffer,
+                                self.surface.frame_command_buffer(),
                                 part.index_count,
                                 instance_count,
                                 0,
@@ -3742,7 +3908,7 @@ impl<'window> TexturedSession<'window> {
                             functions
                                 .cmd_draw_indexed_indirect
                                 .expect("loaded function")(
-                                self.surface.command_buffer,
+                                self.surface.frame_command_buffer(),
                                 mesh.buffer,
                                 part.indirect_offset,
                                 1,
@@ -3758,13 +3924,13 @@ impl<'window> TexturedSession<'window> {
                         ..
                     } => {
                         functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             self.transient_geometry.handle,
                             index_offset,
                             index_type,
                         );
                         functions.cmd_draw_indexed.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             index_count,
                             draw.instances.map_or(1, |(_, count)| count),
                             0,
@@ -3788,12 +3954,12 @@ impl<'window> TexturedSession<'window> {
                         let part = &mesh.parts[0];
                         let pipeline = &self.pipelines[draw.pipeline];
                         functions.cmd_bind_pipeline.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.pipeline,
                         );
                         functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.layout,
                             0,
@@ -3803,14 +3969,14 @@ impl<'window> TexturedSession<'window> {
                             &raw const draw.dynamic_offset,
                         );
                         functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             0,
                             1,
                             &raw const mesh.buffer,
                             &raw const mesh.vertex_offset,
                         );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             mesh.buffer,
                             part.index_offset,
                             part.index_type,
@@ -3818,7 +3984,7 @@ impl<'window> TexturedSession<'window> {
                         functions
                             .cmd_draw_indexed_indirect
                             .expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             mesh.buffer,
                             part.indirect_offset,
                             1,
@@ -3837,12 +4003,12 @@ impl<'window> TexturedSession<'window> {
                         let part = &mesh.parts[0];
                         let pipeline = &self.instanced_pipelines[batch.pipeline];
                         functions.cmd_bind_pipeline.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.pipeline,
                         );
                         functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline.layout,
                             0,
@@ -3854,20 +4020,20 @@ impl<'window> TexturedSession<'window> {
                         let buffers = [mesh.buffer, self.instance_transforms.handle];
                         let offsets = [mesh.vertex_offset, batch.transform_offset];
                         functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             0,
                             2,
                             buffers.as_ptr(),
                             offsets.as_ptr(),
                         );
                         functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             mesh.buffer,
                             part.index_offset,
                             part.index_type,
                         );
                         functions.cmd_draw_indexed.expect("loaded function")(
-                            self.surface.command_buffer,
+                            self.surface.frame_command_buffer(),
                             part.index_count,
                             batch.instance_count,
                             0,
@@ -3894,7 +4060,7 @@ impl<'window> TexturedSession<'window> {
                 );
             }
             self.gpu_timing.query_pool = ptr::null_mut();
-            self.gpu_timing.pending = None;
+            self.gpu_timing.pending = [None; super::ClearSurface::frames_in_flight()];
         }
         for pipeline in self
             .pipelines
@@ -4133,13 +4299,13 @@ impl ClearSurface<'_> {
         let render_finished = self.swapchain.render_finished[slot];
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            semaphore: self.image_available,
+            semaphore: self.frame_image_available(),
             stageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             ..Default::default()
         };
         let command = vk::VkCommandBufferSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            commandBuffer: self.command_buffer,
+            commandBuffer: self.frame_command_buffer(),
             ..Default::default()
         };
         let signal = vk::VkSemaphoreSubmitInfo {
@@ -4167,12 +4333,12 @@ impl ClearSurface<'_> {
                     self.device().queue,
                     1,
                     &raw const submit,
-                    self.frame_fence,
+                    self.frame_fence(),
                 )
             },
             "vkQueueSubmit2 for textured frame",
         )?;
-        self.frame_pending = true;
+        self.mark_frame_pending();
         self.swapchain.initialized[slot] = true;
         self.queue_present_with_feedback(
             image_index,
@@ -4299,7 +4465,8 @@ fn create_gpu_query_pool(surface: &ClearSurface<'_>) -> Result<vk::VkQueryPool, 
     let info = vk::VkQueryPoolCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
         queryType: vk::VK_QUERY_TYPE_TIMESTAMP,
-        queryCount: GPU_QUERY_COUNT,
+        queryCount: GPU_QUERY_COUNT
+            * u32::try_from(super::ClearSurface::frames_in_flight()).expect("slot count fits u32"),
         ..Default::default()
     };
     let mut pool = ptr::null_mut();
@@ -4416,6 +4583,7 @@ fn write_buffer(
 fn write_scene_transforms(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
+    base: usize,
     draws: &[TexturedSceneDraw<'_>],
 ) -> Result<(), GraphicsError> {
     let required = draws
@@ -4448,7 +4616,7 @@ fn write_scene_transforms(
         for (index, draw) in draws.iter().enumerate() {
             ptr::copy_nonoverlapping(
                 ptr::from_ref(&draw.model_view_projection).cast::<u8>(),
-                mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                mapped.cast::<u8>().add(base + index * DRAW_UNIFORM_STRIDE),
                 DRAW_UNIFORM_SIZE,
             );
         }
@@ -4460,6 +4628,7 @@ fn write_scene_transforms(
 fn write_material_uniforms(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
+    base: usize,
     records: &[MaterialRecord<'_>],
     overlay: &[MaterialRecord<'_>],
     shadow: Option<&ShadowPrepass<'_>>,
@@ -4472,7 +4641,7 @@ fn write_material_uniforms(
         .and_then(|slots| slots.saturating_sub(1).checked_mul(DRAW_UNIFORM_STRIDE))
         .and_then(|offset| offset.checked_add(DRAW_UNIFORM_STRIDE))
         .ok_or_else(|| error("material uniform write exceeds address space"))?;
-    if u64::try_from(required).map_err(|_| error("material uniform write exceeds u64"))?
+    if u64::try_from(base + required).map_err(|_| error("material uniform write exceeds u64"))?
         > buffer.size
     {
         return Err(error("material uniform write exceeds allocation"));
@@ -4518,7 +4687,7 @@ fn write_material_uniforms(
         for (index, uniform) in uniforms.enumerate() {
             ptr::copy_nonoverlapping(
                 uniform.as_ptr(),
-                mapped.cast::<u8>().add(index * DRAW_UNIFORM_STRIDE),
+                mapped.cast::<u8>().add(base + index * DRAW_UNIFORM_STRIDE),
                 uniform.len(),
             );
         }
@@ -4748,6 +4917,7 @@ fn resolved_instances(
 fn write_transient_geometry(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
+    base: usize,
     records: &[MaterialRecord<'_>],
     overlay: &[MaterialRecord<'_>],
 ) -> Result<(), GraphicsError> {
@@ -4774,7 +4944,7 @@ fn write_transient_geometry(
         "vkMapMemory for transient geometry",
     )?;
     unsafe {
-        let mut offset = 0_usize;
+        let mut offset = base;
         for record in records.iter().chain(overlay) {
             let GeometrySource::Transient(geometry) = record.geometry else {
                 continue;
@@ -4815,6 +4985,7 @@ fn write_transient_geometry(
 fn write_instance_transforms(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
+    base: usize,
     batches: &[TexturedInstanceBatch<'_>],
 ) -> Result<(), GraphicsError> {
     let required = batches.iter().try_fold(0_usize, |bytes, batch| {
@@ -4825,7 +4996,7 @@ fn write_instance_transforms(
             .and_then(|batch_bytes| bytes.checked_add(batch_bytes))
             .ok_or_else(|| error("instance transform write exceeds address space"))
     })?;
-    if u64::try_from(required).map_err(|_| error("instance transform write exceeds u64"))?
+    if u64::try_from(base + required).map_err(|_| error("instance transform write exceeds u64"))?
         > buffer.size
     {
         return Err(error("instance transform write exceeds allocation"));
@@ -4846,7 +5017,7 @@ fn write_instance_transforms(
         "vkMapMemory for instance transforms",
     )?;
     unsafe {
-        let mut offset = 0_usize;
+        let mut offset = base;
         for batch in batches {
             let bytes = mem::size_of_val(batch.model_view_projections);
             ptr::copy_nonoverlapping(
@@ -4864,9 +5035,11 @@ fn write_instance_transforms(
 fn write_postprocess_uniform(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
+    base: usize,
     uniform: &[u8],
 ) -> Result<(), GraphicsError> {
-    if u64::try_from(uniform.len()).map_err(|_| error("postprocess uniform length exceeds u64"))?
+    if u64::try_from(base + uniform.len())
+        .map_err(|_| error("postprocess uniform length exceeds u64"))?
         > buffer.size
     {
         return Err(error("postprocess uniform write exceeds allocation"));
@@ -4879,7 +5052,7 @@ fn write_postprocess_uniform(
                 device.handle,
                 buffer.memory,
                 0,
-                u64::try_from(uniform.len()).expect("validated uniform length fits u64"),
+                buffer.size,
                 0,
                 &raw mut mapped,
             )
@@ -4887,7 +5060,11 @@ fn write_postprocess_uniform(
         "vkMapMemory for postprocess uniform",
     )?;
     unsafe {
-        ptr::copy_nonoverlapping(uniform.as_ptr(), mapped.cast::<u8>(), uniform.len());
+        ptr::copy_nonoverlapping(
+            uniform.as_ptr(),
+            mapped.cast::<u8>().add(base),
+            uniform.len(),
+        );
         device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
@@ -6577,10 +6754,21 @@ fn image_barrier(
         ..Default::default()
     }
 }
-fn pipeline_barrier(surface: &ClearSurface<'_>, barrier: &vk::VkImageMemoryBarrier2) {
-    pipeline_barriers(surface, slice::from_ref(barrier));
+fn pipeline_barrier(
+    surface: &ClearSurface<'_>,
+    command_buffer: vk::VkCommandBuffer,
+    barrier: &vk::VkImageMemoryBarrier2,
+) {
+    pipeline_barriers(surface, command_buffer, slice::from_ref(barrier));
 }
-fn pipeline_barriers(surface: &ClearSurface<'_>, barriers: &[vk::VkImageMemoryBarrier2]) {
+/// Takes the command buffer explicitly because both the frame's buffer and the
+/// upload buffer record barriers, and inferring one from the surface picked the
+/// wrong recording as soon as the two stopped being the same buffer.
+fn pipeline_barriers(
+    surface: &ClearSurface<'_>,
+    command_buffer: vk::VkCommandBuffer,
+    barriers: &[vk::VkImageMemoryBarrier2],
+) {
     let dependency = vk::VkDependencyInfo {
         sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         imageMemoryBarrierCount: u32::try_from(barriers.len()).expect("barrier count fits u32"),
@@ -6592,7 +6780,7 @@ fn pipeline_barriers(surface: &ClearSurface<'_>, barriers: &[vk::VkImageMemoryBa
             .device()
             .functions
             .cmd_pipeline_barrier2
-            .expect("loaded function")(surface.command_buffer, &raw const dependency);
+            .expect("loaded function")(command_buffer, &raw const dependency);
     }
 }
 fn descriptor_write(

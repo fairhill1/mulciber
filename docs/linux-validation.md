@@ -17,6 +17,9 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 - Physical human input, pointer-capture, and playable game-slice evidence on native Wayland and
   X11 through XWayland was recorded on 2026-07-20 at committed `3075d0e`; modifier-transition,
   trackpad-unit, repeat-cadence, non-KDE-compositor, and native Xorg coverage remain pending.
+- The Vulkan backend records up to three frames before waiting on the oldest, measured on
+  2026-08-04 against a consumer workload that had been fully CPU/GPU-serialized; the
+  validation-layer conformance re-run for the overlapped path remains outstanding.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
 - The Vulkan triangle probe consumes runtime-selected peer Wayland and X11 modules from
   `mulciber-platform`, behind a `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection.
@@ -506,6 +509,50 @@ machine and session, the conformance probe repeated all thirteen cases, and `mul
 `mulciber-api-clear --frames 60 --abandon-acquired-frame-once` recovering through abandonment,
 all exiting zero with no validation output. These are finite static-window runs; no new
 interactive lifecycle evidence is claimed for the reshaped pump error path.
+
+### Frames-in-flight evidence
+
+On 2026-08-04, the Vulkan backend replaced its single command buffer, fence, and image-available
+semaphore with a ring of three, so that recording a frame no longer waits for the previous frame
+to finish executing. Skyrimlike standing still in a village hemp field on the same native KDE
+Plasma Wayland / Nvidia RTX 3060 Ti tier is what motivated and measured it. A 662-frame capture
+against the published 0.13.0 backend showed the serialization directly: a 19.716 ms mean wall
+frame (stdev 0.180, 50.7 fps) made of 13.122 ms of acquisition and 5.809 ms of recording, against
+a 13.046 ms GPU frame. The CPU blocked for almost exactly one GPU frame, so the two costs added
+rather than overlapping.
+
+Two intermediate revisions are recorded because they were wrong in instructive ways. A ring of two
+slots against three requested swapchain images reached 56.4 fps mean but with an 8.063 ms wall
+stdev against the serialized build's 0.180 ms, and read as a steady stutter rather than a slow
+frame: acquisition went bimodal at 0.007 ms on some frames and 13.295 ms on others, because a ring
+shorter than the presentation engine's own cycle re-enters a slot it has not come back round to.
+Sizing the ring from the requested image count fixed that period without removing the stall, and
+the remaining cost was not where it was inferred to be. Instrumentation measured deferred
+reclamation at 0 us and `vkAcquireNextImageKHR` itself at 8-28 us, while the slot fence wait cost
+12,854 us. `platform::acquire_timeout` is zero on Linux, so acquisition is a non-blocking poll
+that returns `Unavailable` several hundred times per presented frame; rotating the ring per call
+rather than per presented frame made nearly every one of those polls wait a whole GPU frame for a
+frame that would never be recorded. The waited-for slot is now held across polls and committed
+only once an image is really acquired.
+
+The operator then reported a steady 75 fps in the same scene that had walked at 51 fps, which on
+this 74.97 Hz display is the FIFO grid rather than the frame. **Partial**: this is an operator-eye
+framerate report on one machine and display. No post-fix capture was taken, so the per-stage
+breakdown after the change is unrecorded, and `mulciber-api-conformance` has not been re-run
+against the ring — validation-layer, abandonment, resize-generation, and reclamation evidence for
+the overlapped path is outstanding. Metal is unchanged and still waits for the previous command
+buffer inside drawable acquisition.
+
+Two hazards that exist only once frames overlap were closed with the ring rather than after it.
+The GPU timestamp query pool was a single eight-query block shared by every frame, so a pipelined
+frame would reset queries the previous frame was still writing and corrupt the very durations the
+change was being tuned against; it is now one block per slot, indexed by the slot the frame owns.
+The six host-visible per-frame regions — scene and postprocess uniforms, read-only storage,
+transient geometry, instance transforms, and record instances — were likewise one copy each,
+rewritten every frame, so a frame's CPU writes would land on bytes the previous frame's GPU was
+still reading. Each is now sized and based per slot, with the base applied where offsets are
+produced so that a write and a bind cannot disagree about which region they mean. Neither hazard
+had a visible symptom before the ring, because nothing overlapped.
 
 ### Single-backend build evidence
 

@@ -23,15 +23,65 @@ const API_VERSION_1_4: u32 = make_api_version(0, 1, 4, 0);
 const UINT64_MAX: u64 = u64::MAX;
 static VALIDATION_MESSAGE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// How many frames may be recorded and submitted before the oldest is waited on.
+///
+/// One means the CPU cannot begin recording a frame until the GPU has finished
+/// the previous one, so the two never overlap and a frame costs the sum of both
+/// rather than the larger of them.
+///
+/// This has to match the swapchain's image count rather than merely be greater
+/// than one. The presentation engine hands images back in a cycle of its own
+/// length, and a ring shorter than that cycle re-enters a slot the presentation
+/// engine has not come back round to yet: with two slots against the three
+/// images requested below, acquisition blocked for a whole GPU frame on two
+/// frames in every three, and the beat between the two periods read as a steady
+/// stutter rather than as a slow frame.
+const FRAMES_IN_FLIGHT: usize = SWAPCHAIN_IMAGE_COUNT as usize;
+
+/// Images requested of the presentation engine.
+///
+/// A driver may give more, and `FRAMES_IN_FLIGHT` is sized from what is asked
+/// for rather than from what arrives, because the ring is built once and the
+/// count is only a minimum. More images than slots costs a little memory; fewer
+/// is the stall above.
+const SWAPCHAIN_IMAGE_COUNT: u32 = 3;
+
+/// Everything one in-flight frame owns exclusively.
+///
+/// A frame records into its own command buffer and its completion is tracked by
+/// its own fence, which is what lets the next frame be recorded while this one
+/// is still executing. `image_available` is per slot rather than per surface
+/// because two frames in flight are two outstanding acquisitions, and one
+/// semaphore cannot carry both.
+struct FrameSlot {
+    command_buffer: vk::VkCommandBuffer,
+    fence: vk::VkFence,
+    image_available: vk::VkSemaphore,
+    /// Whether this slot has work submitted that nothing has waited on yet.
+    pending: bool,
+}
+
 pub(crate) struct ClearSurface<'window> {
     device: Option<Device>,
     swapchain: Swapchain,
     command_pool: vk::VkCommandPool,
-    command_buffer: vk::VkCommandBuffer,
-    image_available: vk::VkSemaphore,
-    acquire_fence: vk::VkFence,
-    frame_fence: vk::VkFence,
-    frame_pending: bool,
+    frames: Vec<FrameSlot>,
+    /// The slot the frame currently being recorded owns.
+    frame_index: usize,
+    /// Uploads get their own command buffer and fence, so that blocking on an
+    /// upload never means blocking on a frame and an upload issued between
+    /// frames cannot land inside a frame's own recording.
+    upload_command_buffer: vk::VkCommandBuffer,
+    upload_fence: vk::VkFence,
+    upload_pending: bool,
+    /// The slot the next presented frame will use, once one has been waited for.
+    ///
+    /// Held across polls because acquisition is non-blocking on some platforms
+    /// and returns `Unavailable` many times per presented frame. Rotating the
+    /// ring per call rather than per presented frame makes every one of those
+    /// polls wait on a slot that still has work in flight — a whole GPU frame
+    /// each time, for a frame that is not going to be recorded.
+    next_frame_index: Option<usize>,
     info: SurfaceInfo,
     recreate_after_present: bool,
     resize_pace: Duration,
@@ -70,11 +120,12 @@ impl<'window> ClearSurface<'window> {
             device: Some(device),
             swapchain: Swapchain::default(),
             command_pool: ptr::null_mut(),
-            command_buffer: ptr::null_mut(),
-            image_available: ptr::null_mut(),
-            acquire_fence: ptr::null_mut(),
-            frame_fence: ptr::null_mut(),
-            frame_pending: false,
+            frames: Vec::new(),
+            frame_index: 0,
+            upload_command_buffer: ptr::null_mut(),
+            upload_fence: ptr::null_mut(),
+            upload_pending: false,
+            next_frame_index: None,
             info: SurfaceInfo::initial(extent).expect("extent was checked"),
             recreate_after_present: false,
             resize_pace,
@@ -114,7 +165,20 @@ impl<'window> ClearSurface<'window> {
         if let Some(error) = self.deferred_error.take() {
             return Err(error);
         }
-        self.wait_for_frame()?;
+        // Take the next slot in the ring and wait only for the frame that last
+        // used it, rather than for the frame just submitted. That is the whole
+        // of the overlap: with two slots the CPU records the next frame while
+        // the GPU is still executing the previous one.
+        // Waited for once and then held: a poll that comes back empty leaves
+        // the slot ready for the next attempt rather than rotating past it.
+        let candidate = if let Some(slot) = self.next_frame_index {
+            slot
+        } else {
+            let slot = (self.frame_index + 1) % self.frames.len();
+            self.wait_for_slot(slot)?;
+            self.next_frame_index = Some(slot);
+            slot
+        };
         let extent = surface_extent(metrics);
         if extent.is_empty() {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
@@ -155,8 +219,16 @@ impl<'window> ClearSurface<'window> {
                     self.device().handle,
                     self.swapchain.handle,
                     platform::acquire_timeout(),
-                    self.image_available,
-                    self.acquire_fence,
+                    self.frames[candidate].image_available,
+                    // No fence. The image-available semaphore already makes the
+                    // submission wait for the image at colour-attachment output,
+                    // which is the whole reason it is passed; fencing the
+                    // acquisition as well makes the CPU wait for the presentation
+                    // engine too, and that is a second serialization on top of
+                    // the frame one. It cost nothing while a frame could not
+                    // begin before the previous had finished, and it is the
+                    // binding constraint once they overlap.
+                    ptr::null_mut(),
                     &raw mut image_index,
                 )
             };
@@ -177,7 +249,9 @@ impl<'window> ClearSurface<'window> {
             } else {
                 check(result, "vkAcquireNextImageKHR")?;
             }
-            self.wait_and_reset_fence(self.acquire_fence, "image-acquisition fence")?;
+            // Only a frame that really got an image advances the ring.
+            self.frame_index = candidate;
+            self.next_frame_index = None;
             let slot = usize::try_from(image_index)
                 .map_err(|_| GraphicsError::internal("invalid image index"))?;
             if slot >= self.swapchain.images.len() {
@@ -231,37 +305,92 @@ impl<'window> ClearSurface<'window> {
             command_pool
         };
         self.command_pool = command_pool;
-        let command_buffer = {
-            let device = self.device();
-            let allocate_info = vk::VkCommandBufferAllocateInfo {
-                sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                commandPool: command_pool,
-                level: vk::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                commandBufferCount: 1,
-                ..Default::default()
-            };
-            let mut command_buffer = ptr::null_mut();
-            check(
-                unsafe {
-                    // SAFETY: Pool is live and output storage is writable.
-                    device
-                        .functions
-                        .allocate_command_buffers
-                        .expect("loaded function")(
-                        device.handle,
-                        &raw const allocate_info,
-                        &raw mut command_buffer,
-                    )
-                },
-                "vkAllocateCommandBuffers",
-            )?;
-            command_buffer
-        };
-        self.command_buffer = command_buffer;
-        self.image_available = create_semaphore(self.device(), "image-available semaphore")?;
-        self.acquire_fence = create_fence(self.device(), false, "image-acquisition fence")?;
-        self.frame_fence = create_fence(self.device(), false, "frame fence")?;
+        for slot in 0..FRAMES_IN_FLIGHT {
+            let command_buffer = self.allocate_command_buffer()?;
+            self.frames.push(FrameSlot {
+                command_buffer,
+                fence: create_fence(self.device(), false, "frame fence")?,
+                image_available: create_semaphore(self.device(), "image-available semaphore")?,
+                pending: false,
+            });
+            debug_assert_eq!(self.frames.len(), slot + 1);
+        }
+        self.upload_command_buffer = self.allocate_command_buffer()?;
+        self.upload_fence = create_fence(self.device(), false, "resource upload fence")?;
         Ok(())
+    }
+
+    fn allocate_command_buffer(&self) -> Result<vk::VkCommandBuffer, GraphicsError> {
+        let device = self.device();
+        let allocate_info = vk::VkCommandBufferAllocateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool: self.command_pool,
+            level: vk::VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1,
+            ..Default::default()
+        };
+        let mut command_buffer = ptr::null_mut();
+        check(
+            unsafe {
+                // SAFETY: Pool is live and output storage is writable.
+                device
+                    .functions
+                    .allocate_command_buffers
+                    .expect("loaded function")(
+                    device.handle,
+                    &raw const allocate_info,
+                    &raw mut command_buffer,
+                )
+            },
+            "vkAllocateCommandBuffers",
+        )?;
+        Ok(command_buffer)
+    }
+
+    fn frame_slot(&self) -> &FrameSlot {
+        &self.frames[self.frame_index]
+    }
+
+    /// The command buffer the frame being recorded owns.
+    pub(super) fn frame_command_buffer(&self) -> vk::VkCommandBuffer {
+        self.frame_slot().command_buffer
+    }
+
+    pub(super) fn frame_fence(&self) -> vk::VkFence {
+        self.frame_slot().fence
+    }
+
+    fn frame_image_available(&self) -> vk::VkSemaphore {
+        self.frame_slot().image_available
+    }
+
+    pub(super) fn upload_command_buffer(&self) -> vk::VkCommandBuffer {
+        self.upload_command_buffer
+    }
+
+    pub(super) const fn upload_fence(&self) -> vk::VkFence {
+        self.upload_fence
+    }
+
+    /// Which slot of the ring the frame being recorded owns.
+    ///
+    /// Anything the GPU writes per frame and the CPU reads back a frame later
+    /// has to be indexed by this, or two frames in flight share one set of
+    /// results and the older is overwritten while it is still being produced.
+    pub(super) const fn frame_slot_index(&self) -> usize {
+        self.frame_index
+    }
+
+    pub(super) const fn frames_in_flight() -> usize {
+        FRAMES_IN_FLIGHT
+    }
+
+    pub(super) const fn mark_upload_pending(&mut self) {
+        self.upload_pending = true;
+    }
+
+    pub(super) fn mark_frame_pending(&mut self) {
+        self.frames[self.frame_index].pending = true;
     }
 
     #[allow(clippy::too_many_lines)]
@@ -270,7 +399,7 @@ impl<'window> ClearSurface<'window> {
         requested: SurfaceExtent,
         advance_generation: bool,
     ) -> Result<(), GraphicsError> {
-        self.wait_for_frame()?;
+        self.wait_for_all_frames()?;
         if !self.swapchain.handle.is_null() {
             // Salvage completed timing reports before this swapchain and its time-domain epoch
             // are retired; frames whose reports never arrived stay unreported.
@@ -288,7 +417,12 @@ impl<'window> ClearSurface<'window> {
                 },
                 "vkDeviceWaitIdle before swapchain recreation",
             )?;
-            self.frame_pending = false;
+            // The idle wait covers every slot at once, so none of them is still
+            // owed a fence wait.
+            for frame in &mut self.frames {
+                frame.pending = false;
+            }
+            self.upload_pending = false;
         }
         let device = self.device();
         let mut capabilities = vk::VkSurfaceCapabilitiesKHR::default();
@@ -313,7 +447,10 @@ impl<'window> ClearSurface<'window> {
         require_fifo_present_mode(device)?;
         let extent = choose_extent(capabilities, requested);
         let extent_info = SurfaceExtent::new(extent.width, extent.height);
-        let mut image_count = capabilities.minImageCount.saturating_add(1).max(3);
+        let mut image_count = capabilities
+            .minImageCount
+            .saturating_add(1)
+            .max(SWAPCHAIN_IMAGE_COUNT);
         if capabilities.maxImageCount != 0 {
             image_count = image_count.min(capabilities.maxImageCount);
         }
@@ -398,25 +535,27 @@ impl<'window> ClearSurface<'window> {
             vk::VK_IMAGE_LAYOUT_UNDEFINED
         };
         {
+            let fence = self.frame_fence();
+            let command_buffer = self.frame_command_buffer();
             let device = self.device();
             check(
                 unsafe {
-                    // SAFETY: The frame fence is idle after `wait_for_frame`.
+                    // SAFETY: This slot's fence is idle after `wait_for_slot`.
                     device.functions.reset_fences.expect("loaded function")(
                         device.handle,
                         1,
-                        &raw const self.frame_fence,
+                        &raw const fence,
                     )
                 },
                 "vkResetFences",
             )?;
             check(
                 unsafe {
-                    // SAFETY: The only command buffer is no longer executing.
+                    // SAFETY: This slot's command buffer is no longer executing.
                     device
                         .functions
                         .reset_command_buffer
-                        .expect("loaded function")(self.command_buffer, 0)
+                        .expect("loaded function")(command_buffer, 0)
                 },
                 "vkResetCommandBuffer",
             )?;
@@ -432,7 +571,9 @@ impl<'window> ClearSurface<'window> {
                 self.device()
                     .functions
                     .begin_command_buffer
-                    .expect("loaded function")(self.command_buffer, &raw const begin)
+                    .expect("loaded function")(
+                    self.frame_command_buffer(), &raw const begin
+                )
             },
             "vkBeginCommandBuffer",
         )?;
@@ -443,20 +584,20 @@ impl<'window> ClearSurface<'window> {
                 self.device()
                     .functions
                     .end_command_buffer
-                    .expect("loaded function")(self.command_buffer)
+                    .expect("loaded function")(self.frame_command_buffer())
             },
             "vkEndCommandBuffer",
         )?;
 
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            semaphore: self.image_available,
+            semaphore: self.frame_image_available(),
             stageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             ..Default::default()
         };
         let command = vk::VkCommandBufferSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            commandBuffer: self.command_buffer,
+            commandBuffer: self.frame_command_buffer(),
             ..Default::default()
         };
         let signal = vk::VkSemaphoreSubmitInfo {
@@ -485,12 +626,12 @@ impl<'window> ClearSurface<'window> {
                     self.device().queue,
                     1,
                     &raw const submit,
-                    self.frame_fence,
+                    self.frame_fence(),
                 )
             },
             "vkQueueSubmit2",
         )?;
-        self.frame_pending = true;
+        self.frames[self.frame_index].pending = true;
         self.swapchain.initialized[slot] = true;
 
         self.queue_present_with_feedback(image_index, render_finished, "vkQueuePresentKHR")?;
@@ -574,27 +715,31 @@ impl<'window> ClearSurface<'window> {
             pImageMemoryBarriers: &raw const to_present,
             ..Default::default()
         };
+        let command_buffer = self.frame_command_buffer();
         let functions = &self.device().functions;
         unsafe {
             // SAFETY: The command buffer is recording and all referenced image resources are live.
             functions.cmd_pipeline_barrier2.expect("loaded function")(
-                self.command_buffer,
+                command_buffer,
                 &raw const dependency,
             );
             functions.cmd_begin_rendering.expect("loaded function")(
-                self.command_buffer,
+                command_buffer,
                 &raw const rendering,
             );
-            functions.cmd_end_rendering.expect("loaded function")(self.command_buffer);
+            functions.cmd_end_rendering.expect("loaded function")(command_buffer);
             functions.cmd_pipeline_barrier2.expect("loaded function")(
-                self.command_buffer,
+                command_buffer,
                 &raw const present_dependency,
             );
         }
     }
 
     fn abandon(&mut self) -> Result<FrameDisposition, GraphicsError> {
-        let old_semaphore = self.image_available;
+        // The acquisition that signalled this slot's semaphore is being thrown
+        // away, so the signal it left has no waiter and the semaphore cannot be
+        // reused. Only the abandoned frame's own slot is affected.
+        let old_semaphore = self.frame_image_available();
         let replacement = create_semaphore(self.device(), "replacement image-available semaphore")?;
         if let Err(error) = self.recreate_swapchain(self.info.extent(), true) {
             unsafe {
@@ -608,7 +753,7 @@ impl<'window> ClearSurface<'window> {
             }
             return Err(error);
         }
-        self.image_available = replacement;
+        self.frames[self.frame_index].image_available = replacement;
         unsafe {
             // SAFETY: Acquisition completion was fenced and this semaphore has no queued waits.
             self.device()
@@ -621,10 +766,47 @@ impl<'window> ClearSurface<'window> {
         Ok(FrameDisposition::Abandoned(self.info.generation()))
     }
 
-    fn wait_for_frame(&mut self) -> Result<(), GraphicsError> {
-        if !self.frame_pending {
+    /// Waits until one slot's submitted work has completed, so the slot's
+    /// command buffer and semaphore may be reused.
+    ///
+    /// This is the only wait on the per-frame path. It is what bounds how far
+    /// the CPU may run ahead of the GPU, and with more than one slot it is
+    /// normally already satisfied by the time it is reached.
+    fn wait_for_slot(&mut self, slot: usize) -> Result<(), GraphicsError> {
+        if !self.frames[slot].pending {
             return Ok(());
         }
+        let fence = self.frames[slot].fence;
+        self.wait_for_fence(fence, "vkWaitForFences for frame")?;
+        self.frames[slot].pending = false;
+        Ok(())
+    }
+
+    /// Waits until every frame in flight and any upload has completed.
+    ///
+    /// Callers are the paths that destroy or replace something the GPU may
+    /// still be reading: resource reclamation, buffer growth, swapchain
+    /// recreation, and teardown. With frames overlapping, "the frame I just
+    /// submitted is done" is no longer the same statement as "the GPU is done
+    /// with this resource", and every one of those callers means the second.
+    fn wait_for_all_frames(&mut self) -> Result<(), GraphicsError> {
+        for slot in 0..self.frames.len() {
+            self.wait_for_slot(slot)?;
+        }
+        self.wait_for_upload()
+    }
+
+    fn wait_for_upload(&mut self) -> Result<(), GraphicsError> {
+        if !self.upload_pending {
+            return Ok(());
+        }
+        let fence = self.upload_fence;
+        self.wait_for_fence(fence, "vkWaitForFences for resource upload")?;
+        self.upload_pending = false;
+        Ok(())
+    }
+
+    fn wait_for_fence(&self, fence: vk::VkFence, description: &str) -> Result<(), GraphicsError> {
         check(
             unsafe {
                 // SAFETY: Fence is live and belongs to this device.
@@ -634,43 +816,9 @@ impl<'window> ClearSurface<'window> {
                     .expect("loaded function")(
                     self.device().handle,
                     1,
-                    &raw const self.frame_fence,
-                    vk::VK_TRUE,
-                    UINT64_MAX,
-                )
-            },
-            "vkWaitForFences for frame",
-        )?;
-        self.frame_pending = false;
-        Ok(())
-    }
-
-    fn wait_and_reset_fence(
-        &self,
-        fence: vk::VkFence,
-        description: &str,
-    ) -> Result<(), GraphicsError> {
-        let device = self.device();
-        check(
-            unsafe {
-                // SAFETY: Fence is live and was supplied to a completed acquisition.
-                device.functions.wait_for_fences.expect("loaded function")(
-                    device.handle,
-                    1,
                     &raw const fence,
                     vk::VK_TRUE,
                     UINT64_MAX,
-                )
-            },
-            description,
-        )?;
-        check(
-            unsafe {
-                // SAFETY: Signaled fence may be reset for its next acquisition.
-                device.functions.reset_fences.expect("loaded function")(
-                    device.handle,
-                    1,
-                    &raw const fence,
                 )
             },
             description,
@@ -678,7 +826,7 @@ impl<'window> ClearSurface<'window> {
     }
 
     fn finish(&mut self) -> Result<(), GraphicsError> {
-        let mut result = self.wait_for_frame();
+        let mut result = self.wait_for_all_frames();
         if let Some(device) = self.device.as_ref()
             && let Err(error) = check(
                 unsafe {
@@ -707,24 +855,26 @@ impl<'window> ClearSurface<'window> {
         destroy_swapchain(device, mem::take(&mut self.swapchain));
         unsafe {
             // SAFETY: Device idle was requested and each owned child is destroyed once.
-            if !self.image_available.is_null() {
-                device.functions.destroy_semaphore.expect("loaded function")(
-                    device.handle,
-                    self.image_available,
-                    ptr::null(),
-                );
+            for frame in self.frames.drain(..) {
+                if !frame.image_available.is_null() {
+                    device.functions.destroy_semaphore.expect("loaded function")(
+                        device.handle,
+                        frame.image_available,
+                        ptr::null(),
+                    );
+                }
+                if !frame.fence.is_null() {
+                    device.functions.destroy_fence.expect("loaded function")(
+                        device.handle,
+                        frame.fence,
+                        ptr::null(),
+                    );
+                }
             }
-            if !self.acquire_fence.is_null() {
+            if !self.upload_fence.is_null() {
                 device.functions.destroy_fence.expect("loaded function")(
                     device.handle,
-                    self.acquire_fence,
-                    ptr::null(),
-                );
-            }
-            if !self.frame_fence.is_null() {
-                device.functions.destroy_fence.expect("loaded function")(
-                    device.handle,
-                    self.frame_fence,
+                    self.upload_fence,
                     ptr::null(),
                 );
             }

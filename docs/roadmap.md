@@ -62,6 +62,12 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   replacement on the base-swapchain fallback, followed by 120 presented recovery frames and clean
   shutdown (physically exercised on native Wayland on the current Nvidia tier, with the compatibility
   path forced).
+- [x] Overlap Vulkan frame recording with GPU execution through a ring of per-frame command
+  buffers, fences, semaphores, timestamp blocks, and host-visible regions, sized from the requested
+  swapchain image count (a consumer workload measured as fully serialized at 50.7 fps reached the
+  74.97 Hz display grid; operator-eye evidence on one Linux/Nvidia machine, with the
+  validation-layer conformance re-run and a post-change per-stage capture outstanding, and Metal
+  still serializing — [Linux runbook](linux-validation.md)).
 - [ ] Record per-platform presentation-feedback availability for the
   [Gate 4 pacing plan](gate4-pacing-plan.md) (Metal presented handlers with `presentedTime` and
   drawable-ID correlation are physically exercised on the Apple M2 60 Hz tier, including

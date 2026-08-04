@@ -44,13 +44,15 @@ Metal configures buffer index 2 with `MTLVertexStepFunctionPerInstance` and issu
 instanced draw per batch. The shared instance buffer is replaced only after frame acquisition has
 established completion of the previous use. Vulkan configures a second vertex binding with
 `VK_VERTEX_INPUT_RATE_INSTANCE`, binds each batch's byte offset, and issues one
-`vkCmdDrawIndexed` with the batch instance count. Its host-coherent instance buffer grows only after
-waiting for the one in-flight frame fence. Both implementations reuse the established direct and
-postprocessed attachment/lifecycle paths.
+`vkCmdDrawIndexed` with the batch instance count. Its host-coherent instance buffer carries one
+region per frame in flight, based on the slot the recording frame owns, and grows only after every
+frame in flight has completed. Both implementations reuse the established direct and postprocessed
+attachment/lifecycle paths.
 
 This checkpoint does not add automatic grouping, sorting, indirect multi-draw, GPU-written instance
-data, per-instance materials, arbitrary vertex layouts, multiple frames in flight, bindless
-resources, or a general render-pass API.
+data, per-instance materials, arbitrary vertex layouts, bindless resources, or a general
+render-pass API. Frames in flight arrived later and on the Vulkan path only; Metal still replaces
+its shared instance buffer once acquisition has established completion of the previous frame.
 
 ## macOS comparison checkpoint
 

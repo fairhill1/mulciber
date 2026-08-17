@@ -2,6 +2,12 @@
 //!
 //! The compiler intentionally accepts Naga's baseline WebGPU capabilities only. Advanced shader
 //! capabilities remain separate until each native output path has equivalent validation evidence.
+//!
+//! The same source can also answer host questions: [`compile_host_field`] generates a Rust
+//! evaluator for designated WGSL functions, so a simulation can ask what the shader draws without
+//! a second hand-written copy of the field.
+
+mod host_field;
 
 use std::fmt;
 use std::fs;
@@ -104,6 +110,52 @@ pub fn compile_wgsl(
         ShaderTarget::Vulkan => compile_vulkan(&module, &info, artifact.as_ref(), &interface),
         ShaderTarget::Metal => compile_metal(&module, &info, artifact.as_ref(), &interface),
     }
+}
+
+/// Generates a Rust source file that evaluates `functions` from the same WGSL the shader uses.
+///
+/// Each named function becomes a `pub fn` with the WGSL argument names, `f32`, `i32`, `u32`, and
+/// `bool` scalars, `[f32; N]`-shaped vectors, and fixed-size arrays; the functions it calls are
+/// generated privately beside it. The file is written to `generated`, is meant to be produced by a
+/// `build.rs` and pulled in with `include!` so it cannot drift from the shader, and should be
+/// included in a module of its own because the generated helper names are file-local.
+///
+/// The accepted subset is pure arithmetic. Bindings, textures, derivatives, atomics, barriers,
+/// workgroup memory, switch statements, and matrices have no host meaning and are refused rather
+/// than approximated. WGSL semantics that differ from Rust's nearest spelling — `fract`, `sign`,
+/// `round`, integer wrapping, and clamped out-of-range indexing — are generated as the shader
+/// computes them; transcendental functions still differ from a GPU by its documented precision,
+/// and integer division by zero panics on the host where a GPU leaves it undefined.
+///
+/// # Errors
+///
+/// Returns an error for invalid WGSL, a name that is not a function in the module, a function
+/// that returns nothing, or any construct outside the host-evaluable subset.
+pub fn compile_host_field(
+    source: impl AsRef<Path>,
+    generated: impl AsRef<Path>,
+    functions: &[&str],
+) -> Result<(), ShaderBuildError> {
+    let source_path = source.as_ref();
+    let text = fs::read_to_string(source_path)
+        .map_err(|error| fail(format!("read {}: {error}", source_path.display())))?;
+    let module = naga::front::wgsl::parse_str(&text)
+        .map_err(|error| fail(format!("WGSL parse: {}", error.emit_to_string(&text))))?;
+    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        .validate(&module)
+        .map_err(|error| fail(format!("WGSL validation: {}", error.emit_to_string(&text))))?;
+    let label = source_path.file_name().map_or_else(
+        || source_path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let rust = host_field::generate(&module, &info, &label, functions)?;
+    let generated = generated.as_ref();
+    if let Some(parent) = generated.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| fail(format!("create host-field output: {error}")))?;
+    }
+    fs::write(generated, rust)
+        .map_err(|error| fail(format!("write {}: {error}", generated.display())))
 }
 
 /// Encodes the module's pipeline-facing interface: per entry point its stage, name, and

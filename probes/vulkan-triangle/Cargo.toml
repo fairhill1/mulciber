@@ -7,6 +7,10 @@ publish = false
 rust-version.workspace = true
 version.workspace = true
 
+[build-dependencies]
+mulciber-shader = { path = "../../crates/mulciber-shader" }
+naga = { version = "30.0.0", features = ["wgsl-in", "spv-out"] }
+
 [lints]
 workspace = true
 

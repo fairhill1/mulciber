@@ -195,6 +195,14 @@ fallback, and acquired-frame abandonment/recovery controls.
   automated Linux evidence in the [Linux runbook](linux-validation.md) and automated Metal
   evidence on the Apple M2 tier in the [macOS runbook](macos-validation.md); pass composition,
   persistent buffers, and compute/storage remain closed until their own forcing slices.
+- [x] Let the host ask a question the shader already answers. `mulciber-shader::compile_host_field`
+  generates a Rust evaluator for designated functions of the same WGSL module the shader is
+  compiled from, over a pure-arithmetic subset, so a simulation collides against the surface it
+  draws instead of against a second hand-written copy of the field. A consumer measured up to 207 m
+  of disagreement between a drawn displaced planet and the sphere it collided with; the Vulkan
+  probe now measures the generated evaluator against the same field dispatched on the GPU and
+  reports 0.000402 m across a 348.6 m surface range on the Nvidia RTX 3060 Ti tier
+  ([Linux runbook](linux-validation.md)). Metal-side agreement is unmeasured.
 - [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
   Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;
   keep device/queue/command topology private until the representative slice forces it.

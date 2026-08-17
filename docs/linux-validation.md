@@ -20,6 +20,9 @@ retaining native window, loader, and Vulkan surface creation in separate modules
 - The Vulkan backend records up to three frames before waiting on the oldest, measured on
   2026-08-04 against a consumer workload that had been fully CPU/GPU-serialized; the
   validation-layer conformance re-run for the overlapped path remains outstanding.
+- The Vulkan triangle probe measures a WGSL height field evaluated on the GPU against the host
+  evaluator `mulciber-shader` generates from the same source; the two agreed to 0.000402 m across a
+  348.6 m surface range on 2026-08-17. Metal-side agreement remains unmeasured.
 - The capability report's Wayland path creates an unconfigured `wl_surface` only for Vulkan queries.
 - The Vulkan triangle probe consumes runtime-selected peer Wayland and X11 modules from
   `mulciber-platform`, behind a `--platform` flag with `WAYLAND_DISPLAY`/`DISPLAY` autodetection.
@@ -553,6 +556,37 @@ rewritten every frame, so a frame's CPU writes would land on bytes the previous 
 still reading. Each is now sized and based per slot, with the base applied where offsets are
 produced so that a write and a bind cannot disagree about which region they mean. Neither hazard
 had a visible symptom before the ring, because nothing overlapped.
+
+### Host-field agreement evidence
+
+On 2026-08-17, `mulciber-shader` gained a second offline output: a host-callable Rust evaluator
+generated from designated functions of the same WGSL a shader is compiled from. The motivating
+consumer draws two planetary bodies whose surfaces are displaced from a sphere by a procedural
+height field authored in WGSL and evaluated per vertex, and resolves collisions on the host against
+a plain sphere because it had no way to ask the field the same question. It reported up to 207 m of
+disagreement between the surface it drew and the surface it collided with.
+
+`mulciber-vulkan-triangle` now measures the agreement directly on the current native KDE Plasma
+Wayland / Nvidia RTX 3060 Ti tier, with the Khronos validation layer enabled. `src/field.wgsl` is
+the only definition of a five-octave value-noise displacement field. The probe's build script emits
+both the compute SPIR-V (naga 30.0.0, SPIR-V 1.4, accepted by `spirv-val --target-env vulkan1.3`)
+and the host evaluator from it; nothing about the field is written twice. At startup the probe
+dispatches the field over 256 sample directions into a device-local storage buffer, copies it back,
+and evaluates the same two functions on the host through the generated evaluator.
+
+The worst of the 256 differences was 0.000402 m, at sample 122, across a 348.6 m surface range, and
+the run produced no validation-layer output. The remaining difference is the expected one: the
+field's `normalize`, `sin`, and `cos` are computed by the device to its own documented precision
+and by the host through the platform's libm, and a chaotic five-octave field amplifies that last
+bit. Integer hashing, `floor`, `fract`, and the arithmetic between them agree exactly, because the
+generator emits WGSL's semantics rather than Rust's nearest spelling. The probe fails if the worst
+difference exceeds 0.01 m.
+
+**Established** on this tier for the Vulkan side. Metal-side agreement is **unavailable**: this
+machine has no Apple hardware, the Metal probe was not run, and the generated evaluator is
+target-neutral only by construction rather than by measurement. The check runs once at startup on
+one field; it is not a survey of the accepted WGSL subset, whose coverage rests on the generator's
+unit tests.
 
 ### Single-backend build evidence
 

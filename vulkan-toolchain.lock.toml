@@ -57,6 +57,15 @@ wgsl_sha256 = "5b49c8a69c18d95eed3469ed1a08b9ad81bbd6a2e0bb7dafe9cee74089149313"
 vulkan_artifact_sha256 = "23d528e5820a93f4055e0a58445c910e1b29f0447da3220bd9451f9accd44def"
 metal_artifact_sha256 = "9d70f1ab70cc54790a1b519f984ec2c716f7ed78d1029407a7d68a4614921254"
 
+[field_probe_shader]
+# The Vulkan probe's host-field source. Its compute SPIR-V and the Rust evaluator that
+# `mulciber-shader` generates from it are both produced by the probe's build script rather than
+# checked in, because the check they support is that the two cannot drift from this one source.
+compiler = "naga 30.0.0"
+target_environment = "vulkan1.3"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "cd20c3dd2d423aa5fae31fd2422989637c2ac1a1e2ef7717f4708323001a2253"
+
 [inputs]
 vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98af"
 vulkan_core_h_sha256 = "682de8fb5d47f9839d62732975e8c7d54f8d2e8c178d79977d698e34ebc64da9"

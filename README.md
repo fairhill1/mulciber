@@ -58,7 +58,10 @@ evaluated against the pre-registered comparisons in the
   suspension coordination, and presented-cadence pacing diagnostics
   ([runtime contract](docs/runtime-contract.md)).
 - `mulciber-shader` is a separate offline tool that turns WGSL into validated, cached native
-  artifacts; no shader compiler ships in the game process.
+  artifacts; no shader compiler ships in the game process. It also generates host-callable Rust
+  evaluators for designated functions of that same WGSL, so a simulation can ask what the shader
+  draws — a displacement height field, for instance — without a second hand-written copy of it
+  ([crate README](crates/mulciber-shader/README.md)).
 
 Capability evidence, per-platform validation records, and the exact remaining gaps live in the
 [roadmap](docs/roadmap.md) and the [macOS](docs/macos-validation.md),
@@ -105,6 +108,10 @@ New programs follow the `examples/` pattern: copy an example package (path depen
 Mulciber crates, `publish = false`, workspace lints), add it to the root workspace `members`, and
 start from the example nearest your workload. Two conventions are easy to miss:
 
+- A field the simulation also needs — terrain displacement, say — is authored once in WGSL and
+  generated for the host with `mulciber_shader::compile_host_field` from a `build.rs`, then pulled
+  in with `include!` inside a module of its own. The host answer is an ordinary synchronous Rust
+  call, available in the tick that asks for it.
 - Shaders are offline artifacts. No shader compiler ships in the game process and there is no
   runtime-WGSL path; each example embeds a checked-in `.shaderbin` selected by its `build.rs`.
   Reuse a checked-in artifact when your pipeline shape matches (several examples and probes share
@@ -128,7 +135,9 @@ cargo run -q -p mulciber-vulkan-info -- --platform wayland --json  # Linux; or -
 The presentation probes exercise the full representative native workloads: staging uploads, BC1
 with verified readback, compute-written buffers/images/indirect commands, mip generation with
 mip-tail verification, indexed-indirect drawing, capability-selected 4x MSAA, shadow/scene/post
-passes, timestamps and debug labels, and device-specific pipeline artifacts. The exercised
+passes, timestamps and debug labels, and device-specific pipeline artifacts. The Vulkan probe
+additionally dispatches a WGSL height field over 256 directions and compares the readback with the
+host evaluator generated from that same source. The exercised
 capabilities are itemized in [roadmap sections 1 and 2](docs/roadmap.md).
 
 ```sh

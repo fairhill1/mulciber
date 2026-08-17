@@ -21,6 +21,7 @@ mod renderer_cache;
 mod renderer_compute;
 mod renderer_descriptors;
 mod renderer_frame;
+mod renderer_host_field;
 mod renderer_instrumentation;
 mod renderer_pacing;
 mod renderer_pipelines;
@@ -51,6 +52,9 @@ const UINT32_MAX: u32 = u32::MAX;
 const UINT64_MAX: u64 = u64::MAX;
 const FRAME_SLOT_COUNT: usize = 3;
 const STORAGE_VALUE_COUNT: usize = 64;
+const FIELD_SAMPLE_COUNT: usize = 256;
+const FIELD_WORKGROUP_SIZE: usize = 64;
+const FIELD_TOLERANCE_METRES: f32 = 0.01;
 const COMPUTE_IMAGE_WIDTH: u32 = 8;
 const COMPUTE_IMAGE_HEIGHT: u32 = 8;
 const COMPUTE_IMAGE_MIP_LEVELS: u32 = 4;
@@ -1724,6 +1728,13 @@ struct Renderer {
     compute_descriptor_set: vk::VkDescriptorSet,
     compute_pipeline_layout: vk::VkPipelineLayout,
     compute_pipeline: vk::VkPipeline,
+    field_storage: GpuBuffer,
+    field_readback: GpuBuffer,
+    field_descriptor_set_layout: vk::VkDescriptorSetLayout,
+    field_descriptor_pool: vk::VkDescriptorPool,
+    field_descriptor_set: vk::VkDescriptorSet,
+    field_pipeline_layout: vk::VkPipelineLayout,
+    field_pipeline: vk::VkPipeline,
     image_available: vk::VkSemaphore,
     render_finished: Vec<vk::VkSemaphore>,
     present_fences: Vec<vk::VkFence>,
@@ -1816,6 +1827,13 @@ impl Renderer {
             compute_descriptor_set: ptr::null_mut(),
             compute_pipeline_layout: ptr::null_mut(),
             compute_pipeline: ptr::null_mut(),
+            field_storage: GpuBuffer::default(),
+            field_readback: GpuBuffer::default(),
+            field_descriptor_set_layout: ptr::null_mut(),
+            field_descriptor_pool: ptr::null_mut(),
+            field_descriptor_set: ptr::null_mut(),
+            field_pipeline_layout: ptr::null_mut(),
+            field_pipeline: ptr::null_mut(),
             image_available: ptr::null_mut(),
             render_finished: Vec::new(),
             present_fences: Vec::new(),
@@ -1845,6 +1863,7 @@ impl Renderer {
         renderer.create_uniform_buffers()?;
         renderer.create_texture_resources()?;
         renderer.create_compute_readback_resources()?;
+        renderer.create_host_field_resources()?;
         renderer.create_shadow_resources()?;
         renderer.create_texture_descriptors()?;
         renderer.create_postprocess_resources()?;
@@ -1883,6 +1902,8 @@ impl Drop for Renderer {
         let mut compute_indirect = mem::take(&mut self.compute_indirect);
         let mut compute_image = mem::take(&mut self.compute_image);
         let mut compute_readback = mem::take(&mut self.compute_readback);
+        let mut field_storage = mem::take(&mut self.field_storage);
+        let mut field_readback = mem::take(&mut self.field_readback);
         // SAFETY: `finish` completed all submitted GPU work before these owned buffers are freed.
         unsafe {
             self.destroy_compute_resources(
@@ -1890,6 +1911,7 @@ impl Drop for Renderer {
                 &mut compute_indirect,
                 &mut compute_readback,
             );
+            self.destroy_host_field_resources(&mut field_storage, &mut field_readback);
             self.destroy_persistent_render_resources();
             if !self.texture_sampler.is_null() {
                 self.device
@@ -2326,6 +2348,10 @@ fn compute_image_readback_offset() -> usize {
 
 fn compute_mip_tail_readback_offset() -> usize {
     compute_image_readback_offset() + compute_image_byte_len()
+}
+
+fn field_buffer_byte_len() -> usize {
+    FIELD_SAMPLE_COUNT * mem::size_of::<f32>()
 }
 
 fn compute_readback_byte_len() -> usize {

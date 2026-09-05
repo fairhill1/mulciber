@@ -108,12 +108,20 @@ the zero-based session index used by `PresentedFrame::index`, so CPU-side frame 
 duration data to presentation feedback without comparing unrelated clock epochs. Disabled and
 unsupported states remain distinct.
 
-The Vulkan implementation lazily creates an eight-entry timestamp query pool on a capable graphics
+The Vulkan implementation lazily creates a per-slot eight-entry timestamp query block on a capable graphics
 queue, labels and measures the complete frame plus the fixed shadow, scene, and postprocess regions,
 masks counter wraparound to `timestampValidBits`, converts through `timestampPeriod`, and reads only
-after the one in-flight frame fence has completed. The Metal implementation reports only completed
-command-buffer `GPUStartTime`/`GPUEndTime`. The shared types deliberately do not claim identical
-scope boundaries, timestamp domains, or resolution.
+after the corresponding frame-slot fence has completed. The Metal implementation reports completed
+command-buffer `GPUStartTime`/`GPUEndTime` from its three-slot ring in submission order. Devices
+supporting stage-boundary timestamp counters additionally expose shadow, scene and postprocess
+spans. Counter buffers belong to frame slots and are allocated only when capture is enabled;
+resolution occurs after completion, using paired CPU/GPU clocks for tick conversion. Missing or
+invalid counter results omit the affected region. Devices without this capability retain whole-frame
+timing. `GpuScopeTiming::render_stages` optionally exposes vertex and fragment intervals, summed
+across passes in a region. The overall Metal region is the span from its earliest stage start to
+latest stage end, including any gaps. Stage intervals can overlap, so they are not additive GPU
+utilization. The shared types deliberately do not claim identical scope boundaries, timestamp
+domains, or resolution. Timing toggles drain in-flight work; ordinary feedback drains do not wait.
 
 ### Lazy resource reclamation is bounded at a frame boundary
 

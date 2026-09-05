@@ -27,14 +27,20 @@ the existing mesh APIs remain the one-part/default-part path.
 On Vulkan a frame is recorded while earlier frames are still executing: command buffers, fences,
 semaphores, GPU timestamp blocks, and every host-visible per-frame region belong to one of three
 frame slots, so building a frame no longer costs the previous frame's GPU time as well as its own.
-The depth is not an application-visible policy, and Metal still waits for the previous command
-buffer inside drawable acquisition.
+Metal also uses three slots, matched to its drawable pool. Each owns a retained command buffer
+and separate CPU-written uniform, storage, transient-geometry, transform, and record-instance
+buffers. Acquisition waits only before reusing a slot; unavailable and abandoned acquisitions do
+not rotate the ring. Completed GPU timings remain correlated and ordered by submission. The depth
+is not an application-visible latency policy.
 
 Optional GPU diagnostics correlate completed durations with presentation frame indices. Metal
-reports whole-command-buffer time; Vulkan additionally reports the fixed shadow, scene, and
-postprocess regions when its graphics queue supports timestamps. Lazy resource drops are reclaimed
-in bounded batches at frame boundaries, once every frame in flight has completed, while explicit
-destruction and shutdown remain synchronous and fallible.
+reports whole-command-buffer time and, on devices supporting stage-boundary timestamp counters,
+shadow, scene, and postprocess spans with separate vertex/fragment intervals. Vulkan reports
+the fixed regions when its graphics queue supports timestamps. Stage intervals can overlap and
+region spans can include pipeline gaps; neither is additive GPU utilization. Lazy resource drops are reclaimed
+in bounded batches at frame boundaries. Vulkan drains every frame in flight before reclamation;
+Metal releases its owner references while retained command buffers preserve submitted resource
+uses. Explicit destruction is fallible; shutdown waits and checks every outstanding submission.
 
 The API is experimental and may change without compatibility guarantees. Design contracts,
 decision records, runnable examples, and recorded validation evidence live in the

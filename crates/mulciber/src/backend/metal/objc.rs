@@ -548,3 +548,28 @@ impl Drop for AutoreleasePool {
         unsafe { void(self.0, c"drain") };
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Range {
+    pub location: usize,
+    pub length: usize,
+}
+
+pub unsafe fn object_range(receiver: Object, name: &CStr, range: Range) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, Range) -> Object =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), range) }
+}
+
+pub unsafe fn bool_object(receiver: Object, name: &CStr, argument: Object) -> bool {
+    let function: unsafe extern "C" fn(Object, Selector, Object) -> bool =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), argument) }
+}
+
+pub unsafe fn void_two_u64_out(receiver: Object, name: &CStr, first: *mut u64, second: *mut u64) {
+    let function: unsafe extern "C" fn(Object, Selector, *mut u64, *mut u64) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second) }
+}

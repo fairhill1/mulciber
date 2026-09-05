@@ -323,9 +323,10 @@ impl TexturedFrameToken {
     }
 }
 
-pub(crate) struct TexturedSession<'window> {
-    surface: ClearSurface<'window>,
-    sample_count: usize,
+/// CPU-written storage belongs to one frame slot. Ordinary retained Metal
+/// command buffers keep immutable resources and replaced buffer objects alive;
+/// separate mutable buffers prevent CPU writes racing an earlier GPU reader.
+struct FrameResources {
     uniform: Object,
     uniform_capacity: usize,
     /// Frame-transient read-only storage region for material and shadow records, in bytes.
@@ -340,6 +341,93 @@ pub(crate) struct TexturedSession<'window> {
     /// bytes.
     record_instances: Object,
     record_instance_capacity: usize,
+}
+
+impl FrameResources {
+    fn new(device: Object) -> Result<Self, GraphicsError> {
+        let mut frame = Self {
+            uniform: ptr::null_mut(),
+            uniform_capacity: 1,
+            storage: ptr::null_mut(),
+            storage_capacity: STORAGE_OFFSET_ALIGNMENT,
+            transient_geometry: ptr::null_mut(),
+            transient_capacity: STORAGE_OFFSET_ALIGNMENT,
+            instance_transforms: ptr::null_mut(),
+            instance_capacity: 1,
+            record_instances: ptr::null_mut(),
+            record_instance_capacity: STORAGE_OFFSET_ALIGNMENT,
+        };
+        // The owner drops any earlier allocations if a later allocation fails.
+        for (buffer, size, label) in [
+            (
+                &mut frame.uniform,
+                DRAW_UNIFORM_STRIDE,
+                "Metal frame uniforms",
+            ),
+            (
+                &mut frame.storage,
+                STORAGE_OFFSET_ALIGNMENT,
+                "Metal frame storage",
+            ),
+            (
+                &mut frame.transient_geometry,
+                STORAGE_OFFSET_ALIGNMENT,
+                "Metal frame geometry",
+            ),
+            (
+                &mut frame.instance_transforms,
+                INSTANCE_TRANSFORM_SIZE,
+                "Metal frame transforms",
+            ),
+            (
+                &mut frame.record_instances,
+                STORAGE_OFFSET_ALIGNMENT,
+                "Metal frame instances",
+            ),
+        ] {
+            // SAFETY: The live device returns an owned shared buffer; Drop balances it.
+            *buffer = unsafe {
+                required(
+                    objc::object_two_usizes(device, c"newBufferWithLength:options:", size, 0),
+                    label,
+                )?
+            };
+        }
+        Ok(frame)
+    }
+}
+
+impl Drop for FrameResources {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.uniform.is_null() {
+                objc::void(self.uniform, c"release");
+                self.uniform = ptr::null_mut();
+            }
+            if !self.storage.is_null() {
+                objc::void(self.storage, c"release");
+                self.storage = ptr::null_mut();
+            }
+            if !self.transient_geometry.is_null() {
+                objc::void(self.transient_geometry, c"release");
+                self.transient_geometry = ptr::null_mut();
+            }
+            if !self.instance_transforms.is_null() {
+                objc::void(self.instance_transforms, c"release");
+                self.instance_transforms = ptr::null_mut();
+            }
+            if !self.record_instances.is_null() {
+                objc::void(self.record_instances, c"release");
+                self.record_instances = ptr::null_mut();
+            }
+        }
+    }
+}
+
+pub(crate) struct TexturedSession<'window> {
+    surface: ClearSurface<'window>,
+    sample_count: usize,
+    frames: Vec<FrameResources>,
     resolved_instance_batches: Vec<ResolvedInstanceBatch>,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
@@ -350,12 +438,21 @@ pub(crate) struct TexturedSession<'window> {
     shadow_map_arrays: Arena<ShadowMapArrayResource>,
     shadow_pipelines: Arena<ShadowPipelineResource>,
     postprocess_pipelines: Arena<PostprocessPipelineResource>,
+    // GPU-only attachments stay shared: tracked hazards on the one command
+    // queue order their uses. Retained commands also keep replaced targets alive.
     targets: Arena<TargetResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
 }
 
 impl<'window> TexturedSession<'window> {
-    #[allow(clippy::too_many_lines)]
+    fn frame(&self) -> &FrameResources {
+        &self.frames[self.surface.frame_slot()]
+    }
+
+    fn frame_mut(&mut self) -> &mut FrameResources {
+        &mut self.frames[self.surface.frame_slot()]
+    }
+
     pub(crate) fn new(
         target: SurfaceTarget<'window>,
         metrics: WindowMetrics,
@@ -369,111 +466,14 @@ impl<'window> TexturedSession<'window> {
         } else {
             1
         };
-        let uniform = unsafe {
-            required(
-                objc::object_two_usizes(
-                    surface.device,
-                    c"newBufferWithLength:options:",
-                    DRAW_UNIFORM_STRIDE,
-                    0,
-                ),
-                "Metal cube uniform buffer",
-            )?
-        };
-        let storage = match unsafe {
-            required(
-                objc::object_two_usizes(
-                    surface.device,
-                    c"newBufferWithLength:options:",
-                    STORAGE_OFFSET_ALIGNMENT,
-                    0,
-                ),
-                "Metal record storage buffer",
-            )
-        } {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                unsafe { objc::void(uniform, c"release") };
-                return Err(failure);
-            }
-        };
-        let transient_geometry = match unsafe {
-            required(
-                objc::object_two_usizes(
-                    surface.device,
-                    c"newBufferWithLength:options:",
-                    STORAGE_OFFSET_ALIGNMENT,
-                    0,
-                ),
-                "Metal transient geometry buffer",
-            )
-        } {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                unsafe {
-                    objc::void(storage, c"release");
-                    objc::void(uniform, c"release");
-                };
-                return Err(failure);
-            }
-        };
-        let instance_transforms = match unsafe {
-            required(
-                objc::object_two_usizes(
-                    surface.device,
-                    c"newBufferWithLength:options:",
-                    INSTANCE_TRANSFORM_SIZE,
-                    0,
-                ),
-                "Metal instance transform buffer",
-            )
-        } {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                unsafe {
-                    objc::void(transient_geometry, c"release");
-                    objc::void(storage, c"release");
-                    objc::void(uniform, c"release");
-                };
-                return Err(failure);
-            }
-        };
-        let record_instances = match unsafe {
-            required(
-                objc::object_two_usizes(
-                    surface.device,
-                    c"newBufferWithLength:options:",
-                    STORAGE_OFFSET_ALIGNMENT,
-                    0,
-                ),
-                "Metal record instance buffer",
-            )
-        } {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                unsafe {
-                    objc::void(instance_transforms, c"release");
-                    objc::void(transient_geometry, c"release");
-                    objc::void(storage, c"release");
-                    objc::void(uniform, c"release");
-                };
-                return Err(failure);
-            }
-        };
+        let frames = (0..super::FRAMES_IN_FLIGHT)
+            .map(|_| FrameResources::new(surface.device))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((
             Self {
                 surface,
                 sample_count,
-                uniform,
-                uniform_capacity: 1,
-                storage,
-                storage_capacity: STORAGE_OFFSET_ALIGNMENT,
-                transient_geometry,
-                transient_capacity: STORAGE_OFFSET_ALIGNMENT,
-                instance_transforms,
-                instance_capacity: 1,
-                record_instances,
-                record_instance_capacity: STORAGE_OFFSET_ALIGNMENT,
+                frames,
                 resolved_instance_batches: Vec::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
@@ -499,12 +499,19 @@ impl<'window> TexturedSession<'window> {
         self.surface.info()
     }
 
-    pub(crate) const fn gpu_timing_support(&self) -> crate::GpuTimingSupport {
-        crate::GpuTimingSupport::Frame
+    pub(crate) fn gpu_timing_support(&self) -> crate::GpuTimingSupport {
+        if self.surface.counter_set.is_some() {
+            crate::GpuTimingSupport::Regions
+        } else {
+            crate::GpuTimingSupport::Frame
+        }
     }
 
     pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
-        self.surface.enable_gpu_timing(enabled);
+        if self.surface.gpu_timing_enabled != enabled {
+            self.surface.finish_all_frames()?;
+        }
+        self.surface.enable_gpu_timing(enabled)?;
         Ok(())
     }
 
@@ -1202,7 +1209,7 @@ impl<'window> TexturedSession<'window> {
             .checked_add(overlay.len())
             .and_then(|slots| slots.checked_add(shadow_records))
             .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
-        if uniform_slots > self.uniform_capacity {
+        if uniform_slots > self.frame().uniform_capacity {
             let capacity = uniform_slots
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal material uniform capacity overflow"))?;
@@ -1220,12 +1227,12 @@ impl<'window> TexturedSession<'window> {
                     "Metal material uniform buffer",
                 )?
             };
-            unsafe { objc::void(self.uniform, c"release") };
-            self.uniform = replacement;
-            self.uniform_capacity = capacity;
+            unsafe { objc::void(self.frame().uniform, c"release") };
+            self.frame_mut().uniform = replacement;
+            self.frame_mut().uniform_capacity = capacity;
         }
         unsafe {
-            let contents = objc::pointer_value(self.uniform, c"contents");
+            let contents = objc::pointer_value(self.frame().uniform, c"contents");
             if contents.is_null() {
                 return Err(GraphicsError::new(
                     "Metal uniform buffer has no CPU address",
@@ -1264,7 +1271,7 @@ impl<'window> TexturedSession<'window> {
                     .and_then(|aligned| total.checked_add(aligned))
                     .ok_or_else(|| GraphicsError::new("Metal record storage offsets overflow"))
             })?;
-        if storage_bytes > self.storage_capacity {
+        if storage_bytes > self.frame().storage_capacity {
             let capacity = storage_bytes
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal record storage capacity overflow"))?;
@@ -1279,13 +1286,13 @@ impl<'window> TexturedSession<'window> {
                     "Metal record storage buffer",
                 )?
             };
-            unsafe { objc::void(self.storage, c"release") };
-            self.storage = replacement;
-            self.storage_capacity = capacity;
+            unsafe { objc::void(self.frame().storage, c"release") };
+            self.frame_mut().storage = replacement;
+            self.frame_mut().storage_capacity = capacity;
         }
         if storage_bytes > 0 {
             unsafe {
-                let contents = objc::pointer_value(self.storage, c"contents");
+                let contents = objc::pointer_value(self.frame().storage, c"contents");
                 if contents.is_null() {
                     return Err(GraphicsError::new(
                         "Metal record storage buffer has no CPU address",
@@ -1357,7 +1364,7 @@ impl<'window> TexturedSession<'window> {
                     })
                     .ok_or_else(|| GraphicsError::new("Metal transient geometry offsets overflow"))
             })?;
-        if geometry_bytes > self.transient_capacity {
+        if geometry_bytes > self.frame().transient_capacity {
             let capacity = geometry_bytes
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal transient geometry capacity overflow"))?;
@@ -1372,13 +1379,13 @@ impl<'window> TexturedSession<'window> {
                     "Metal transient geometry buffer",
                 )?
             };
-            unsafe { objc::void(self.transient_geometry, c"release") };
-            self.transient_geometry = replacement;
-            self.transient_capacity = capacity;
+            unsafe { objc::void(self.frame().transient_geometry, c"release") };
+            self.frame_mut().transient_geometry = replacement;
+            self.frame_mut().transient_capacity = capacity;
         }
         if geometry_bytes > 0 {
             unsafe {
-                let contents = objc::pointer_value(self.transient_geometry, c"contents");
+                let contents = objc::pointer_value(self.frame().transient_geometry, c"contents");
                 if contents.is_null() {
                     return Err(GraphicsError::new(
                         "Metal transient geometry buffer has no CPU address",
@@ -1444,7 +1451,7 @@ impl<'window> TexturedSession<'window> {
                 .and_then(|aligned| total.checked_add(aligned))
                 .ok_or_else(|| GraphicsError::new("Metal record instance offsets overflow"))
         })?;
-        if instance_bytes > self.record_instance_capacity {
+        if instance_bytes > self.frame().record_instance_capacity {
             let capacity = instance_bytes
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal record instance capacity overflow"))?;
@@ -1459,15 +1466,15 @@ impl<'window> TexturedSession<'window> {
                     "Metal record instance buffer",
                 )?
             };
-            unsafe { objc::void(self.record_instances, c"release") };
-            self.record_instances = replacement;
-            self.record_instance_capacity = capacity;
+            unsafe { objc::void(self.frame().record_instances, c"release") };
+            self.frame_mut().record_instances = replacement;
+            self.frame_mut().record_instance_capacity = capacity;
         }
         if supplies().all(<[u8]>::is_empty) {
             return Ok(());
         }
         unsafe {
-            let contents = objc::pointer_value(self.record_instances, c"contents");
+            let contents = objc::pointer_value(self.frame().record_instances, c"contents");
             if contents.is_null() {
                 return Err(GraphicsError::new(
                     "Metal record instance buffer has no CPU address",
@@ -1568,6 +1575,7 @@ impl<'window> TexturedSession<'window> {
             objc::void_usize(depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
             objc::void_usize(depth, c"setStoreAction:", STORE_ACTION_STORE);
             objc::void_f64(depth, c"setClearDepth:", 1.0);
+            self.surface.attach_timing(pass, layer.unwrap_or(0));
             let encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal shadow render encoder",
@@ -1585,7 +1593,7 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.uniform,
+                        self.frame().uniform,
                         *uniform_index * DRAW_UNIFORM_STRIDE,
                         slot,
                     );
@@ -1593,7 +1601,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setFragmentBuffer:offset:atIndex:",
-                            self.uniform,
+                            self.frame().uniform,
                             *uniform_index * DRAW_UNIFORM_STRIDE,
                             slot,
                         );
@@ -1604,7 +1612,7 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.storage,
+                        self.frame().storage,
                         *storage_offset,
                         slot,
                     );
@@ -1612,7 +1620,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setFragmentBuffer:offset:atIndex:",
-                            self.storage,
+                            self.frame().storage,
                             *storage_offset,
                             slot,
                         );
@@ -1655,7 +1663,7 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.record_instances,
+                        self.frame().record_instances,
                         *instance_offset,
                         MATERIAL_INSTANCE_BUFFER_INDEX,
                     );
@@ -1697,7 +1705,7 @@ impl<'window> TexturedSession<'window> {
             self.textures.get(draw.texture.id())?;
             self.pipelines.get(draw.pipeline.id())?;
         }
-        if draws.len() > self.uniform_capacity {
+        if draws.len() > self.frame().uniform_capacity {
             let capacity = draws
                 .len()
                 .checked_next_power_of_two()
@@ -1716,12 +1724,12 @@ impl<'window> TexturedSession<'window> {
                     "Metal scene transform buffer",
                 )?
             };
-            unsafe { objc::void(self.uniform, c"release") };
-            self.uniform = replacement;
-            self.uniform_capacity = capacity;
+            unsafe { objc::void(self.frame().uniform, c"release") };
+            self.frame_mut().uniform = replacement;
+            self.frame_mut().uniform_capacity = capacity;
         }
         unsafe {
-            let contents = objc::pointer_value(self.uniform, c"contents");
+            let contents = objc::pointer_value(self.frame().uniform, c"contents");
             if contents.is_null() {
                 return Err(GraphicsError::new(
                     "Metal uniform buffer has no CPU address",
@@ -1747,7 +1755,7 @@ impl<'window> TexturedSession<'window> {
                 .checked_add(batch.model_view_projections.len())
                 .ok_or_else(|| GraphicsError::new("Metal instance count exceeds address space"))
         })?;
-        if instance_count > self.instance_capacity {
+        if instance_count > self.frame().instance_capacity {
             let capacity = instance_count
                 .checked_next_power_of_two()
                 .ok_or_else(|| GraphicsError::new("Metal instance capacity overflow"))?;
@@ -1765,9 +1773,9 @@ impl<'window> TexturedSession<'window> {
                     "Metal instance transform buffer",
                 )?
             };
-            unsafe { objc::void(self.instance_transforms, c"release") };
-            self.instance_transforms = replacement;
-            self.instance_capacity = capacity;
+            unsafe { objc::void(self.frame().instance_transforms, c"release") };
+            self.frame_mut().instance_transforms = replacement;
+            self.frame_mut().instance_capacity = capacity;
         }
         self.resolved_instance_batches.clear();
         let mut transform_offset = 0_usize;
@@ -1788,7 +1796,7 @@ impl<'window> TexturedSession<'window> {
                 .ok_or_else(|| GraphicsError::new("Metal instance offsets overflow"))?;
         }
         unsafe {
-            let contents = objc::pointer_value(self.instance_transforms, c"contents");
+            let contents = objc::pointer_value(self.frame().instance_transforms, c"contents");
             if contents.is_null() {
                 return Err(GraphicsError::new(
                     "Metal instance transform buffer has no CPU address",
@@ -1915,7 +1923,7 @@ impl<'window> TexturedSession<'window> {
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
-        let result = self.surface.finish_last_submission();
+        let result = self.surface.finish_all_frames();
         self.destroy_resources();
         let surface = unsafe { ptr::read(&raw const self.surface) };
         mem::forget(self);
@@ -1990,6 +1998,7 @@ impl<'window> TexturedSession<'window> {
                     material_instances_len(records),
                 )?;
             }
+            self.surface.attach_timing(pass, super::timing::SCENE);
             let encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal cube render encoder",
@@ -2112,6 +2121,9 @@ impl<'window> TexturedSession<'window> {
                     material_instances_len(records) + material_instances_len(overlay),
                 )?;
             }
+            self.surface.attach_timing(scene_pass, super::timing::SCENE);
+            self.surface
+                .attach_timing(post_pass, super::timing::POSTPROCESS);
             let scene_encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
                 "Metal scene render encoder",
@@ -2195,7 +2207,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
-                            self.uniform,
+                            self.frame().uniform,
                             index * DRAW_UNIFORM_STRIDE,
                             0,
                         );
@@ -2251,7 +2263,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
-                            self.instance_transforms,
+                            self.frame().instance_transforms,
                             batch.transform_offset,
                             2,
                         );
@@ -2361,14 +2373,14 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.uniform,
+                        self.frame().uniform,
                         (uniform_base + index) * DRAW_UNIFORM_STRIDE,
                         slot,
                     );
                     objc::void_object_two_usizes(
                         encoder,
                         c"setFragmentBuffer:offset:atIndex:",
-                        self.uniform,
+                        self.frame().uniform,
                         (uniform_base + index) * DRAW_UNIFORM_STRIDE,
                         slot,
                     );
@@ -2378,14 +2390,14 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.storage,
+                        self.frame().storage,
                         storage_offset,
                         slot,
                     );
                     objc::void_object_two_usizes(
                         encoder,
                         c"setFragmentBuffer:offset:atIndex:",
-                        self.storage,
+                        self.frame().storage,
                         storage_offset,
                         slot,
                     );
@@ -2406,7 +2418,7 @@ impl<'window> TexturedSession<'window> {
                         objc::void_object_two_usizes(
                             encoder,
                             c"setVertexBuffer:offset:atIndex:",
-                            self.transient_geometry,
+                            self.frame().transient_geometry,
                             vertex_offset,
                             MATERIAL_VERTEX_BUFFER_INDEX,
                         );
@@ -2488,7 +2500,7 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object_two_usizes(
                         encoder,
                         c"setVertexBuffer:offset:atIndex:",
-                        self.record_instances,
+                        self.frame().record_instances,
                         instance_offset,
                         MATERIAL_INSTANCE_BUFFER_INDEX,
                     );
@@ -2541,7 +2553,7 @@ impl<'window> TexturedSession<'window> {
                             PRIMITIVE_TYPE_TRIANGLE,
                             index_count,
                             index_type,
-                            self.transient_geometry,
+                            self.frame().transient_geometry,
                             index_offset,
                             instance_count,
                         );
@@ -2586,28 +2598,8 @@ impl<'window> TexturedSession<'window> {
         for mesh in self.meshes.take_all() {
             release_mesh(mesh);
         }
-        unsafe {
-            if !self.uniform.is_null() {
-                objc::void(self.uniform, c"release");
-                self.uniform = ptr::null_mut();
-            }
-            if !self.storage.is_null() {
-                objc::void(self.storage, c"release");
-                self.storage = ptr::null_mut();
-            }
-            if !self.transient_geometry.is_null() {
-                objc::void(self.transient_geometry, c"release");
-                self.transient_geometry = ptr::null_mut();
-            }
-            if !self.instance_transforms.is_null() {
-                objc::void(self.instance_transforms, c"release");
-                self.instance_transforms = ptr::null_mut();
-            }
-            if !self.record_instances.is_null() {
-                objc::void(self.record_instances, c"release");
-                self.record_instances = ptr::null_mut();
-            }
-        }
+        self.frames.clear();
+        self.frames.shrink_to_fit();
 
         // `shutdown` moves the surface out and deliberately suppresses this
         // session's destructor. Release the now-empty arenas' allocations here
@@ -2771,7 +2763,7 @@ fn release_postprocess_target(target: PostprocessTargetResource) {
 
 impl Drop for TexturedSession<'_> {
     fn drop(&mut self) {
-        let _ = self.surface.finish_last_submission();
+        let _ = self.surface.finish_all_frames();
         self.destroy_resources();
     }
 }

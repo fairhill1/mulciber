@@ -1809,11 +1809,56 @@ pub enum GpuTimingScope {
 pub struct GpuScopeTiming {
     scope: GpuTimingScope,
     duration: Duration,
+    render_stages: Option<GpuRenderStageTiming>,
+}
+
+/// Optional native render-stage measurements within a GPU timing region.
+///
+/// Durations sum the individual stage intervals when a region contains several
+/// render passes (for example shadow cascades). Stages and passes may overlap;
+/// these are elapsed intervals, not additive GPU utilization or CPU wait time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuRenderStageTiming {
+    vertex: Duration,
+    fragment: Duration,
+}
+
+impl GpuRenderStageTiming {
+    /// Sum of measured vertex-stage intervals, excluding gaps before fragment work.
+    #[must_use]
+    pub const fn vertex(&self) -> Duration {
+        self.vertex
+    }
+
+    /// Sum of measured fragment-stage intervals.
+    #[must_use]
+    pub const fn fragment(&self) -> Duration {
+        self.fragment
+    }
 }
 
 impl GpuScopeTiming {
     pub(crate) const fn new(scope: GpuTimingScope, duration: Duration) -> Self {
-        Self { scope, duration }
+        Self {
+            scope,
+            duration,
+            render_stages: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) const fn with_render_stages(mut self, vertex: Duration, fragment: Duration) -> Self {
+        self.render_stages = Some(GpuRenderStageTiming { vertex, fragment });
+        self
+    }
+
+    /// Native render-stage intervals when the backend exposes them.
+    ///
+    /// A region's overall duration may include gaps between vertex and fragment
+    /// execution. These details distinguish those gaps from the stage intervals.
+    #[must_use]
+    pub const fn render_stages(&self) -> Option<GpuRenderStageTiming> {
+        self.render_stages
     }
 
     /// Region measured by this sample.

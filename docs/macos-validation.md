@@ -1,5 +1,158 @@
 # macOS AppKit/Metal validation runbook
 
+## Metal frames in flight
+
+On 2026-09-05, a development tree based on `aa9c2b4` implemented three frame slots in the
+extracted Metal backend, matched to the three-drawable pool. CPU recording can proceed while
+previous commands execute. A slot advances only after submission, not after a retry or abandonment.
+Each slot owns a retained command buffer and separate CPU-written uniform, read-only storage,
+transient geometry, instance-transform, and record-instance buffers. Slot-local growth cannot
+replace another slot's mutable storage. GPU-only attachments remain shared on the same tracked
+queue. Postprocess constants use Metal's encoder-owned byte copy.
+
+Ordinary `commandBuffer` retains submitted resource references; this preserves native mesh,
+texture, pipeline and target lifetimes when application handles are reclaimed or targets are
+replaced. It does not protect shared CPU-written bytes, which is why those buffers are separate
+per slot. See Apple's [retainedReferences documentation](https://developer.apple.com/documentation/metal/mtlcommandbuffer/retainedreferences).
+Shutdown waits, checks and releases every slot even after an earlier completion error. Completed
+GPU samples are harvested in submission order, and capture toggles drain outstanding work and
+clear prior-capture timing identities.
+
+Native validation on the Apple M2 / 8 GiB MacBook Air completed with no Metal validation errors:
+
+- `cargo check --workspace --all-targets`, Clippy with `-D warnings`, workspace tests,
+  `cargo fmt --all -- --check`, and `git diff --check` passed.
+- `MTL_DEBUG_LAYER=1 target/debug/mulciber-api-conformance`: 94 cases passed, including the new
+  120-step sequence of growing uniform supplies, repeated abandonment, mesh drop/replacement,
+  and unique, ordered GPU timing indices for submitted frames. This run includes the existing
+  material, instancing, shadow, transient geometry, storage, and postprocess cases.
+- API cube: 120 frames with acquired-frame abandonment, at both 4x and forced 1x. Both exited
+  zero; timed presentation feedback reported p95 16.667 ms and zero missed display intervals.
+  Some startup presentations had no display time (15 at 4x, 38 at 1x); no broader pacing claim.
+- API clear: abandonment followed by 120 recovery frames and clean exit.
+- A release Isle of Rán town movement run under `MTL_DEBUG_LAYER=1` completed its 30-second
+  capture and shut down without validation errors. Its timings are excluded from the comparison.
+
+### Release consumer measurements
+
+Isle of Rán `0d7ddb8`, release profile, built with Cargo command-line patches pointing at local
+`crates/mulciber` and `crates/mulciber-platform`; the game manifest and lockfile remain unchanged.
+The before binary uses published Mulciber 0.13.1. Settings stayed fullscreen, 50% render scale,
+7 terrain chunks, 3 grass chunks, 128 m NPC distance, 4x MSAA, clouds enabled. Laptop on AC;
+a status query reported no recorded thermal/performance warning and 62% memory free. That is
+not a CPU-frequency trace or a controlled thermal soak.
+
+Each run captures 30 wall-clock seconds through `--newgame --trace --trace-walk`; town adds
+`--at -412,2804 --look 0`. The driver waits five simulation seconds, then walks/sprints, turns,
+and requests repeated jumps through normal movement and collision. Below excludes the first
+five wall-clock seconds, an approximate settling cutoff. Before/after runs were consecutive
+within each pair, with no build or validation probe running concurrently.
+
+| Route/build | Mean FPS | p95 interval | p99 interval | Worst interval | Mean acquisition wait |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Spawn before | 50.53 | 24.61 ms | 25.89 ms | 28.96 ms | 17.04 ms |
+| Spawn after | 59.16 | 18.93 ms | 33.80 ms | 36.74 ms | 10.89 ms |
+| Town before | 54.76 | 23.51 ms | 23.64 ms | 23.85 ms | 17.07 ms |
+| Town after | 57.24 | 20.45 ms | 35.75 ms | 38.78 ms | 10.40 ms |
+
+The change removes unconditional previous-frame serialization and improves throughput, but does
+**not** establish steady 60 FPS. The p99/worst intervals worsened in these runs. Acquisition still
+includes drawable availability and slot reuse; these captures do not split those waits. GPU
+command-buffer duration under overlap is an elapsed span, not additive GPU occupancy, so its
+increase does not by itself establish increased shader cost. CPU preparation times also varied
+substantially between runs; no cause is assigned without CPU scheduling/power evidence.
+
+The route is scripted in simulation time while capture ends in wall time. Before/after travelled
+148/198 m at spawn and 164/197 m at town, so the full windows contain different path coverage and
+actor populations. As a secondary comparison, retaining samples between 10 and 140 m of cumulative
+horizontal travel gives spawn 52.90 → 59.77 FPS (p95 24.333 → 18.512 ms, p99 24.697 → 19.430 ms),
+and town 56.44 → 58.01 FPS (p95 20.171 → 19.581 ms, p99 20.577 → 34.669 ms). This reduces route-length
+bias but is not a bit-identical workload replay.
+
+All game frame intervals are between completed CPU submissions, not measured display scanout.
+A preliminary after run reached 58.76 FPS after the cutoff and is also archived; it preceded the
+final timing-order correction and is excluded from the paired table. Per-pass GPU profiling,
+long-session thermal testing, input-to-display latency, physical resize/minimize/occlusion,
+multi-display transitions, Metal 4, and other hardware remain untested for this change.
+No Vulkan execution was performed for the expanded conformance probe.
+
+Reproduce the local consumer build:
+
+```sh
+cargo build --release \
+  --config 'patch.crates-io.mulciber.path="/Users/adne/dev/mulciber/crates/mulciber"' \
+  --config 'patch.crates-io.mulciber-platform.path="/Users/adne/dev/mulciber/crates/mulciber-platform"'
+target/release/isle-of-ran --newgame --trace --trace-walk
+target/release/isle-of-ran --newgame --trace --trace-walk --at -412,2804 --look 0
+```
+
+Cargo updates its lockfile for local patches; restore the published-source lockfile after testing.
+The engine is not published by this validation. The tested game release executable contains the
+local fix; a normal rebuild without the overrides uses the published engine again.
+
+Evidence is in ignored `validation-artifacts/metal-frames-in-flight-20260905/`: validation/build
+logs, raw game CSVs, source patch, base revisions and binary hashes. Paired CSVs are
+`play-run-1788624887316.csv` / `play-run-1788624954531.csv` (spawn), and
+`play-run-1788625015671.csv` / `play-run-1788625114122.csv` (town). The validation-enabled game
+capture is `play-run-1788625181355.csv`; the preliminary run is `play-run-1788624718584.csv`.
+
+
+### Follow-up diagnostics and current limit
+
+Added opt-in Metal stage-boundary timestamp sampling after the overlap-only comparison above.
+It is capability-checked, uses one shared counter buffer per frame slot, and resolves only completed
+frames. The first counter implementation passed workspace checks and a native 94-case conformance
+run under Metal API Validation, including a nonzero Scene-region assertion. A finite validated cube
+run also reported Regions support. Evidence: `metal-counters-conformance.log` and
+`metal-counters-cube.log`.
+
+A subsequent review corrected the aggregation of shadow cascades to report their overall span,
+not the sum of overlapping pass spans. The API now also carries separate vertex and fragment
+intervals. Metal may begin vertex work well before fragment work, so a 15 ms postprocess span
+is **not** evidence of 15 ms of active postprocess shading. The earlier counter gameplay CSV
+`play-run-1788625842911.csv` predates this correction and must not be used to rank shader cost.
+The corrected aggregation and optional stage-detail API pass automated workspace checks; their
+next native gameplay capture remains pending.
+
+An Instruments Metal System Trace (`/tmp/isle-metal-system.trace`) recorded a release town walk.
+Its CPU samples placed about 88.4% of running main-thread samples after 15 seconds on efficiency
+cores. This is an observation, not a demonstrated cause. A startup query found the main thread
+already had `QOS_CLASS_USER_INTERACTIVE` (0x21), so an explicit identical QoS override was removed.
+The exported GPU-interval table was empty; no GPU occupancy claim comes from that recording.
+Drawable wait intervals did include waits spanning multiple display intervals.
+
+Further gameplay measurement stopped when the console locked. A process sample showed the game
+waiting for initial window metrics, before renderer startup, and IORegistry confirmed
+`CGSSessionScreenIsLocked=Yes`. The stalled processes were terminated. No performance results are
+assigned to those attempts. The temporary platform QoS edit and game CSV stage-detail edit were
+restored; the latter is retained as `isle-metal-stage-csv.patch` in the evidence archive for the next
+local-engine diagnostic build. Game source and published dependency lockfile are unchanged.
+
+The original serialization defect is fixed locally, but a stable 60 FPS result has **not** been
+established. The next measurement is the corrected per-stage release town trace on an unlocked
+display, followed by controlled isolation of the measured expensive pass. No shader or quality
+change has been made on the basis of the ambiguous region spans.
+
+
+### Final unlocked-display validation and 0.13.2 release
+
+The display was unlocked later on 2026-09-05. The final 94-case native conformance run passed
+under `MTL_DEBUG_LAYER=1`, including frame-ring growth, abandonment, resource churn and ordered
+region timing. A release consumer town trace with corrected stage aggregation then completed
+30 seconds and 1,657 frames without Metal validation errors. The startup-only QoS experiment
+was disabled for this run; its temporary platform source change is absent from the release.
+
+After the first five wall-clock seconds, 1,431 GPU samples reported mean vertex/fragment
+intervals of 1.559/0.745 ms for shadows, 0.677/14.564 ms for the scene, and 0.012/0.224 ms for
+postprocessing. These are stage elapsed intervals, not hardware utilization, and this validation-
+enabled run is not a replacement for an uninstrumented benchmark. It identifies the scene fragment
+stage as the next investigation target; no claim of stable 60 FPS or a specific shader bottleneck
+is made. Evidence: `metal-final-native.log`, `isle-metal-final-stages.log`, and
+`play-run-1788627219644.csv`. This supersedes the locked-display limitation above.
+
+Release 0.13.2 contains the Metal frame ring, per-slot mutable resources, optional region and
+stage timing, and expanded native conformance coverage. No platform crate change is included.
+
 ## Native-resolution overlay checkpoint
 
 On 2026-07-21, on an uncommitted working tree based on `8725179`, the native-resolution

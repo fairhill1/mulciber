@@ -299,6 +299,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct Cases<'window> {
     step: u32,
     passed: u32,
+    ring_submitted: u64,
+    ring_timings: std::collections::BTreeSet<u64>,
     graphics: Option<OpenedGraphics<'window>>,
     window: &'window Window,
     mesh: Option<Mesh>,
@@ -334,6 +336,8 @@ impl<'window> Cases<'window> {
         Ok(Self {
             step: 0,
             passed: 0,
+            ring_submitted: 0,
+            ring_timings: std::collections::BTreeSet::new(),
             graphics: Some(graphics),
             window,
             mesh: None,
@@ -3482,6 +3486,9 @@ impl<'window> Cases<'window> {
                 self.step = 53;
                 Ok(false)
             }
+            // Sustain overlapping submissions, grow each slot's uniforms, abandon
+            // frames between submissions, and drop meshes the GPU may still read.
+            53..=172 => self.exercise_frame_ring(metrics),
             // The one-sample session presents and shuts down cleanly.
             _ => {
                 let Some(frame) = self.acquire(metrics)? else {
@@ -3490,12 +3497,105 @@ impl<'window> Cases<'window> {
                 let disposition = self.draw(frame, IDENTITY)?;
                 assert_presented(disposition)?;
                 self.pass("one-sample presentation");
+                if self
+                    .graphics
+                    .as_ref()
+                    .expect("session B is open")
+                    .selection
+                    .gpu_timing_support()
+                    != mulciber::GpuTimingSupport::Unsupported
+                {
+                    assert!(
+                        self.ring_timings.len() >= 100,
+                        "sustained submissions must report GPU timings"
+                    );
+                }
+                self.pass("frame ring growth, abandonment, resource churn and correlated timing");
                 let graphics = self.graphics.take().expect("session B is open");
                 graphics.shutdown()?;
                 self.pass("second fallible shutdown succeeded");
                 Ok(true)
             }
         }
+    }
+
+    fn exercise_frame_ring(&mut self, metrics: WindowMetrics) -> Result<bool, Box<dyn Error>> {
+        if self.step == 53 {
+            self.graphics
+                .as_mut()
+                .expect("session B is open")
+                .queue
+                .set_gpu_timing_enabled(true)?;
+        }
+        let Some(frame) = self.acquire(metrics)? else {
+            return Ok(false);
+        };
+        if self.step.is_multiple_of(11) {
+            frame.abandon()?;
+            self.step += 1;
+            return Ok(false);
+        }
+        let graphics = self.graphics.as_mut().expect("session B is open");
+        if self.step.is_multiple_of(7) {
+            self.mesh = Some(
+                graphics
+                    .device
+                    .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
+            );
+        }
+        let draws: Vec<_> = (0..(1 << (self.step % 7)))
+            .map(|index| TexturedSceneDraw {
+                mesh: self.mesh.as_ref().expect("mesh exists"),
+                texture: self.texture.as_ref().expect("texture exists"),
+                pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                model_view_projection: if (index + self.step).is_multiple_of(2) {
+                    IDENTITY
+                } else {
+                    SHIFTED
+                },
+            })
+            .collect();
+        assert_presented(graphics.queue.render_and_present(
+            frame,
+            SceneSubmission {
+                content: SceneContent::Textured(&draws),
+                output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
+                shadow: None,
+                overlay: None,
+                clear: ClearColor::BLACK,
+            },
+        )?)?;
+        self.ring_submitted += 1;
+        if let mulciber::GpuTimingFeedback::Reported(frames) = graphics.queue.take_gpu_timings()? {
+            for frame in frames {
+                if graphics.selection.gpu_timing_support() == mulciber::GpuTimingSupport::Regions {
+                    assert!(
+                        frame
+                            .scopes()
+                            .iter()
+                            .any(|scope| scope.scope() == mulciber::GpuTimingScope::Scene
+                                && !scope.duration().is_zero()),
+                        "region-capable timing must measure the scene"
+                    );
+                }
+                if let Some(&previous) = self.ring_timings.last() {
+                    assert!(
+                        frame.frame_index() > previous,
+                        "GPU timings must arrive in submission order"
+                    );
+                }
+                assert!(
+                    frame.frame_index() < self.ring_submitted,
+                    "GPU timing names an unsubmitted frame"
+                );
+                assert!(
+                    self.ring_timings.insert(frame.frame_index()),
+                    "GPU timing was reported twice"
+                );
+            }
+        }
+        self.step += 1;
+        Ok(false)
     }
 
     fn acquire(

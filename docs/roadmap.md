@@ -66,8 +66,13 @@ cannot be learned efficiently without pre-existing ecosystem knowledge.
   buffers, fences, semaphores, timestamp blocks, and host-visible regions, sized from the requested
   swapchain image count (a consumer workload measured as fully serialized at 50.7 fps reached the
   74.97 Hz display grid; operator-eye evidence on one Linux/Nvidia machine, with the
-  validation-layer conformance re-run and a post-change per-stage capture outstanding, and Metal
-  still serializing — [Linux runbook](linux-validation.md)).
+  validation-layer conformance re-run and a post-change per-stage capture outstanding —
+  [Linux runbook](linux-validation.md)).
+- [x] Overlap Metal recording and GPU execution with three retained-command-buffer slots and
+  slot-owned CPU-written buffers. The M2 validation matrix covers sustained submission, buffer
+  growth, abandonment, resource churn, ordered GPU timing, 4x/1x cube rendering, and shutdown.
+  Release walkaround traces measure throughput and remaining misses; no claim of steady 60 FPS
+  or new physical resize/multi-display evidence — [macOS runbook](macos-validation.md#metal-frames-in-flight).
 - [ ] Record per-platform presentation-feedback availability for the
   [Gate 4 pacing plan](gate4-pacing-plan.md) (Metal presented handlers with `presentedTime` and
   drawable-ID correlation are physically exercised on the Apple M2 60 Hz tier, including
@@ -151,6 +156,9 @@ Metal evidence completed so far:
 - [x] Memoryless 4x MSAA color and depth attachments resolved into the drawable.
 - [x] Reusable shadow depth, main MSAA, and fullscreen post-processing passes.
 - [x] Debug labels and command-buffer GPU start/end timing.
+- [x] Extracted opt-in stage-boundary timestamp counters for capable Metal devices; M2
+  conformance returned scene-region timings. Final separate vertex/fragment interval aggregation
+  passed native conformance and a validation-enabled release consumer town walk.
 - [x] Strict cold-generation and cross-process loading of a device-specific Metal binary archive.
 
 ## 3. Extract and test the first Mulciber API slice

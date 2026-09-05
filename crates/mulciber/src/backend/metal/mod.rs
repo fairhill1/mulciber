@@ -1,5 +1,6 @@
 #[allow(missing_docs)]
 pub mod objc;
+mod timing;
 
 use core::ffi::c_void;
 use core::marker::PhantomData;
@@ -22,6 +23,16 @@ pub(crate) const BACKEND_NAME: &str = "Metal";
 use objc::{AutoreleasePool, Object, Size};
 
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
+// Match the drawable pool. A slot is reused only after its command buffer completes.
+const FRAMES_IN_FLIGHT: usize = 3;
+
+#[derive(Default)]
+struct FrameSlot {
+    command_buffer: Object,
+    timing_index: Option<u64>,
+    counters: Option<timing::CounterSamples>,
+}
+
 const LOAD_ACTION_CLEAR: usize = 2;
 const STORE_ACTION_STORE: usize = 1;
 
@@ -127,8 +138,10 @@ pub(crate) struct ClearSurface<'window> {
     layer: Object,
     queue: Object,
     info: SurfaceInfo,
-    last_command_buffer: Object,
-    last_command_buffer_index: Option<u64>,
+    frames: [FrameSlot; FRAMES_IN_FLIGHT],
+    /// Next slot to acquire; advances only after an actual submission.
+    frame_slot: usize,
+    counter_set: Option<timing::CounterSet>,
     gpu_timing_enabled: bool,
     gpu_timings: VecDeque<GpuFrameTiming>,
     pending_presents: VecDeque<PendingPresent>,
@@ -170,7 +183,7 @@ impl<'window> ClearSurface<'window> {
             objc::void_object(layer, c"setDevice:", device);
             objc::void_usize(layer, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
             objc::void_bool(layer, c"setFramebufferOnly:", true);
-            objc::void_usize(layer, c"setMaximumDrawableCount:", 3);
+            objc::void_usize(layer, c"setMaximumDrawableCount:", FRAMES_IN_FLIGHT);
             objc::void_bool(layer, c"setDisplaySyncEnabled:", true);
             objc::void_bool(layer, c"setAllowsNextDrawableTimeout:", true);
             configure_layer(layer, metrics);
@@ -192,8 +205,9 @@ impl<'window> ClearSurface<'window> {
                 layer,
                 queue,
                 info,
-                last_command_buffer: ptr::null_mut(),
-                last_command_buffer_index: None,
+                frames: core::array::from_fn(|_| FrameSlot::default()),
+                frame_slot: 0,
+                counter_set: timing::CounterSet::find(device),
                 gpu_timing_enabled: false,
                 gpu_timings: VecDeque::new(),
                 pending_presents: VecDeque::new(),
@@ -207,8 +221,32 @@ impl<'window> ClearSurface<'window> {
         self.info
     }
 
-    pub(crate) fn enable_gpu_timing(&mut self, enabled: bool) {
+    pub(crate) fn enable_gpu_timing(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        if enabled
+            && !self.gpu_timing_enabled
+            && let Some(set) = &self.counter_set
+        {
+            let counters = (0..FRAMES_IN_FLIGHT)
+                .map(|_| timing::CounterSamples::new(self.device, set))
+                .collect::<Result<Vec<_>, _>>()?;
+            for (frame, counters) in self.frames.iter_mut().zip(counters) {
+                frame.counters = Some(counters);
+            }
+        }
+        if self.gpu_timing_enabled != enabled {
+            self.gpu_timings.clear();
+            // Never attribute an earlier capture's pending frames to a new capture.
+            for frame in &mut self.frames {
+                frame.timing_index = None;
+            }
+        }
         self.gpu_timing_enabled = enabled;
+        if !enabled {
+            for frame in &mut self.frames {
+                frame.counters = None;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn take_gpu_timings(&mut self) -> GpuTimingFeedback {
@@ -235,7 +273,22 @@ impl<'window> ClearSurface<'window> {
         &mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<MetalFrameToken>, GraphicsError> {
-        self.finish_last_submission()?;
+        // Harvest completed frames without blocking. Only reuse of the next slot
+        // waits; neither drawable unavailability nor abandonment advances the ring.
+        for offset in 0..FRAMES_IN_FLIGHT {
+            let slot = (self.frame_slot + offset) % FRAMES_IN_FLIGHT;
+            let command = self.frames[slot].command_buffer;
+            if !command.is_null() {
+                // SAFETY: The slot owns a retain on this submitted command buffer.
+                if unsafe { objc::usize_value(command, c"status") } < 4 {
+                    // Preserve submission order even if this command completes
+                    // while a later slot is being inspected.
+                    break;
+                }
+                self.finish_frame(slot)?;
+            }
+        }
+        self.finish_frame(self.frame_slot)?;
         let Ok(extent) = surface_extent(metrics) else {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
         };
@@ -286,6 +339,9 @@ impl<'window> ClearSurface<'window> {
             })?;
         }
 
+        if let Some(counters) = &self.frames[self.frame_slot].counters {
+            counters.begin(self.device);
+        }
         Ok(FrameAcquire::Ready(MetalFrameToken {
             drawable,
             pool,
@@ -294,7 +350,7 @@ impl<'window> ClearSurface<'window> {
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
-        let result = self.finish_last_submission();
+        let result = self.finish_all_frames();
         self.destroy_native_objects();
         result
     }
@@ -366,16 +422,18 @@ impl<'window> ClearSurface<'window> {
     pub(crate) unsafe fn present_commit(&mut self, command_buffer: Object, drawable: Object) {
         // SAFETY: The caller guarantees live objects; `addPresentedHandler:` precedes
         // presentation as Metal requires, and the retain is balanced by
-        // `finish_last_submission`.
+        // `finish_frame`.
         unsafe {
             let drawable_id = objc::usize_value(drawable, c"drawableID");
             objc::void_object(drawable, c"addPresentedHandler:", presented_handler_block());
             objc::void_object(command_buffer, c"presentDrawable:", drawable);
             objc::void(command_buffer, c"retain");
             objc::void(command_buffer, c"commit");
-            self.last_command_buffer = command_buffer;
-            self.last_command_buffer_index =
+            debug_assert!(self.frames[self.frame_slot].command_buffer.is_null());
+            self.frames[self.frame_slot].command_buffer = command_buffer;
+            self.frames[self.frame_slot].timing_index =
                 self.gpu_timing_enabled.then_some(self.presented_count);
+            self.frame_slot = (self.frame_slot + 1) % FRAMES_IN_FLIGHT;
             if self.pending_presents.len() >= PRESENT_FEEDBACK_CAP {
                 self.pending_presents.pop_front();
             }
@@ -426,12 +484,36 @@ impl<'window> ClearSurface<'window> {
         PresentFeedback::Reported(frames)
     }
 
-    fn finish_last_submission(&mut self) -> Result<(), GraphicsError> {
-        if self.last_command_buffer.is_null() {
+    fn attach_timing(&self, descriptor: Object, pass: usize) {
+        if let Some(counters) = &self.frames[self.frame_slot].counters {
+            counters.attach(descriptor, pass);
+        }
+    }
+
+    fn frame_slot(&self) -> usize {
+        self.frame_slot
+    }
+
+    fn finish_all_frames(&mut self) -> Result<(), GraphicsError> {
+        let mut result = Ok(());
+        for offset in 0..FRAMES_IN_FLIGHT {
+            let slot = (self.frame_slot + offset) % FRAMES_IN_FLIGHT;
+            // Drain every retain even when an earlier command buffer failed.
+            let completed = self.finish_frame(slot);
+            if result.is_ok() {
+                result = completed;
+            }
+        }
+        result
+    }
+
+    fn finish_frame(&mut self, slot: usize) -> Result<(), GraphicsError> {
+        let command_buffer =
+            core::mem::replace(&mut self.frames[slot].command_buffer, ptr::null_mut());
+        let frame_index = self.frames[slot].timing_index.take();
+        if command_buffer.is_null() {
             return Ok(());
         }
-        let command_buffer = core::mem::replace(&mut self.last_command_buffer, ptr::null_mut());
-        let frame_index = self.last_command_buffer_index.take();
         // SAFETY: This surface owns one retain on a committed command buffer.
         unsafe { objc::void(command_buffer, c"waitUntilCompleted") };
         // MTLCommandBufferStatusCompleted is 4; status 5 is an error.
@@ -448,13 +530,15 @@ impl<'window> ClearSurface<'window> {
                     if self.gpu_timings.len() >= PRESENT_FEEDBACK_CAP {
                         self.gpu_timings.pop_front();
                     }
-                    self.gpu_timings.push_back(GpuFrameTiming::new(
-                        frame_index,
-                        std::vec![GpuScopeTiming::new(
-                            GpuTimingScope::Frame,
-                            Duration::from_secs_f64(end - start),
-                        )],
-                    ));
+                    let mut scopes = std::vec![GpuScopeTiming::new(
+                        GpuTimingScope::Frame,
+                        Duration::from_secs_f64(end - start)
+                    )];
+                    if let Some(counters) = &self.frames[slot].counters {
+                        scopes.extend(counters.resolve(self.device));
+                    }
+                    self.gpu_timings
+                        .push_back(GpuFrameTiming::new(frame_index, scopes));
                 }
             }
             Ok(())
@@ -472,6 +556,10 @@ impl<'window> ClearSurface<'window> {
     }
 
     fn destroy_native_objects(&mut self) {
+        for frame in &mut self.frames {
+            frame.counters = None;
+        }
+        self.counter_set = None;
         // Purge this layer's undrained feedback. A handler still in flight can land after the
         // purge; the bounded queue and per-drawable-ID matching keep that stale remainder inert.
         if !self.layer.is_null()
@@ -512,7 +600,7 @@ pub(crate) use textured::{TexturedFrameToken, TexturedSession};
 
 impl Drop for ClearSurface<'_> {
     fn drop(&mut self) {
-        let _ = self.finish_last_submission();
+        let _ = self.finish_all_frames();
         self.destroy_native_objects();
     }
 }

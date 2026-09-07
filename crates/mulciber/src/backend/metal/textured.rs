@@ -42,6 +42,7 @@ const VERTEX_FORMAT_UINT4: usize = 39;
 /// [`crate::MATERIAL_SLOT_LIMIT`], so this index cannot collide with a WGSL buffer binding.
 const MATERIAL_VERTEX_BUFFER_INDEX: usize = 30;
 const VERTEX_STEP_FUNCTION_PER_INSTANCE: usize = 2;
+const LOAD_ACTION_LOAD: usize = 1;
 const LOAD_ACTION_CLEAR: usize = 2;
 const STORE_ACTION_STORE: usize = 1;
 const STORE_ACTION_DONT_CARE: usize = 0;
@@ -312,7 +313,7 @@ enum ResolvedGeometry {
 enum PreparedScene<'resources> {
     Draws(&'resources [TexturedSceneDraw<'resources>]),
     Instances,
-    Materials(&'resources [MaterialRecord<'resources>]),
+    Materials(&'resources [MaterialRecord<'resources>], Option<usize>),
 }
 
 pub(crate) struct TexturedFrameToken(MetalFrameToken);
@@ -889,13 +890,14 @@ impl<'window> TexturedSession<'window> {
             }
         };
         let multisample_color = if self.sample_count == 4 {
-            match create_target_texture(
+            match create_target_texture_with_storage(
                 self.surface.device,
                 PIXEL_FORMAT_BGRA8_UNORM_SRGB,
                 width,
                 height,
                 4,
                 TEXTURE_USAGE_RENDER_TARGET,
+                false,
             ) {
                 Ok(color) => color,
                 Err(failure) => {
@@ -1111,7 +1113,7 @@ impl<'window> TexturedSession<'window> {
         self.prepare_material_scene(records, &[], shadow)?;
         self.encode_present(
             token,
-            PreparedScene::Materials(records),
+            PreparedScene::Materials(records, None),
             shadow,
             target,
             clear,
@@ -1126,6 +1128,7 @@ impl<'window> TexturedSession<'window> {
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         overlay: &[MaterialRecord<'_>],
+        foreground_start: Option<usize>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         uniform: &[u8],
@@ -1147,7 +1150,7 @@ impl<'window> TexturedSession<'window> {
         self.prepare_material_scene(records, overlay, shadow)?;
         self.encode_postprocessed_present(
             token,
-            PreparedScene::Materials(records),
+            PreparedScene::Materials(records, foreground_start),
             shadow,
             overlay,
             postprocess_pipeline,
@@ -1989,7 +1992,7 @@ impl<'window> TexturedSession<'window> {
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal cube command buffer",
             )?;
-            if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
+            if let (Some(shadow), PreparedScene::Materials(records, _)) = (shadow, scene) {
                 self.encode_shadow_prepass(
                     command,
                     shadow,
@@ -2052,7 +2055,11 @@ impl<'window> TexturedSession<'window> {
                 objc::void_usize(
                     scene_color,
                     c"setStoreAction:",
-                    STORE_ACTION_MULTISAMPLE_RESOLVE,
+                    if matches!(scene, PreparedScene::Materials(_, Some(_))) {
+                        STORE_ACTION_STORE
+                    } else {
+                        STORE_ACTION_MULTISAMPLE_RESOLVE
+                    },
                 );
             } else {
                 objc::void_object(scene_color, c"setTexture:", targets.scene_color);
@@ -2112,7 +2119,7 @@ impl<'window> TexturedSession<'window> {
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal postprocess command buffer",
             )?;
-            if let (Some(shadow), PreparedScene::Materials(records)) = (shadow, scene) {
+            if let (Some(shadow), PreparedScene::Materials(records, _)) = (shadow, scene) {
                 self.encode_shadow_prepass(
                     command,
                     shadow,
@@ -2130,6 +2137,40 @@ impl<'window> TexturedSession<'window> {
             )?;
             self.encode_prepared_scene(scene_encoder, scene)?;
             objc::void(scene_encoder, c"endEncoding");
+
+            if let PreparedScene::Materials(records, Some(start)) = scene {
+                // The color survives the first encoder; depth is cleared again.
+                // MSAA color is private storage so LOAD is legal across encoders.
+                objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_LOAD);
+                if self.sample_count == 4 {
+                    objc::void_usize(
+                        scene_color,
+                        c"setStoreAction:",
+                        STORE_ACTION_MULTISAMPLE_RESOLVE,
+                    );
+                }
+                self.surface
+                    .attach_timing(scene_pass, super::timing::FOREGROUND);
+                let foreground_encoder = required(
+                    objc::object_object(
+                        command,
+                        c"renderCommandEncoderWithDescriptor:",
+                        scene_pass,
+                    ),
+                    "Metal foreground render encoder",
+                )?;
+                let world = &records[..start];
+                self.encode_material_records(
+                    foreground_encoder,
+                    &records[start..],
+                    start,
+                    material_storage_len(world),
+                    transient_geometry_len(world),
+                    material_instances_len(world),
+                    false,
+                )?;
+                objc::void(foreground_encoder, c"endEncoding");
+            }
 
             let post_encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", post_pass),
@@ -2169,7 +2210,7 @@ impl<'window> TexturedSession<'window> {
                 0,
                 3,
             );
-            if let (false, PreparedScene::Materials(records)) = (overlay.is_empty(), scene) {
+            if let (false, PreparedScene::Materials(records, _)) = (overlay.is_empty(), scene) {
                 self.encode_material_records(
                     post_encoder,
                     overlay,
@@ -2242,8 +2283,9 @@ impl<'window> TexturedSession<'window> {
                         );
                     }
                 }
-                PreparedScene::Materials(records) => {
-                    self.encode_material_records(encoder, records, 0, 0, 0, 0, false)?;
+                PreparedScene::Materials(records, foreground_start) => {
+                    let world = &records[..foreground_start.unwrap_or(records.len())];
+                    self.encode_material_records(encoder, world, 0, 0, 0, 0, false)?;
                 }
                 PreparedScene::Instances => {
                     for batch in &self.resolved_instance_batches {
@@ -3718,6 +3760,26 @@ fn create_target_texture(
     sample_count: usize,
     usage: usize,
 ) -> Result<Object, GraphicsError> {
+    create_target_texture_with_storage(
+        device,
+        format,
+        width,
+        height,
+        sample_count,
+        usage,
+        sample_count == 4,
+    )
+}
+
+fn create_target_texture_with_storage(
+    device: Object,
+    format: usize,
+    width: usize,
+    height: usize,
+    sample_count: usize,
+    usage: usize,
+    memoryless: bool,
+) -> Result<Object, GraphicsError> {
     unsafe {
         let descriptor = required(
             objc::object_three_usizes_bool(
@@ -3733,10 +3795,16 @@ fn create_target_texture(
         if sample_count == 4 {
             objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_2D_MULTISAMPLE);
             objc::void_usize(descriptor, c"setSampleCount:", 4);
-            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_MEMORYLESS);
-        } else {
-            objc::void_usize(descriptor, c"setStorageMode:", STORAGE_MODE_PRIVATE);
         }
+        objc::void_usize(
+            descriptor,
+            c"setStorageMode:",
+            if memoryless {
+                STORAGE_MODE_MEMORYLESS
+            } else {
+                STORAGE_MODE_PRIVATE
+            },
+        );
         objc::void_usize(descriptor, c"setUsage:", usage);
         required(
             objc::object_object(device, c"newTextureWithDescriptor:", descriptor),

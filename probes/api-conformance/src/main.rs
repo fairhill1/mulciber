@@ -1646,6 +1646,9 @@ impl<'window> Cases<'window> {
                     storage: &[],
                     instances: &[],
                 }];
+                // Equal-depth geometry in separate groups exercises a fresh foreground
+                // depth target while retaining postprocess and overlay composition.
+                let records = [records[0], records[0]];
                 let overlay_records = [MaterialRecord {
                     pipeline: &overlay_pipeline,
                     geometry: GeometrySource::Mesh(
@@ -1661,7 +1664,10 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        content: SceneContent::Material(&records),
+                        content: SceneContent::MaterialWithForeground {
+                            records: &records,
+                            foreground_start: 1,
+                        },
                         output: SceneOutput::Postprocessed {
                             pipeline: self
                                 .postprocess_pipeline
@@ -1680,6 +1686,7 @@ impl<'window> Cases<'window> {
                 )?;
                 assert_presented(disposition)?;
                 self.pass("postprocessed material presentation");
+                self.pass("depth-isolated foreground material presentation");
                 self.pass("overlay records drawn after the postprocess resolve");
                 self.pass("partial mip chain rejected");
                 self.pass("mip level byte mismatch rejected");

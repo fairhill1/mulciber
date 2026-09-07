@@ -930,24 +930,7 @@ impl Queue<'_> {
         frame: Frame<'_>,
         submission: SceneSubmission<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
-        if submission.shadow.is_some() && !matches!(submission.content, SceneContent::Material(_)) {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                "the shadow pass composes with material scene content only",
-            ));
-        }
-        if submission.overlay.is_some()
-            && !matches!(
-                (submission.content, submission.output),
-                (SceneContent::Material(_), SceneOutput::Postprocessed { .. })
-            )
-        {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                "the overlay pass composes with material scene content and postprocessed output \
-                 only",
-            ));
-        }
+        let foreground_start = validate_scene_recipe(&submission)?;
         match (submission.content, submission.output) {
             (SceneContent::Textured(draws), SceneOutput::Direct(targets)) => self
                 .draw_textured_scene_and_present(
@@ -997,6 +980,12 @@ impl Queue<'_> {
                 uniform,
                 submission.clear,
             ),
+            (SceneContent::MaterialWithForeground { .. }, SceneOutput::Direct(_)) => {
+                Err(GraphicsError::with_kind(
+                    GraphicsErrorKind::Unsupported,
+                    "foreground material content requires postprocessed output",
+                ))
+            }
             (SceneContent::Material(records), SceneOutput::Direct(targets)) => self
                 .draw_material_scene_and_present(
                     frame,
@@ -1006,7 +995,8 @@ impl Queue<'_> {
                     submission.clear,
                 ),
             (
-                SceneContent::Material(records),
+                SceneContent::Material(records)
+                | SceneContent::MaterialWithForeground { records, .. },
                 SceneOutput::Postprocessed {
                     pipeline,
                     targets,
@@ -1017,6 +1007,7 @@ impl Queue<'_> {
                 records,
                 submission.shadow,
                 submission.overlay,
+                foreground_start,
                 pipeline,
                 targets,
                 uniform,
@@ -1249,6 +1240,7 @@ impl Queue<'_> {
         records: &[MaterialRecord<'_>],
         shadow: Option<ShadowPrepass<'_>>,
         overlay: Option<&[MaterialRecord<'_>]>,
+        foreground_start: Option<usize>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
         uniform: &[u8],
@@ -1276,6 +1268,7 @@ impl Queue<'_> {
             records,
             shadow.as_ref(),
             overlay.unwrap_or(&[]),
+            foreground_start,
             postprocess_pipeline.lease.id,
             targets.lease.id,
             uniform,
@@ -3170,6 +3163,19 @@ pub enum SceneContent<'resources> {
     Instanced(&'resources [TexturedInstanceBatch<'resources>]),
     /// Non-empty application-authored material records encoded in slice order.
     Material(&'resources [MaterialRecord<'resources>]),
+    /// Ordered world and foreground records, separated by a fresh depth clear.
+    ///
+    /// Records before `foreground_start` draw the world. The remaining records draw
+    /// over its color with independent depth, before postprocessing and the HUD overlay.
+    /// Both groups must be non-empty and use the same depth comparison direction.
+    /// The foreground retains scene resolution, MSAA, material bindings and shadow sampling.
+    /// Requires [`SceneOutput::Postprocessed`].
+    MaterialWithForeground {
+        /// World records followed by foreground records; staged once in this order.
+        records: &'resources [MaterialRecord<'resources>],
+        /// Index of the first foreground record, strictly inside `records`.
+        foreground_start: usize,
+    },
 }
 
 /// Output path for one [`SceneSubmission`].
@@ -3869,4 +3875,69 @@ fn reclaim_lazy_resources(shared: &Shared<'_>) -> Result<(), GraphicsError> {
         return Err(error);
     }
     Ok(())
+}
+
+fn validate_scene_recipe(submission: &SceneSubmission<'_>) -> Result<Option<usize>, GraphicsError> {
+    if submission.shadow.is_some()
+        && !matches!(
+            submission.content,
+            SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. }
+        )
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "the shadow pass composes with material scene content only",
+        ));
+    }
+    if submission.overlay.is_some()
+        && !matches!(
+            (submission.content, submission.output),
+            (
+                SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. },
+                SceneOutput::Postprocessed { .. }
+            )
+        )
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "the overlay pass composes with material scene content and postprocessed output \
+                 only",
+        ));
+    }
+    match submission.content {
+        SceneContent::MaterialWithForeground {
+            records,
+            foreground_start,
+        } => {
+            validate_foreground_start(records.len(), foreground_start)?;
+            Ok(Some(foreground_start))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn validate_foreground_start(
+    record_count: usize,
+    foreground_start: usize,
+) -> Result<(), GraphicsError> {
+    if foreground_start == 0 || foreground_start >= record_count {
+        return Err(GraphicsError::invalid_request(
+            "foreground split must leave non-empty world and foreground material records",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod foreground_tests {
+    use super::validate_foreground_start;
+
+    #[test]
+    fn foreground_requires_world_and_foreground_records() {
+        assert!(validate_foreground_start(2, 1).is_ok());
+        assert!(validate_foreground_start(10, 9).is_ok());
+        for (count, split) in [(0, 0), (1, 0), (1, 1), (3, 0), (3, 3), (3, usize::MAX)] {
+            assert!(validate_foreground_start(count, split).is_err());
+        }
+    }
 }

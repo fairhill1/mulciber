@@ -45,3 +45,11 @@ uses. Explicit destruction is fallible; shutdown waits and checks every outstand
 The API is experimental and may change without compatibility guarantees. Design contracts,
 decision records, runnable examples, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).
+
+## Depth-isolated first-person geometry
+
+`SceneContent::MaterialWithForeground { records, foreground_start }` draws the world
+records before the split, preserves color, clears depth, and draws the foreground
+records before postprocessing and the HUD overlay. Both groups must be non-empty
+and use the same depth comparison direction. This recipe requires postprocessed
+output and retains material lighting, shadow sampling, scene resolution and MSAA.

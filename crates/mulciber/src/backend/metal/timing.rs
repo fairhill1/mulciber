@@ -9,7 +9,8 @@ use core::{cell::Cell, ptr};
 use std::{time::Duration, vec::Vec};
 
 pub(super) const SCENE: usize = SHADOW_MAP_LAYER_LIMIT as usize;
-pub(super) const POSTPROCESS: usize = SCENE + 1;
+pub(super) const FOREGROUND: usize = SCENE + 1;
+pub(super) const POSTPROCESS: usize = FOREGROUND + 1;
 const PASSES: usize = POSTPROCESS + 1;
 const SAMPLES: usize = PASSES * 4;
 
@@ -184,7 +185,13 @@ impl CounterSamples {
             let samples = core::array::from_fn(|index| unsafe {
                 bytes.add(pass * 4 + index).read_unaligned()
             });
-            let group = if pass < SCENE { 0 } else { pass - SCENE + 1 };
+            let group = if pass < SCENE {
+                0
+            } else if pass < POSTPROCESS {
+                1
+            } else {
+                2
+            };
             if pass_duration(samples, cpu_span, gpu_span).is_none() {
                 invalid[group] = true;
                 continue;

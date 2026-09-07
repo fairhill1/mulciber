@@ -439,3 +439,11 @@ device recovery.
 - [ ] Add supported Linux input and runtime evidence, then perform the full Gate 5 lifecycle
   comparison (first physical KDE-tier input and Forge Run runtime evidence recorded 2026-07-20;
   the remaining Linux coverage in the input contract and the comparison itself remain open).
+
+### Foreground material pass (headless checkpoint)
+
+The first-person weapon workload adds a depth-isolated foreground group before
+postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
+[material contract](material-contract.md)
+for ordering, MSAA storage, and validation limits. Physical rendering and visual
+validation of this addition remain outstanding.

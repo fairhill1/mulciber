@@ -282,3 +282,28 @@ Validation, and the material-scene example ran validation-clean (Metal, four sam
 scripted titlebar close. The Vulkan peer implementation passed check and clippy for the Windows
 target from the same host; its physical validation-layer, visual, and lifecycle evidence
 remains outstanding, per the [macOS runbook](macos-validation.md).
+
+## Depth-isolated foreground checkpoint
+
+`SceneContent::MaterialWithForeground` splits one ordered material record list into
+non-empty world and foreground groups. The engine preserves world color, clears depth,
+and draws the foreground before postprocessing and the native-resolution HUD overlay.
+Both groups retain the scene's resolution, sample count, material/shadow bindings and
+must use the same depth comparison direction. Direct output is not supported by this recipe.
+
+Vulkan uses a second dynamic-rendering scope with color LOAD, depth CLEAR, and explicit
+attachment reuse barriers. Metal uses a second render encoder; postprocessed MSAA color
+uses private storage so its samples survive the first encoder, and resolves after the
+foreground. Direct-output MSAA color and depth targets retain their memoryless policy.
+The foreground contributes to the existing scene GPU timing scope on both backends.
+
+Validation for this checkpoint is headless: engine unit tests, native Vulkan checks and
+lints, and Metal cross-target checks/lints. The conformance probe includes foreground
+plus postprocess and HUD composition, but has not been executed for this change. Native
+validation-layer execution and visual confirmation at 1x/4x MSAA, scaled rendering,
+resize, and near-wall weapon poses remain unverified; no window was opened.
+
+Operator feedback from Isle of Rán confirms the sword foreground fix works visually.
+The bow and nocked arrow now use the same path and pass the game renderer tests,
+but have no separate visual confirmation. This does not add native API-validation,
+MSAA-mode, resize, or Metal hardware evidence.

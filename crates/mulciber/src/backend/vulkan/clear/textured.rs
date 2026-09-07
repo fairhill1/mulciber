@@ -502,7 +502,7 @@ enum ShadowView {
 enum PreparedScene {
     Draws,
     Instances,
-    Materials,
+    Materials(Option<usize>),
 }
 
 pub(crate) struct TexturedSession<'window> {
@@ -1365,7 +1365,7 @@ impl<'window> TexturedSession<'window> {
         self.record_draw(
             token.image_index,
             target_index,
-            PreparedScene::Materials,
+            PreparedScene::Materials(None),
             clear,
             depth_clear,
         )?;
@@ -1379,6 +1379,7 @@ impl<'window> TexturedSession<'window> {
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         overlay: &[MaterialRecord<'_>],
+        foreground_start: Option<usize>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         uniform: &[u8],
@@ -1401,7 +1402,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_pipeline_index,
             target_index,
             postprocess_descriptor,
-            PreparedScene::Materials,
+            PreparedScene::Materials(foreground_start),
             uniform,
             clear,
             depth_clear,
@@ -3712,6 +3713,71 @@ impl<'window> TexturedSession<'window> {
                 self.surface.frame_command_buffer(),
             );
         }
+        if let PreparedScene::Materials(Some(start)) = scene {
+            // Preserve the world color (including MSAA samples), discard its depth,
+            // and synchronize attachment reuse before the foreground rendering scope.
+            let color = multisample_color.unwrap_or(scene_color);
+            let color_barrier = image_barrier(
+                color.handle,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                    | vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                color_subresource_range(),
+            );
+            let depth_barrier = image_barrier(
+                target_depth.handle,
+                vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                    | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                    | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                    | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                depth_subresource_range(),
+            );
+            // The resolve destination was also written by the world pass.
+            let resolve_barrier = image_barrier(
+                scene_color.handle,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                color_subresource_range(),
+            );
+            let barriers = [color_barrier, depth_barrier, resolve_barrier];
+            pipeline_barriers(
+                &self.surface,
+                self.surface.frame_command_buffer(),
+                &barriers[..if multisample_color.is_some() { 3 } else { 2 }],
+            );
+            let foreground_color = vk::VkRenderingAttachmentInfo {
+                loadOp: vk::VK_ATTACHMENT_LOAD_OP_LOAD,
+                ..scene_attachment
+            };
+            let foreground_rendering = vk::VkRenderingInfo {
+                pColorAttachments: &raw const foreground_color,
+                ..scene_rendering
+            };
+            unsafe {
+                let functions = &device.functions;
+                functions.cmd_begin_rendering.expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                    &raw const foreground_rendering,
+                );
+                self.record_material_draws(&self.resolved_material_draws[start..], false);
+                functions.cmd_end_rendering.expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                );
+            }
+        }
         self.end_gpu_region(SCENE_QUERY_START + 1);
 
         let sample_scene = image_barrier(
@@ -3796,7 +3862,8 @@ impl<'window> TexturedSession<'window> {
                 0,
                 0,
             );
-            if matches!(scene, PreparedScene::Materials) && !self.resolved_overlay_draws.is_empty()
+            if matches!(scene, PreparedScene::Materials(_))
+                && !self.resolved_overlay_draws.is_empty()
             {
                 self.record_material_draws(&self.resolved_overlay_draws, true);
             }
@@ -3993,8 +4060,12 @@ impl<'window> TexturedSession<'window> {
                         );
                     }
                 }
-                PreparedScene::Materials => {
-                    self.record_material_draws(&self.resolved_material_draws, false);
+                PreparedScene::Materials(foreground_start) => {
+                    self.record_material_draws(
+                        &self.resolved_material_draws
+                            [..foreground_start.unwrap_or(self.resolved_material_draws.len())],
+                        false,
+                    );
                 }
                 PreparedScene::Instances => {
                     let dynamic_offset = 0_u32;

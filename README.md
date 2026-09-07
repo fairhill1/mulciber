@@ -174,3 +174,11 @@ documented in the [pipeline cache policy](docs/vulkan-pipeline-cache.md),
 - [macOS](docs/macos-validation.md), [Windows](docs/windows-validation.md), and
   [Linux](docs/linux-validation.md) validation runbooks
 - [Pinned references](docs/references.md)
+
+### Foreground material pass (headless checkpoint)
+
+The first-person weapon workload adds a depth-isolated foreground group before
+postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
+[material contract](docs/material-contract.md)
+for ordering, MSAA storage, and validation limits. Physical rendering and visual
+validation of this addition remain outstanding.

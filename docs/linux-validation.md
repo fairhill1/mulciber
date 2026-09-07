@@ -958,3 +958,11 @@ presentation evidence above establishes only the explicitly listed KDE Plasma ru
 Wayland and XWayland lifecycle interaction, unlocked pacing on both paths, and locked-session
 retry behavior on X11. Native Xorg, display changes, input, multi-display, and other
 compositor/driver/hardware combinations are still required.
+
+### Foreground material pass (headless checkpoint)
+
+The first-person weapon workload adds a depth-isolated foreground group before
+postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
+[material contract](material-contract.md)
+for ordering, MSAA storage, and validation limits. Physical rendering and visual
+validation of this addition remain outstanding.

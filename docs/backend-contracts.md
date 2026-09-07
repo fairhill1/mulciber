@@ -182,3 +182,11 @@ is not a resolution by itself.
 This ledger should be updated when evidence changes. A completed probe checkbox does not automatically
 create a public abstraction; it narrows the remaining design space by establishing another native
 contract that Mulciber must preserve.
+
+### Foreground material pass (headless checkpoint)
+
+The first-person weapon workload adds a depth-isolated foreground group before
+postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
+[material contract](material-contract.md)
+for ordering, MSAA storage, and validation limits. Physical rendering and visual
+validation of this addition remain outstanding.

@@ -53,3 +53,7 @@ records before the split, preserves color, clears depth, and draws the foregroun
 records before postprocessing and the HUD overlay. Both groups must be non-empty
 and use the same depth comparison direction. This recipe requires postprocessed
 output and retains material lighting, shadow sampling, scene resolution and MSAA.
+
+Material and shadow records expose their per-record instance upload cap through
+`mulciber::INSTANCE_SUPPLY_SIZE_LIMIT`. Split larger supplies on whole-instance
+boundaries and submit multiple records using the same mesh and pipeline.

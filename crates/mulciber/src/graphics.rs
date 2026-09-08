@@ -2416,9 +2416,19 @@ pub const TRANSIENT_GEOMETRY_SIZE_LIMIT: u32 = 4_194_304;
 
 /// Largest supported per-record instance supply in bytes.
 ///
-/// Four mebibytes carries 65,536 four-by-four float matrices in one record — far past any
-/// practical single-submission scatter — while keeping the frame-transient instance region
-/// bounded.
+/// Four mebibytes carries 65,536 four-by-four float matrices in one record.
+/// Larger supplies must be split between records, on whole-instance boundaries;
+/// this limit applies independently to material and shadow records.
+///
+/// ```
+/// use mulciber::INSTANCE_SUPPLY_SIZE_LIMIT;
+///
+/// let stride = 40_usize;
+/// let batch_bytes = INSTANCE_SUPPLY_SIZE_LIMIT as usize / stride * stride;
+/// assert!(batch_bytes > 0);
+/// assert!(batch_bytes <= INSTANCE_SUPPLY_SIZE_LIMIT as usize);
+/// assert_eq!(batch_bytes % stride, 0);
+/// ```
 pub const INSTANCE_SUPPLY_SIZE_LIMIT: u32 = 4_194_304;
 
 /// Largest supported material binding slot and vertex attribute location.

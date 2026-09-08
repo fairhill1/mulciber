@@ -1,7 +1,7 @@
 mod hdr;
 mod scene_depth;
 pub(crate) use hdr::bloom_extents;
-use hdr::{validate_bloom_filter_interface, validate_bloom_interface, validate_hdr_pair};
+use hdr::{validate_bloom_filter_interface, validate_hdr_pair};
 use scene_depth::validate_scene_depth_order;
 
 use core::cell::RefCell;
@@ -496,7 +496,14 @@ impl Device<'_> {
         prefilter: ShaderArtifact<'_>,
         downsample: ShaderArtifact<'_>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
-        self.create_hdr_pipeline(descriptor, prefilter, downsample, None)
+        self.create_hdr_composite_pipeline(
+            descriptor,
+            Some(BloomShaders {
+                prefilter,
+                downsample,
+            }),
+            None,
+        )
     }
 
     /// Adds application-authored scattering and additive depth-aware upscaling to HDR.
@@ -512,37 +519,62 @@ impl Device<'_> {
         downsample: ShaderArtifact<'_>,
         volume: VolumetricShaders<'_>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
-        for (shader, msaa, composite) in [
-            (volume.scatter, false, false),
-            (volume.scatter_msaa, true, false),
-            (volume.composite, false, true),
-            (volume.composite_msaa, true, true),
-        ] {
-            hdr::validate_volume_interface(shader, descriptor.uniform_size, msaa, composite)?;
-        }
-        self.create_hdr_pipeline(descriptor, prefilter, downsample, Some(volume))
+        self.create_hdr_composite_pipeline(
+            descriptor,
+            Some(BloomShaders {
+                prefilter,
+                downsample,
+            }),
+            Some(volume),
+        )
     }
 
-    fn create_hdr_pipeline(
+    /// Creates an HDR tone-map composite with independently optional bloom and scattering.
+    ///
+    /// Absent effects create no child pipelines and execute no filter, scattering or upscale
+    /// passes. Applications can cache the desired combinations and select a pipeline per frame.
+    /// Without bloom, the composite must declare no bindings beyond its ordinary 0/1/2 inputs;
+    /// with bloom, it must declare all six textures at bindings 3 through 8. Targets remain HDR
+    /// in every combination and may be shared; their allocated bloom storage is retained.
+    /// Scattering retains its material-content and cascaded-shadow submission requirements.
+    ///
+    /// # Errors
+    /// Rejects mismatched stage interfaces, uniform sizes or unsupported native resources.
+    pub fn create_hdr_composite_pipeline(
         &self,
         descriptor: PostprocessPipelineDescriptor<'_>,
-        prefilter: ShaderArtifact<'_>,
-        downsample: ShaderArtifact<'_>,
+        bloom: Option<BloomShaders<'_>>,
         volume: Option<VolumetricShaders<'_>>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
         validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
-        validate_bloom_interface(descriptor.shader, descriptor.uniform_size)?;
-        validate_postprocess_interface(prefilter, None)?;
-        validate_postprocess_interface(downsample, None)?;
-        validate_bloom_filter_interface(prefilter)?;
-        validate_bloom_filter_interface(downsample)?;
+        hdr::validate_optional_bloom_interface(
+            descriptor.shader,
+            descriptor.uniform_size,
+            bloom.is_some(),
+        )?;
+        if let Some(filters) = bloom {
+            for shader in [filters.prefilter, filters.downsample] {
+                validate_postprocess_interface(shader, None)?;
+                validate_bloom_filter_interface(shader)?;
+            }
+        }
+        if let Some(volume) = volume {
+            for (shader, msaa, composite) in [
+                (volume.scatter, false, false),
+                (volume.scatter_msaa, true, false),
+                (volume.composite, false, true),
+                (volume.composite_msaa, true, true),
+            ] {
+                hdr::validate_volume_interface(shader, descriptor.uniform_size, msaa, composite)?;
+            }
+        }
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
         let config = PostprocessPipelineConfig {
             volume,
             volume_stage: crate::graphics::VolumeStage::None,
             samples: 1,
             uniform_size,
-            bloom: Some([prefilter, downsample]),
+            bloom: bloom.map(|filters| [filters.prefilter, filters.downsample]),
             hdr_output: false,
         };
         let id =
@@ -3399,6 +3431,15 @@ pub(crate) enum VolumeStage {
     None,
     Scatter,
     Composite,
+}
+
+/// Application-authored filters for the six-level HDR bloom chain.
+#[derive(Clone, Copy)]
+pub struct BloomShaders<'inputs> {
+    /// Extracts highlights from the resolved scene into the first half-resolution level.
+    pub prefilter: ShaderArtifact<'inputs>,
+    /// Filters each preceding level into the next smaller level.
+    pub downsample: ShaderArtifact<'inputs>,
 }
 
 /// Application shaders for shadowed, half-resolution HDR scattering.

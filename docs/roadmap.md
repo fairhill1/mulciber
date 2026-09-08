@@ -472,3 +472,11 @@ HDR materials can sample a world-depth snapshot before volumetric and foreground
 using the existing 1x/4x depth shader support. The first consumer splits the world pass;
 normal depth testing remains active. See the [scene-depth contract](scene-depth-contract.md)
 for ordering, native copy ownership, validation and remaining hardware evidence.
+
+### Optional HDR effects (0.13.8)
+
+The public HDR composite constructor now permits bloom and volumetrics independently, including
+tone mapping with both absent. Existing native empty-stage paths skip the corresponding passes;
+strict reflection rejects missing or unwritten bloom inputs. Headless tests cover stage contracts
+and the consuming game's cached pipeline choices. Native visual/performance validation of these
+new combinations remains outstanding; see [HDR contract](hdr-bloom-contract.md).

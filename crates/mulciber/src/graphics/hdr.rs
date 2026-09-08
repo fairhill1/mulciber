@@ -10,6 +10,27 @@ pub(super) fn validate_hdr_pair(pipeline: bool, target: bool) -> Result<(), Grap
     Ok(())
 }
 
+pub(super) fn validate_optional_bloom_interface(
+    artifact: ShaderArtifact<'_>,
+    uniform_size: Option<u32>,
+    bloom: bool,
+) -> Result<(), GraphicsError> {
+    if bloom {
+        return validate_bloom_interface(artifact, uniform_size);
+    }
+    if artifact
+        .parse_interface()
+        .bindings
+        .iter()
+        .any(|slot| slot.group != 0 || slot.binding > 2)
+    {
+        return Err(GraphicsError::invalid_request(
+            "HDR composite without bloom accepts only bindings 0, 1 and 2",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_bloom_interface(
     shader: ShaderArtifact<'_>,
     uniform_size: Option<u32>,
@@ -229,6 +250,32 @@ mod tests {
         bytes.extend_from_slice(&0x0723_0203_u32.to_le_bytes());
         bytes.extend(interface);
         bytes
+    }
+
+    #[test]
+    fn disabled_bloom_rejects_composites_that_would_read_unwritten_levels() {
+        let texture = shader::INTERFACE_BINDING_SAMPLED_TEXTURE;
+        let sampler = shader::INTERFACE_BINDING_SAMPLER;
+        let mut slots = std::vec![(1, texture), (2, sampler)];
+        let bytes = artifact(&slots);
+        assert!(
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, false)
+                .is_ok()
+        );
+        assert!(
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, true)
+                .is_err()
+        );
+        slots.extend((3..9).map(|slot| (slot, texture)));
+        let bytes = artifact(&slots);
+        assert!(
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, true)
+                .is_ok()
+        );
+        assert!(
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, false)
+                .is_err()
+        );
     }
 
     #[test]

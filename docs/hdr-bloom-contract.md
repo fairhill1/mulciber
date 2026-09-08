@@ -24,6 +24,20 @@ surface-format material pipelines and postprocessing keep their original behavio
   engine owns allocation, pass ordering, dependencies and retirement. No shader compiler is added
   to the runtime. HDR scene storage does not imply HDR monitor output: presentation remains sRGB.
 
+## Independently optional effects
+
+`Device::create_hdr_composite_pipeline` accepts optional `BloomShaders` and `VolumetricShaders`.
+Applications can create all four combinations ahead of time and select one per frame. A disabled
+stage has no child pipelines, descriptors or render passes. The final tone-map and underwater
+composite still runs against the same HDR scene targets. Target-owned bloom storage remains
+allocated for instant re-enabling; optional stages control GPU work, not target allocation.
+
+Without bloom the final shader must omit bindings 3 through 8. Validation rejects a composite
+that would sample unwritten bloom levels. With bloom the complete six-texture contract remains
+required. Existing constructors delegate to this path with their previous effect sets intact.
+Headless interface tests and the consuming game's pipeline-selection/uniform tests cover this
+addition; new native visual or performance evidence is not claimed.
+
 ## Native implementation
 
 Vulkan checks RGBA16Float attachment, blending and linear-filter support, plus image-format-specific

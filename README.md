@@ -207,6 +207,15 @@ using the existing 1x/4x depth shader support. The first consumer splits the wor
 normal depth testing remains active. See the [scene-depth contract](docs/scene-depth-contract.md)
 for ordering, native copy ownership, validation and remaining hardware evidence.
 
+## Metal HDR fixes (0.13.10)
+
+First run of the HDR, scene-depth and volumetric passes on Apple silicon found two Metal-only
+faults. The MSAA scene color carried a resolve texture on intermediate encoders whose store
+action was a plain store, which Metal rejects; only the last writer resolves now. Render target
+creation released an autoreleased texture descriptor, so any target created inside a frame left
+a freed object in the frame pool and every error exit segfaulted instead of returning its
+message. Isle of Rán renders on Metal with both fixes.
+
 ## GPU-local Vulkan meshes (0.13.9)
 
 Immutable meshes now prefer device-local storage with frame-owned staged uploads, bounded retained

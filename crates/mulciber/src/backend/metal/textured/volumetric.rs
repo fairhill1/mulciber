@@ -2,8 +2,8 @@
 use super::{
     GraphicsError, LOAD_ACTION_DONT_CARE, LOAD_ACTION_LOAD, Object, PIXEL_FORMAT_RGBA16_FLOAT,
     PRIMITIVE_TYPE_TRIANGLE, PostprocessPipelineResource, PostprocessTargetResource,
-    STORE_ACTION_MULTISAMPLE_RESOLVE, STORE_ACTION_STORE, TEXTURE_USAGE_RENDER_TARGET,
-    TEXTURE_USAGE_SHADER_READ, create_target_texture, objc, required,
+    STORE_ACTION_STORE, TEXTURE_USAGE_RENDER_TARGET, TEXTURE_USAGE_SHADER_READ,
+    create_target_texture, objc, required, store_scene_color,
 };
 
 pub(super) fn ensure_target(
@@ -60,22 +60,7 @@ pub(super) fn encode(
                 objc::void_usize(color, c"setStoreAction:", STORE_ACTION_STORE);
             } else {
                 objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_LOAD);
-                if target.multisample_color.is_null() {
-                    objc::void_object(color, c"setTexture:", target.scene_color);
-                    objc::void_usize(color, c"setStoreAction:", STORE_ACTION_STORE);
-                } else {
-                    objc::void_object(color, c"setTexture:", target.multisample_color);
-                    objc::void_object(color, c"setResolveTexture:", target.scene_color);
-                    objc::void_usize(
-                        color,
-                        c"setStoreAction:",
-                        if foreground {
-                            STORE_ACTION_STORE
-                        } else {
-                            STORE_ACTION_MULTISAMPLE_RESOLVE
-                        },
-                    );
-                }
+                store_scene_color(color, target, !foreground);
             }
             let encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),

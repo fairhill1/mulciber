@@ -2143,25 +2143,13 @@ impl<'window> TexturedSession<'window> {
                 objc::object_usize(scene_attachments, c"objectAtIndexedSubscript:", 0),
                 "scene color attachment zero",
             )?;
-            if self.sample_count == 4 {
-                objc::void_object(scene_color, c"setTexture:", targets.multisample_color);
-                objc::void_object(scene_color, c"setResolveTexture:", targets.scene_color);
-                objc::void_usize(
-                    scene_color,
-                    c"setStoreAction:",
-                    if snapshot_start.is_some()
-                        || matches!(scene, PreparedScene::Materials(_, Some(_)))
-                        || !volume_shadow.is_null()
-                    {
-                        STORE_ACTION_STORE
-                    } else {
-                        STORE_ACTION_MULTISAMPLE_RESOLVE
-                    },
-                );
-            } else {
-                objc::void_object(scene_color, c"setTexture:", targets.scene_color);
-                objc::void_usize(scene_color, c"setStoreAction:", STORE_ACTION_STORE);
-            }
+            store_scene_color(
+                scene_color,
+                targets,
+                snapshot_start.is_none()
+                    && !matches!(scene, PreparedScene::Materials(_, Some(_)))
+                    && volume_shadow.is_null(),
+            );
             objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_CLEAR);
             let [red, green, blue, alpha] = clear.components();
             objc::void_clear_color(
@@ -2262,12 +2250,8 @@ impl<'window> TexturedSession<'window> {
                 scene_depth::capture(command, targets)?;
                 objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_LOAD);
                 objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_LOAD);
-                if self.sample_count == 4 && foreground.is_none() && volume_shadow.is_null() {
-                    objc::void_usize(
-                        scene_color,
-                        c"setStoreAction:",
-                        STORE_ACTION_MULTISAMPLE_RESOLVE,
-                    );
+                if foreground.is_none() && volume_shadow.is_null() {
+                    store_scene_color(scene_color, targets, true);
                 }
                 // Only the first encoder owns the scene-start timing sample.
                 let next = objc::object_object(scene_pass, c"copyWithZone:", ptr::null_mut());
@@ -2303,13 +2287,7 @@ impl<'window> TexturedSession<'window> {
                 // The color survives the first encoder; depth is cleared again.
                 // MSAA color is private storage so LOAD is legal across encoders.
                 objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_LOAD);
-                if self.sample_count == 4 {
-                    objc::void_usize(
-                        scene_color,
-                        c"setStoreAction:",
-                        STORE_ACTION_MULTISAMPLE_RESOLVE,
-                    );
-                }
+                store_scene_color(scene_color, targets, true);
                 self.surface
                     .attach_timing(scene_pass, super::timing::FOREGROUND);
                 let foreground_encoder = required(
@@ -4064,6 +4042,44 @@ fn create_target_texture(
     )
 }
 
+/// Points a color attachment at the scene color and stores it, resolving the
+/// multisample target into the single-sample texture only when `resolve` is set.
+///
+/// Metal rejects an attachment that carries a resolve texture while its store
+/// action is a plain store, so an intermediate encoder that hands the samples
+/// on to a later encoder must carry no resolve texture at all. Only the last
+/// writer of the scene color resolves.
+unsafe fn store_scene_color(color: Object, targets: &PostprocessTargetResource, resolve: bool) {
+    // SAFETY: The caller supplies a live color attachment descriptor and targets
+    // whose textures outlive the descriptor.
+    unsafe {
+        if targets.multisample_color.is_null() {
+            objc::void_object(color, c"setTexture:", targets.scene_color);
+            objc::void_usize(color, c"setStoreAction:", STORE_ACTION_STORE);
+        } else {
+            objc::void_object(color, c"setTexture:", targets.multisample_color);
+            objc::void_object(
+                color,
+                c"setResolveTexture:",
+                if resolve {
+                    targets.scene_color
+                } else {
+                    ptr::null_mut()
+                },
+            );
+            objc::void_usize(
+                color,
+                c"setStoreAction:",
+                if resolve {
+                    STORE_ACTION_MULTISAMPLE_RESOLVE
+                } else {
+                    STORE_ACTION_STORE
+                },
+            );
+        }
+    }
+}
+
 fn create_target_texture_with_storage(
     device: Object,
     format: usize,
@@ -4099,12 +4115,13 @@ fn create_target_texture_with_storage(
             },
         );
         objc::void_usize(descriptor, c"setUsage:", usage);
-        let texture = required(
+        // The convenience constructor returns an autoreleased descriptor, so the
+        // enclosing pool releases it. Releasing it here as well freed it under a
+        // live frame pool, whose drain then released it a second time.
+        required(
             objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
             "Metal render target texture",
-        );
-        objc::void(descriptor, c"release");
-        texture
+        )
     }
 }
 

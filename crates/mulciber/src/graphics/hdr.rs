@@ -73,6 +73,68 @@ pub(crate) fn bloom_extents(width: u32, height: u32) -> [(u32, u32); 6] {
     })
 }
 
+/// Keep native descriptor recipes and compiled texture sample counts in agreement.
+pub(super) fn validate_volume_interface(
+    artifact: ShaderArtifact<'_>,
+    uniform: Option<u32>,
+    msaa: bool,
+    composite: bool,
+) -> Result<(), GraphicsError> {
+    let interface = artifact.parse_interface();
+    super::find_entry_point(
+        &interface,
+        "post_vertex",
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    super::find_entry_point(
+        &interface,
+        "post_fragment",
+        shader::INTERFACE_STAGE_FRAGMENT,
+        "fragment",
+    )?;
+    let size = uniform
+        .filter(|s| *s > 0 && *s <= super::POSTPROCESS_UNIFORM_SIZE_LIMIT)
+        .ok_or_else(|| GraphicsError::invalid_request("volumetrics require a bounded uniform"))?;
+    let expected = [
+        (shader::INTERFACE_BINDING_UNIFORM, size),
+        (
+            if msaa {
+                shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH
+            } else {
+                shader::INTERFACE_BINDING_DEPTH_TEXTURE
+            },
+            0,
+        ),
+        (
+            if composite {
+                shader::INTERFACE_BINDING_SAMPLED_TEXTURE
+            } else {
+                shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY
+            },
+            0,
+        ),
+    ];
+    if interface.bindings.len() != expected.len() {
+        return Err(GraphicsError::invalid_request(
+            "volumetrics require exactly bindings 0, 1 and 2",
+        ));
+    }
+    for (binding, (kind, size)) in expected.into_iter().enumerate() {
+        if !interface.bindings.iter().any(|s| {
+            s.group == 0
+                && s.binding == u32::try_from(binding).expect("three slots")
+                && s.kind == kind
+                && s.size == size
+        }) {
+            return Err(GraphicsError::invalid_request(
+                "volumetric uniform, depth sample count or input texture disagrees with its shader",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,7 +206,14 @@ mod tests {
             interface.extend_from_slice(&0_u32.to_le_bytes());
             interface.extend_from_slice(&binding.to_le_bytes());
             interface.push(kind);
-            interface.extend_from_slice(&0_u32.to_le_bytes());
+            interface.extend_from_slice(
+                &(if kind == shader::INTERFACE_BINDING_UNIFORM {
+                    320_u32
+                } else {
+                    0
+                })
+                .to_le_bytes(),
+            );
         }
         let mut bytes = Vec::from(&b"MULSHDR2"[..]);
         bytes.extend_from_slice(
@@ -199,5 +268,39 @@ mod tests {
         slots[2] = (3, shader::INTERFACE_BINDING_SAMPLED_TEXTURE);
         let bytes = artifact(&slots);
         assert!(validate_bloom_filter_interface(ShaderArtifact::new(&bytes).unwrap()).is_err());
+    }
+    #[test]
+    fn volume_rejects_depth_sample_count_and_uniform_mismatches() {
+        for msaa in [false, true] {
+            for composite in [false, true] {
+                let slots = [
+                    (0, shader::INTERFACE_BINDING_UNIFORM),
+                    (
+                        1,
+                        if msaa {
+                            shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH
+                        } else {
+                            shader::INTERFACE_BINDING_DEPTH_TEXTURE
+                        },
+                    ),
+                    (
+                        2,
+                        if composite {
+                            shader::INTERFACE_BINDING_SAMPLED_TEXTURE
+                        } else {
+                            shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY
+                        },
+                    ),
+                ];
+                let bytes = artifact(&slots);
+                let artifact = ShaderArtifact::new(&bytes).unwrap();
+                assert!(validate_volume_interface(artifact, Some(320), msaa, composite).is_ok());
+                assert!(validate_volume_interface(artifact, Some(320), !msaa, composite).is_err());
+                assert!(validate_volume_interface(artifact, Some(320), msaa, !composite).is_err());
+                for size in [None, Some(0), Some(16), Some(513)] {
+                    assert!(validate_volume_interface(artifact, size, msaa, composite).is_err());
+                }
+            }
+        }
     }
 }

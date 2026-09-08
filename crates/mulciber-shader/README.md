@@ -57,3 +57,7 @@ way Naga's bounds-check policy clamps it. Two differences remain by nature: tran
 functions differ from a device by its documented precision, and integer division by zero panics on
 the host where a GPU leaves it undefined. `mulciber-vulkan-triangle` measures the first of those
 against a real device — see the [Linux runbook](../../docs/linux-validation.md).
+
+The reflected interface also distinguishes single-sample and multisampled 2D depth textures.
+`texture_depth_multisampled_2d` artifacts require Mulciber 0.13.6 or newer; older runtimes
+reject this binding kind rather than treating it as a single-sample texture.

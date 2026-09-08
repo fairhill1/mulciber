@@ -46,7 +46,7 @@ threshold in the overlay.
 
 `Device::create_postprocess_pipeline` accepts either a `ShaderArtifact` as the no-uniform
 convenience form or a `PostprocessPipelineDescriptor`. The descriptor optionally declares an exact
-uniform byte size at group 0, binding 0, capped at 256 bytes. The post pipeline is always
+uniform byte size at group 0, binding 0, capped at 512 bytes. The post pipeline is always
 single-sampled, loads `post_vertex` and `post_fragment`, samples resolved scene color at group 0,
 binding 1, and uses its pipeline-owned sampler at group 0, binding 2. Pipeline creation checks the
 fixed entry points and resource kinds against the artifact's offline interface record; when a
@@ -96,7 +96,7 @@ Vulkan allocates scene color with color-attachment and sampled usage. Dynamic re
 resolves it, then a synchronization2 image barrier changes it from color-attachment output/write to
 fragment-shader sampled/read before the fullscreen pass. The swapchain image follows its existing
 acquire, color-attachment, present, and retirement path. Postprocess uniforms use a dedicated
-host-visible 256-byte buffer rather than the shared scene/material uniform region. The one-frame
+host-visible 512-byte buffer rather than the shared scene/material uniform region. The one-frame
 fence is complete before submitted bytes overwrite that buffer. A uniform descriptor exists only
 when declared, exposes binding 0 to vertex and fragment stages, and uses the exact declared range;
 bindings 1 and 2 remain the resolved image and sampler. Target-keyed descriptor sets keep the stable

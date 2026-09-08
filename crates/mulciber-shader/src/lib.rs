@@ -33,6 +33,7 @@ const BINDING_STORAGE: u8 = 3;
 const BINDING_DEPTH_TEXTURE: u8 = 4;
 const BINDING_COMPARISON_SAMPLER: u8 = 5;
 const BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
+const BINDING_MULTISAMPLED_DEPTH: u8 = 7;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,6 +256,14 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
                 },
                 0,
             ),
+            (
+                AddressSpace::Handle,
+                TypeInner::Image {
+                    dim: naga::ImageDimension::D2,
+                    arrayed: false,
+                    class: naga::ImageClass::Depth { multi: true },
+                },
+            ) => (BINDING_MULTISAMPLED_DEPTH, 0),
             (AddressSpace::Handle, TypeInner::Sampler { comparison }) => (
                 if *comparison {
                     BINDING_COMPARISON_SAMPLER
@@ -610,6 +619,49 @@ mod tests {
         }
 
         assert_eq!(interface, expected);
+    }
+
+    #[test]
+    fn multisampled_depth_records_a_distinct_kind_and_metal_binding() {
+        let source = "@group(0) @binding(1) var depth: texture_depth_multisampled_2d;
+            @fragment fn sample_depth() -> @location(0) vec4<f32> {
+                return vec4<f32>(textureLoad(depth, vec2<i32>(0), 0));
+            }";
+        let module = naga::front::wgsl::parse_str(source).unwrap();
+        let interface = shader_interface(&module).unwrap();
+        assert_eq!(
+            interface[interface.len() - 5],
+            super::BINDING_MULTISAMPLED_DEPTH
+        );
+        assert_eq!(metal_resources(&module).unwrap().len(), 1);
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module)
+            .unwrap();
+        let options = naga::back::msl::Options {
+            lang_version: (3, 1),
+            per_entry_point_map: module
+                .entry_points
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.name.clone(),
+                        naga::back::msl::EntryPointResources {
+                            resources: metal_resources(&module).unwrap(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &options,
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .unwrap();
+        assert!(msl.contains("depth2d_ms"));
     }
 
     #[test]

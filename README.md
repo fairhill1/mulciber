@@ -189,3 +189,11 @@ The opt-in RGBA16Float material/postprocess path adds six bloom levels before th
 composite and native-resolution HUD. See the [HDR contract](docs/hdr-bloom-contract.md) for APIs,
 format checks, synchronization, ownership and the validation boundary. Native rendering and visual
 validation of this addition remain outstanding.
+
+## Volumetric HDR scattering
+
+The opt-in HDR path can now sample native-MSAA world depth and the submitted shadow cascades
+for a half-resolution scattering pass, followed by additive depth-aware upscaling before
+foreground and bloom. See the [volumetric contract](docs/volumetric-contract.md) for binding, lifetime and
+validation boundaries. This is a headless checkpoint; native visual and performance evidence
+remains outstanding.

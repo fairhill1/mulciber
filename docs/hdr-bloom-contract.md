@@ -55,3 +55,10 @@ Rust generated from the exact same WGSL by `mulciber-shader::compile_host_field`
 No new native presentation, validation-layer rendering, image readback, visual, resize-storm,
 performance, or physical Metal execution evidence is claimed. Exercise those on hardware before
 promoting this checkpoint to an established cross-backend capability.
+
+## Optional shadowed scattering
+
+The [volumetric extension](volumetric-contract.md) inserts scattering and additive upscaling
+before foreground and bloom. HDR world depth is now sampleable at the scene sample count, and
+the shared postprocess uniform limit is 512 bytes. The additional half-resolution image is
+allocated only when a volumetric pipeline submits to the targets.

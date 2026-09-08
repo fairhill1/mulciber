@@ -1,4 +1,5 @@
 mod bloom;
+mod volumetric;
 
 use core::ffi::c_void;
 use core::{mem, ptr, slice};
@@ -316,7 +317,9 @@ struct TextureResource {
 }
 
 struct PipelineResource {
+    volume: Vec<PipelineResource>,
     bloom: Vec<PipelineResource>,
+    volume_sets: Vec<volumetric::DescriptorSets>,
     bloom_sets: Vec<(vk::VkDescriptorSet, [vk::VkDescriptorSet; 6])>,
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
@@ -413,6 +416,7 @@ struct TargetResource {
 }
 
 struct PostprocessTargetResource {
+    scattering: Option<Image>,
     bloom: Vec<Image>,
     info: SurfaceInfo,
     /// Offscreen scene extent — the render-scale-adjusted extent the scene pass renders at.
@@ -912,7 +916,12 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &PostprocessPipelineConfig,
     ) -> Result<ResourceId, GraphicsError> {
-        let resource = create_postprocess_pipeline(&self.surface, shader.payload(), config)?;
+        let resource = create_postprocess_pipeline(
+            &self.surface,
+            shader.payload(),
+            config,
+            self.sample_count.cast_unsigned(),
+        )?;
         self.postprocess_pipelines.insert(resource)
     }
 
@@ -1034,7 +1043,7 @@ impl<'window> TexturedSession<'window> {
                 continue;
             }
             reclaimed_postprocess_target = true;
-            for image in target.bloom.drain(..) {
+            for image in target.bloom.drain(..).chain(target.scattering.take()) {
                 destroy_image(surface, image);
             }
             if let Some(color) = target.multisample_color.take() {
@@ -1064,6 +1073,7 @@ impl<'window> TexturedSession<'window> {
                 pipeline.descriptor_pool = replacement;
                 pipeline.bindings.clear();
                 pipeline.bloom_sets.clear();
+                pipeline.volume_sets.clear();
             }
         }
         Ok(())
@@ -1136,6 +1146,7 @@ impl<'window> TexturedSession<'window> {
     /// Creates the two-pass targets: offscreen scene storage at `scene_extent` — the
     /// render-scale-adjusted extent — while presentation stays at the surface extent carried
     /// by `info`.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn create_postprocess_targets(
         &mut self,
         info: SurfaceInfo,
@@ -1144,6 +1155,12 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets()?;
         if hdr {
+            volumetric::validate_depth(
+                &self.surface,
+                self.sample_count,
+                scene_extent.width(),
+                scene_extent.height(),
+            )?;
             bloom::validate_format(
                 &self.surface,
                 self.sample_count,
@@ -1171,7 +1188,13 @@ impl<'window> TexturedSession<'window> {
             scene_extent.width(),
             scene_extent.height(),
             DEPTH_FORMAT,
-            vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT as u32,
+            (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                | if hdr {
+                    vk::VK_IMAGE_USAGE_SAMPLED_BIT
+                } else {
+                    0
+                })
+            .cast_unsigned(),
             vk::VK_IMAGE_ASPECT_DEPTH_BIT as u32,
             self.sample_count,
             1,
@@ -1204,6 +1227,7 @@ impl<'window> TexturedSession<'window> {
             None
         };
         let mut resource = PostprocessTargetResource {
+            scattering: None,
             bloom: Vec::new(),
             info,
             scene_extent: vk::VkExtent2D {
@@ -1445,9 +1469,33 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets do not match acquired Vulkan generation",
             ));
         }
+        let volume_shadow = if self.postprocess_pipelines[postprocess_pipeline_index]
+            .volume
+            .is_empty()
+        {
+            None
+        } else {
+            let Some(ShadowPrepass::Cascaded(pass)) = shadow else {
+                return Err(error("volumetric HDR requires a cascaded shadow prepass"));
+            };
+            volumetric::ensure_target(&self.surface, &mut self.postprocess_targets[target_index])?;
+            Some(self.shadow_map_arrays.get(pass.map.id())?.array_view)
+        };
         self.prepare_material_scene(records, overlay, shadow)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
+        if let Some(shadow) = volume_shadow {
+            let base = self.postprocess_uniform_base();
+            volumetric::prepare_descriptors(
+                &self.surface,
+                &mut self.postprocess_pipelines[postprocess_pipeline_index],
+                &self.postprocess_targets[target_index],
+                postprocess_descriptor,
+                shadow,
+                &self.postprocess_uniform,
+                base,
+            )?;
+        }
         self.record_postprocessed_draw(
             token.image_index,
             postprocess_pipeline_index,
@@ -2110,7 +2158,7 @@ impl<'window> TexturedSession<'window> {
         if reset_scene_descriptors {
             self.reset_descriptor_pools(false)?;
         }
-        if reset_postprocess_descriptors {
+        if reset_postprocess_descriptors || reset_scene_descriptors {
             self.reset_descriptor_pools(true)?;
         }
         for &request in requests {
@@ -2130,9 +2178,11 @@ impl<'window> TexturedSession<'window> {
         } else if request.kind == ResourceKind::ShadowMap {
             self.shadow_maps.get(request.id)?;
             self.reset_descriptor_pools(false)?;
+            self.reset_descriptor_pools(true)?;
         } else if request.kind == ResourceKind::ShadowMapArray {
             self.shadow_map_arrays.get(request.id)?;
             self.reset_descriptor_pools(false)?;
+            self.reset_descriptor_pools(true)?;
         } else if request.kind == ResourceKind::PostprocessTargets {
             self.postprocess_targets.get(request.id)?;
             self.reset_descriptor_pools(true)?;
@@ -2250,6 +2300,7 @@ impl<'window> TexturedSession<'window> {
                 pipeline.descriptor_pool = replacement;
                 pipeline.bindings.clear();
                 pipeline.bloom_sets.clear();
+                pipeline.volume_sets.clear();
             }
             return Ok(());
         }
@@ -2272,6 +2323,7 @@ impl<'window> TexturedSession<'window> {
             pipeline.descriptor_pool = replacement;
             pipeline.bindings.clear();
             pipeline.bloom_sets.clear();
+            pipeline.volume_sets.clear();
         }
         for pipeline in self.material_pipelines.iter_mut() {
             let replacement = create_material_descriptor_pool(device)?;
@@ -3558,6 +3610,15 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<(), GraphicsError> {
+        if !self.postprocess_pipelines[postprocess_pipeline_index]
+            .volume
+            .is_empty()
+            && !matches!(scene, PreparedScene::Materials(_))
+        {
+            return Err(error(
+                "volumetric HDR requires material content and cascaded shadows",
+            ));
+        }
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
         let target = &self.postprocess_targets[target_index];
         let scene_color = target
@@ -3731,7 +3792,7 @@ impl<'window> TexturedSession<'window> {
             imageView: target_depth.view,
             imageLayout: vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
             loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: vk::VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            storeOp: vk::VK_ATTACHMENT_STORE_OP_STORE,
             clearValue: vk::VkClearValue {
                 depthStencil: vk::VkClearDepthStencilValue {
                     depth: depth_clear,
@@ -3797,6 +3858,15 @@ impl<'window> TexturedSession<'window> {
                 self.surface.frame_command_buffer(),
             );
         }
+        volumetric::record(
+            &self.surface,
+            &self.postprocess_pipelines[postprocess_pipeline_index],
+            &self.postprocess_targets[target_index],
+            postprocess_descriptor,
+            scene_attachment,
+            scene_area,
+            scene_viewport,
+        );
         if let PreparedScene::Materials(Some(start)) = scene {
             // Preserve the world color (including MSAA samples), discard its depth,
             // and synchronize attachment reuse before the foreground rendering scope.
@@ -4303,7 +4373,7 @@ fn destroy_texture_device(device: &super::Device, texture: TextureResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
-    for child in pipeline.bloom {
+    for child in pipeline.bloom.into_iter().chain(pipeline.volume) {
         destroy_pipeline_device(device, child);
     }
     unsafe {
@@ -4361,7 +4431,9 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
     destroy_pipeline_device(
         device,
         PipelineResource {
+            volume: Vec::new(),
             bloom: Vec::new(),
+            volume_sets: Vec::new(),
             bloom_sets: Vec::new(),
             set_layout: pipeline.set_layout,
             layout: pipeline.layout,
@@ -4422,7 +4494,9 @@ fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipeli
     destroy_pipeline_device(
         device,
         PipelineResource {
+            volume: Vec::new(),
             bloom: Vec::new(),
+            volume_sets: Vec::new(),
             bloom_sets: Vec::new(),
             set_layout: pipeline.set_layout,
             layout: pipeline.layout,
@@ -4449,7 +4523,7 @@ fn destroy_target_device(device: &super::Device, target: TargetResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_postprocess_target_device(device: &super::Device, target: PostprocessTargetResource) {
-    for image in target.bloom {
+    for image in target.bloom.into_iter().chain(target.scattering) {
         unsafe {
             destroy_image_device(device, image);
         }
@@ -5560,7 +5634,9 @@ fn create_pipeline(
         ..Default::default()
     };
     let mut resource = PipelineResource {
+        volume: Vec::new(),
         bloom: Vec::new(),
+        volume_sets: Vec::new(),
         bloom_sets: Vec::new(),
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
@@ -6549,17 +6625,49 @@ fn create_postprocess_pipeline(
     surface: &ClearSurface<'_>,
     bytes: &[u8],
     config: &PostprocessPipelineConfig<'_>,
+    samples: u32,
 ) -> Result<PipelineResource, GraphicsError> {
     let mut resource = create_postprocess_pipeline_base(surface, bytes, config)?;
     if let Some(shaders) = config.bloom {
         for shader in shaders {
             let child = PostprocessPipelineConfig {
+                volume: None,
+                volume_stage: crate::graphics::VolumeStage::None,
+                samples: 1,
                 uniform_size: 0,
                 bloom: None,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(surface, shader.payload(), &child) {
                 Ok(pipeline) => resource.bloom.push(pipeline),
+                Err(failure) => {
+                    destroy_pipeline_device(surface.device(), resource);
+                    return Err(failure);
+                }
+            }
+        }
+    }
+    if let Some(volume) = config.volume {
+        let shaders = if samples == 4 {
+            [volume.scatter_msaa, volume.composite_msaa]
+        } else {
+            [volume.scatter, volume.composite]
+        };
+        for (index, shader) in shaders.into_iter().enumerate() {
+            let child = PostprocessPipelineConfig {
+                volume: None,
+                volume_stage: if index == 0 {
+                    crate::graphics::VolumeStage::Scatter
+                } else {
+                    crate::graphics::VolumeStage::Composite
+                },
+                samples: if index == 0 { 1 } else { samples },
+                uniform_size: config.uniform_size,
+                bloom: None,
+                hdr_output: true,
+            };
+            match create_postprocess_pipeline_base(surface, shader.payload(), &child) {
+                Ok(pipeline) => resource.volume.push(pipeline),
                 Err(failure) => {
                     destroy_pipeline_device(surface.device(), resource);
                     return Err(failure);
@@ -6592,7 +6700,18 @@ fn create_postprocess_pipeline_base(
         vk::VK_DESCRIPTOR_TYPE_SAMPLER,
         vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
     );
-    let mut bindings = std::vec![image_binding, sampler_binding];
+    let mut bindings = if config.volume_stage == crate::graphics::VolumeStage::None {
+        std::vec![image_binding, sampler_binding]
+    } else {
+        std::vec![
+            image_binding,
+            layout_binding(
+                2,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32
+            )
+        ]
+    };
     if config.uniform_size != 0 {
         bindings.push(uniform_binding);
     }
@@ -6613,7 +6732,9 @@ fn create_postprocess_pipeline_base(
         ..Default::default()
     };
     let mut resource = PipelineResource {
+        volume: Vec::new(),
         bloom: Vec::new(),
+        volume_sets: Vec::new(),
         bloom_sets: Vec::new(),
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
@@ -6712,15 +6833,21 @@ fn create_postprocess_pipeline_base(
         };
         let multisample = vk::VkPipelineMultisampleStateCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            rasterizationSamples: vk::VK_SAMPLE_COUNT_1_BIT,
+            rasterizationSamples: config.samples.cast_signed(),
             ..Default::default()
         };
         let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
+            blendEnable: u32::from(config.volume_stage == crate::graphics::VolumeStage::Composite),
+            srcColorBlendFactor: vk::VK_BLEND_FACTOR_ONE,
+            dstColorBlendFactor: vk::VK_BLEND_FACTOR_ONE,
+            colorBlendOp: vk::VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor: vk::VK_BLEND_FACTOR_ZERO,
+            dstAlphaBlendFactor: vk::VK_BLEND_FACTOR_ONE,
+            alphaBlendOp: vk::VK_BLEND_OP_ADD,
             colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
                 | vk::VK_COLOR_COMPONENT_G_BIT
                 | vk::VK_COLOR_COMPONENT_B_BIT
                 | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
-            ..Default::default()
         };
         let blend = vk::VkPipelineColorBlendStateCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,

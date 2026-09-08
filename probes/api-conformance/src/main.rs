@@ -826,7 +826,7 @@ impl<'window> Cases<'window> {
                             .device
                             .create_postprocess_pipeline(PostprocessPipelineDescriptor {
                                 shader: ShaderArtifact::new(SHADER)?,
-                                uniform_size: Some(257),
+                                uniform_size: Some(513),
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
@@ -3230,7 +3230,7 @@ impl<'window> Cases<'window> {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
-                let oversized = [0_u8; 257];
+                let oversized = [0_u8; 513];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 expect_error(
                     graphics
@@ -3256,7 +3256,7 @@ impl<'window> Cases<'window> {
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
-                    "exceeding the 256-byte limit",
+                    "exceeding the 512-byte limit",
                     "oversized postprocess uniform rejected",
                 )?;
                 self.pass("oversized postprocess uniform rejected");

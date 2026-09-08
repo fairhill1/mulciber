@@ -1,4 +1,5 @@
 mod bloom;
+mod volumetric;
 
 use core::ffi::c_void;
 use core::{mem, ptr};
@@ -215,6 +216,7 @@ struct PipelineResource {
 }
 
 struct PostprocessPipelineResource {
+    volume: Vec<PostprocessPipelineResource>,
     bloom: Vec<PostprocessPipelineResource>,
     pipeline: Object,
     sampler: Object,
@@ -283,6 +285,7 @@ struct TargetResource {
 }
 
 struct PostprocessTargetResource {
+    scattering: Object,
     bloom: Vec<Object>,
     info: SurfaceInfo,
     scene_color: Object,
@@ -691,6 +694,7 @@ impl<'window> TexturedSession<'window> {
                 self.surface.device,
                 shader.payload(),
                 config,
+                u32::try_from(self.sample_count).expect("sample count"),
             )?)
     }
 
@@ -812,6 +816,12 @@ impl<'window> TexturedSession<'window> {
                 objc::void(target.scene_color, c"release");
                 objc::void(target.depth, c"release");
             }
+            if !target.scattering.is_null() {
+                unsafe {
+                    objc::void(target.scattering, c"release");
+                }
+                target.scattering = ptr::null_mut();
+            }
             for texture in target.bloom.drain(..) {
                 unsafe {
                     objc::void(texture, c"release");
@@ -892,13 +902,14 @@ impl<'window> TexturedSession<'window> {
             1,
             TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
         )?;
-        let depth = match create_target_texture(
+        let depth = match create_target_texture_with_storage(
             self.surface.device,
             PIXEL_FORMAT_DEPTH32_FLOAT,
             width,
             height,
             self.sample_count,
-            TEXTURE_USAGE_RENDER_TARGET,
+            TEXTURE_USAGE_RENDER_TARGET | if hdr { TEXTURE_USAGE_SHADER_READ } else { 0 },
+            !hdr && self.sample_count == 4,
         ) {
             Ok(depth) => depth,
             Err(failure) => {
@@ -929,6 +940,7 @@ impl<'window> TexturedSession<'window> {
             ptr::null_mut()
         };
         let mut resource = PostprocessTargetResource {
+            scattering: ptr::null_mut(),
             bloom: Vec::new(),
             info,
             scene_color,
@@ -2066,6 +2078,25 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
+        let volume_shadow = if self.postprocess_pipelines[postprocess_pipeline]
+            .volume
+            .is_empty()
+        {
+            ptr::null_mut()
+        } else {
+            let Some(ShadowPrepass::Cascaded(pass)) = shadow else {
+                return Err(GraphicsError::new(
+                    "volumetric HDR requires a cascaded shadow prepass",
+                ));
+            };
+            if !matches!(scene, PreparedScene::Materials(_, _)) {
+                return Err(GraphicsError::new(
+                    "volumetric HDR requires material content",
+                ));
+            }
+            volumetric::ensure_target(self.surface.device, &mut self.postprocess_targets[target])?;
+            self.shadow_map_arrays.get(pass.map.id())?.texture
+        };
         unsafe {
             let drawable = token.0.drawable;
             let drawable_texture = required(
@@ -2094,7 +2125,9 @@ impl<'window> TexturedSession<'window> {
                 objc::void_usize(
                     scene_color,
                     c"setStoreAction:",
-                    if matches!(scene, PreparedScene::Materials(_, Some(_))) {
+                    if matches!(scene, PreparedScene::Materials(_, Some(_)))
+                        || !volume_shadow.is_null()
+                    {
                         STORE_ACTION_STORE
                     } else {
                         STORE_ACTION_MULTISAMPLE_RESOLVE
@@ -2122,7 +2155,15 @@ impl<'window> TexturedSession<'window> {
             )?;
             objc::void_object(scene_depth, c"setTexture:", targets.depth);
             objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
-            objc::void_usize(scene_depth, c"setStoreAction:", STORE_ACTION_DONT_CARE);
+            objc::void_usize(
+                scene_depth,
+                c"setStoreAction:",
+                if volume_shadow.is_null() {
+                    STORE_ACTION_DONT_CARE
+                } else {
+                    STORE_ACTION_STORE
+                },
+            );
             objc::void_f64(scene_depth, c"setClearDepth:", f64::from(depth_clear));
 
             let post_pass = required(
@@ -2177,6 +2218,14 @@ impl<'window> TexturedSession<'window> {
             self.encode_prepared_scene(scene_encoder, scene)?;
             objc::void(scene_encoder, c"endEncoding");
 
+            volumetric::encode(
+                command,
+                &self.postprocess_pipelines[postprocess_pipeline],
+                targets,
+                volume_shadow,
+                uniform,
+                matches!(scene, PreparedScene::Materials(_, Some(_))),
+            )?;
             if let PreparedScene::Materials(records, Some(start)) = scene {
                 // The color survives the first encoder; depth is cleared again.
                 // MSAA color is private storage so LOAD is legal across encoders.
@@ -2747,11 +2796,12 @@ fn release_pipeline(pipeline: PipelineResource) {
 fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
     let PostprocessPipelineResource {
         bloom,
+        volume,
         pipeline,
         sampler,
         uniform_size: _,
     } = pipeline;
-    for child in bloom {
+    for child in bloom.into_iter().chain(volume) {
         release_postprocess_pipeline(child);
     }
     unsafe {
@@ -2842,12 +2892,16 @@ fn release_target(target: TargetResource) {
 fn release_postprocess_target(target: PostprocessTargetResource) {
     let PostprocessTargetResource {
         bloom,
+        scattering,
         info: _,
         scene_color,
         multisample_color,
         depth,
     } = target;
-    for texture in bloom {
+    for texture in bloom
+        .into_iter()
+        .chain((!scattering.is_null()).then_some(scattering))
+    {
         unsafe {
             objc::void(texture, c"release");
         }
@@ -3673,17 +3727,49 @@ fn create_postprocess_pipeline(
     device: Object,
     bytes: &[u8],
     config: &PostprocessPipelineConfig<'_>,
+    samples: u32,
 ) -> Result<PostprocessPipelineResource, GraphicsError> {
     let mut resource = create_postprocess_pipeline_base(device, bytes, config)?;
     if let Some(shaders) = config.bloom {
         for shader in shaders {
             let child = PostprocessPipelineConfig {
+                volume: None,
+                volume_stage: crate::graphics::VolumeStage::None,
+                samples: 1,
                 uniform_size: 0,
                 bloom: None,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(device, shader.payload(), &child) {
                 Ok(pipeline) => resource.bloom.push(pipeline),
+                Err(failure) => {
+                    release_postprocess_pipeline(resource);
+                    return Err(failure);
+                }
+            }
+        }
+    }
+    if let Some(volume) = config.volume {
+        let shaders = if samples == 4 {
+            [volume.scatter_msaa, volume.composite_msaa]
+        } else {
+            [volume.scatter, volume.composite]
+        };
+        for (index, shader) in shaders.into_iter().enumerate() {
+            let child = PostprocessPipelineConfig {
+                volume: None,
+                volume_stage: if index == 0 {
+                    crate::graphics::VolumeStage::Scatter
+                } else {
+                    crate::graphics::VolumeStage::Composite
+                },
+                samples: if index == 0 { 1 } else { samples },
+                uniform_size: config.uniform_size,
+                bloom: None,
+                hdr_output: true,
+            };
+            match create_postprocess_pipeline_base(device, shader.payload(), &child) {
+                Ok(pipeline) => resource.volume.push(pipeline),
                 Err(failure) => {
                     release_postprocess_pipeline(resource);
                     return Err(failure);
@@ -3745,7 +3831,7 @@ fn create_postprocess_pipeline_base(
         )?;
         objc::void_object(descriptor, c"setVertexFunction:", vertex);
         objc::void_object(descriptor, c"setFragmentFunction:", fragment);
-        objc::void_usize(descriptor, c"setSampleCount:", 1);
+        objc::void_usize(descriptor, c"setSampleCount:", config.samples as usize);
         let colors = required(
             objc::object(descriptor, c"colorAttachments"),
             "postprocess pipeline colors",
@@ -3763,6 +3849,13 @@ fn create_postprocess_pipeline_base(
                 PIXEL_FORMAT_BGRA8_UNORM_SRGB
             },
         );
+        if config.volume_stage == crate::graphics::VolumeStage::Composite {
+            objc::void_bool(color, c"setBlendingEnabled:", true);
+            objc::void_usize(color, c"setSourceRGBBlendFactor:", 1);
+            objc::void_usize(color, c"setDestinationRGBBlendFactor:", 1);
+            objc::void_usize(color, c"setSourceAlphaBlendFactor:", 0);
+            objc::void_usize(color, c"setDestinationAlphaBlendFactor:", 1);
+        }
         let mut pipeline_error = ptr::null_mut();
         let pipeline = objc::object_object_out(
             device,
@@ -3794,6 +3887,7 @@ fn create_postprocess_pipeline_base(
             objc::void(object, c"release");
         }
         Ok(PostprocessPipelineResource {
+            volume: Vec::new(),
             bloom: Vec::new(),
             pipeline,
             sampler,
@@ -3911,10 +4005,12 @@ fn create_target_texture_with_storage(
             },
         );
         objc::void_usize(descriptor, c"setUsage:", usage);
-        required(
+        let texture = required(
             objc::object_object(device, c"newTextureWithDescriptor:", descriptor),
             "Metal render target texture",
-        )
+        );
+        objc::void(descriptor, c"release");
+        texture
     }
 }
 

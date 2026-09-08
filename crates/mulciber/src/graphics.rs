@@ -466,6 +466,9 @@ impl Device<'_> {
         validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
         let config = PostprocessPipelineConfig {
+            volume: None,
+            volume_stage: crate::graphics::VolumeStage::None,
+            samples: 1,
             uniform_size,
             bloom: None,
             hdr_output: false,
@@ -491,6 +494,40 @@ impl Device<'_> {
         prefilter: ShaderArtifact<'_>,
         downsample: ShaderArtifact<'_>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
+        self.create_hdr_pipeline(descriptor, prefilter, downsample, None)
+    }
+
+    /// Adds application-authored scattering and additive depth-aware upscaling to HDR.
+    /// Requires a cascaded shadow prepass on every submission. World depth is stored
+    /// and read at its native sample count before the foreground depth clear.
+    ///
+    /// # Errors
+    /// Rejects mismatched shader bindings, uniform sizes or unsupported native resources.
+    pub fn create_volumetric_hdr_postprocess_pipeline(
+        &self,
+        descriptor: PostprocessPipelineDescriptor<'_>,
+        prefilter: ShaderArtifact<'_>,
+        downsample: ShaderArtifact<'_>,
+        volume: VolumetricShaders<'_>,
+    ) -> Result<PostprocessPipeline, GraphicsError> {
+        for (shader, msaa, composite) in [
+            (volume.scatter, false, false),
+            (volume.scatter_msaa, true, false),
+            (volume.composite, false, true),
+            (volume.composite_msaa, true, true),
+        ] {
+            hdr::validate_volume_interface(shader, descriptor.uniform_size, msaa, composite)?;
+        }
+        self.create_hdr_pipeline(descriptor, prefilter, downsample, Some(volume))
+    }
+
+    fn create_hdr_pipeline(
+        &self,
+        descriptor: PostprocessPipelineDescriptor<'_>,
+        prefilter: ShaderArtifact<'_>,
+        downsample: ShaderArtifact<'_>,
+        volume: Option<VolumetricShaders<'_>>,
+    ) -> Result<PostprocessPipeline, GraphicsError> {
         validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
         validate_bloom_interface(descriptor.shader, descriptor.uniform_size)?;
         validate_postprocess_interface(prefilter, None)?;
@@ -499,6 +536,9 @@ impl Device<'_> {
         validate_bloom_filter_interface(downsample)?;
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
         let config = PostprocessPipelineConfig {
+            volume,
+            volume_stage: crate::graphics::VolumeStage::None,
+            samples: 1,
             uniform_size,
             bloom: Some([prefilter, downsample]),
             hdr_output: false,
@@ -2467,7 +2507,7 @@ pub struct PostprocessPipeline {
 ///
 /// Postprocess uniform data is transient for one submission and follows the same bounded model as
 /// material uniform data, but backends keep its storage independent from scene/material uniforms.
-pub const POSTPROCESS_UNIFORM_SIZE_LIMIT: u32 = 256;
+pub const POSTPROCESS_UNIFORM_SIZE_LIMIT: u32 = 512;
 
 /// Everything needed to create one fullscreen postprocess pipeline.
 ///
@@ -3314,7 +3354,36 @@ pub enum SceneOutput<'resources> {
 }
 
 /// Validated postprocess creation inputs handed to the native backends.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VolumeStage {
+    #[default]
+    None,
+    Scatter,
+    Composite,
+}
+
+/// Application shaders for shadowed, half-resolution HDR scattering.
+/// All use `post_vertex` / `post_fragment`, and the composite's exact uniform
+/// layout at binding 0. Binding 1 is world depth. Binding 2 is a depth texture
+/// array for scattering, or the half-resolution `RGBA16Float` result for compositing.
+/// The composite adds RGB to scene color; its alpha is ignored. It runs before
+/// foreground, bloom and tone mapping. Both MSAA variants read multisampled depth.
+#[derive(Clone, Copy)]
+pub struct VolumetricShaders<'inputs> {
+    /// Scattering with single-sample world depth.
+    pub scatter: ShaderArtifact<'inputs>,
+    /// Scattering with multisampled world depth.
+    pub scatter_msaa: ShaderArtifact<'inputs>,
+    /// Depth-aware additive upscale with single-sample world depth.
+    pub composite: ShaderArtifact<'inputs>,
+    /// Depth-aware additive upscale with multisampled world depth.
+    pub composite_msaa: ShaderArtifact<'inputs>,
+}
+
 pub(crate) struct PostprocessPipelineConfig<'inputs> {
+    pub(crate) volume: Option<VolumetricShaders<'inputs>>,
+    pub(crate) volume_stage: VolumeStage,
+    pub(crate) samples: u32,
     pub(crate) bloom: Option<[ShaderArtifact<'inputs>; 2]>,
     pub(crate) hdr_output: bool,
     /// Declared group-0/binding-0 byte size, or zero when absent.

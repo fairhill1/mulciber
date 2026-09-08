@@ -480,3 +480,13 @@ tone mapping with both absent. Existing native empty-stage paths skip the corres
 strict reflection rejects missing or unwritten bloom inputs. Headless tests cover stage contracts
 and the consuming game's cached pipeline choices. Native visual/performance validation of these
 new combinations remains outstanding; see [HDR contract](hdr-bloom-contract.md).
+
+### Vulkan mesh placement (0.13.9)
+
+- [x] Prefer GPU-local immutable meshes, directly map suitable local heaps, retain bounded small
+  staging buffers after completion, and preserve pending uploads across abandonment. Default and
+  forced-host paths pass 96 conformance cases on native Wayland; default also passes on XWayland.
+- [x] Drain completed GPU timings in submission order when abandonment skips a frame slot.
+- [ ] Broaden native UMA/full-BAR, actual memory-pressure recovery and Windows hardware evidence.
+
+Policy and benchmark scope: [Vulkan mesh memory](vulkan-mesh-memory.md).

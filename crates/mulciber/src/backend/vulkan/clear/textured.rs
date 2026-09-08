@@ -1,4 +1,7 @@
 mod bloom;
+mod mesh;
+
+use mesh::MeshBufferArena;
 mod scene_depth;
 mod volumetric;
 
@@ -86,16 +89,6 @@ struct MeshAllocation {
     size: u64,
 }
 
-struct MeshBufferBlock {
-    buffer: Buffer,
-    mapped: *mut u8,
-    free: Vec<Range<u64>>,
-}
-
-struct MeshBufferArena {
-    blocks: Vec<MeshBufferBlock>,
-}
-
 struct MeshResource {
     buffer: vk::VkBuffer,
     allocation: MeshAllocation,
@@ -169,147 +162,6 @@ fn plan_mesh_storage(
     )
     .ok_or_else(|| error("mesh buffer offsets overflow"))?;
     Ok((parts, allocation_size))
-}
-
-impl MeshBufferArena {
-    const fn new() -> Self {
-        Self { blocks: Vec::new() }
-    }
-
-    fn create_mesh(
-        &mut self,
-        surface: &ClearSurface<'_>,
-        vertex_bytes: &[u8],
-        index_parts: &[MeshIndexData<'_>],
-    ) -> Result<MeshResource, GraphicsError> {
-        let vertex_size = u64::try_from(vertex_bytes.len())
-            .map_err(|_| error("mesh vertex bytes exceed Vulkan address space"))?;
-        let (mut parts, allocation_size) = plan_mesh_storage(vertex_size, index_parts)?;
-        let allocation = self.allocate(surface, allocation_size)?;
-        let block = &self.blocks[allocation.block];
-        unsafe {
-            ptr::copy_nonoverlapping(
-                vertex_bytes.as_ptr(),
-                block.mapped.add(
-                    usize::try_from(allocation.offset)
-                        .expect("mesh allocation offset came from a usize-sized buffer"),
-                ),
-                vertex_bytes.len(),
-            );
-            for (part, metadata) in index_parts.iter().zip(&parts) {
-                ptr::copy_nonoverlapping(
-                    part.bytes.as_ptr(),
-                    block.mapped.add(
-                        usize::try_from(allocation.offset + metadata.index_offset)
-                            .expect("mesh index offset came from a usize-sized buffer"),
-                    ),
-                    part.bytes.len(),
-                );
-                let draw = vk::VkDrawIndexedIndirectCommand {
-                    indexCount: metadata.index_count,
-                    instanceCount: 1,
-                    firstIndex: 0,
-                    vertexOffset: 0,
-                    firstInstance: 0,
-                };
-                ptr::copy_nonoverlapping(
-                    ptr::from_ref(&draw).cast::<u8>(),
-                    block.mapped.add(
-                        usize::try_from(allocation.offset + metadata.indirect_offset)
-                            .expect("mesh indirect offset came from a usize-sized buffer"),
-                    ),
-                    mem::size_of_val(&draw),
-                );
-            }
-        }
-        for part in &mut parts {
-            part.index_offset = allocation
-                .offset
-                .checked_add(part.index_offset)
-                .ok_or_else(|| error("mesh index allocation offset overflows"))?;
-            part.indirect_offset = allocation
-                .offset
-                .checked_add(part.indirect_offset)
-                .ok_or_else(|| error("mesh indirect allocation offset overflows"))?;
-        }
-        Ok(MeshResource {
-            buffer: block.buffer.handle,
-            allocation,
-            vertex_offset: allocation.offset,
-            parts,
-        })
-    }
-
-    fn allocate(
-        &mut self,
-        surface: &ClearSurface<'_>,
-        size: u64,
-    ) -> Result<MeshAllocation, GraphicsError> {
-        for (block_index, block) in self.blocks.iter_mut().enumerate() {
-            if let Some(offset) = take_free_range(&mut block.free, size, MESH_ALLOCATION_ALIGNMENT)
-            {
-                return Ok(MeshAllocation {
-                    block: block_index,
-                    offset,
-                    size,
-                });
-            }
-        }
-        let block_size = MESH_BUFFER_BLOCK_SIZE.max(
-            size.checked_next_power_of_two()
-                .ok_or_else(|| error("mesh buffer block size overflow"))?,
-        );
-        let buffer = create_buffer(
-            surface,
-            usize::try_from(block_size)
-                .map_err(|_| error("mesh buffer block exceeds this target"))?,
-            (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT
-                | vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) as u32,
-            &[],
-        )?;
-        let mapped = match map_buffer(surface, &buffer) {
-            Ok(mapped) => mapped,
-            Err(failure) => {
-                destroy_buffer(surface, buffer);
-                return Err(failure);
-            }
-        };
-        let free = core::iter::once(0..block_size).collect();
-        let mut block = MeshBufferBlock {
-            buffer,
-            mapped,
-            free,
-        };
-        let offset = take_free_range(&mut block.free, size, MESH_ALLOCATION_ALIGNMENT)
-            .expect("new mesh buffer block fits its requested allocation");
-        let block_index = self.blocks.len();
-        self.blocks.push(block);
-        Ok(MeshAllocation {
-            block: block_index,
-            offset,
-            size,
-        })
-    }
-
-    fn free(&mut self, allocation: MeshAllocation) {
-        insert_free_range(
-            &mut self.blocks[allocation.block].free,
-            allocation.offset..allocation.offset + allocation.size,
-        );
-    }
-
-    fn destroy(&mut self, device: &super::Device) {
-        for block in self.blocks.drain(..) {
-            unsafe {
-                device.functions.unmap_memory.expect("loaded function")(
-                    device.handle,
-                    block.buffer.memory,
-                );
-                destroy_buffer_device(device, block.buffer);
-            }
-        }
-    }
 }
 
 struct TextureResource {
@@ -2968,14 +2820,33 @@ impl<'window> TexturedSession<'window> {
     }
 
     fn collect_gpu_timing(&mut self) -> Result<(), GraphicsError> {
-        let slot = self.surface.frame_slot_index();
+        let Some(completed) = self.gpu_timing.pending[self.surface.frame_slot_index()] else {
+            return Ok(());
+        };
+        // Acquisition completed this slot's fence. All older submissions on the
+        // same graphics queue have also completed, including slots skipped by an
+        // abandoned frame. Drain them in submission order before reusing queries.
+        let mut slots: [_; ClearSurface::frames_in_flight()] = core::array::from_fn(|slot| slot);
+        slots.sort_unstable_by_key(|&slot| {
+            self.gpu_timing.pending[slot].map_or(u64::MAX, |p| p.frame_index)
+        });
+        for slot in slots {
+            if self.gpu_timing.pending[slot].is_some_and(|p| p.frame_index <= completed.frame_index)
+            {
+                self.collect_gpu_timing_slot(slot)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_gpu_timing_slot(&mut self, slot: usize) -> Result<(), GraphicsError> {
         let Some(pending) = self.gpu_timing.pending[slot].take() else {
             return Ok(());
         };
         // Reads this slot's own block. The frame that wrote it is the one that
         // last held this slot, and acquisition already waited on its fence, so
         // the results are complete without a wait here.
-        let base = self.gpu_query_base();
+        let base = u32::try_from(slot).expect("frame slot fits u32") * GPU_QUERY_COUNT;
         let mut values = [0_u64; GPU_QUERY_COUNT as usize];
         let device = self.surface.device();
         check(
@@ -3186,7 +3057,13 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameDisposition, GraphicsError> {
         let frame_index = self.surface.presented_count;
         let slot = self.surface.frame_slot_index();
-        let disposition = self.surface.submit_recorded(image_index)?;
+        let disposition = self.surface.submit_recorded(image_index);
+        // Submission can succeed before presentation fails. The copies then belong to
+        // that in-flight slot even when the caller receives a presentation error.
+        if self.surface.frames[slot].pending {
+            self.mesh_buffers.uploads_submitted();
+        }
+        let disposition = disposition?;
         if self.gpu_timing.enabled && !self.gpu_timing.query_pool.is_null() {
             self.gpu_timing.pending[slot] = Some(PendingGpuTiming {
                 frame_index,
@@ -3441,6 +3318,7 @@ impl<'window> TexturedSession<'window> {
         // slot, which is the only work these resets can collide with; waiting
         // for the frame just submitted is what kept the CPU and GPU serialized.
         self.collect_gpu_timing()?;
+        self.mesh_buffers.prepare_uploads(&self.surface)?;
         let frame_fence = self.surface.frame_fence();
         let device = self.surface.device();
         check(
@@ -3482,6 +3360,7 @@ impl<'window> TexturedSession<'window> {
             "vkBeginCommandBuffer for textured frame",
         )?;
         self.begin_gpu_frame();
+        self.mesh_buffers.record_uploads(&self.surface);
         self.recorded_has_shadow = self.pending_shadow_target.is_some();
         if self.recorded_has_shadow {
             self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
@@ -3694,6 +3573,7 @@ impl<'window> TexturedSession<'window> {
         // As in `record_draw`: acquisition already waited for this slot, and a
         // wait on the rest is exactly the serialization being removed.
         self.collect_gpu_timing()?;
+        self.mesh_buffers.prepare_uploads(&self.surface)?;
         if !uniform.is_empty() {
             let base = self.postprocess_uniform_base();
             write_postprocess_uniform(&self.surface, &self.postprocess_uniform, base, uniform)?;
@@ -3739,6 +3619,7 @@ impl<'window> TexturedSession<'window> {
             "vkBeginCommandBuffer for postprocessed frame",
         )?;
         self.begin_gpu_frame();
+        self.mesh_buffers.record_uploads(&self.surface);
         self.recorded_has_shadow = self.pending_shadow_target.is_some();
         if self.recorded_has_shadow {
             self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
@@ -4710,6 +4591,23 @@ fn create_buffer(
     usage: u32,
     bytes: &[u8],
 ) -> Result<Buffer, GraphicsError> {
+    create_buffer_with_memory(
+        surface,
+        size,
+        usage,
+        bytes,
+        (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+            .cast_unsigned(),
+    )
+}
+
+fn create_buffer_with_memory(
+    surface: &ClearSurface<'_>,
+    size: usize,
+    usage: u32,
+    bytes: &[u8],
+    required: u32,
+) -> Result<Buffer, GraphicsError> {
     let size =
         u64::try_from(size).map_err(|_| error("buffer size exceeds Vulkan address space"))?;
     let info = vk::VkBufferCreateInfo {
@@ -4735,7 +4633,7 @@ fn create_buffer(
         },
         "vkCreateBuffer for textured slice",
     )?;
-    if let Err(failure) = complete_buffer_storage(surface, &mut buffer, bytes) {
+    if let Err(failure) = complete_buffer_storage(surface, &mut buffer, bytes, required) {
         destroy_buffer(surface, buffer);
         return Err(failure);
     }
@@ -4856,6 +4754,7 @@ fn complete_buffer_storage(
     surface: &ClearSurface<'_>,
     buffer: &mut Buffer,
     bytes: &[u8],
+    required: u32,
 ) -> Result<(), GraphicsError> {
     let device = surface.device();
     let mut requirements = vk::VkMemoryRequirements::default();
@@ -4865,12 +4764,13 @@ fn complete_buffer_storage(
             .get_buffer_memory_requirements
             .expect("loaded function")(device.handle, buffer.handle, &raw mut requirements);
     };
-    let memory_type = find_memory_type(
-        device,
-        requirements.memoryTypeBits,
-        (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) as u32,
-    )
-    .ok_or_else(|| error("no host-visible coherent Vulkan memory type"))?;
+    let memory_type =
+        find_memory_type(device, requirements.memoryTypeBits, required).ok_or_else(|| {
+            GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                format!("no compatible Vulkan buffer memory type for flags {required:#x}"),
+            )
+        })?;
     let allocate = vk::VkMemoryAllocateInfo {
         sType: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         allocationSize: requirements.size,

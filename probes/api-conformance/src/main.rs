@@ -826,11 +826,14 @@ impl<'window> Cases<'window> {
                             .device
                             .create_postprocess_pipeline(PostprocessPipelineDescriptor {
                                 shader: ShaderArtifact::new(SHADER)?,
-                                uniform_size: Some(513),
+                                uniform_size: Some(mulciber::POSTPROCESS_UNIFORM_SIZE_LIMIT + 1),
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
-                        "outside the supported 1 through 256",
+                        &format!(
+                            "outside the supported 1 through {}",
+                            mulciber::POSTPROCESS_UNIFORM_SIZE_LIMIT
+                        ),
                         "oversized postprocess uniform declaration rejected",
                     )?;
                     expect_error(
@@ -3544,11 +3547,13 @@ impl<'window> Cases<'window> {
         }
         let graphics = self.graphics.as_mut().expect("session B is open");
         if self.step.is_multiple_of(7) {
-            self.mesh = Some(
-                graphics
-                    .device
-                    .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
-            );
+            // Exceed the staging-cache cap once, then reuse its frame slot during
+            // normal small-mesh churn. The first triangle remains the visible draw.
+            let mut vertices = TRIANGLE_VERTICES.to_vec();
+            if self.step == 7 {
+                vertices.resize(1 << 20, TRIANGLE_VERTICES[0]);
+            }
+            self.mesh = Some(graphics.device.create_mesh(&vertices, &[0, 1, 2])?);
         }
         let draws: Vec<_> = (0..(1 << (self.step % 7)))
             .map(|index| TexturedSceneDraw {

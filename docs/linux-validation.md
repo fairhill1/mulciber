@@ -988,3 +988,28 @@ HDR materials can sample a world-depth snapshot before volumetric and foreground
 using the existing 1x/4x depth shader support. The first consumer splits the world pass;
 normal depth testing remains active. See the [scene-depth contract](scene-depth-contract.md)
 for ordering, native copy ownership, validation and remaining hardware evidence.
+
+## GPU-local mesh release validation (2026-09-08)
+
+The 0.13.9 candidate passes 96 API conformance cases on RTX 3060 Ti / Nvidia 610.57.04 / KDE native
+Wayland, again with `MULCIBER_VULKAN_MESH_MEMORY=host`, and with `WAYLAND_DISPLAY=` selecting X11
+through XWayland. Khronos validation is enabled; all three exit zero without warnings/errors. The
+ring test includes an oversized upload followed by small-mesh churn and completed-slot reuse. Its
+timing-order assertion passes without weakening it.
+
+```sh
+cargo build --release -p mulciber-api-conformance
+target/release/mulciber-api-conformance
+MULCIBER_VULKAN_MESH_MEMORY=host target/release/mulciber-api-conformance
+WAYLAND_DISPLAY= target/release/mulciber-api-conformance
+```
+
+Workspace format/check/Clippy/tests and Windows/Apple-silicon library cross-checks pass. These are
+automated ownership/submission checks, not new human lifecycle, multi-display, native Xorg, actual
+allocation-exhaustion or visual-readback evidence. [Vulkan mesh memory](vulkan-mesh-memory.md) records
+the policy and game experiment; logs are in `validation-artifacts/mesh-memory-release-2026-09-08/`.
+
+The final 0.13.9 outdoor game comparison completed matching 1800-tick routes in both modes:
+67.78 → 74.71 FPS and 10.93 → 9.73 ms GPU time. This is one follow-up pair; the mesh-memory
+record distinguishes it from the earlier three-pair prototype benchmark. Raw captures, native GPU
+correlation, settings and runner scripts are archived under the release directory's `game/` folder.

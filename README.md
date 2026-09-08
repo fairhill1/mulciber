@@ -206,3 +206,9 @@ HDR materials can sample a world-depth snapshot before volumetric and foreground
 using the existing 1x/4x depth shader support. The first consumer splits the world pass;
 normal depth testing remains active. See the [scene-depth contract](docs/scene-depth-contract.md)
 for ordering, native copy ownership, validation and remaining hardware evidence.
+
+## GPU-local Vulkan meshes (0.13.9)
+
+Immutable meshes now prefer device-local storage with frame-owned staged uploads, bounded retained
+staging capacity and an observable host-memory fallback. GPU timing feedback remains ordered across
+frame-slot abandonment. See the [mesh-memory policy and evidence](docs/vulkan-mesh-memory.md).

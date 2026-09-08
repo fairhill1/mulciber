@@ -29,7 +29,11 @@ accumulator tradeoff for smooth motion without predicting future game state.
 ## Timing semantics
 
 - `RuntimeConfig::fixed_hz` selects a representable, nonzero fixed step. Forge Run uses 60 Hz.
-- Wall-clock time accumulates until one or more complete fixed steps are available.
+- Wall-clock time accumulates until one or more complete fixed steps are available. Presentation
+  cadence may smooth the incoming delta only while cumulative scheduled time stays within 16 ms
+  of elapsed time since creation or resume. A stale FPS estimate falls back to the current elapsed
+  delta; it cannot accumulate simulation time to play back after recovery. The smoothing offset
+  survives fallback, and resets only on resume.
 - `FramePlan::fixed_steps` and `fixed_step` define deterministic simulation work; the application
   must run exactly that many equal-duration updates before rendering.
 - `frame_delta` is separately clamped variable time for presentation-only work. It must not be used
@@ -86,8 +90,10 @@ source, and stays independent of the graphics crate. It maintains a bounded wind
 intervals and reports frame counts, untimed presentations, a median-of-window cadence estimate
 (withheld until enough intervals exist), a min/median/p95/max interval summary, and a count of
 intervals exceeding 1.5 times the running estimate. It owns no scheduling policy: nothing sleeps,
-throttles, or reorders work. Scheduling hooks are deliberately deferred until the probe-first
-evidence and the Vulkan availability survey say what policy inputs are real.
+throttles, or reorders work. `FramePacer` uses the estimate to propose whole-interval deltas and
+accepts them only within the cumulative 16 ms drift bound. `FrameSchedule::paced()` is false when
+feedback is missing or stale, or when quantization would exceed that bound. The diagnostics median
+is an observation of throughput, not proof of the display's refresh interval.
 
 ## Ownership boundary
 
@@ -124,6 +130,14 @@ implementation size. Mulciber backend/runtime internals and wgpu/winit internals
 See the [game-slice comparison](game-slice-comparison.md) for source-count methodology and evidence.
 
 ## Current evidence
+
+Runtime 0.5.2 fixes an Isle of Rán reproduction in which 30 -> 60 FPS ran simulation at 2x speed
+and 20 -> 60 FPS ran it at 3x speed for roughly two seconds. The 240-interval median remained slow
+while the one-interval floor applied that stale duration to every recovered frame. Headless tests
+now cover repeated FPS increases/decreases, gradual recovery, jitter, feedback delayed two frames,
+stale-feedback transitions, hitch discard and resume. They check cumulative scheduled time and
+actual fixed-step progress, including that discarded hitch time is not repaid. No new game launch,
+native visual validation, or physical display-transition coverage is claimed for this patch.
 
 Unit tests cover invalid timing limits, partial-step accumulation, interpolation, frame clamping,
 catch-up discard reporting, held/pressed/released key semantics, key repeats, focus-loss releases,

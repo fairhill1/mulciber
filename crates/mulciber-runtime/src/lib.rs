@@ -7,7 +7,8 @@
 //! The runtime also owns the display-interval frame pacer. Drain the graphics surface's
 //! presentation feedback into [`Runtime::record_presented`] every frame and
 //! [`Runtime::begin_frame`] advances simulation time by whole display intervals of the observed
-//! cadence instead of by wall-clock gaps between build starts — wall-clock gaps reintroduce
+//! cadence when that keeps cumulative drift within 16 ms of elapsed time. Otherwise it uses
+//! wall-clock gaps between build starts. Unsmoothed wall-clock gaps can reintroduce
 //! visible judder on a steadily presenting display even with fixed simulation steps. Skipping the
 //! feedback drain observably degrades every frame to the wall-clock fallback; check
 //! [`RuntimeFrame::schedule`] or [`Runtime::pacing_report`] rather than assuming pacing engaged.
@@ -74,7 +75,7 @@ impl RuntimeFrame<'_> {
     }
 
     /// Returns how this frame's delta was derived: paced onto the observed display cadence, or
-    /// the wall-clock fallback while presentation feedback is missing or stale.
+    /// the wall-clock fallback while feedback is missing, stale, or would cause timing drift.
     pub const fn schedule(&self) -> FrameSchedule {
         self.schedule
     }
@@ -112,7 +113,7 @@ impl Runtime {
     /// Drain the graphics surface's presentation feedback into this method (or
     /// [`Self::record_untimed_presented`]) every frame. Once the recorded timestamps yield a
     /// cadence estimate, [`Self::begin_frame`] advances simulation time by whole display
-    /// intervals instead of wall-clock gaps.
+    /// intervals when doing so respects the cumulative drift bound, otherwise by wall-clock gaps.
     pub fn record_presented(&mut self, presented_at: Instant) {
         self.pacer.record_presented(presented_at);
     }
@@ -156,9 +157,10 @@ impl Runtime {
     /// Begins a scoped frame with fixed simulation work, input, and render interpolation.
     ///
     /// While recorded presentation feedback yields a fresh cadence estimate, the frame delta is a
-    /// whole number of display intervals; call this once per frame that will be presented, since
-    /// every paced call advances at least one interval. Without feedback, or when it goes stale,
-    /// the delta observably falls back to the wall-clock gap since the previous frame — see
+    /// whole number of display intervals if doing so keeps cumulative pacing drift within 16 ms
+    /// of elapsed time. Call this once per frame that will be presented. Without fresh feedback,
+    /// or when the drift limit would be exceeded, the delta observably falls back to the wall-clock
+    /// gap since the previous frame — see
     /// [`RuntimeFrame::schedule`].
     ///
     /// Dropping a frame with fixed updates consumes transient input, including on early return.
@@ -225,17 +227,148 @@ mod tests {
     fn recorded_feedback_paces_jittered_frame_starts_onto_the_display_cadence() {
         let (mut runtime, mut presented) = runtime_after_steady_presents(30);
         let mut now = presented + Duration::from_millis(1);
-        drop(runtime.begin_frame(now));
-        for jitter_ms in [3_u64, 18, 2, 17] {
-            now += Duration::from_millis(jitter_ms);
+        runtime.resume(now);
+        for elapsed in [
+            STEP + Duration::from_millis(7),
+            STEP.checked_sub(Duration::from_millis(7)).unwrap(),
+        ]
+        .repeat(100)
+        {
+            now += elapsed;
             let frame = runtime.begin_frame(now);
-            assert!(frame.schedule().paced(), "jitter {jitter_ms} ms");
-            assert_eq!(frame.plan().frame_delta(), STEP, "jitter {jitter_ms} ms");
+            assert!(frame.schedule().paced());
+            assert_eq!(frame.plan().frame_delta(), STEP);
             drop(frame);
             presented += STEP;
             runtime.record_presented(presented);
         }
         assert_eq!(runtime.pacing_report().estimated_cadence, Some(STEP));
+    }
+
+    #[test]
+    fn fps_changes_keep_scheduled_time_and_simulation_near_elapsed_time() {
+        use std::collections::VecDeque;
+
+        for feedback_delay in [0, 2] {
+            let config = RuntimeConfig::fixed_hz(60).unwrap();
+            let start = Instant::now();
+            let mut now = start;
+            let mut runtime = Runtime::new(config, start);
+            let mut feedback = VecDeque::new();
+            let mut scheduled = Duration::ZERO;
+            let mut simulated = Duration::ZERO;
+            // Fill the 240-interval window before each transition; include small changes that
+            // would defeat a guard considering only the current frame's error.
+            for hz in [30, 60, 20, 60, 40, 80, 60, 61, 120, 240, 30, 60] {
+                let period = Duration::from_secs_f64(1.0 / f64::from(hz));
+                let segment_start = now;
+                let simulation_start = simulated;
+                for _ in 0..300 {
+                    now += period;
+                    feedback.push_back(now);
+                    if feedback.len() > feedback_delay {
+                        runtime.record_presented(feedback.pop_front().unwrap());
+                    }
+                    let frame = runtime.begin_frame(now);
+                    let plan = frame.plan();
+                    scheduled += frame.schedule().frame_delta();
+                    simulated += plan.fixed_step() * plan.fixed_steps();
+                    assert_eq!(plan.dropped_time(), Duration::ZERO);
+                    assert!((0.0..1.0).contains(&plan.interpolation()));
+                    let elapsed = now.duration_since(start);
+                    assert!(
+                        scheduled.abs_diff(elapsed) <= Duration::from_millis(16),
+                        "{hz} Hz, delay {feedback_delay}: {scheduled:?} vs {elapsed:?}"
+                    );
+                    assert!(
+                        simulated.abs_diff(elapsed)
+                            <= Duration::from_millis(16) + config.fixed_step()
+                    );
+                    // Bound progress from each transition too, not just the start of the run.
+                    assert!(
+                        simulated
+                            .checked_sub(simulation_start)
+                            .unwrap()
+                            .abs_diff(now - segment_start)
+                            <= Duration::from_millis(32) + config.fixed_step()
+                    );
+                }
+            }
+            // Recover continuously instead of jumping between two fixed cadences.
+            for micros in (8_000..50_000).rev().step_by(37) {
+                now += Duration::from_micros(micros);
+                runtime.record_presented(now);
+                let frame = runtime.begin_frame(now);
+                scheduled += frame.schedule().frame_delta();
+                simulated += frame.plan().fixed_step() * frame.plan().fixed_steps();
+                assert!(scheduled.abs_diff(now - start) <= Duration::from_millis(16));
+                assert!(
+                    simulated.abs_diff(now - start)
+                        <= Duration::from_millis(16) + config.fixed_step()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stale_feedback_and_hitches_do_not_refill_the_smoothing_budget_or_repay_dropped_time() {
+        let start = Instant::now();
+        let mut now = start;
+        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), start);
+        let mut scheduled = Duration::ZERO;
+        for _ in 0..300 {
+            now += STEP;
+            runtime.record_presented(now);
+            scheduled += runtime.begin_frame(now).schedule().frame_delta();
+        }
+        // Repeated fallback/re-entry must not grant a new 16 ms of synthetic time each time.
+        for _ in 0..20 {
+            now += Duration::from_millis(2);
+            runtime.record_presented(now);
+            scheduled += runtime.begin_frame(now).schedule().frame_delta();
+            now += Duration::from_secs(1);
+            let frame = runtime.begin_frame(now);
+            scheduled += frame.schedule().frame_delta();
+            assert!(!frame.schedule().paced());
+            assert_eq!(frame.plan().fixed_steps(), 8);
+            assert!(frame.plan().dropped_time() > Duration::from_millis(850));
+            drop(frame);
+
+            let mut recovery_simulation = Duration::ZERO;
+            for _ in 0..120 {
+                now += STEP;
+                runtime.record_presented(now);
+                let frame = runtime.begin_frame(now);
+                scheduled += frame.schedule().frame_delta();
+                recovery_simulation += frame.plan().fixed_step() * frame.plan().fixed_steps();
+                assert!(scheduled.abs_diff(now - start) <= Duration::from_millis(16));
+            }
+            assert!(recovery_simulation.abs_diff(STEP * 120) < Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn resume_with_a_slow_cadence_does_not_advance_without_elapsed_time() {
+        let start = Instant::now();
+        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), start);
+        let mut now = start;
+        for _ in 0..300 {
+            now += Duration::from_millis(50);
+            runtime.record_presented(now);
+            drop(runtime.begin_frame(now));
+        }
+        runtime.suspend();
+        now += Duration::from_secs(10);
+        runtime.record_presented(now);
+        runtime.resume(now);
+        let frame = runtime.begin_frame(now);
+        assert_eq!(frame.plan().fixed_steps(), 0);
+        assert_eq!(frame.schedule().frame_delta(), Duration::ZERO);
+        drop(frame);
+        let fixed_step = RuntimeConfig::fixed_hz(60).unwrap().fixed_step();
+        let frame = runtime.begin_frame(now + fixed_step);
+        assert_eq!(frame.schedule().frame_delta(), fixed_step);
+        assert_eq!(frame.plan().fixed_steps(), 1);
     }
 
     #[test]

@@ -14,8 +14,10 @@ Forward platform events to `Runtime::handle_window_event`, drain presentation fe
 for rendering between the previous and current simulation states.
 
 Frame deltas follow observed presentation cadence when fresh feedback is available and fall back to
-wall-clock timing otherwise. Catch-up work and accepted frame time are bounded so a hitch cannot
-create an unbounded simulation spiral; discarded time remains visible through diagnostics.
+wall-clock timing otherwise. Cadence smoothing keeps cumulative scheduled time within 16 ms of
+elapsed time; an outdated FPS estimate cannot accelerate gameplay for seconds after recovery.
+Fallback preserves this bounded offset, and resume resets it. Catch-up work and accepted frame time
+are bounded so a hitch cannot create an unbounded simulation spiral; discarded time remains visible through diagnostics.
 
 ## Input semantics
 

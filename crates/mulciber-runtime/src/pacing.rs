@@ -134,6 +134,9 @@ fn percentile_rank(length: usize, percent: usize) -> usize {
 /// Presented feedback older than this no longer anchors the presentation grid; scheduling falls
 /// back to wall-clock timing until fresh feedback arrives, such as after occlusion or resume.
 const PACING_STALENESS_LIMIT: Duration = Duration::from_millis(250);
+/// Smoothing may shift time by less than one 60 Hz tick, never accumulate seconds of drift.
+/// This accommodates the measured ±7 ms build-start jitter without trusting a stale cadence.
+const MAX_PACING_DRIFT_NANOS: i128 = 16_000_000;
 
 /// Derives display-cadence frame deltas from presented-frame feedback.
 ///
@@ -142,8 +145,10 @@ const PACING_STALENESS_LIMIT: Duration = Duration::from_millis(250);
 /// ask [`Self::schedule`] when a frame is about to be built. While a cadence estimate and fresh
 /// feedback exist, each frame delta is a whole number of display intervals: one interval
 /// normally, more when the wall-clock gap since the previous schedule shows the display consumed
-/// extra intervals. Without an estimate, or when feedback goes stale, deltas observably fall back
-/// to raw wall-clock gaps.
+/// extra intervals. Quantization is accepted only while total scheduled time stays within 16 ms
+/// of elapsed time since creation or resume. Otherwise, or without fresh estimated feedback,
+/// deltas observably fall back to raw wall-clock gaps. The offset is retained across fallbacks;
+/// no backlog is built for later repayment when FPS or display cadence changes.
 ///
 /// Deltas quantize to the cadence instead of following the wall clock because a FIFO-presented
 /// backend displays exactly one frame per display interval even when frame building starts at
@@ -159,6 +164,8 @@ pub struct FramePacer {
     diagnostics: PacingDiagnostics,
     last_presented: Option<Instant>,
     last_schedule_at: Option<Instant>,
+    /// Sum of scheduled deltas minus elapsed time since creation or resume.
+    pacing_drift_nanos: i128,
 }
 
 impl Default for FramePacer {
@@ -175,6 +182,7 @@ impl FramePacer {
             diagnostics: PacingDiagnostics::new(),
             last_presented: None,
             last_schedule_at: None,
+            pacing_drift_nanos: 0,
         }
     }
 
@@ -196,9 +204,10 @@ impl FramePacer {
     /// [`Self::schedule`] call.
     ///
     /// Call when frame production resumes after a pause so the paused interval does not enter the
-    /// next frame delta as elapsed time.
+    /// next frame delta as elapsed time. Resets the bounded smoothing offset as well.
     pub const fn resume(&mut self, now: Instant) {
         self.last_schedule_at = Some(now);
+        self.pacing_drift_nanos = 0;
     }
 
     /// Summarizes everything the underlying diagnostics recorded so far.
@@ -214,10 +223,13 @@ impl FramePacer {
         });
         self.last_schedule_at = Some(now);
         match self.display_intervals(now, elapsed) {
-            Some(frame_delta) => FrameSchedule {
-                frame_delta,
-                paced: true,
-            },
+            Some(frame_delta) => {
+                self.pacing_drift_nanos += signed_nanos(frame_delta) - signed_nanos(elapsed);
+                FrameSchedule {
+                    frame_delta,
+                    paced: true,
+                }
+            }
             None => FrameSchedule {
                 frame_delta: elapsed,
                 paced: false,
@@ -226,8 +238,11 @@ impl FramePacer {
     }
 
     /// Quantizes `elapsed` to whole display intervals, or `None` when cadence or fresh feedback
-    /// is missing.
+    /// is missing or quantization would exceed the cumulative smoothing limit.
     fn display_intervals(&self, now: Instant, elapsed: Duration) -> Option<Duration> {
+        if elapsed.is_zero() {
+            return None;
+        }
         let cadence = self.diagnostics.estimated_cadence()?;
         let presented = self.last_presented?;
         if now.saturating_duration_since(presented) > PACING_STALENESS_LIMIT {
@@ -240,10 +255,18 @@ impl FramePacer {
         // gaps count an extra interval only past one and three-quarters.
         let slack = cadence / 4;
         let intervals = (elapsed + slack).as_nanos() / cadence.as_nanos();
-        u32::try_from(intervals.max(1))
-            .ok()
-            .map(|intervals| cadence * intervals)
+        let frame_delta = cadence.checked_mul(u32::try_from(intervals.max(1)).ok()?)?;
+        let drift = self.pacing_drift_nanos + signed_nanos(frame_delta) - signed_nanos(elapsed);
+        // A median of slow presents can remain slow for 120 recovered frames. Quantizing every
+        // new frame to that old interval manufactures simulation time (30 -> 60 FPS ran at 2x).
+        // Keep the cumulative offset bounded in both directions, including across unpaced frames:
+        // clearing it on fallback would grant a fresh budget and recreate the same speedup.
+        (drift.abs() <= MAX_PACING_DRIFT_NANOS).then_some(frame_delta)
     }
+}
+
+fn signed_nanos(duration: Duration) -> i128 {
+    i128::try_from(duration.as_nanos()).expect("every Duration fits in signed 128-bit nanoseconds")
 }
 
 /// One frame's pacing decision: how much time the frame advances and how that was derived.
@@ -414,17 +437,24 @@ mod tests {
 
     #[test]
     fn jittered_schedule_gaps_still_advance_one_display_interval() {
-        // The measured pathology: build starts alternately arrive ~3 ms and ~18 ms apart while
-        // the display consumes one frame per ~13.3 ms interval. Deltas must stay one interval.
+        // Early/late build starts cancel over each pair while the display remains steady.
+        // Unlike the old fixture, the timestamps never put presents in the future or manufacture
+        // extra time by advancing presentation faster than the schedule clock indefinitely.
         let (mut pacer, mut presented) = pacer_after_steady_presents(30);
         let mut now = presented + Duration::from_millis(1);
-        for jitter_ms in [3_u64, 18, 2, 17, 4, 16] {
+        pacer.resume(now);
+        for elapsed in [
+            STEP + Duration::from_millis(7),
+            STEP.checked_sub(Duration::from_millis(7)).unwrap(),
+        ]
+        .repeat(100)
+        {
+            now += elapsed;
             let schedule = pacer.schedule(now);
             assert!(schedule.paced());
-            assert_eq!(schedule.frame_delta(), STEP, "jitter {jitter_ms} ms");
+            assert_eq!(schedule.frame_delta(), STEP);
             presented += STEP;
             pacer.record_presented(presented);
-            now += Duration::from_millis(jitter_ms);
         }
     }
 
@@ -449,13 +479,20 @@ mod tests {
     }
 
     #[test]
-    fn back_to_back_schedules_keep_the_one_interval_floor() {
+    fn back_to_back_schedules_cannot_manufacture_time() {
         let (mut pacer, last_presented) = pacer_after_steady_presents(30);
         let now = last_presented + Duration::from_millis(1);
         let first = pacer.schedule(now);
         let second = pacer.schedule(now + Duration::from_millis(1));
-        assert_eq!(first.frame_delta(), STEP);
+        assert_eq!(first.frame_delta(), Duration::ZERO);
         assert_eq!(second.frame_delta(), STEP);
+        let third = pacer.schedule(now + Duration::from_millis(2));
+        assert!(!third.paced());
+        assert_eq!(third.frame_delta(), Duration::from_millis(1));
+        assert_eq!(
+            pacer.schedule(now + Duration::from_millis(2)).frame_delta(),
+            Duration::ZERO
+        );
     }
 
     #[test]

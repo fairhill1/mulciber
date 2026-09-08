@@ -422,7 +422,10 @@ device recovery.
   `mulciber-runtime::PacingDiagnostics` reports cadence estimates, interval distributions, and
   missed intervals, consumed by Forge Run and `mulciber-api-cube`, and the pinned wgpu/winit Forge
   Run peer carries the equivalent best-effort present-return estimator; extraction evidence lives
-  in the [Linux runbook](linux-validation.md); the first policy half is extracted as
+  in the [Linux runbook](linux-validation.md).
+  Runtime 0.5.2 additionally bounds cumulative pacing drift to 16 ms with an elapsed-time fallback;
+  headless FPS-recovery tests prevent the stale cadence estimate from accelerating gameplay. New
+  native visual evidence for this correction remains outstanding. Earlier evidence covers
   `mulciber-runtime::FramePacer` — display-interval frame deltas from the observed cadence with an
   observable wall-clock fallback, measured on the Wayland/KWin tier to reduce simulation-delta
   error against presented intervals from ±7 ms to a 35 µs p95 — and since runtime 0.4.0 `Runtime`

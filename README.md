@@ -57,7 +57,8 @@ evaluated against the pre-registered comparisons in the
   [decision ledger](docs/api-slice-decisions.md)).
 - `mulciber-runtime` provides input snapshots with focus-loss clearing, a configurable fixed-step
   accumulator with bounded catch-up, clamped variable updates, render interpolation, rendering
-  suspension coordination, and presented-cadence pacing diagnostics
+  suspension coordination, and presented-cadence smoothing with bounded cumulative time drift
+  and diagnostics
   ([runtime contract](docs/runtime-contract.md)).
 - `mulciber-shader` is a separate offline tool that turns WGSL into validated, cached native
   artifacts; no shader compiler ships in the game process. It also generates host-callable Rust

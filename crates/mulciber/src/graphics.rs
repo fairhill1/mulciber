@@ -1,3 +1,7 @@
+mod hdr;
+pub(crate) use hdr::bloom_extents;
+use hdr::{validate_bloom_filter_interface, validate_bloom_interface, validate_hdr_pair};
+
 use core::cell::RefCell;
 use std::format;
 use std::rc::Rc;
@@ -461,12 +465,50 @@ impl Device<'_> {
         let descriptor = descriptor.into();
         validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
-        let config = PostprocessPipelineConfig { uniform_size };
+        let config = PostprocessPipelineConfig {
+            uniform_size,
+            bloom: None,
+            hdr_output: false,
+        };
         let id =
             session_mut(&self.shared)?.create_postprocess_pipeline(descriptor.shader, &config)?;
         Ok(PostprocessPipeline {
             lease: self.lease(id, ResourceKind::PostprocessPipeline),
             uniform_size,
+            hdr: false,
+        })
+    }
+
+    /// Creates an HDR composite with six half-resolution bloom levels at bindings 3 through 8.
+    /// The prefilter and downsample shaders use the ordinary no-uniform postprocess interface.
+    /// Scene color is linear `RGBA16Float`; the composite must tone-map to the sRGB surface.
+    ///
+    /// # Errors
+    /// Rejects invalid shader interfaces or unsupported native pipeline creation.
+    pub fn create_hdr_postprocess_pipeline(
+        &self,
+        descriptor: PostprocessPipelineDescriptor<'_>,
+        prefilter: ShaderArtifact<'_>,
+        downsample: ShaderArtifact<'_>,
+    ) -> Result<PostprocessPipeline, GraphicsError> {
+        validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
+        validate_bloom_interface(descriptor.shader, descriptor.uniform_size)?;
+        validate_postprocess_interface(prefilter, None)?;
+        validate_postprocess_interface(downsample, None)?;
+        validate_bloom_filter_interface(prefilter)?;
+        validate_bloom_filter_interface(downsample)?;
+        let uniform_size = descriptor.uniform_size.unwrap_or(0);
+        let config = PostprocessPipelineConfig {
+            uniform_size,
+            bloom: Some([prefilter, downsample]),
+            hdr_output: false,
+        };
+        let id =
+            session_mut(&self.shared)?.create_postprocess_pipeline(descriptor.shader, &config)?;
+        Ok(PostprocessPipeline {
+            lease: self.lease(id, ResourceKind::PostprocessPipeline),
+            uniform_size,
+            hdr: true,
         })
     }
 
@@ -485,6 +527,25 @@ impl Device<'_> {
     pub fn create_material_pipeline(
         &self,
         descriptor: MaterialPipelineDescriptor<'_>,
+    ) -> Result<MaterialPipeline, GraphicsError> {
+        self.create_material_pipeline_with_format(descriptor, false)
+    }
+
+    /// Creates a material pipeline for linear `RGBA16Float` HDR scene targets.
+    ///
+    /// # Errors
+    /// Reports the same declaration errors as `create_material_pipeline`, plus native format errors.
+    pub fn create_hdr_material_pipeline(
+        &self,
+        descriptor: MaterialPipelineDescriptor<'_>,
+    ) -> Result<MaterialPipeline, GraphicsError> {
+        self.create_material_pipeline_with_format(descriptor, true)
+    }
+
+    fn create_material_pipeline_with_format(
+        &self,
+        descriptor: MaterialPipelineDescriptor<'_>,
+        hdr: bool,
     ) -> Result<MaterialPipeline, GraphicsError> {
         let layout = validate_vertex_layout(descriptor.vertex_layout)?;
         let instance_layout = descriptor
@@ -507,6 +568,7 @@ impl Device<'_> {
         validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
         let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
         let config = MaterialPipelineConfig {
+            hdr,
             vertex_entry: descriptor.vertex_entry,
             fragment_entry: descriptor.fragment_entry,
             stride: layout.stride,
@@ -529,6 +591,7 @@ impl Device<'_> {
         };
         let id = session_mut(&self.shared)?.create_material_pipeline(descriptor.shader, &config)?;
         Ok(MaterialPipeline {
+            hdr,
             lease: self.lease(id, ResourceKind::MaterialPipeline),
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
@@ -735,11 +798,36 @@ impl Device<'_> {
         scale: RenderScale,
     ) -> Result<PostprocessTargets, GraphicsError> {
         let scene_extent = scale.scene_extent(info.extent());
-        let id = session_mut(&self.shared)?.create_postprocess_targets(info, scene_extent)?;
+        let id =
+            session_mut(&self.shared)?.create_postprocess_targets(info, scene_extent, false)?;
         Ok(PostprocessTargets {
             lease: self.lease(id, ResourceKind::PostprocessTargets),
             info,
             scale,
+            hdr: false,
+        })
+    }
+
+    /// Creates scaled linear `RGBA16Float` scene targets and six bloom levels.
+    /// Existing surface-format targets remain available through `create_scaled_postprocess_targets`.
+    ///
+    /// # Errors
+    /// Rejects unsupported HDR attachment/filter/sample-count combinations or allocation failure.
+    pub fn create_scaled_hdr_postprocess_targets(
+        &self,
+        info: SurfaceInfo,
+        scale: RenderScale,
+    ) -> Result<PostprocessTargets, GraphicsError> {
+        let id = session_mut(&self.shared)?.create_postprocess_targets(
+            info,
+            scale.scene_extent(info.extent()),
+            true,
+        )?;
+        Ok(PostprocessTargets {
+            lease: self.lease(id, ResourceKind::PostprocessTargets),
+            info,
+            scale,
+            hdr: true,
         })
     }
 
@@ -1119,6 +1207,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_hdr_pair(scene.postprocess_pipeline.hdr, scene.targets.hdr)?;
         validate_postprocess_uniform(scene.postprocess_pipeline, scene.uniform)?;
         let token = frame
             .token
@@ -1185,6 +1274,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_hdr_pair(postprocess_pipeline.hdr, targets.hdr)?;
         validate_postprocess_uniform(postprocess_pipeline, uniform)?;
         let token = frame
             .token
@@ -1258,6 +1348,7 @@ impl Queue<'_> {
                 "postprocess pipeline belongs to a different graphics session than the queue",
             ));
         }
+        validate_hdr_pair(postprocess_pipeline.hdr, targets.hdr)?;
         validate_postprocess_uniform(postprocess_pipeline, uniform)?;
         let token = frame
             .token
@@ -1385,6 +1476,9 @@ impl Queue<'_> {
             ));
         }
         self.validate_targets(frame_session, frame_info, targets)?;
+        for record in records {
+            validate_hdr_pair(record.pipeline.hdr, targets.hdr())?;
+        }
         self.validate_material_records(frame_session, records)
     }
 
@@ -1402,6 +1496,7 @@ impl Queue<'_> {
         }
         self.validate_material_records(frame_session, overlay)?;
         for record in overlay {
+            validate_hdr_pair(record.pipeline.hdr, false)?;
             if record.pipeline.depth != DepthMode::Off {
                 return Err(GraphicsError::invalid_request(
                     "overlay records draw into the presentable target, which carries no depth \
@@ -1622,6 +1717,7 @@ impl Queue<'_> {
                 "textured scene must contain at least one draw",
             ));
         }
+        validate_hdr_pair(false, targets.hdr())?;
         self.validate_targets(frame_session, frame_info, targets)?;
         for draw in draws {
             Self::validate_draw_handle_sessions(
@@ -1657,6 +1753,7 @@ impl Queue<'_> {
                 "instanced textured scene must contain at least one batch",
             ));
         }
+        validate_hdr_pair(false, targets.hdr())?;
         self.validate_targets(frame_session, frame_info, targets)?;
         for batch in batches {
             if batch.model_view_projections.is_empty() {
@@ -2360,6 +2457,7 @@ impl TexturedPipeline {
 /// application-authored per-submission uniform data.
 #[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessPipeline {
+    hdr: bool,
     lease: ResourceLease,
     /// Zero when the pipeline declares no postprocess uniform.
     uniform_size: u32,
@@ -2630,6 +2728,7 @@ pub struct MaterialPipelineDescriptor<'inputs> {
 /// Application-authored material pipeline with declared blend and depth modes.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MaterialPipeline {
+    hdr: bool,
     lease: ResourceLease,
     layout: OwnedVertexLayout,
     /// Zero when no uniform slot is declared.
@@ -2841,6 +2940,7 @@ impl<'resources> ShadowPrepass<'resources> {
 
 /// Validated creation inputs handed to the native backends.
 pub(crate) struct MaterialPipelineConfig<'inputs> {
+    pub(crate) hdr: bool,
     pub(crate) vertex_entry: &'inputs str,
     pub(crate) fragment_entry: &'inputs str,
     pub(crate) stride: u32,
@@ -2952,6 +3052,7 @@ impl RenderScale {
 /// Extent- and generation-dependent two-pass color/depth targets.
 #[derive(Debug, Eq, PartialEq)]
 pub struct PostprocessTargets {
+    hdr: bool,
     lease: ResourceLease,
     info: SurfaceInfo,
     scale: RenderScale,
@@ -2974,6 +3075,9 @@ impl PostprocessTargets {
 }
 
 trait SceneTargets {
+    fn hdr(&self) -> bool {
+        false
+    }
     fn session(&self) -> u64;
     fn info(&self) -> SurfaceInfo;
     fn label(&self) -> &'static str;
@@ -2994,6 +3098,9 @@ impl SceneTargets for RenderTargets {
 }
 
 impl SceneTargets for PostprocessTargets {
+    fn hdr(&self) -> bool {
+        self.hdr
+    }
     fn session(&self) -> u64 {
         self.lease.session
     }
@@ -3207,7 +3314,9 @@ pub enum SceneOutput<'resources> {
 }
 
 /// Validated postprocess creation inputs handed to the native backends.
-pub(crate) struct PostprocessPipelineConfig {
+pub(crate) struct PostprocessPipelineConfig<'inputs> {
+    pub(crate) bloom: Option<[ShaderArtifact<'inputs>; 2]>,
+    pub(crate) hdr_output: bool,
     /// Declared group-0/binding-0 byte size, or zero when absent.
     pub(crate) uniform_size: u32,
 }

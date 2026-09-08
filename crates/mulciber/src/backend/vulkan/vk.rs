@@ -3680,6 +3680,15 @@ pub struct VkFormatProperties {
     pub bufferFeatures: VkFormatFeatureFlags,
 }
 #[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct VkImageFormatProperties {
+    pub maxExtent: VkExtent3D,
+    pub maxMipLevels: u32,
+    pub maxArrayLayers: u32,
+    pub sampleCounts: VkSampleCountFlags,
+    pub maxResourceSize: VkDeviceSize,
+}
+#[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VkInstanceCreateInfo {
     pub sType: VkStructureType,
@@ -4949,6 +4958,17 @@ pub type PFN_vkGetPhysicalDeviceFormatProperties = ::core::option::Option<
         format: VkFormat,
         pFormatProperties: *mut VkFormatProperties,
     ),
+>;
+pub type PFN_vkGetPhysicalDeviceImageFormatProperties = ::core::option::Option<
+    unsafe extern "C" fn(
+        physicalDevice: VkPhysicalDevice,
+        format: VkFormat,
+        type_: VkImageType,
+        tiling: VkImageTiling,
+        usage: VkImageUsageFlags,
+        flags: VkImageCreateFlags,
+        pImageFormatProperties: *mut VkImageFormatProperties,
+    ) -> VkResult,
 >;
 pub type PFN_vkGetPhysicalDeviceProperties = ::core::option::Option<
     unsafe extern "C" fn(

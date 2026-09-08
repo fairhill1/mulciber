@@ -190,3 +190,10 @@ postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
 [material contract](material-contract.md)
 for ordering, MSAA storage, and validation limits. Physical rendering and visual
 validation of this addition remain outstanding.
+
+## HDR scene and bloom (partial)
+
+The opt-in RGBA16Float material/postprocess path adds six bloom levels before the final sRGB
+composite and native-resolution HUD. See the [HDR contract](hdr-bloom-contract.md) for APIs,
+format checks, synchronization, ownership and the validation boundary. Native rendering and visual
+validation of this addition remain outstanding.

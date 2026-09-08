@@ -1044,6 +1044,7 @@ struct InstanceFns {
     enumerate_physical_devices: vk::PFN_vkEnumeratePhysicalDevices,
     get_physical_device_properties: vk::PFN_vkGetPhysicalDeviceProperties,
     get_physical_device_format_properties: vk::PFN_vkGetPhysicalDeviceFormatProperties,
+    get_physical_device_image_format_properties: vk::PFN_vkGetPhysicalDeviceImageFormatProperties,
     get_physical_device_memory_properties: vk::PFN_vkGetPhysicalDeviceMemoryProperties,
     get_physical_device_features2: vk::PFN_vkGetPhysicalDeviceFeatures2,
     get_queue_family_properties: vk::PFN_vkGetPhysicalDeviceQueueFamilyProperties,
@@ -1076,6 +1077,9 @@ impl InstanceFns {
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
             get_physical_device_format_properties: load!(c"vkGetPhysicalDeviceFormatProperties"),
+            get_physical_device_image_format_properties: load!(
+                c"vkGetPhysicalDeviceImageFormatProperties"
+            ),
             get_physical_device_memory_properties: load!(c"vkGetPhysicalDeviceMemoryProperties"),
             get_physical_device_features2: load!(c"vkGetPhysicalDeviceFeatures2"),
             get_queue_family_properties: load!(c"vkGetPhysicalDeviceQueueFamilyProperties"),

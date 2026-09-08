@@ -1,3 +1,5 @@
+mod bloom;
+
 use core::ffi::c_void;
 use core::{mem, ptr};
 use std::format;
@@ -21,6 +23,7 @@ use crate::{
 
 use objc::{Object, Origin3, Region3, Size3};
 
+const PIXEL_FORMAT_RGBA16_FLOAT: usize = 115;
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
 const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
@@ -42,6 +45,7 @@ const VERTEX_FORMAT_UINT4: usize = 39;
 /// [`crate::MATERIAL_SLOT_LIMIT`], so this index cannot collide with a WGSL buffer binding.
 const MATERIAL_VERTEX_BUFFER_INDEX: usize = 30;
 const VERTEX_STEP_FUNCTION_PER_INSTANCE: usize = 2;
+const LOAD_ACTION_DONT_CARE: usize = 0;
 const LOAD_ACTION_LOAD: usize = 1;
 const LOAD_ACTION_CLEAR: usize = 2;
 const STORE_ACTION_STORE: usize = 1;
@@ -211,6 +215,7 @@ struct PipelineResource {
 }
 
 struct PostprocessPipelineResource {
+    bloom: Vec<PostprocessPipelineResource>,
     pipeline: Object,
     sampler: Object,
     uniform_size: u32,
@@ -278,6 +283,7 @@ struct TargetResource {
 }
 
 struct PostprocessTargetResource {
+    bloom: Vec<Object>,
     info: SurfaceInfo,
     scene_color: Object,
     multisample_color: Object,
@@ -806,6 +812,11 @@ impl<'window> TexturedSession<'window> {
                 objc::void(target.scene_color, c"release");
                 objc::void(target.depth, c"release");
             }
+            for texture in target.bloom.drain(..) {
+                unsafe {
+                    objc::void(texture, c"release");
+                }
+            }
             target.scene_color = ptr::null_mut();
             target.multisample_color = ptr::null_mut();
             target.depth = ptr::null_mut();
@@ -861,15 +872,21 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         info: SurfaceInfo,
         scene_extent: crate::SurfaceExtent,
+        hdr: bool,
     ) -> Result<ResourceId, GraphicsError> {
         self.reclaim_stale_targets();
+        let format = if hdr {
+            PIXEL_FORMAT_RGBA16_FLOAT
+        } else {
+            PIXEL_FORMAT_BGRA8_UNORM_SRGB
+        };
         let width = usize::try_from(scene_extent.width())
             .map_err(|_| GraphicsError::new("target width exceeds usize"))?;
         let height = usize::try_from(scene_extent.height())
             .map_err(|_| GraphicsError::new("target height exceeds usize"))?;
         let scene_color = create_target_texture(
             self.surface.device,
-            PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+            format,
             width,
             height,
             1,
@@ -892,7 +909,7 @@ impl<'window> TexturedSession<'window> {
         let multisample_color = if self.sample_count == 4 {
             match create_target_texture_with_storage(
                 self.surface.device,
-                PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+                format,
                 width,
                 height,
                 4,
@@ -911,12 +928,34 @@ impl<'window> TexturedSession<'window> {
         } else {
             ptr::null_mut()
         };
-        self.postprocess_targets.insert(PostprocessTargetResource {
+        let mut resource = PostprocessTargetResource {
+            bloom: Vec::new(),
             info,
             scene_color,
             multisample_color,
             depth,
-        })
+        };
+        if hdr {
+            for (width, height) in
+                crate::graphics::bloom_extents(scene_extent.width(), scene_extent.height())
+            {
+                match create_target_texture(
+                    self.surface.device,
+                    format,
+                    width as usize,
+                    height as usize,
+                    1,
+                    TEXTURE_USAGE_RENDER_TARGET | TEXTURE_USAGE_SHADER_READ,
+                ) {
+                    Ok(texture) => resource.bloom.push(texture),
+                    Err(failure) => {
+                        release_postprocess_target(resource);
+                        return Err(failure);
+                    }
+                }
+            }
+        }
+        self.postprocess_targets.insert(resource)
     }
 
     pub(crate) fn draw_scene_and_present(
@@ -2172,6 +2211,11 @@ impl<'window> TexturedSession<'window> {
                 objc::void(foreground_encoder, c"endEncoding");
             }
 
+            bloom::encode(
+                command,
+                &self.postprocess_pipelines[postprocess_pipeline],
+                targets,
+            )?;
             let post_encoder = required(
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", post_pass),
                 "Metal postprocess render encoder",
@@ -2194,6 +2238,14 @@ impl<'window> TexturedSession<'window> {
                 postprocess.sampler,
                 2,
             );
+            for (level, &texture) in targets.bloom.iter().enumerate() {
+                objc::void_object_usize(
+                    post_encoder,
+                    c"setFragmentTexture:atIndex:",
+                    texture,
+                    level + 3,
+                );
+            }
             if postprocess.uniform_size != 0 {
                 objc::void_bytes_usize_usize(
                     post_encoder,
@@ -2694,10 +2746,14 @@ fn release_pipeline(pipeline: PipelineResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
     let PostprocessPipelineResource {
+        bloom,
         pipeline,
         sampler,
         uniform_size: _,
     } = pipeline;
+    for child in bloom {
+        release_postprocess_pipeline(child);
+    }
     unsafe {
         objc::void(sampler, c"release");
         objc::void(pipeline, c"release");
@@ -2785,11 +2841,17 @@ fn release_target(target: TargetResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_postprocess_target(target: PostprocessTargetResource) {
     let PostprocessTargetResource {
+        bloom,
         info: _,
         scene_color,
         multisample_color,
         depth,
     } = target;
+    for texture in bloom {
+        unsafe {
+            objc::void(texture, c"release");
+        }
+    }
     unsafe {
         if !multisample_color.is_null() {
             objc::void(multisample_color, c"release");
@@ -3032,7 +3094,15 @@ fn create_material_pipeline(
             objc::object_usize(colors, c"objectAtIndexedSubscript:", 0),
             "material pipeline color zero",
         )?;
-        objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
+        objc::void_usize(
+            color,
+            c"setPixelFormat:",
+            if config.hdr {
+                PIXEL_FORMAT_RGBA16_FLOAT
+            } else {
+                PIXEL_FORMAT_BGRA8_UNORM_SRGB
+            },
+        );
         match config.blend {
             BlendMode::Opaque => {}
             BlendMode::Cutout => {
@@ -3161,7 +3231,7 @@ fn create_material_pipeline(
                 objc::description(pipeline_error)
             )));
         }
-        let overlay_pipeline = if config.depth == DepthMode::Off {
+        let overlay_pipeline = if config.depth == DepthMode::Off && !config.hdr {
             objc::void_usize(descriptor, c"setSampleCount:", 1);
             objc::void_usize(
                 descriptor,
@@ -3602,6 +3672,32 @@ fn create_shadow_pipeline(
 fn create_postprocess_pipeline(
     device: Object,
     bytes: &[u8],
+    config: &PostprocessPipelineConfig<'_>,
+) -> Result<PostprocessPipelineResource, GraphicsError> {
+    let mut resource = create_postprocess_pipeline_base(device, bytes, config)?;
+    if let Some(shaders) = config.bloom {
+        for shader in shaders {
+            let child = PostprocessPipelineConfig {
+                uniform_size: 0,
+                bloom: None,
+                hdr_output: true,
+            };
+            match create_postprocess_pipeline_base(device, shader.payload(), &child) {
+                Ok(pipeline) => resource.bloom.push(pipeline),
+                Err(failure) => {
+                    release_postprocess_pipeline(resource);
+                    return Err(failure);
+                }
+            }
+        }
+    }
+    Ok(resource)
+}
+
+#[allow(clippy::too_many_lines)]
+fn create_postprocess_pipeline_base(
+    device: Object,
+    bytes: &[u8],
     config: &PostprocessPipelineConfig,
 ) -> Result<PostprocessPipelineResource, GraphicsError> {
     unsafe {
@@ -3658,7 +3754,15 @@ fn create_postprocess_pipeline(
             objc::object_usize(colors, c"objectAtIndexedSubscript:", 0),
             "postprocess pipeline color zero",
         )?;
-        objc::void_usize(color, c"setPixelFormat:", PIXEL_FORMAT_BGRA8_UNORM_SRGB);
+        objc::void_usize(
+            color,
+            c"setPixelFormat:",
+            if config.hdr_output {
+                PIXEL_FORMAT_RGBA16_FLOAT
+            } else {
+                PIXEL_FORMAT_BGRA8_UNORM_SRGB
+            },
+        );
         let mut pipeline_error = ptr::null_mut();
         let pipeline = objc::object_object_out(
             device,
@@ -3690,6 +3794,7 @@ fn create_postprocess_pipeline(
             objc::void(object, c"release");
         }
         Ok(PostprocessPipelineResource {
+            bloom: Vec::new(),
             pipeline,
             sampler,
             uniform_size: config.uniform_size,

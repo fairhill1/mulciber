@@ -57,3 +57,18 @@ output and retains material lighting, shadow sampling, scene resolution and MSAA
 Material and shadow records expose their per-record instance upload cap through
 `mulciber::INSTANCE_SUPPLY_SIZE_LIMIT`. Split larger supplies on whole-instance
 boundaries and submit multiple records using the same mesh and pipeline.
+
+## HDR scenes and bloom
+
+`Device::create_hdr_material_pipeline` renders linear radiance into the RGBA16Float
+bundle created by `Device::create_scaled_hdr_postprocess_targets`.
+`Device::create_hdr_postprocess_pipeline` accepts application-authored prefilter,
+downsample and composite shaders. Six bloom levels feed the final sRGB composite;
+foreground geometry participates in HDR and bloom, while HUD overlays remain sharp.
+Existing surface-format pipelines and targets remain available. HDR scene storage
+is independent of HDR monitor output.
+
+Vulkan validates HDR format roles, sample counts and extent limits. Both native
+backends own bloom resources and their dependencies. This release has headless
+build, lint and unit-test evidence; native HDR presentation and visual validation
+remain outstanding. See the [HDR contract](https://github.com/fairhill1/mulciber/blob/main/docs/hdr-bloom-contract.md).

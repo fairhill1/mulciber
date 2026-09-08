@@ -1,6 +1,8 @@
 mod hdr;
+mod scene_depth;
 pub(crate) use hdr::bloom_extents;
 use hdr::{validate_bloom_filter_interface, validate_bloom_interface, validate_hdr_pair};
+use scene_depth::validate_scene_depth_order;
 
 use core::cell::RefCell;
 use std::format;
@@ -607,6 +609,17 @@ impl Device<'_> {
         )?;
         validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
         let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
+        if declaration.scene_depth.is_some()
+            && (!hdr
+                || matches!(
+                    descriptor.depth,
+                    DepthMode::TestWrite | DepthMode::TestWriteGreater
+                ))
+        {
+            return Err(GraphicsError::invalid_request(
+                "scene-depth materials require HDR and must not write depth",
+            ));
+        }
         let config = MaterialPipelineConfig {
             hdr,
             vertex_entry: descriptor.vertex_entry,
@@ -623,6 +636,7 @@ impl Device<'_> {
             storage: declaration.storage,
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
+            scene_depth_binding: declaration.scene_depth,
             depth_texture_binding: declaration.depth_texture,
             depth_texture_array_binding: declaration.depth_texture_array,
             comparison_sampler_binding: declaration.comparison_sampler,
@@ -637,6 +651,7 @@ impl Device<'_> {
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
             storage_size: declaration.storage.map_or(0, |(_, size)| size),
             instance_stride: instance_layout.map_or(0, |instance| instance.stride),
+            scene_depth: declaration.scene_depth.is_some(),
             texture_count: declaration.texture_bindings.len(),
             shadow_slot: if declaration.depth_texture.is_some() {
                 Some(ShadowSlotKind::Map)
@@ -747,7 +762,8 @@ impl Device<'_> {
         let (consumed, consumed_instance) =
             validate_layouts_cover_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
         let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
-        if declaration.depth_texture.is_some()
+        if declaration.scene_depth.is_some()
+            || declaration.depth_texture.is_some()
             || declaration.depth_texture_array.is_some()
             || declaration.comparison_sampler.is_some()
         {
@@ -1541,6 +1557,11 @@ impl Queue<'_> {
                 return Err(GraphicsError::invalid_request(
                     "overlay records draw into the presentable target, which carries no depth \
                      target; their pipelines must declare DepthMode::Off",
+                ));
+            }
+            if record.pipeline.scene_depth {
+                return Err(GraphicsError::invalid_request(
+                    "overlay records may not sample scene depth",
                 ));
             }
             if record.pipeline.shadow_slot.is_some() {
@@ -2707,6 +2728,21 @@ pub enum MaterialBinding {
         /// Texture-coordinate addressing on both axes.
         address: SamplerAddress,
     },
+    /// A depth snapshot of preceding world records, at the scene's sample count.
+    ///
+    /// The first record declaring this slot ends the opaque pass. Subsequent world
+    /// records may test depth but may not write it. Requires HDR postprocessed material
+    /// output; unavailable in foreground, overlay and shadow passes. The engine supplies
+    /// the texture, so it occupies neither `textures` nor `shadow_map` on the record.
+    /// Depth is in the scene's native 0..1 projection (including reversed Z), at render
+    /// scale with top-left texel origin. Declare `texture_depth_2d` at 1x or
+    /// `texture_depth_multisampled_2d` at 4x, matching [`DeviceSelection::sample_count`].
+    /// Use `textureLoad` with fragment pixel coordinates; MSAA reduction is shader-owned.
+    /// The snapshot is captured once per submission and survives foreground depth clears.
+    SceneDepth {
+        /// WGSL binding number; at most one scene-depth slot per pipeline.
+        binding: u32,
+    },
     /// One sampled `texture_depth_2d` supplied per draw record from a [`ShadowMap`].
     ///
     /// At most one depth-texture slot — plain or arrayed — may be declared per material
@@ -2768,6 +2804,7 @@ pub struct MaterialPipelineDescriptor<'inputs> {
 /// Application-authored material pipeline with declared blend and depth modes.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MaterialPipeline {
+    pub(crate) scene_depth: bool,
     hdr: bool,
     lease: ResourceLease,
     layout: OwnedVertexLayout,
@@ -2997,6 +3034,8 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) texture_bindings: &'inputs [u32],
     /// Declared sampler slots with their filter and address modes.
     pub(crate) sampler_bindings: &'inputs [SamplerSlot],
+    /// Snapshot binding and whether its shader expects multisampled depth.
+    pub(crate) scene_depth_binding: Option<(u32, bool)>,
     /// Declared depth-texture slot fed from a shadow map per record.
     pub(crate) depth_texture_binding: Option<u32>,
     /// Declared depth-texture-array slot fed from a shadow map array per record.
@@ -3717,6 +3756,7 @@ struct BindingDeclaration {
     uniform: Option<(u32, u32)>,
     texture_bindings: Vec<u32>,
     sampler_bindings: Vec<SamplerSlot>,
+    scene_depth: Option<(u32, bool)>,
     depth_texture: Option<u32>,
     depth_texture_array: Option<u32>,
     comparison_sampler: Option<u32>,
@@ -3731,6 +3771,7 @@ const fn interface_binding_label(kind: u8) -> &'static str {
         shader::INTERFACE_BINDING_SAMPLER => "a sampler",
         shader::INTERFACE_BINDING_STORAGE => "a storage buffer",
         shader::INTERFACE_BINDING_DEPTH_TEXTURE => "a depth texture",
+        shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH => "a multisampled depth texture",
         shader::INTERFACE_BINDING_COMPARISON_SAMPLER => "a comparison sampler",
         shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY => "a depth texture array",
         _ => "an unsupported resource",
@@ -3760,6 +3801,7 @@ fn validate_bindings_against_interface(
         uniform: None,
         texture_bindings: Vec::new(),
         sampler_bindings: Vec::new(),
+        scene_depth: None,
         depth_texture: None,
         depth_texture_array: None,
         comparison_sampler: None,
@@ -3821,6 +3863,30 @@ fn validate_bindings_against_interface(
                     address,
                 });
                 (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
+            }
+            MaterialBinding::SceneDepth { binding } => {
+                let multisampled = interface.bindings.iter().any(|slot| {
+                    slot.binding == binding
+                        && slot.kind == shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH
+                });
+                if declaration
+                    .scene_depth
+                    .replace((binding, multisampled))
+                    .is_some()
+                {
+                    return Err(GraphicsError::invalid_request(
+                        "material pipelines support at most one scene-depth slot",
+                    ));
+                }
+                (
+                    binding,
+                    if multisampled {
+                        shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH
+                    } else {
+                        shader::INTERFACE_BINDING_DEPTH_TEXTURE
+                    },
+                    0,
+                )
             }
             MaterialBinding::DepthTexture { binding } => {
                 if declaration.depth_texture.is_some() || declaration.depth_texture_array.is_some()
@@ -4066,6 +4132,24 @@ fn reclaim_lazy_resources(shared: &Shared<'_>) -> Result<(), GraphicsError> {
 }
 
 fn validate_scene_recipe(submission: &SceneSubmission<'_>) -> Result<Option<usize>, GraphicsError> {
+    let (records, foreground) = match submission.content {
+        SceneContent::Material(records) => (records, None),
+        SceneContent::MaterialWithForeground {
+            records,
+            foreground_start,
+        } => {
+            validate_foreground_start(records.len(), foreground_start)?;
+            (records, Some(foreground_start))
+        }
+        _ => (&[][..], None),
+    };
+    validate_scene_depth_order(
+        records
+            .iter()
+            .map(|record| (record.pipeline.scene_depth, record.pipeline.depth)),
+        foreground,
+        matches!(submission.output, SceneOutput::Postprocessed { targets, .. } if targets.hdr),
+    )?;
     if submission.shadow.is_some()
         && !matches!(
             submission.content,

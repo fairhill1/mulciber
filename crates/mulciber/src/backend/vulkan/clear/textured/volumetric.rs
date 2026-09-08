@@ -24,7 +24,10 @@ pub(super) fn validate_depth(
                 super::DEPTH_FORMAT,
                 vk::VK_IMAGE_TYPE_2D,
                 vk::VK_IMAGE_TILING_OPTIMAL,
-                (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT)
+                (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                    | vk::VK_IMAGE_USAGE_SAMPLED_BIT
+                    | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                    | vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT)
                     .cast_unsigned(),
                 0,
                 &raw mut properties,

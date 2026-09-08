@@ -1310,6 +1310,7 @@ struct DeviceFns {
     cmd_bind_descriptor_sets: vk::PFN_vkCmdBindDescriptorSets,
     cmd_bind_vertex_buffers: vk::PFN_vkCmdBindVertexBuffers,
     cmd_bind_index_buffer: vk::PFN_vkCmdBindIndexBuffer,
+    cmd_copy_image2: vk::PFN_vkCmdCopyImage2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
@@ -1336,6 +1337,7 @@ struct DeviceFns {
 }
 
 impl DeviceFns {
+    #[allow(clippy::too_many_lines)]
     unsafe fn load(
         instance: &Instance,
         device: vk::VkDevice,
@@ -1405,6 +1407,7 @@ impl DeviceFns {
             cmd_bind_descriptor_sets: load!(c"vkCmdBindDescriptorSets"),
             cmd_bind_vertex_buffers: load!(c"vkCmdBindVertexBuffers"),
             cmd_bind_index_buffer: load!(c"vkCmdBindIndexBuffer"),
+            cmd_copy_image2: load!(c"vkCmdCopyImage2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),

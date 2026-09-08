@@ -1,4 +1,5 @@
 mod bloom;
+mod scene_depth;
 mod volumetric;
 
 use core::ffi::c_void;
@@ -238,6 +239,7 @@ struct MaterialPipelineResource {
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
     /// Declared depth-texture slot fed from a shadow map per record.
+    scene_depth_binding: Option<u32>,
     depth_texture_binding: Option<u32>,
     /// Declared depth-texture-array slot fed from a shadow map array per record.
     depth_texture_array_binding: Option<u32>,
@@ -285,6 +287,7 @@ struct TargetResource {
 }
 
 struct PostprocessTargetResource {
+    depth_snapshot: Object,
     scattering: Object,
     bloom: Vec<Object>,
     info: SurfaceInfo,
@@ -703,6 +706,7 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
+        config.validate_scene_depth_samples(self.sample_count == 4)?;
         self.material_pipelines.insert(create_material_pipeline(
             self.surface.device,
             shader.payload(),
@@ -815,6 +819,12 @@ impl<'window> TexturedSession<'window> {
                 }
                 objc::void(target.scene_color, c"release");
                 objc::void(target.depth, c"release");
+            }
+            if !target.depth_snapshot.is_null() {
+                unsafe {
+                    objc::void(target.depth_snapshot, c"release");
+                }
+                target.depth_snapshot = ptr::null_mut();
             }
             if !target.scattering.is_null() {
                 unsafe {
@@ -940,6 +950,7 @@ impl<'window> TexturedSession<'window> {
             ptr::null_mut()
         };
         let mut resource = PostprocessTargetResource {
+            depth_snapshot: ptr::null_mut(),
             scattering: ptr::null_mut(),
             bloom: Vec::new(),
             info,
@@ -2078,6 +2089,19 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
+        let snapshot_start = match scene {
+            PreparedScene::Materials(records, _) => records
+                .iter()
+                .position(|record| record.pipeline.scene_depth),
+            _ => None,
+        };
+        if snapshot_start.is_some() {
+            scene_depth::ensure_target(
+                self.surface.device,
+                &mut self.postprocess_targets[target],
+                self.sample_count,
+            )?;
+        }
         let volume_shadow = if self.postprocess_pipelines[postprocess_pipeline]
             .volume
             .is_empty()
@@ -2125,7 +2149,8 @@ impl<'window> TexturedSession<'window> {
                 objc::void_usize(
                     scene_color,
                     c"setStoreAction:",
-                    if matches!(scene, PreparedScene::Materials(_, Some(_)))
+                    if snapshot_start.is_some()
+                        || matches!(scene, PreparedScene::Materials(_, Some(_)))
                         || !volume_shadow.is_null()
                     {
                         STORE_ACTION_STORE
@@ -2158,7 +2183,7 @@ impl<'window> TexturedSession<'window> {
             objc::void_usize(
                 scene_depth,
                 c"setStoreAction:",
-                if volume_shadow.is_null() {
+                if volume_shadow.is_null() && snapshot_start.is_none() {
                     STORE_ACTION_DONT_CARE
                 } else {
                     STORE_ACTION_STORE
@@ -2215,9 +2240,57 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", scene_pass),
                 "Metal scene render encoder",
             )?;
-            self.encode_prepared_scene(scene_encoder, scene)?;
+            if let (Some(start), PreparedScene::Materials(records, _)) = (snapshot_start, scene) {
+                self.encode_material_records(
+                    scene_encoder,
+                    &records[..start],
+                    0,
+                    0,
+                    0,
+                    0,
+                    false,
+                    ptr::null_mut(),
+                )?;
+            } else {
+                self.encode_prepared_scene(scene_encoder, scene)?;
+            }
             objc::void(scene_encoder, c"endEncoding");
 
+            if let (Some(start), PreparedScene::Materials(records, foreground)) =
+                (snapshot_start, scene)
+            {
+                scene_depth::capture(command, targets)?;
+                objc::void_usize(scene_color, c"setLoadAction:", LOAD_ACTION_LOAD);
+                objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_LOAD);
+                if self.sample_count == 4 && foreground.is_none() && volume_shadow.is_null() {
+                    objc::void_usize(
+                        scene_color,
+                        c"setStoreAction:",
+                        STORE_ACTION_MULTISAMPLE_RESOLVE,
+                    );
+                }
+                // Only the first encoder owns the scene-start timing sample.
+                let next = objc::object_object(scene_pass, c"copyWithZone:", ptr::null_mut());
+                let next = required(next, "Metal depth-reading pass")?;
+                scene_depth::clear_timing(next);
+                let encoder =
+                    objc::object_object(command, c"renderCommandEncoderWithDescriptor:", next);
+                objc::void(next, c"release");
+                let encoder = required(encoder, "Metal depth-reading encoder")?;
+                let prior = &records[..start];
+                self.encode_material_records(
+                    encoder,
+                    &records[start..foreground.unwrap_or(records.len())],
+                    start,
+                    material_storage_len(prior),
+                    transient_geometry_len(prior),
+                    material_instances_len(prior),
+                    false,
+                    targets.depth_snapshot,
+                )?;
+                objc::void(encoder, c"endEncoding");
+                objc::void_usize(scene_depth, c"setLoadAction:", LOAD_ACTION_CLEAR);
+            }
             volumetric::encode(
                 command,
                 &self.postprocess_pipelines[postprocess_pipeline],
@@ -2256,6 +2329,7 @@ impl<'window> TexturedSession<'window> {
                     transient_geometry_len(world),
                     material_instances_len(world),
                     false,
+                    ptr::null_mut(),
                 )?;
                 objc::void(foreground_encoder, c"endEncoding");
             }
@@ -2320,6 +2394,7 @@ impl<'window> TexturedSession<'window> {
                     transient_geometry_len(records),
                     material_instances_len(records),
                     true,
+                    ptr::null_mut(),
                 )?;
             }
             objc::void(post_encoder, c"endEncoding");
@@ -2386,7 +2461,16 @@ impl<'window> TexturedSession<'window> {
                 }
                 PreparedScene::Materials(records, foreground_start) => {
                     let world = &records[..foreground_start.unwrap_or(records.len())];
-                    self.encode_material_records(encoder, world, 0, 0, 0, 0, false)?;
+                    self.encode_material_records(
+                        encoder,
+                        world,
+                        0,
+                        0,
+                        0,
+                        0,
+                        false,
+                        ptr::null_mut(),
+                    )?;
                 }
                 PreparedScene::Instances => {
                     for batch in &self.resolved_instance_batches {
@@ -2456,6 +2540,7 @@ impl<'window> TexturedSession<'window> {
         transient_base: usize,
         instance_base: usize,
         overlay: bool,
+        snapshot: Object,
     ) -> Result<(), GraphicsError> {
         unsafe {
             let mut storage_offset = storage_base;
@@ -2597,6 +2682,12 @@ impl<'window> TexturedSession<'window> {
                         sampler,
                         slot,
                     );
+                }
+                if let Some(binding) = pipeline.scene_depth_binding {
+                    let texture = required(snapshot, "material scene-depth snapshot")?;
+                    let slot = usize::try_from(binding).expect("validated binding");
+                    objc::void_object_usize(encoder, c"setVertexTexture:atIndex:", texture, slot);
+                    objc::void_object_usize(encoder, c"setFragmentTexture:atIndex:", texture, slot);
                 }
                 let shadow_binding = match record.shadow_map {
                     Some(ShadowSource::Map(map)) => pipeline
@@ -2893,6 +2984,7 @@ fn release_postprocess_target(target: PostprocessTargetResource) {
     let PostprocessTargetResource {
         bloom,
         scattering,
+        depth_snapshot,
         info: _,
         scene_color,
         multisample_color,
@@ -2901,6 +2993,7 @@ fn release_postprocess_target(target: PostprocessTargetResource) {
     for texture in bloom
         .into_iter()
         .chain((!scattering.is_null()).then_some(scattering))
+        .chain((!depth_snapshot.is_null()).then_some(depth_snapshot))
     {
         unsafe {
             objc::void(texture, c"release");
@@ -3415,6 +3508,7 @@ fn create_material_pipeline(
             uniform: config.uniform,
             storage: config.storage,
             texture_bindings: config.texture_bindings.to_vec(),
+            scene_depth_binding: config.scene_depth_binding.map(|(binding, _)| binding),
             depth_texture_binding: config.depth_texture_binding,
             depth_texture_array_binding: config.depth_texture_array_binding,
             comparison_sampler,

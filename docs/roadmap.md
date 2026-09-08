@@ -462,3 +462,10 @@ for a half-resolution scattering pass, followed by additive depth-aware upscalin
 foreground and bloom. See the [volumetric contract](volumetric-contract.md) for binding, lifetime and
 validation boundaries. This is a headless checkpoint; native visual and performance evidence
 remains outstanding.
+
+## Material scene-depth snapshot (headless checkpoint)
+
+HDR materials can sample a world-depth snapshot before volumetric and foreground passes,
+using the existing 1x/4x depth shader support. The first consumer splits the world pass;
+normal depth testing remains active. See the [scene-depth contract](scene-depth-contract.md)
+for ordering, native copy ownership, validation and remaining hardware evidence.

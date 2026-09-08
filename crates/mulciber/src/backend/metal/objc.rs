@@ -573,3 +573,10 @@ pub unsafe fn void_two_u64_out(receiver: Object, name: &CStr, first: *mut u64, s
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name), first, second) }
 }
+
+/// Calls a selector accepting two Objective-C objects.
+pub unsafe fn void_two_objects(receiver: Object, name: &CStr, first: Object, second: Object) {
+    let function: unsafe extern "C" fn(Object, Selector, Object, Object) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), first, second) }
+}

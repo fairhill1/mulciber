@@ -5591,6 +5591,7 @@ pub const VK_PIPELINE_STAGE_2_NONE: VkPipelineStageFlagBits2 = 0;
 pub const VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT: VkPipelineStageFlagBits2 = 1;
 pub const VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT: VkPipelineStageFlagBits2 = 2;
 pub const VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT: VkPipelineStageFlagBits2 = 4;
+pub const VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT: VkPipelineStageFlagBits2 = 8;
 pub const VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT: VkPipelineStageFlagBits2 = 128;
 pub const VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 256;
 pub const VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT: VkPipelineStageFlagBits2 = 512;
@@ -5848,6 +5849,47 @@ impl Default for VkCopyBufferInfo2 {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkImageCopy2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcSubresource: VkImageSubresourceLayers,
+    pub srcOffset: VkOffset3D,
+    pub dstSubresource: VkImageSubresourceLayers,
+    pub dstOffset: VkOffset3D,
+    pub extent: VkExtent3D,
+}
+impl Default for VkImageCopy2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkCopyImageInfo2 {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub srcImage: VkImage,
+    pub srcImageLayout: VkImageLayout,
+    pub dstImage: VkImage,
+    pub dstImageLayout: VkImageLayout,
+    pub regionCount: u32,
+    pub pRegions: *const VkImageCopy2,
+}
+impl Default for VkCopyImageInfo2 {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkBufferImageCopy2 {
     pub sType: VkStructureType,
     pub pNext: *const ::core::ffi::c_void,
@@ -6059,6 +6101,9 @@ pub type PFN_vkQueueSubmit2 = ::core::option::Option<
 >;
 pub type PFN_vkCmdCopyBuffer2 = ::core::option::Option<
     unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pCopyBufferInfo: *const VkCopyBufferInfo2),
+>;
+pub type PFN_vkCmdCopyImage2 = ::core::option::Option<
+    unsafe extern "C" fn(commandBuffer: VkCommandBuffer, pCopyImageInfo: *const VkCopyImageInfo2),
 >;
 pub type PFN_vkCmdCopyBufferToImage2 = ::core::option::Option<
     unsafe extern "C" fn(

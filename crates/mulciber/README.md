@@ -72,3 +72,11 @@ Vulkan validates HDR format roles, sample counts and extent limits. Both native
 backends own bloom resources and their dependencies. This release has headless
 build, lint and unit-test evidence; native HDR presentation and visual validation
 remain outstanding. See the [HDR contract](https://github.com/fairhill1/mulciber/blob/main/docs/hdr-bloom-contract.md).
+
+## Material scene depth
+
+`MaterialBinding::SceneDepth` gives HDR materials an immutable snapshot of preceding world
+depth at the selected 1x/4x sample count. The engine captures it before the first consuming
+record and preserves normal depth testing, volumetric lighting and foreground ordering.
+Scene-depth consumers must use the matching WGSL depth texture kind and cannot write depth.
+See the [scene-depth contract](https://github.com/fairhill1/mulciber/blob/main/docs/scene-depth-contract.md).

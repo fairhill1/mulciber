@@ -307,3 +307,9 @@ Operator feedback from Isle of Rán confirms the sword foreground fix works visu
 The bow and nocked arrow now use the same path and pass the game renderer tests,
 but have no separate visual confirmation. This does not add native API-validation,
 MSAA-mode, resize, or Metal hardware evidence.
+
+## Scene-depth materials
+
+`MaterialBinding::SceneDepth` supplies preceding world depth to HDR materials at the native
+scene sample count. See the [scene-depth contract](scene-depth-contract.md) for the implicit
+pass boundary, immutable snapshot, rejected combinations and validation limits.

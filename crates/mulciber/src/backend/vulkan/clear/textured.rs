@@ -1,4 +1,5 @@
 mod bloom;
+mod scene_depth;
 mod volumetric;
 
 use core::ffi::c_void;
@@ -355,6 +356,7 @@ struct MaterialPipelineResource {
     /// Declared texture binding numbers in ascending order.
     texture_bindings: Vec<u32>,
     /// Declared depth-texture slot fed from a shadow map per record.
+    scene_depth_binding: Option<u32>,
     depth_texture_binding: Option<u32>,
     /// Declared depth-texture-array slot fed from a shadow map array per record.
     depth_texture_array_binding: Option<u32>,
@@ -416,6 +418,7 @@ struct TargetResource {
 }
 
 struct PostprocessTargetResource {
+    depth_snapshot: Option<Image>,
     scattering: Option<Image>,
     bloom: Vec<Image>,
     info: SurfaceInfo,
@@ -930,6 +933,7 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
+        config.validate_scene_depth_samples(self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT)?;
         if config.hdr {
             bloom::validate_format(&self.surface, self.sample_count, 1, 1)?;
         }
@@ -1057,6 +1061,7 @@ impl<'window> TexturedSession<'window> {
             }
         }
         if reclaimed_postprocess_target {
+            self.reset_descriptor_pools(false)?;
             let device = self.surface.device();
             for pipeline in self.postprocess_pipelines.iter_mut() {
                 let replacement = create_postprocess_descriptor_pool(device)?;
@@ -1190,7 +1195,7 @@ impl<'window> TexturedSession<'window> {
             DEPTH_FORMAT,
             (vk::VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                 | if hdr {
-                    vk::VK_IMAGE_USAGE_SAMPLED_BIT
+                    vk::VK_IMAGE_USAGE_SAMPLED_BIT | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT
                 } else {
                     0
                 })
@@ -1227,6 +1232,7 @@ impl<'window> TexturedSession<'window> {
             None
         };
         let mut resource = PostprocessTargetResource {
+            depth_snapshot: None,
             scattering: None,
             bloom: Vec::new(),
             info,
@@ -1436,7 +1442,7 @@ impl<'window> TexturedSession<'window> {
                 "render targets do not match acquired Vulkan generation",
             ));
         }
-        self.prepare_material_scene(records, &[], shadow)?;
+        self.prepare_material_scene(records, &[], shadow, None)?;
         self.record_draw(
             token.image_index,
             target_index,
@@ -1481,7 +1487,23 @@ impl<'window> TexturedSession<'window> {
             volumetric::ensure_target(&self.surface, &mut self.postprocess_targets[target_index])?;
             Some(self.shadow_map_arrays.get(pass.map.id())?.array_view)
         };
-        self.prepare_material_scene(records, overlay, shadow)?;
+        let snapshot = if records.iter().any(|record| record.pipeline.scene_depth) {
+            scene_depth::ensure_target(
+                &self.surface,
+                &mut self.postprocess_targets[target_index],
+                self.sample_count,
+            )?;
+            Some((
+                targets,
+                self.postprocess_targets[target_index]
+                    .depth_snapshot
+                    .expect("snapshot allocated")
+                    .view,
+            ))
+        } else {
+            None
+        };
+        self.prepare_material_scene(records, overlay, shadow, snapshot)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
         if let Some(shadow) = volume_shadow {
@@ -1518,6 +1540,7 @@ impl<'window> TexturedSession<'window> {
         records: &[MaterialRecord<'_>],
         overlay: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
+        snapshot: Option<(ResourceId, vk::VkImageView)>,
     ) -> Result<(), GraphicsError> {
         let shadow_records = shadow.map_or(0, |shadow| shadow.records().count());
         let uniform_slots = records
@@ -1709,11 +1732,20 @@ impl<'window> TexturedSession<'window> {
                 }
                 None => None,
             };
+            let snapshot_view = if record.pipeline.scene_depth {
+                let (id, view) =
+                    snapshot.ok_or_else(|| error("scene-depth material lacks HDR snapshot"))?;
+                sampled_ids.push(id);
+                Some(view)
+            } else {
+                None
+            };
             let descriptor = self.material_descriptor_set(
                 pipeline,
                 &sampled_ids,
                 &texture_indices,
                 shadow_view,
+                snapshot_view,
             )?;
             let uniform_offset = u32::try_from(uniform_base + index * DRAW_UNIFORM_STRIDE)
                 .expect("material offset was validated");
@@ -2185,6 +2217,7 @@ impl<'window> TexturedSession<'window> {
             self.reset_descriptor_pools(true)?;
         } else if request.kind == ResourceKind::PostprocessTargets {
             self.postprocess_targets.get(request.id)?;
+            self.reset_descriptor_pools(false)?;
             self.reset_descriptor_pools(true)?;
         }
         let device = self.surface.device();
@@ -2636,6 +2669,7 @@ impl<'window> TexturedSession<'window> {
         sampled_ids: &[ResourceId],
         texture_indices: &[usize],
         shadow_view: Option<ShadowView>,
+        snapshot_view: Option<vk::VkImageView>,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
         if let Some((_, set)) = self.material_pipelines[pipeline_index]
             .bindings
@@ -2650,6 +2684,7 @@ impl<'window> TexturedSession<'window> {
         let pipeline_storage = pipeline.storage;
         let texture_bindings = pipeline.texture_bindings.clone();
         let samplers = pipeline.samplers.clone();
+        let scene_depth_binding = pipeline.scene_depth_binding;
         let depth_texture_binding = pipeline.depth_texture_binding;
         let depth_texture_array_binding = pipeline.depth_texture_array_binding;
         let comparison_sampler = pipeline.comparison_sampler;
@@ -2717,6 +2752,18 @@ impl<'window> TexturedSession<'window> {
                 },
             )
         });
+        let snapshot_image = snapshot_view
+            .zip(scene_depth_binding)
+            .map(|(view, binding)| {
+                (
+                    binding,
+                    vk::VkDescriptorImageInfo {
+                        imageView: view,
+                        imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        ..Default::default()
+                    },
+                )
+            });
         let comparison_info = comparison_sampler.map(|(_, sampler)| vk::VkDescriptorImageInfo {
             sampler,
             ..Default::default()
@@ -2752,6 +2799,14 @@ impl<'window> TexturedSession<'window> {
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_SAMPLER,
                 ptr::from_ref(info).cast(),
+            ));
+        }
+        if let Some((binding, ref image)) = snapshot_image {
+            writes.push(descriptor_write(
+                set,
+                binding,
+                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                ptr::from_ref(image).cast(),
             ));
         }
         if let Some((binding, ref image)) = shadow_image {
@@ -3713,7 +3768,8 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             vk::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT
+                | vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                 | vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
                 | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -3726,7 +3782,8 @@ impl<'window> TexturedSession<'window> {
             vk::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                 | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+            vk::VK_ACCESS_2_TRANSFER_READ_BIT
+                | vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                 | vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
                 | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -3834,6 +3891,17 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
+        let world_end = match scene {
+            PreparedScene::Materials(start) => start.unwrap_or(self.resolved_material_draws.len()),
+            _ => 0,
+        };
+        let snapshot_start = self.resolved_material_draws[..world_end]
+            .iter()
+            .position(|draw| {
+                self.material_pipelines[draw.pipeline]
+                    .scene_depth_binding
+                    .is_some()
+            });
         self.begin_gpu_region(c"scene", [0.15, 0.75, 0.35, 1.0], SCENE_QUERY_START);
         unsafe {
             let functions = &device.functions;
@@ -3853,10 +3921,44 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const scene_area,
             );
-            self.record_prepared_scene(scene);
+            if let Some(start) = snapshot_start {
+                self.record_material_draws(&self.resolved_material_draws[..start], false);
+            } else {
+                self.record_prepared_scene(scene);
+            }
             functions.cmd_end_rendering.expect("loaded function")(
                 self.surface.frame_command_buffer(),
             );
+        }
+        if let Some(start) = snapshot_start {
+            scene_depth::capture(&self.surface, &self.postprocess_targets[target_index]);
+            scene_depth::continue_color(&self.surface, scene_color, multisample_color);
+            let color = vk::VkRenderingAttachmentInfo {
+                loadOp: vk::VK_ATTACHMENT_LOAD_OP_LOAD,
+                ..scene_attachment
+            };
+            let depth = vk::VkRenderingAttachmentInfo {
+                loadOp: vk::VK_ATTACHMENT_LOAD_OP_LOAD,
+                ..depth_attachment
+            };
+            let rendering = vk::VkRenderingInfo {
+                pColorAttachments: &raw const color,
+                pDepthAttachment: &raw const depth,
+                ..scene_rendering
+            };
+            unsafe {
+                device
+                    .functions
+                    .cmd_begin_rendering
+                    .expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                    &raw const rendering,
+                );
+                self.record_material_draws(&self.resolved_material_draws[start..world_end], false);
+                device.functions.cmd_end_rendering.expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                );
+            }
         }
         volumetric::record(
             &self.surface,
@@ -4523,6 +4625,11 @@ fn destroy_target_device(device: &super::Device, target: TargetResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_postprocess_target_device(device: &super::Device, target: PostprocessTargetResource) {
+    if let Some(image) = target.depth_snapshot {
+        unsafe {
+            destroy_image_device(device, image);
+        }
+    }
     for image in target.bloom.into_iter().chain(target.scattering) {
         unsafe {
             destroy_image_device(device, image);
@@ -5939,6 +6046,13 @@ fn create_material_pipeline(
             stages,
         ));
     }
+    if let Some((binding, _)) = config.scene_depth_binding {
+        layout_bindings.push(layout_binding(
+            binding,
+            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            stages,
+        ));
+    }
     if let Some(binding) = config.depth_texture_binding {
         layout_bindings.push(layout_binding(
             binding,
@@ -5977,6 +6091,7 @@ fn create_material_pipeline(
         uniform: config.uniform,
         storage: config.storage,
         texture_bindings: config.texture_bindings.to_vec(),
+        scene_depth_binding: config.scene_depth_binding.map(|(binding, _)| binding),
         depth_texture_binding: config.depth_texture_binding,
         depth_texture_array_binding: config.depth_texture_array_binding,
         comparison_sampler: None,

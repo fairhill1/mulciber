@@ -1047,7 +1047,11 @@ unsafe fn handle_input_message(
             Some(0)
         }
         WM_CAPTURECHANGED => {
-            if let Some(state) = state {
+            // SetCapture can notify us even when this window retains capture.
+            // Only a transfer away releases held buttons.
+            if l_param as Hwnd != window
+                && let Some(state) = state
+            {
                 // SAFETY: Win32 already transferred capture; reconcile retained button state.
                 unsafe { release_captured_buttons(state) };
             }
@@ -1523,8 +1527,14 @@ unsafe fn dispatch_pointer_button(
             state
                 .captured_pointer_buttons
                 .set(state.captured_pointer_buttons.get() | mask);
-            // SAFETY: The handle identifies the window currently receiving this button press.
-            unsafe { SetCapture(window) };
+            // A second held button must not recapture the same window: Win32 sends
+            // WM_CAPTURECHANGED synchronously even when the owner is unchanged.
+            // SAFETY: Both calls concern this live window on its creating thread.
+            unsafe {
+                if GetCapture() != window {
+                    SetCapture(window);
+                }
+            }
         }
         ButtonState::Released => {
             state
@@ -1879,5 +1889,108 @@ mod tests {
             pointer_button(WM_XBUTTONDOWN, 2 << 16),
             Some((PointerButton::Other(4), 1 << 4, ButtonState::Pressed))
         );
+    }
+
+    #[test]
+    #[ignore = "requires a native Windows desktop; creates a hidden window"]
+    fn native_mouse_chords_preserve_buttons_until_release_or_capture_loss() {
+        unsafe fn record(context: *mut std::ffi::c_void, event: WindowEvent) {
+            // SAFETY: The test keeps this vector alive until after the window is dropped.
+            let events = unsafe { &mut *context.cast::<Vec<(PointerButton, ButtonState)>>() };
+            if let WindowEvent::Input(crate::InputEvent::PointerButton { button, state, .. }) =
+                event
+            {
+                events.push((button, state));
+            }
+        }
+
+        let mut events = Vec::<(PointerButton, ButtonState)>::new();
+        let slot = WindowSlot::new();
+        let window = super::Window::new(
+            &crate::WindowDescriptor::new(
+                "Mouse chord regression",
+                crate::LogicalSize::new(64, 64),
+            ),
+            false,
+            slot.claim().unwrap(),
+        )
+        .unwrap();
+        let handle = window.handle.as_ptr();
+        window
+            .state
+            .event_context
+            .set(std::ptr::from_mut(&mut events).cast());
+        window.state.event_callback.set(Some(record));
+
+        for (first, second) in [
+            (PointerButton::Primary, PointerButton::Secondary),
+            (PointerButton::Secondary, PointerButton::Primary),
+        ] {
+            let messages = |button| match button {
+                PointerButton::Primary => (super::WM_LBUTTONDOWN, super::WM_LBUTTONUP),
+                PointerButton::Secondary => (super::WM_RBUTTONDOWN, super::WM_RBUTTONUP),
+                _ => unreachable!(),
+            };
+            let (first_down, first_up) = messages(first);
+            let (second_down, second_up) = messages(second);
+            events.clear();
+            // SAFETY: This hidden window and its callback are live on the creating thread.
+            unsafe {
+                super::window_procedure(handle, first_down, 0, 0);
+                super::window_procedure(handle, second_down, 0, 0);
+            }
+            assert_eq!(
+                events,
+                [
+                    (first, ButtonState::Pressed),
+                    (second, ButtonState::Pressed)
+                ]
+            );
+            assert_eq!(window.state.captured_pointer_buttons.get(), 3);
+
+            // A redundant native capture notification must not manufacture button releases.
+            // SAFETY: Capture is confined to this live window on its creating thread.
+            unsafe {
+                super::SetCapture(handle);
+            }
+            assert_eq!(events.len(), 2);
+            assert_eq!(window.state.captured_pointer_buttons.get(), 3);
+
+            // SAFETY: Deliver a release through the same native handler as a real mouse event.
+            unsafe {
+                super::window_procedure(handle, second_up, 0, 0);
+            }
+            assert_eq!(events.last(), Some(&(second, ButtonState::Released)));
+            assert_eq!(events.len(), 3);
+            // SAFETY: GetCapture reads only this thread's capture owner.
+            assert_eq!(unsafe { super::GetCapture() }, handle);
+            // SAFETY: The first button and this hidden window are still live.
+            unsafe {
+                super::window_procedure(handle, first_up, 0, 0);
+            }
+            assert_eq!(events.last(), Some(&(first, ButtonState::Released)));
+            assert_eq!(events.len(), 4);
+            assert_eq!(window.state.captured_pointer_buttons.get(), 0);
+            // SAFETY: GetCapture reads only this thread's capture owner.
+            assert!(unsafe { super::GetCapture() }.is_null());
+        }
+
+        events.clear();
+        // SAFETY: The test window owns capture; releasing it exercises actual Win32 notification.
+        unsafe {
+            super::window_procedure(handle, super::WM_LBUTTONDOWN, 0, 0);
+            super::window_procedure(handle, super::WM_RBUTTONDOWN, 0, 0);
+            super::ReleaseCapture();
+        }
+        assert_eq!(
+            events,
+            [
+                (PointerButton::Primary, ButtonState::Pressed),
+                (PointerButton::Secondary, ButtonState::Pressed),
+                (PointerButton::Primary, ButtonState::Released),
+                (PointerButton::Secondary, ButtonState::Released),
+            ]
+        );
+        assert_eq!(window.state.captured_pointer_buttons.get(), 0);
     }
 }

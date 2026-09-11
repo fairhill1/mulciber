@@ -630,3 +630,28 @@ report the window as borderless windowed rather than exclusive.
 - Whether the adapter is the GTX 1060-class baseline or another test tier.
 - Console output from the finite run.
 - Any validation message verbatim, plus the action that triggered it.
+
+## Windows mouse-button chord regression (2026-09-11)
+
+The Win32 backend called `SetCapture` on every button press, including when its window
+already owned capture. Windows synchronously sent `WM_CAPTURECHANGED` for that same
+owner, and the backend synthesized releases for every held button. In Isle of Ran,
+pressing RMB while holding LMB therefore released the drawn bow before aiming zoom.
+
+The backend now avoids redundant capture calls and ignores capture-change notifications
+whose destination is the same window. Genuine capture loss still releases held buttons.
+
+Native hidden-window regression command:
+
+```powershell
+cargo test -p mulciber-platform native_mouse_chords -- --ignored --nocapture
+```
+
+On this Windows development machine, the test failed against the original implementation
+with `Primary Pressed, Primary Released, Secondary Released, Secondary Pressed` instead
+of two presses, and passed with the fix. It covers both press orders, independent button
+release, redundant native capture, and genuine capture loss. The ordinary platform
+tests and `cargo clippy -p mulciber-platform --all-targets -- -D warnings` also passed.
+The user also confirmed that RMB zoom works while holding the drawn bow in Isle of Ran
+using this local engine checkout. The fix ships in mulciber-platform 0.5.4. This establishes
+no new display, GPU, or broader pointer-device coverage.

@@ -444,7 +444,7 @@ impl<'window> ClearSurface<'window> {
         let formats = surface_formats(device)?;
         let format = choose_surface_format(&formats)
             .ok_or_else(|| unsupported("surface exposes no supported sRGB format"))?;
-        require_fifo_present_mode(device)?;
+        let present_mode = choose_present_mode(device)?;
         let extent = choose_extent(capabilities, requested);
         let extent_info = SurfaceExtent::new(extent.width, extent.height);
         let mut image_count = capabilities
@@ -474,7 +474,7 @@ impl<'window> ClearSurface<'window> {
             imageSharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
             preTransform: capabilities.currentTransform,
             compositeAlpha: composite_alpha,
-            presentMode: vk::VK_PRESENT_MODE_FIFO_KHR,
+            presentMode: present_mode,
             clipped: vk::VK_TRUE,
             oldSwapchain: self.swapchain.handle,
             ..Default::default()
@@ -1888,7 +1888,7 @@ fn surface_formats(device: &Device) -> Result<Vec<vk::VkSurfaceFormatKHR>, Graph
     Ok(values)
 }
 
-fn require_fifo_present_mode(device: &Device) -> Result<(), GraphicsError> {
+fn choose_present_mode(device: &Device) -> Result<vk::VkPresentModeKHR, GraphicsError> {
     let function = device
         .instance
         .functions
@@ -1918,8 +1918,16 @@ fn require_fifo_present_mode(device: &Device) -> Result<(), GraphicsError> {
         },
         "enumerate present modes",
     )?;
-    if values[..count as usize].contains(&vk::VK_PRESENT_MODE_FIFO_KHR) {
-        Ok(())
+    if let Some(mode) = platform::choose_present_mode(&values[..count as usize]) {
+        eprintln!(
+            "Vulkan presentation: {}",
+            if mode == vk::VK_PRESENT_MODE_MAILBOX_KHR {
+                "mailbox"
+            } else {
+                "fifo"
+            }
+        );
+        Ok(mode)
     } else {
         Err(GraphicsError::with_kind(
             GraphicsErrorKind::Unsupported,

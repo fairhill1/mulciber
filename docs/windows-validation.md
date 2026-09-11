@@ -655,3 +655,30 @@ tests and `cargo clippy -p mulciber-platform --all-targets -- -D warnings` also 
 The user also confirmed that RMB zoom works while holding the drawn bow in Isle of Ran
 using this local engine checkout. The fix ships in mulciber-platform 0.5.4. This establishes
 no new display, GPU, or broader pointer-device coverage.
+
+## Windows mailbox presentation (0.13.11)
+
+Windows Vulkan now prefers mailbox presentation when the surface supports it,
+with FIFO as the fallback. Linux retains FIFO and Metal is unchanged. Mailbox
+keeps vertical-blank synchronization while replacing stale pending images;
+CPU rendering is not capped to display refresh and may consume more power.
+The selected mode is printed at swapchain creation.
+
+On an RTX 3060 Ti with NVIDIA 616.92 at 2560x1440, approximately 75 Hz, the
+same 1,800-tick Isle of Ran route retained all 31 actor/player checkpoints.
+Acquisition p95 fell from 11.330 ms to 0.018 ms and CPU frame-wall p99 from
+25.137 ms to 15.932 ms. GPU frame p95 was 9.000 ms versus 8.887 ms. The
+mailbox run had no CPU frame intervals over 20 ms. These are submission/CPU
+pacing measurements, not displayed-frame intervals or physical input latency.
+The user confirmed that the input delay was gone during unrestricted play.
+This evidence covers one Windows GPU/display; other hardware and multi-display
+behavior are not established by it.
+Release validation exposed optional timing queue exhaustion during rapid mailbox
+resize. Requests now stop at the configured native queue capacity and resume
+after results drain; rendering continues without a timing request while full.
+Zero stage timestamps (unavailable for discarded mailbox images) now produce
+untimed feedback rather than corrupting the native-time anchor. Regression tests
+cover queue exhaustion/resumption and unavailable timestamps before/after anchoring.
+The 4x/1x cube probes now report approximately 13.338 ms cadence instead of
+invalid huge intervals. AMD has not been physically tested for this release.
+Final automated preflight passed: `validation-artifacts/windows-vulkan-20260911-163439.zip`. Formatting, workspace check, Clippy with warnings denied, and workspace tests passed. The standalone native triangle probe still reports occasional anomalous raw timing intervals; the public 4x/1x cube cadence is approximately 13.338 ms.

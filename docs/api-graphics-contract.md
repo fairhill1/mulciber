@@ -57,14 +57,16 @@ reconfiguration round-trip.
 Native result codes remain structured diagnostics but do not become the ordinary application state
 machine.
 
-### VSync pacing comes from the presentation path, not the loop
+### Presentation synchronization and CPU pacing
 
-The platform pump does not throttle. An ordinary loop that presents on every redraw is VSync-bound
-because the presentation path itself blocks at display rate: the Metal backend acquires drawables
-from a display-synced layer (`setDisplaySyncEnabled:`), and the Vulkan backend presents through a
-FIFO swapchain. This is why the examples run without explicit sleeps, and why a minimized or fully
-occluded window, whose redraw delivery the platform suspends, presents no frames instead of
-spinning.
+The platform pump does not throttle. Metal acquires from a display-synced layer
+and Linux Vulkan retains FIFO presentation. Windows Vulkan prefers mailbox
+when available, falling back to FIFO. Mailbox updates at vertical blank but
+replaces a pending image with a newer one, so rendering may exceed refresh
+rate; applications must not treat submitted frame count as displayed frame
+count or assume mailbox throttles CPU work to refresh rate. The selected Vulkan
+mode is printed when creating a swapchain. Minimized or fully occluded windows
+whose redraw delivery the platform suspends present no frames.
 
 ### Every ready frame has one disposition
 

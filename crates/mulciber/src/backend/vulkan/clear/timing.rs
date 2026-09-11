@@ -294,13 +294,7 @@ impl ClearSurface<'_> {
     /// is configured.
     fn present_timing_request(&mut self) -> Option<PresentTimingRequest> {
         let selection = self.device().adapter.present_timing.ok()?;
-        let state = self.present_timing.as_mut()?;
-        state.next_present_id += 1;
-        Some(PresentTimingRequest {
-            present_id: state.next_present_id,
-            time_domain_id: state.time_domain_id,
-            stage: selection.stage,
-        })
+        self.present_timing.as_mut()?.request(selection)
     }
 
     /// Records which session frame index a chained present id identifies, so a drained report
@@ -384,20 +378,14 @@ impl ClearSurface<'_> {
                 continue;
             };
             let (_, frame_index) = state.pending.remove(position);
-            let presented_at = if timing.reportComplete == vk::VK_TRUE
-                && timing.presentStageCount >= 1
-            {
-                // SAFETY: The driver wrote this entry's single stage slot allocated above.
-                let time = unsafe { (*timing.pPresentStages).time };
-                let (anchor_instant, anchor_time) = *state.anchor.get_or_insert((drained_at, time));
-                if time >= anchor_time {
-                    anchor_instant.checked_add(Duration::from_nanos(time - anchor_time))
+            let presented_at =
+                if timing.reportComplete == vk::VK_TRUE && timing.presentStageCount >= 1 {
+                    // SAFETY: The driver wrote this entry's single stage slot allocated above.
+                    let time = unsafe { (*timing.pPresentStages).time };
+                    state.display_time(drained_at, time)
                 } else {
-                    anchor_instant.checked_sub(Duration::from_nanos(anchor_time - time))
-                }
-            } else {
-                None
-            };
+                    None
+                };
             if self.feedback.len() >= PRESENT_FEEDBACK_CAP {
                 self.feedback.pop_front();
             }
@@ -422,5 +410,81 @@ impl ClearSurface<'_> {
         let mut frames: Vec<PresentedFrame> = self.feedback.drain(..).collect();
         frames.sort_by_key(PresentedFrame::index);
         PresentFeedback::Reported(frames)
+    }
+}
+
+impl PresentTiming {
+    fn display_time(&mut self, drained_at: Instant, time: u64) -> Option<Instant> {
+        // Vulkan reports zero when a queried stage has no timestamp, notably
+        // for mailbox images replaced before scanout. It is not an epoch.
+        if time == 0 {
+            return None;
+        }
+        let (anchor_instant, anchor_time) = *self.anchor.get_or_insert((drained_at, time));
+        if time >= anchor_time {
+            anchor_instant.checked_add(Duration::from_nanos(time - anchor_time))
+        } else {
+            anchor_instant.checked_sub(Duration::from_nanos(anchor_time - time))
+        }
+    }
+    fn request(&mut self, selection: PresentTimingSelection) -> Option<PresentTimingRequest> {
+        // Mailbox can submit faster than the display completes timing reports.
+        // Reserve no more than the native queue can hold. Omit optional timing
+        // for this present when full; never stall or fail presentation for it.
+        if self.pending.len() >= TIMING_QUEUE_SIZE as usize {
+            return None;
+        }
+        self.next_present_id += 1;
+        Some(PresentTimingRequest {
+            present_id: self.next_present_id,
+            time_domain_id: self.time_domain_id,
+            stage: selection.stage,
+        })
+    }
+}
+
+#[cfg(test)]
+mod queue_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_display_time_never_sets_or_moves_the_anchor() {
+        let mut state = PresentTiming {
+            time_domain_id: 7,
+            next_present_id: 0,
+            pending: Vec::new(),
+            anchor: None,
+        };
+        let now = Instant::now();
+        assert_eq!(state.display_time(now, 0), None);
+        assert!(state.anchor.is_none());
+        assert_eq!(state.display_time(now, 100), Some(now));
+        assert_eq!(state.display_time(now, 0), None);
+        assert_eq!(
+            state.display_time(now, 120),
+            now.checked_add(Duration::from_nanos(20))
+        );
+    }
+
+    #[test]
+    fn full_timing_queue_skips_requests_and_resumes_after_drain() {
+        let mut state = PresentTiming {
+            time_domain_id: 7,
+            next_present_id: 0,
+            pending: Vec::new(),
+            anchor: None,
+        };
+        let selection = PresentTimingSelection { stage: 1 };
+        for frame in 0..u64::from(TIMING_QUEUE_SIZE) {
+            let request = state.request(selection).expect("queue has room");
+            state.pending.push((request.present_id, frame));
+        }
+        assert!(state.request(selection).is_none());
+        assert!(state.request(selection).is_none());
+        assert_eq!(state.next_present_id, u64::from(TIMING_QUEUE_SIZE));
+        state.pending.remove(0);
+        let resumed = state.request(selection).expect("drain freed a slot");
+        assert_eq!(resumed.present_id, u64::from(TIMING_QUEUE_SIZE) + 1);
+        assert_eq!(resumed.time_domain_id, 7);
     }
 }

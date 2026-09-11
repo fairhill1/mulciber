@@ -221,3 +221,12 @@ message. Isle of Rán renders on Metal with both fixes.
 Immutable meshes now prefer device-local storage with frame-owned staged uploads, bounded retained
 staging capacity and an observable host-memory fallback. GPU timing feedback remains ordered across
 frame-slot abandonment. See the [mesh-memory policy and evidence](docs/vulkan-mesh-memory.md).
+
+## Windows mailbox presentation (0.13.11)
+
+Windows Vulkan prefers supported mailbox presentation with FIFO fallback;
+Linux FIFO and Metal behavior are unchanged. Optional presentation timing is
+bounded to native queue capacity, and unavailable timestamps remain untimed.
+The user confirmed the Windows input delay is gone. See
+[Windows validation](docs/windows-validation.md#windows-mailbox-presentation-01311)
+for measured results and hardware coverage.

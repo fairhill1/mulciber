@@ -160,3 +160,48 @@ unsafe fn cast_function<T: Copy>(function: vk::PFN_vkVoidFunction) -> T {
     // SAFETY: The caller pairs the type with the exact symbol used to load this pointer.
     unsafe { mem::transmute_copy(&function) }
 }
+
+/// Keep Windows presentation from accumulating stale completed frames. Mailbox
+/// remains synchronized to vertical blank; FIFO is the guaranteed fallback.
+/// Linux keeps its existing compositor-paced FIFO policy.
+pub(super) fn choose_present_mode(modes: &[vk::VkPresentModeKHR]) -> Option<vk::VkPresentModeKHR> {
+    if cfg!(target_os = "windows") && modes.contains(&vk::VK_PRESENT_MODE_MAILBOX_KHR) {
+        Some(vk::VK_PRESENT_MODE_MAILBOX_KHR)
+    } else if modes.contains(&vk::VK_PRESENT_MODE_FIFO_KHR) {
+        Some(vk::VK_PRESENT_MODE_FIFO_KHR)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn fifo_only_surfaces_remain_supported() {
+        assert_eq!(
+            choose_present_mode(&[vk::VK_PRESENT_MODE_FIFO_KHR]),
+            Some(vk::VK_PRESENT_MODE_FIFO_KHR)
+        );
+        assert_eq!(choose_present_mode(&[]), None);
+        assert_eq!(
+            choose_present_mode(&[vk::VK_PRESENT_MODE_IMMEDIATE_KHR]),
+            None
+        );
+    }
+
+    #[test]
+    fn mailbox_preference_is_windows_only() {
+        let modes = [
+            vk::VK_PRESENT_MODE_FIFO_KHR,
+            vk::VK_PRESENT_MODE_MAILBOX_KHR,
+        ];
+        let expected = if cfg!(target_os = "windows") {
+            vk::VK_PRESENT_MODE_MAILBOX_KHR
+        } else {
+            vk::VK_PRESENT_MODE_FIFO_KHR
+        };
+        assert_eq!(choose_present_mode(&modes), Some(expected));
+    }
+}

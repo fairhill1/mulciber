@@ -490,3 +490,12 @@ new combinations remains outstanding; see [HDR contract](hdr-bloom-contract.md).
 - [ ] Broaden native UMA/full-BAR, actual memory-pressure recovery and Windows hardware evidence.
 
 Policy and benchmark scope: [Vulkan mesh memory](vulkan-mesh-memory.md).
+
+## Windows mailbox presentation (0.13.11)
+
+Windows Vulkan prefers supported mailbox presentation with FIFO fallback;
+Linux FIFO and Metal behavior are unchanged. Optional presentation timing is
+bounded to native queue capacity, and unavailable timestamps remain untimed.
+The user confirmed the Windows input delay is gone. See
+[Windows validation](windows-validation.md#windows-mailbox-presentation-01311)
+for measured results and hardware coverage.

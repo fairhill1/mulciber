@@ -36,12 +36,14 @@
 //! ```
 
 mod input;
+mod limiter;
 mod pacing;
 mod timing;
 
 use std::time::Instant;
 
 pub use input::{InputSnapshot, ScrollSample};
+pub use limiter::FrameStartLimiter;
 use mulciber_platform::{InputEvent, WindowEvent};
 pub use pacing::{FramePacer, FrameSchedule, IntervalSummary, PacingDiagnostics, PacingReport};
 pub use timing::{FramePlan, RuntimeConfig, RuntimeConfigError};

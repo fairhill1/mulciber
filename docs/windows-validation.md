@@ -682,3 +682,37 @@ cover queue exhaustion/resumption and unavailable timestamps before/after anchor
 The 4x/1x cube probes now report approximately 13.338 ms cadence instead of
 invalid huge intervals. AMD has not been physically tested for this release.
 Final automated preflight passed: `validation-artifacts/windows-vulkan-20260911-163439.zip`. Formatting, workspace check, Clippy with warnings denied, and workspace tests passed. The standalone native triangle probe still reports occasional anomalous raw timing intervals; the public 4x/1x cube cadence is approximately 13.338 ms.
+
+
+## Vulkan recording and opt-in frame-start pacing (0.13.12 / runtime 0.5.3)
+
+Vulkan material and shadow passes retain the bound pipeline across consecutive draws and
+use direct indexed draws for immutable single-instance mesh parts. Ordering, instancing,
+draw arguments, synchronization and presentation mode selection are preserved. This shared
+optimization applies to Windows and Linux; Metal command recording is unchanged.
+
+`PresentedFrame::refresh_interval()` reports a native Vulkan display period when available,
+independently of dropped frames; unsupported feedback and Metal return no period.
+Runtime `FrameStartLimiter` is explicitly enabled by the application and waits before the
+event pump, preserving fresh mouse input. It never infers refresh from rendering throughput,
+adds no wait without a usable native period, and does not change fixed-step interpolation.
+Applications should reset it on rendering suspension/resume. Isle of Ran enables it only
+on Windows; Linux retains its existing FIFO pacing.
+
+On the Windows RTX 3060 Ti / 74.97 Hz development system, command recording fell from
+5.81 to 5.00 ms in the instrumented walk. Two uninstrumented optimized runs had 2.7% and
+2.4% long display intervals, versus approximately 6.0% before optimization. Adding pacing
+yielded 2.9% and 2.2%, at 73.7 and 74.0 rendered FPS. Among ordinary single-refresh display
+intervals, skipping intermediate rendered frames fell from about 21% to 0.05% and 0.14%.
+The middle 90% of the associated render-start intervals tightened from approximately
+9-21 ms to 13.1-14.5 ms. These are render-sampling proxies, not measured input-to-photon
+latency. All 31 gameplay checkpoints matched, Vulkan reported no validation messages,
+and the user reported improved stationary mouse turning with both changes together.
+
+Native Linux/macOS performance and AMD hardware remain unmeasured for this release.
+
+Release checks: Windows workspace formatting, all-target compilation, strict Clippy and
+workspace tests passed. WSL Ubuntu passed 36 graphics and 29 runtime unit tests and strict
+all-target Clippy. The aarch64 macOS target passed graphics/runtime all-target Clippy; this
+is compile evidence, not native execution. The Windows automated preflight also covers
+the final package source and passed. Archive: `validation-artifacts/windows-vulkan-20260911-173933.zip`. Both crates also passed `cargo publish --dry-run` package verification.

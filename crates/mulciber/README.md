@@ -80,3 +80,8 @@ depth at the selected 1x/4x sample count. The engine captures it before the firs
 record and preserves normal depth testing, volumetric lighting and foreground ordering.
 Scene-depth consumers must use the matching WGSL depth texture kind and cannot write depth.
 See the [scene-depth contract](https://github.com/fairhill1/mulciber/blob/main/docs/scene-depth-contract.md).
+
+Vulkan material/shadow command recording avoids redundant pipeline binds and uses direct
+indexed draws for immutable single-instance parts. Native presentation feedback additionally
+reports an optional display refresh duration for application-controlled frame-start pacing.
+The runtime limiter is opt-in; graphics presentation mode selection is unchanged.

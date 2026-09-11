@@ -161,3 +161,15 @@ from the focused macOS and Linux checks. The wgpu/winit peer passed the general 
 interaction review through Metal with API Validation enabled; its updated local suspension path
 launched and closed cleanly, but no explicit physical hold/minimize/restore observation was
 recorded.
+
+
+## Optional frame-start limiting
+
+`FrameStartLimiter::new(true)` enables an independent CPU frame-start limiter. Supply
+the native display period through `set_refresh_interval`, then call `wait` before pumping
+fresh input. Use `new(false)` on paths already paced by presentation. Without a usable
+native period it performs no wait; never substitute measured FPS for the display period.
+Call `reset` on rendering suspension/resume and supply refreshed display information
+after a surface or monitor change. Short overruns preserve the deadline grid; long stalls
+restart without a burst of catch-up frames. The final 300 microseconds may busy-wait.
+This utility does not change `Runtime` simulation, interpolation, or presentation policy.

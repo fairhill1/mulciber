@@ -38,3 +38,15 @@ submission, collision, scene state, camera policy, process suspension, jobs, or 
 
 The complete experimental contract and validation record live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber/blob/main/docs/runtime-contract.md).
+
+
+## Optional frame-start limiting
+
+`FrameStartLimiter::new(true)` enables an independent CPU frame-start limiter. Supply
+the native display period through `set_refresh_interval`, then call `wait` before pumping
+fresh input. Use `new(false)` on paths already paced by presentation. Without a usable
+native period it performs no wait; never substitute measured FPS for the display period.
+Call `reset` on rendering suspension/resume and supply refreshed display information
+after a surface or monitor change. Short overruns preserve the deadline grid; long stalls
+restart without a burst of catch-up frames. The final 300 microseconds may busy-wait.
+This utility does not change `Runtime` simulation, interpolation, or presentation policy.

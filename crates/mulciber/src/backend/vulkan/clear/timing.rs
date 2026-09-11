@@ -41,6 +41,7 @@ pub(super) struct PresentTiming {
     time_domain_id: u64,
     /// Monotonically increasing `VK_KHR_present_id2` value for this swapchain.
     next_present_id: u64,
+    refresh_interval: Option<Duration>,
     /// Chained present ids paired with the session frame index they identify, oldest first.
     pending: Vec<(u64, u64)>,
     /// Drain instant and native time of this swapchain's first completed report; later native
@@ -137,6 +138,38 @@ pub(super) fn choose_present_timing(
 }
 
 impl ClearSurface<'_> {
+    fn native_refresh_interval(&self) -> Result<Option<Duration>, GraphicsError> {
+        let mut refresh = vk::VkSwapchainTimingPropertiesEXT {
+            sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT,
+            ..Default::default()
+        };
+        let mut counter = 0;
+        check(
+            unsafe {
+                // SAFETY: Live device/swapchain and writable initialized outputs.
+                self.device()
+                    .functions
+                    .get_swapchain_timing_properties
+                    .expect("loaded function")(
+                    self.device().handle,
+                    self.swapchain.handle,
+                    &raw mut refresh,
+                    &raw mut counter,
+                )
+            },
+            "vkGetSwapchainTimingPropertiesEXT",
+        )?;
+        let refresh_interval =
+            (refresh.refreshDuration != 0).then(|| Duration::from_nanos(refresh.refreshDuration));
+        if let Some(interval) = refresh_interval {
+            std::eprintln!(
+                "Vulkan refresh interval: {:.6} ms",
+                interval.as_secs_f64() * 1000.0
+            );
+        }
+        Ok(refresh_interval)
+    }
+
     /// Configures native present timing for the freshly created current swapchain. A swapchain
     /// that exposes no time domain leaves timing unconfigured, so its frames stay unreported.
     pub(super) fn configure_present_timing(&mut self) -> Result<(), GraphicsError> {
@@ -158,6 +191,7 @@ impl ClearSurface<'_> {
             },
             "vkSetSwapchainPresentTimingQueueSizeEXT",
         )?;
+        let refresh_interval = self.native_refresh_interval()?;
         let function = self
             .device()
             .functions
@@ -213,6 +247,7 @@ impl ClearSurface<'_> {
             self.present_timing = Some(PresentTiming {
                 time_domain_id,
                 next_present_id: 0,
+                refresh_interval,
                 pending: Vec::new(),
                 anchor: None,
             });
@@ -389,8 +424,10 @@ impl ClearSurface<'_> {
             if self.feedback.len() >= PRESENT_FEEDBACK_CAP {
                 self.feedback.pop_front();
             }
-            self.feedback
-                .push_back(PresentedFrame::new(frame_index, presented_at));
+            self.feedback.push_back(
+                PresentedFrame::new(frame_index, presented_at)
+                    .with_refresh_interval(state.refresh_interval),
+            );
         }
         Ok(())
     }
@@ -452,6 +489,7 @@ mod queue_capacity_tests {
         let mut state = PresentTiming {
             time_domain_id: 7,
             next_present_id: 0,
+            refresh_interval: None,
             pending: Vec::new(),
             anchor: None,
         };
@@ -471,6 +509,7 @@ mod queue_capacity_tests {
         let mut state = PresentTiming {
             time_domain_id: 7,
             next_present_id: 0,
+            refresh_interval: None,
             pending: Vec::new(),
             anchor: None,
         };

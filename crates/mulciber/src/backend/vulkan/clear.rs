@@ -1334,6 +1334,7 @@ struct DeviceFns {
     queue_submit2: vk::PFN_vkQueueSubmit2,
     set_swapchain_present_timing_queue_size: vk::PFN_vkSetSwapchainPresentTimingQueueSizeEXT,
     get_swapchain_time_domain_properties: vk::PFN_vkGetSwapchainTimeDomainPropertiesEXT,
+    get_swapchain_timing_properties: vk::PFN_vkGetSwapchainTimingPropertiesEXT,
     get_past_presentation_timing: vk::PFN_vkGetPastPresentationTimingEXT,
 }
 
@@ -1432,6 +1433,11 @@ impl DeviceFns {
             queue_submit2: load!(c"vkQueueSubmit2"),
             set_swapchain_present_timing_queue_size: if present_timing {
                 load!(c"vkSetSwapchainPresentTimingQueueSizeEXT")
+            } else {
+                None
+            },
+            get_swapchain_timing_properties: if present_timing {
+                load!(c"vkGetSwapchainTimingPropertiesEXT")
             } else {
                 None
             },

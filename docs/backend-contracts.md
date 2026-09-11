@@ -231,3 +231,14 @@ bounded to native queue capacity, and unavailable timestamps remain untimed.
 The user confirmed the Windows input delay is gone. See
 [Windows validation](windows-validation.md#windows-mailbox-presentation-01311)
 for measured results and hardware coverage.
+
+
+## Vulkan recording and opt-in frame-start pacing (0.13.12 / runtime 0.5.3)
+
+Vulkan material/shadow recording avoids redundant pipeline binds and single-draw indirect
+commands on Windows and Linux. Optional native refresh feedback supports the runtime's new
+opt-in FrameStartLimiter, which waits before input polling; it leaves fixed-step timing
+and interpolation unchanged. Isle of Ran enables limiting only on Windows, retaining Linux
+FIFO behavior. Windows measurements and playtesting support the combined improvement;
+native Linux/macOS performance and AMD coverage remain unmeasured. See
+[validation and measurements](windows-validation.md#vulkan-recording-and-opt-in-frame-start-pacing-01312--runtime-053).

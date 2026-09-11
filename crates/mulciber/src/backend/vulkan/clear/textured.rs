@@ -3221,15 +3221,22 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const area,
             );
+            let mut bound_pipeline = None;
             for draw in draws {
                 let mesh = &self.meshes[draw.mesh];
                 let part = &mesh.parts[draw.part];
                 let pipeline = &self.shadow_pipelines[draw.pipeline];
-                functions.cmd_bind_pipeline.expect("loaded function")(
-                    self.surface.frame_command_buffer(),
-                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    pipeline.pipeline,
-                );
+                let selected_pipeline = pipeline.pipeline;
+                // Pipeline state persists across draws in this command buffer.
+                // Start each pass with unknown state and bind only on transitions.
+                if bound_pipeline != Some(selected_pipeline) {
+                    functions.cmd_bind_pipeline.expect("loaded function")(
+                        self.surface.frame_command_buffer(),
+                        vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        selected_pipeline,
+                    );
+                    bound_pipeline = Some(selected_pipeline);
+                }
                 functions.cmd_bind_descriptor_sets.expect("loaded function")(
                     self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3275,15 +3282,13 @@ impl<'window> TexturedSession<'window> {
                         0,
                     );
                 } else {
-                    functions
-                        .cmd_draw_indexed_indirect
-                        .expect("loaded function")(
+                    functions.cmd_draw_indexed.expect("loaded function")(
                         self.surface.frame_command_buffer(),
-                        mesh.buffer,
-                        part.indirect_offset,
+                        part.index_count,
                         1,
-                        u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                            .expect("indirect command size fits u32"),
+                        0,
+                        0,
+                        0,
                     );
                 }
             }
@@ -4046,17 +4051,24 @@ impl<'window> TexturedSession<'window> {
     unsafe fn record_material_draws(&self, draws: &[ResolvedMaterialDraw], overlay: bool) {
         unsafe {
             let functions = &self.surface.device().functions;
+            let mut bound_pipeline = None;
             for draw in draws {
                 let pipeline = &self.material_pipelines[draw.pipeline];
-                functions.cmd_bind_pipeline.expect("loaded function")(
-                    self.surface.frame_command_buffer(),
-                    vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    if overlay {
-                        pipeline.overlay_pipeline
-                    } else {
-                        pipeline.pipeline
-                    },
-                );
+                let selected_pipeline = if overlay {
+                    pipeline.overlay_pipeline
+                } else {
+                    pipeline.pipeline
+                };
+                // Pipeline state persists across draws in this command buffer.
+                // Start each pass with unknown state and bind only on transitions.
+                if bound_pipeline != Some(selected_pipeline) {
+                    functions.cmd_bind_pipeline.expect("loaded function")(
+                        self.surface.frame_command_buffer(),
+                        vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        selected_pipeline,
+                    );
+                    bound_pipeline = Some(selected_pipeline);
+                }
                 functions.cmd_bind_descriptor_sets.expect("loaded function")(
                     self.surface.frame_command_buffer(),
                     vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -4116,15 +4128,13 @@ impl<'window> TexturedSession<'window> {
                                 0,
                             );
                         } else {
-                            functions
-                                .cmd_draw_indexed_indirect
-                                .expect("loaded function")(
+                            functions.cmd_draw_indexed.expect("loaded function")(
                                 self.surface.frame_command_buffer(),
-                                mesh.buffer,
-                                part.indirect_offset,
+                                part.index_count,
                                 1,
-                                u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                                    .expect("indirect command size fits u32"),
+                                0,
+                                0,
+                                0,
                             );
                         }
                     }

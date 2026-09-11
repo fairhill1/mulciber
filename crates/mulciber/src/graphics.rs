@@ -1934,6 +1934,7 @@ impl<'window> Surface<'window> {
 pub struct PresentedFrame {
     index: u64,
     presented_at: Option<Instant>,
+    refresh_interval: Option<Duration>,
 }
 
 impl PresentedFrame {
@@ -1943,9 +1944,24 @@ impl PresentedFrame {
         Self {
             index,
             presented_at,
+            refresh_interval: None,
         }
     }
 
+    /// Native refresh duration, independent of skipped or discarded frames.
+    ///
+    /// `None` means the backend cannot report a fixed native refresh duration.
+    /// Currently supplied by Vulkan present-timing support; Metal returns `None`.
+    #[must_use]
+    pub const fn refresh_interval(&self) -> Option<Duration> {
+        self.refresh_interval
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub(crate) const fn with_refresh_interval(mut self, interval: Option<Duration>) -> Self {
+        self.refresh_interval = interval;
+        self
+    }
     /// Zero-based position of this frame among the session's presented frames.
     #[must_use]
     pub const fn index(&self) -> u64 {

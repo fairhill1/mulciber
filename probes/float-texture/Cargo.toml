@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-float-texture"
+description = "Native numerical validation of sampled RGBA16Float uploads"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

@@ -71,3 +71,19 @@ vk_xml_sha256 = "fb8f7647fd6439fe5deb423fd55c9186c0b1253c75d61b2399a01c5cfd8b98a
 vulkan_core_h_sha256 = "682de8fb5d47f9839d62732975e8c7d54f8d2e8c178d79977d698e34ebc64da9"
 vulkan_win32_h_sha256 = "72f0b6de71287d3b04d12235e4f2fef8f343126f85be4963c516d31d5bb4c099"
 vk_platform_h_sha256 = "a2cd9085c66776845d2524c3b0e73ccf4827ba046aa6f676c4b8ddbed47d6552"
+
+[float_texture_sample_shader]
+compiler = "naga 30.0.0"
+target_environment = "vulkan1.3"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "36536ec6d7066dd7ff5b206122ba5ce1924c55e2b4ee809970c55533129452d0"
+vulkan_artifact_sha256 = "7ae247020532e825f7c3ad75119f80f2859cf6865337b6e0414ac90443c6e9ea"
+metal_artifact_sha256 = "1a21b1c74cb4c0dae55de1a75ad2dfcd6fe97aa62a794dc3c72aab13d2bca89f"
+
+[float_texture_composite_shader]
+compiler = "naga 30.0.0"
+target_environment = "vulkan1.3"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "82ea4d53fe06a7b689b7c281667c38a874e97c490208212d9d529411dbb78f2b"
+vulkan_artifact_sha256 = "04ba769bce6383c9bac94c11187b78a2d318a2fa3b9e65ce26428f95925a164c"
+metal_artifact_sha256 = "7f660582d0d81577aa4a37914c97c9e9c9181cc0289360c5b9ea9870cc2d637a"

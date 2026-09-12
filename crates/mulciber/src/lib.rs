@@ -27,6 +27,8 @@ pub mod integration {
     pub use crate::backend::metal::objc as metal_objc;
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub use crate::backend::vulkan::vk as vulkan;
+    #[cfg(feature = "native-validation")]
+    pub use crate::graphics::read_hdr_validation_pixel;
 }
 
 pub use presentation::{

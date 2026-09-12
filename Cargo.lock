@@ -125,7 +125,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "mulciber"
-version = "0.13.12"
+version = "0.13.13"
 dependencies = [
  "mulciber-platform",
 ]
@@ -177,6 +177,14 @@ name = "mulciber-cube"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
+name = "mulciber-float-texture"
+version = "0.0.0"
+dependencies = [
  "mulciber",
  "mulciber-platform",
 ]

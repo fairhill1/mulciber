@@ -1313,6 +1313,8 @@ struct DeviceFns {
     cmd_copy_image2: vk::PFN_vkCmdCopyImage2,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
+    #[cfg(feature = "native-validation")]
+    cmd_copy_image_to_buffer2: vk::PFN_vkCmdCopyImageToBuffer2,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
     cmd_draw: vk::PFN_vkCmdDraw,
@@ -1412,6 +1414,8 @@ impl DeviceFns {
             cmd_copy_image2: load!(c"vkCmdCopyImage2"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
+            #[cfg(feature = "native-validation")]
+            cmd_copy_image_to_buffer2: load!(c"vkCmdCopyImageToBuffer2"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),
             cmd_draw: load!(c"vkCmdDraw"),

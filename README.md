@@ -49,7 +49,7 @@ evaluated against the pre-registered comparisons in the
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
   generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
   feedback, opt-in correlated GPU duration feedback (including capability-checked Metal render
-  stage counters), RGBA8 sRGB and linear-UNORM sampled-texture
+  stage counters), RGBA8 sRGB, linear-UNORM, and RGBA16Float sampled-texture
   uploads with optional application-authored mip chains, three frames in flight on Metal and Vulkan,
   immutable shared-vertex indexed mesh
   parts, bounded completed-frame lazy resource reclamation, and recovery-oriented errors
@@ -241,3 +241,10 @@ and interpolation unchanged. Isle of Ran enables limiting only on Windows, retai
 FIFO behavior. Windows measurements and playtesting support the combined improvement;
 native Linux/macOS performance and AMD coverage remain unmeasured. See
 [validation and measurements](docs/windows-validation.md#vulkan-recording-and-opt-in-frame-start-pacing-01312--runtime-053).
+
+## Sampled floating-point textures (0.13.13)
+
+Native RGBA16Float uploads accept linear f32 RGBA texels, with optional complete authored mip chains.
+Existing material bindings support linear filtering and explicit LOD sampling in vertex and fragment
+stages. The 40-case numerical readback probe passed on Metal/Apple M2; native Vulkan execution remains
+pending. See the [input contract, validation, and consumer migration](docs/float-texture-uploads.md).

@@ -1,5 +1,8 @@
 mod bloom;
 mod mesh;
+mod sampled_texture;
+#[cfg(feature = "native-validation")]
+mod validation;
 
 use mesh::MeshBufferArena;
 mod scene_depth;
@@ -18,7 +21,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use super::{ClearSurface, check, color_subresource_range, error, vk};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
-    Rgba8TextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
+    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -676,11 +679,28 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         levels: &[&[u8]],
-        format: Rgba8TextureFormat,
+        format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
         let mip_levels =
             u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
-        let mut packed = Vec::with_capacity(levels.iter().map(|texels| texels.len()).sum());
+        let _base_row = usize::try_from(width)
+            .ok()
+            .and_then(|w| w.checked_mul(format.bytes_per_texel()))
+            .ok_or_else(|| GraphicsError::invalid_request("texture row size overflow"))?;
+        let native_format = match format {
+            SampledTextureFormat::Srgb => vk::VK_FORMAT_R8G8B8A8_SRGB,
+            SampledTextureFormat::Unorm => vk::VK_FORMAT_R8G8B8A8_UNORM,
+            SampledTextureFormat::Float16 => vk::VK_FORMAT_R16G16B16A16_SFLOAT,
+        };
+        sampled_texture::validate_format(&self.surface, native_format, width, height, mip_levels)?;
+        let size = crate::graphics::checked_staging_size(levels.iter().map(|texels| texels.len()))?;
+        let mut packed = Vec::new();
+        packed.try_reserve_exact(size).map_err(|_| {
+            GraphicsError::with_kind(
+                crate::GraphicsErrorKind::OutOfMemory,
+                "texture staging allocation failed",
+            )
+        })?;
         for texels in levels {
             packed.extend_from_slice(texels);
         }
@@ -690,10 +710,6 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
             &packed,
         )?;
-        let native_format = match format {
-            Rgba8TextureFormat::Srgb => vk::VK_FORMAT_R8G8B8A8_SRGB,
-            Rgba8TextureFormat::Unorm => vk::VK_FORMAT_R8G8B8A8_UNORM,
-        };
         let image = match create_image(
             &self.surface,
             width,
@@ -747,7 +763,13 @@ impl<'window> TexturedSession<'window> {
             destroy_image(&self.surface, image);
             return Err(failure);
         }
-        self.textures.insert(TextureResource { image, sampler })
+        match self.textures.insert(TextureResource { image, sampler }) {
+            Ok(id) => Ok(id),
+            Err(failure) => {
+                destroy_texture_device(self.surface.device(), TextureResource { image, sampler });
+                Err(failure)
+            }
+        }
     }
 
     pub(crate) fn create_pipeline(
@@ -1035,7 +1057,14 @@ impl<'window> TexturedSession<'window> {
             scene_extent.width(),
             scene_extent.height(),
             format,
-            (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            (vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                | vk::VK_IMAGE_USAGE_SAMPLED_BIT
+                | if cfg!(feature = "native-validation") {
+                    vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                } else {
+                    0
+                })
+            .cast_unsigned(),
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,
             1,
@@ -2282,8 +2311,12 @@ impl<'window> TexturedSession<'window> {
                 },
                 ..Default::default()
             });
-            buffer_offset += u64::try_from(texels.len())
-                .map_err(|_| error("mip level bytes exceed Vulkan address space"))?;
+            buffer_offset = buffer_offset
+                .checked_add(
+                    u64::try_from(texels.len())
+                        .map_err(|_| error("mip level bytes exceed Vulkan address space"))?,
+                )
+                .ok_or_else(|| GraphicsError::invalid_request("texture staging offset overflow"))?;
         }
         self.begin_upload()?;
         let to_transfer = image_barrier(
@@ -2324,7 +2357,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
-            vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            vk::VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             color_subresource_levels(mip_levels),

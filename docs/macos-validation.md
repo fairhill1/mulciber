@@ -1083,3 +1083,39 @@ Space switch.
 Do not claim multi-display or display-change coverage from a single-display machine, Metal 4
 coverage from a Metal 3 device or pre-macOS-26 SDK, or lifecycle coverage from `--frames` runs.
 Validation archives belong under `validation-artifacts/` and are not source files.
+
+## Sampled RGBA16Float uploads (0.13.13)
+
+On 2026-09-12, the 0.13.13 development tree based on `c15011e` passed native numerical validation
+on the Apple M2 / 8 GiB MacBook Air, macOS 15.7.7 (24G720). This validation preceded the release.
+
+- `MTL_DEBUG_LAYER=1 target/debug/mulciber-float-texture`: all **40 numerical cases** passed at 1x.
+  Both public upload constructors and both WGSL vertex/fragment stages sampled known zero,
+  negative, above-one, and small signed coefficients. Texel centers, bilinear interpolation,
+  explicit mip one, fractional LODs, and base/tail LOD clamping were compared via HDR pixel
+  readback to an independent half-quantized CPU oracle. The configured tolerance is two output
+  half ULPs; the observed maximum difference was one. Small coefficients, including uploaded half
+  subnormals near 1e-5, survived sampling on this GPU.
+- `MTL_DEBUG_LAYER=1 target/debug/mulciber-api-conformance`: all **95 cases** passed, including
+  existing RGBA8/mip, material, shadow, postprocess, instancing, resource churn, abandonment and
+  fallible-shutdown paths. Neither run emitted validation warnings/errors beyond the enabled banner.
+- Required `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and
+  `git diff --check` passed. The graphics crate now has 31 unit tests, including six new float
+  upload tests; workspace tests and doctests all passed.
+- `cargo check` and `cargo clippy -- -D warnings` for `mulciber` and `mulciber-float-texture`,
+  both with `--all-targets --target x86_64-pc-windows-msvc`, passed. This type-checks the native
+  Vulkan upload and readback paths but does not execute Vulkan.
+
+Logs are under `validation-artifacts/float-texture-20260912/` (`metal-numerical.log`,
+`metal-conformance.log`, `native-build.log`); these local validation archives are not source files.
+The initial sandboxed process could not activate AppKit; the native runs above succeeded outside
+the sandbox. No visual correctness, physical lifecycle, multi-display, MSAA float-sampling,
+performance, other Apple GPU, or native Windows/Linux Vulkan evidence is claimed for this addition.
+See the [contract and consumer migration](float-texture-uploads.md) for reproduction and precision
+limits. No Isle of Rán files were modified.
+
+Release review on 2026-09-13 repeated all required workspace checks and the 40-case native
+Metal numerical probe with `MTL_DEBUG_LAYER=1`; all passed without validation errors.
+`cargo publish -p mulciber --dry-run --allow-dirty` successfully packaged and verified the
+registry dependency build. No additional Vulkan or visual coverage is claimed.

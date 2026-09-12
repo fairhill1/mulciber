@@ -85,3 +85,14 @@ Vulkan material/shadow command recording avoids redundant pipeline binds and use
 indexed draws for immutable single-instance parts. Native presentation feedback additionally
 reports an optional display refresh duration for application-controlled frame-start pacing.
 The runtime limiter is opt-in; graphics presentation mode selection is unchanged.
+
+## Floating-point sampled uploads (0.13.13)
+
+`device.create_rgba16_float_texture(width, height, &rgba_f32_texels)` returns a `Texture`
+for existing material bindings and WGSL `texture_2d<f32>` in vertex or fragment shaders.
+`create_rgba16_float_texture_with_mips` accepts a complete authored chain. Conversion rounds
+to binary16, ties to even, without color transforms or a 0–1 clamp; non-finite values and
+magnitudes above 65504 are rejected. Signed zero and half subnormals are preserved in storage,
+while GPU subnormal arithmetic can differ. Linear material samplers interpolate texels and mips.
+Metal numerical readback passed on Apple M2; native Vulkan numerical validation remains pending.
+See the [contract and migration notes](https://github.com/fairhill1/mulciber/blob/main/docs/float-texture-uploads.md).

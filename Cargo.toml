@@ -19,6 +19,7 @@ members = [
     "probes/metal-triangle",
     "probes/api-clear",
     "probes/api-conformance",
+    "probes/float-texture",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

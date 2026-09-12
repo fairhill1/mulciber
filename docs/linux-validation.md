@@ -1013,3 +1013,13 @@ The final 0.13.9 outdoor game comparison completed matching 1800-tick routes in 
 67.78 → 74.71 FPS and 10.93 → 9.73 ms GPU time. This is one follow-up pair; the mesh-memory
 record distinguishes it from the earlier three-pair prototype benchmark. Raw captures, native GPU
 correlation, settings and runner scripts are archived under the release directory's `game/` folder.
+
+## Sampled RGBA16Float uploads (0.13.13)
+
+The Vulkan implementation and `mulciber-float-texture` numerical probe are present, with Windows
+cross-target check/Clippy evidence from macOS only. Native numerical execution on this platform
+remains pending. Run `cargo run -p mulciber-float-texture` with the ordinary required Vulkan
+validation layer; all 40 cases must pass without warning/error callbacks. This covers vertex and
+fragment samples, half quantization, small coefficients, spatial filtering and explicit mip LODs.
+Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
+visual or broader hardware evidence. See the [contract](float-texture-uploads.md).

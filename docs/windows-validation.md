@@ -716,3 +716,12 @@ workspace tests passed. WSL Ubuntu passed 36 graphics and 29 runtime unit tests 
 all-target Clippy. The aarch64 macOS target passed graphics/runtime all-target Clippy; this
 is compile evidence, not native execution. The Windows automated preflight also covers
 the final package source and passed. Archive: `validation-artifacts/windows-vulkan-20260911-173933.zip`. Both crates also passed `cargo publish --dry-run` package verification.
+## Sampled RGBA16Float uploads (0.13.13)
+
+The Vulkan implementation and `mulciber-float-texture` numerical probe are present, with Windows
+cross-target check/Clippy evidence from macOS only. Native numerical execution on this platform
+remains pending. Run `cargo run -p mulciber-float-texture` with the ordinary required Vulkan
+validation layer; all 40 cases must pass without warning/error callbacks. This covers vertex and
+fragment samples, half quantization, small coefficients, spatial filtering and explicit mip LODs.
+Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
+visual or broader hardware evidence. See the [contract](float-texture-uploads.md).

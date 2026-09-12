@@ -1,4 +1,7 @@
 mod hdr;
+mod sampled_texture;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) use sampled_texture::checked_staging_size;
 mod scene_depth;
 pub(crate) use hdr::bloom_extents;
 use hdr::{validate_bloom_filter_interface, validate_hdr_pair};
@@ -309,7 +312,7 @@ impl Device<'_> {
         height: u32,
         texels: &[u8],
     ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture(width, height, texels, Rgba8TextureFormat::Srgb)
+        self.create_rgba8_texture(width, height, texels, SampledTextureFormat::Srgb)
     }
 
     /// Uploads a tightly packed RGBA8 sRGB texture with an application-supplied mip chain.
@@ -329,7 +332,7 @@ impl Device<'_> {
         height: u32,
         levels: &[&[u8]],
     ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_mips(width, height, levels, Rgba8TextureFormat::Srgb)
+        self.create_rgba8_texture_with_mips(width, height, levels, SampledTextureFormat::Srgb)
     }
 
     /// Uploads a tightly packed RGBA8 UNORM texture without sRGB transfer-function decoding.
@@ -346,7 +349,7 @@ impl Device<'_> {
         height: u32,
         texels: &[u8],
     ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture(width, height, texels, Rgba8TextureFormat::Unorm)
+        self.create_rgba8_texture(width, height, texels, SampledTextureFormat::Unorm)
     }
 
     /// Uploads a tightly packed RGBA8 UNORM texture with an application-supplied mip chain.
@@ -367,7 +370,66 @@ impl Device<'_> {
         height: u32,
         levels: &[&[u8]],
     ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_mips(width, height, levels, Rgba8TextureFormat::Unorm)
+        self.create_rgba8_texture_with_mips(width, height, levels, SampledTextureFormat::Unorm)
+    }
+
+    /// Uploads linear `RGBA16Float` data from row-major RGBA f32 texels (eight GPU bytes/texel).
+    ///
+    /// Conversion rounds to IEEE binary16, nearest with ties to even. Signed zero and half
+    /// subnormals are preserved in uploaded storage; values below half precision underflow to
+    /// signed zero. GPU sampling/arithmetic may flush subnormals on some hardware. No color
+    /// transform or 0–1 clamp is applied. NaN, infinity, and magnitudes above 65504 are rejected.
+    /// The texture has only level zero; explicit LOD sampling clamps to that level.
+    /// Bind using `MaterialBinding::Texture` and WGSL `texture_2d<f32>` in either shader stage.
+    ///
+    /// # Errors
+    /// Returns an error for zero dimensions, mismatched texel counts, size overflow, invalid
+    /// components, allocation/upload failure, or unsupported linearly filterable native storage.
+    pub fn create_rgba16_float_texture(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        self.upload_rgba16_float(width, height, &[texels], false)
+    }
+
+    /// Uploads a complete application-authored `RGBA16Float` mip chain.
+    ///
+    /// Level zero has the supplied dimensions; subsequent levels halve each axis, flooring at
+    /// one, through 1×1. No mip generation or color transform is performed. Component conversion
+    /// and errors follow [`Self::create_rgba16_float_texture`]. Use a material sampler with
+    /// linear mip filtering to interpolate explicit fractional LODs.
+    ///
+    /// # Errors
+    /// Also rejects incomplete/extra mip levels and mismatched per-level texel counts.
+    pub fn create_rgba16_float_texture_with_mips(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+    ) -> Result<Texture, GraphicsError> {
+        self.upload_rgba16_float(width, height, levels, true)
+    }
+
+    fn upload_rgba16_float(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+        complete: bool,
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
+        let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
+        let id = session_mut(&self.shared)?.create_texture(
+            width,
+            height,
+            &slices,
+            SampledTextureFormat::Float16,
+        )?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+        })
     }
 
     fn create_rgba8_texture(
@@ -375,7 +437,7 @@ impl Device<'_> {
         width: u32,
         height: u32,
         texels: &[u8],
-        format: Rgba8TextureFormat,
+        format: SampledTextureFormat,
     ) -> Result<Texture, GraphicsError> {
         validate_mip_level(width, height, 0, texels)?;
         let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
@@ -389,7 +451,7 @@ impl Device<'_> {
         width: u32,
         height: u32,
         levels: &[&[u8]],
-        format: Rgba8TextureFormat,
+        format: SampledTextureFormat,
     ) -> Result<Texture, GraphicsError> {
         if width == 0 || height == 0 {
             return Err(GraphicsError::invalid_request(
@@ -2519,17 +2581,27 @@ impl<'resources> MeshSource<'resources> {
     }
 }
 
-/// Uploaded RGBA8 sampled texture, interpreted as sRGB or linear UNORM according to its creation
-/// API.
+/// Uploaded sampled 2D texture: RGBA8 sRGB, RGBA8 UNORM, or linear `RGBA16Float`,
+/// according to its creation API.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
     lease: ResourceLease,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Rgba8TextureFormat {
+pub(crate) enum SampledTextureFormat {
     Srgb,
     Unorm,
+    Float16,
+}
+
+impl SampledTextureFormat {
+    pub(crate) const fn bytes_per_texel(self) -> usize {
+        match self {
+            Self::Srgb | Self::Unorm => 4,
+            Self::Float16 => 8,
+        }
+    }
 }
 
 impl Texture {
@@ -2659,7 +2731,7 @@ pub const SHADOW_MAP_LAYER_LIMIT: u32 = 8;
 pub enum SamplerFilter {
     /// Nearest-texel sampling, keeping texel edges crisp (pixel art, texture atlases).
     Nearest,
-    /// Linear interpolation between adjacent texels.
+    /// Linear interpolation between adjacent texels and between mip levels.
     Linear,
 }
 
@@ -4255,6 +4327,23 @@ fn validate_foreground_start(
         ));
     }
     Ok(())
+}
+
+/// Reads one completed HDR scene pixel for the repository's native validation probe.
+/// Call only after rendering these targets with the supplied queue. This is not a supported API.
+/// # Errors
+/// Rejects mixed sessions, non-HDR/stale targets, or native completion/copy failure.
+#[cfg(feature = "native-validation")]
+pub fn read_hdr_validation_pixel(
+    queue: &Queue<'_>,
+    targets: &PostprocessTargets,
+) -> Result<[u16; 4], GraphicsError> {
+    if targets.lease.session != queue.shared.id || !targets.hdr {
+        return Err(GraphicsError::invalid_request(
+            "validation readback needs same-session HDR targets",
+        ));
+    }
+    session_mut(&queue.shared)?.read_hdr_validation_pixel(targets.lease.id)
 }
 
 #[cfg(test)]

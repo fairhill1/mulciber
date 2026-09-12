@@ -1,5 +1,7 @@
 mod bloom;
 mod scene_depth;
+#[cfg(feature = "native-validation")]
+mod validation;
 mod volumetric;
 
 use core::ffi::c_void;
@@ -14,7 +16,7 @@ use std::ffi::CString;
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
-    Rgba8TextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
+    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -582,26 +584,43 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         levels: &[&[u8]],
-        format: Rgba8TextureFormat,
+        format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
+        // Metal 3's format table guarantees RGBA16Float filtering and 16384-wide 2D textures.
+        // Metal has no Vulkan-style per-format query. Keep this exact-format request explicit.
+        if format == SampledTextureFormat::Float16
+            && (!unsafe { objc::bool_usize(self.surface.device, c"supportsFamily:", 5001) }
+                || width > 16384
+                || height > 16384)
+        {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                "RGBA16Float uploads require Metal 3 linear filtering and dimensions <= 16384",
+            ));
+        }
+        let _base_row = usize::try_from(width)
+            .ok()
+            .and_then(|w| w.checked_mul(format.bytes_per_texel()))
+            .ok_or_else(|| GraphicsError::invalid_request("texture row size overflow"))?;
         unsafe {
             let pixel_format = match format {
-                Rgba8TextureFormat::Srgb => PIXEL_FORMAT_RGBA8_UNORM_SRGB,
-                Rgba8TextureFormat::Unorm => PIXEL_FORMAT_RGBA8_UNORM,
+                SampledTextureFormat::Srgb => PIXEL_FORMAT_RGBA8_UNORM_SRGB,
+                SampledTextureFormat::Unorm => PIXEL_FORMAT_RGBA8_UNORM,
+                SampledTextureFormat::Float16 => PIXEL_FORMAT_RGBA16_FLOAT,
             };
             let descriptor = required(
                 objc::object_three_usizes_bool(
                     objc::class(c"MTLTextureDescriptor"),
                     c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
                     pixel_format,
-                    usize::try_from(width)
-                        .map_err(|_| GraphicsError::new("texture width exceeds usize"))?,
-                    usize::try_from(height)
-                        .map_err(|_| GraphicsError::new("texture height exceeds usize"))?,
+                    usize::try_from(width).expect("validated texture width fits usize"),
+                    usize::try_from(height).expect("validated texture height fits usize"),
                     levels.len() > 1,
                 ),
                 "Metal cube texture descriptor",
             )?;
+            // CPU replacement writes shared storage before the texture becomes bindable.
+            objc::void_usize(descriptor, c"setStorageMode:", 0);
             objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_SHADER_READ);
             let texture = required(
                 objc::object_object(
@@ -612,12 +631,11 @@ impl<'window> TexturedSession<'window> {
                 "Metal cube texture",
             )?;
             for (level, texels) in levels.iter().enumerate() {
-                let level_index = u32::try_from(level)
-                    .map_err(|_| GraphicsError::new("mip chain length exceeds u32"))?;
+                let level_index = u32::try_from(level).expect("validated mip chain fits u32");
                 let level_width = usize::try_from(mip_extent(width, level_index))
-                    .map_err(|_| GraphicsError::new("texture width exceeds usize"))?;
+                    .expect("validated texture width fits usize");
                 let level_height = usize::try_from(mip_extent(height, level_index))
-                    .map_err(|_| GraphicsError::new("texture height exceeds usize"))?;
+                    .expect("validated texture height fits usize");
                 objc::void_region_usize_bytes_usize(
                     texture,
                     c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
@@ -631,35 +649,24 @@ impl<'window> TexturedSession<'window> {
                     },
                     level,
                     texels.as_ptr().cast(),
-                    level_width * 4,
+                    level_width * format.bytes_per_texel(),
                 );
             }
-            let sampler_descriptor = required(
-                objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
-                "Metal sampler descriptor",
-            )?;
-            objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
-            objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
-            objc::void_usize(
-                sampler_descriptor,
-                c"setSAddressMode:",
-                SAMPLER_ADDRESS_REPEAT,
-            );
-            objc::void_usize(
-                sampler_descriptor,
-                c"setTAddressMode:",
-                SAMPLER_ADDRESS_REPEAT,
-            );
-            let sampler = required(
-                objc::object_object(
-                    self.surface.device,
-                    c"newSamplerStateWithDescriptor:",
-                    sampler_descriptor,
-                ),
-                "Metal cube sampler",
-            )?;
-            objc::void(sampler_descriptor, c"release");
-            self.textures.insert(TextureResource { texture, sampler })
+            let sampler = match create_upload_sampler(self.surface.device) {
+                Ok(sampler) => sampler,
+                Err(failure) => {
+                    objc::void(texture, c"release");
+                    return Err(failure);
+                }
+            };
+            match self.textures.insert(TextureResource { texture, sampler }) {
+                Ok(id) => Ok(id),
+                Err(failure) => {
+                    objc::void(sampler, c"release");
+                    objc::void(texture, c"release");
+                    Err(failure)
+                }
+            }
         }
     }
 
@@ -4020,6 +4027,37 @@ unsafe fn configure_vertex_descriptor(
         }
         objc::void_object(descriptor, c"setVertexDescriptor:", vertex);
         Ok(())
+    }
+}
+
+fn create_upload_sampler(device: Object) -> Result<Object, GraphicsError> {
+    unsafe {
+        let sampler_descriptor = required(
+            objc::object(objc::class(c"MTLSamplerDescriptor"), c"new"),
+            "Metal sampler descriptor",
+        )?;
+        objc::void_usize(sampler_descriptor, c"setMinFilter:", SAMPLER_FILTER_LINEAR);
+        objc::void_usize(sampler_descriptor, c"setMagFilter:", SAMPLER_FILTER_LINEAR);
+        objc::void_usize(
+            sampler_descriptor,
+            c"setSAddressMode:",
+            SAMPLER_ADDRESS_REPEAT,
+        );
+        objc::void_usize(
+            sampler_descriptor,
+            c"setTAddressMode:",
+            SAMPLER_ADDRESS_REPEAT,
+        );
+        let sampler = required(
+            objc::object_object(
+                device,
+                c"newSamplerStateWithDescriptor:",
+                sampler_descriptor,
+            ),
+            "Metal upload sampler",
+        );
+        objc::void(sampler_descriptor, c"release");
+        sampler
     }
 }
 

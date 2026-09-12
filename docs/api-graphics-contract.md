@@ -199,3 +199,12 @@ device, resource, encoder, or pipeline types have been added.
 The clear checkpoint now has validation-enabled finite and physical smoke evidence on Metal plus the
 automated Vulkan evidence above. The next implementation step is the representative textured
 depth-tested slice.
+
+## Linear floating-point sampled uploads
+
+`Device::create_rgba16_float_texture(width, height, &[[f32; 4]])` and its
+`_with_mips(width, height, &[&[[f32; 4]]])` peer return the existing `Texture`.
+Finite components in -65504..=65504 round to binary16 with ties to even; there is no color transform
+or normalized clamp. Signed zero and representable half subnormals are uploaded; GPU subnormal
+arithmetic remains hardware-dependent. Complete mip content is application-owned. See the
+[full conversion, binding, native ownership and validation contract](float-texture-uploads.md).

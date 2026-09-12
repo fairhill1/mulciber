@@ -242,3 +242,12 @@ and interpolation unchanged. Isle of Ran enables limiting only on Windows, retai
 FIFO behavior. Windows measurements and playtesting support the combined improvement;
 native Linux/macOS performance and AMD coverage remain unmeasured. See
 [validation and measurements](windows-validation.md#vulkan-recording-and-opt-in-frame-start-pacing-01312--runtime-053).
+
+## Sampled RGBA16Float uploads (0.13.13)
+
+**Partial cross-backend evidence:** native Metal and Vulkan upload implementations expose one
+`Texture` through existing material bindings, with checked binary16 conversion and authored mips.
+Apple M2 / macOS 15.7.7 passed 40 numerical vertex/fragment filtering and explicit-LOD readback cases
+under Metal API validation. Windows cross-target checks pass; native Windows/Linux Vulkan execution
+and wider GPU coverage remain pending. No viability gate is advanced. See the
+[float texture contract and migration handoff](float-texture-uploads.md).

@@ -4,77 +4,35 @@
 [![docs.rs](https://docs.rs/mulciber/badge.svg)](https://docs.rs/mulciber)
 
 Mulciber is a native game-development stack for Rust, built directly on Vulkan and Metal.
+It combines graphics, native windows and input, and game-loop coordination for Windows,
+Linux, and Apple-silicon macOS.
 
-## Why Mulciber?
+Mulciber is pre-1.0; its API still changes between minor releases. Isle of Rán, an open-world
+RPG, runs on the published crates on all three platforms. Hardware coverage and remaining
+validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbooks.
 
-Mulciber is for Rust games that want native-engine control without maintaining separate graphics and
-window-system stacks for every desktop platform. It combines direct Vulkan and Metal access with
-game-focused platform lifecycle, exposes recent GPU capabilities without forcing them into a WebGPU
-feature model, and keeps the shipped runtime small and auditable.
+## What it provides
 
-This is a deliberately narrower goal than `wgpu` plus `winit`, not a claim that those projects are
-bad foundations. Mulciber trades their broad portability and maturity for native API reach,
-coordinated GPU/platform/runtime design, and a first-class support contract limited to modern
-Windows, Linux, and Apple-silicon macOS machines. Minimal dependencies are a means to predictable
-ownership, policy, and maintenance, not the reason for the project by themselves.
+- **Graphics** (`mulciber`): device, queue, and surface ownership; textures, meshes, instancing,
+  and materials; shadow, HDR, bloom, volumetric, and postprocessing passes; native presentation
+  and GPU timing feedback.
+- **Windows and input** (`mulciber-platform`): native Win32, AppKit, Wayland, and X11
+  implementations with window lifecycle, keyboard and pointer events, cursor capture, and fullscreen.
+- **Game loop** (`mulciber-runtime`): input snapshots, fixed-step simulation, bounded catch-up,
+  render interpolation, suspension coordination, and optional frame-start pacing.
+- **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
+  Designated WGSL functions can also generate callable Rust evaluators for simulation code.
+  No shader compiler ships in the game process.
 
-Read [the project vision](docs/vision.md) for the intended user, non-goals, and the criteria
-Mulciber must meet to justify its existence; the [viability gates](docs/viability-gates.md) govern
-whether the project continues, narrows, or stops.
-
-## Direction
-
-- Vulkan 1.3 on Windows and Linux, requesting Vulkan 1.4 when the loader exposes it.
-- Metal 3 on Apple silicon as the compatibility baseline.
-- Metal 4 as an SDK- and capability-gated path.
-- Native Win32, AppKit, Wayland, and X11 platform implementations.
-- No `wgpu`, `winit`, or Direct3D dependency.
-- Native presentation timing, pacing feedback, and platform-native upscaling as first-class
-  capabilities.
-- Modern features such as mesh shading, bindless resources, ray tracing, and sparse resources are
-  independent capabilities rather than a single linear hardware tier.
-
-## Status
-
-Mulciber is pre-1.0 and its API still changes between minor releases. It already drives a real
-game: Isle of Rán, an open-world RPG, runs on the published crates on Windows, Linux, and Apple
-silicon. Native Metal and Vulkan probes established the real platform contracts first; the public
-slice is derived from that evidence and evaluated against the pre-registered comparisons in the
-[API extraction and comparison plan](docs/api-extraction-plan.md). Current state:
-
-- `mulciber-platform` owns peer AppKit, Win32, Wayland, and X11 application/window, event, and
-  lifecycle modules, plus pointer-capture/cursor-mode and fullscreen intents implemented on all
-  four backends and exercised by Isle of Rán on Windows, KDE Linux, and Apple silicon
-  ([platform contract](docs/api-platform-contract.md)).
-- `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
-  generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
-  feedback, opt-in correlated GPU duration feedback (including capability-checked Metal render
-  stage counters), RGBA8 sRGB, linear-UNORM, and RGBA16Float sampled-texture
-  uploads with optional application-authored mip chains, three frames in flight on Metal and Vulkan,
-  immutable shared-vertex indexed mesh
-  parts, bounded completed-frame lazy resource reclamation, and recovery-oriented errors
-  ([graphics contract](docs/api-graphics-contract.md),
-  [decision ledger](docs/api-slice-decisions.md)).
-- `mulciber-runtime` provides input snapshots with focus-loss clearing, a configurable fixed-step
-  accumulator with bounded catch-up, clamped variable updates, render interpolation, rendering
-  suspension coordination, and presented-cadence smoothing with bounded cumulative time drift
-  and diagnostics
-  ([runtime contract](docs/runtime-contract.md)).
-- `mulciber-shader` is a separate offline tool that turns WGSL into validated, cached native
-  artifacts; no shader compiler ships in the game process. It also generates host-callable Rust
-  evaluators for designated functions of that same WGSL, so a simulation can ask what the shader
-  draws — a displacement height field, for instance — without a second hand-written copy of it
-  ([crate README](crates/mulciber-shader/README.md)).
-
-Capability evidence, per-platform validation records, and the exact remaining gaps live in the
-[roadmap](docs/roadmap.md) and the [macOS](docs/macos-validation.md),
-[Windows](docs/windows-validation.md), and [Linux](docs/linux-validation.md) runbooks.
+The graphics baseline is Vulkan 1.3 on Windows and Linux and Metal 3 on Apple silicon.
+Vulkan 1.4 is requested when exposed by the loader; Metal 4 paths are SDK- and capability-gated.
+Advanced GPU features are tracked as independent capabilities. See the
+[support contract](docs/support-contract.md) for platform requirements.
 
 ## Examples
 
-Each example is one safe application source that selects native Metal or Vulkan at compile time.
-Pinned `wgpu`/`winit` and direct-native peers under `comparisons/` implement the same workloads;
-line counts and measurements are single-sourced in the linked contract documents.
+Run an example from this repository. Each uses one safe application source and selects native
+Metal or Vulkan at compile time.
 
 | Command | Workload | Details |
 | --- | --- | --- |
@@ -83,33 +41,20 @@ line counts and measurements are single-sourced in the linked contract documents
 | `cargo run -p mulciber-cube` | Spinning indexed, textured, depth-tested cube | [cube contract](docs/api-cube-contract.md) |
 | `cargo run -p mulciber-input-cube` | Ordered native keyboard/pointer/scroll/focus input | [input contract](docs/input-contract.md) |
 | `cargo run -p mulciber-postprocess-cube` | Half-render-scale resolve plus a uniform-animated fullscreen underwater grade on Vulkan | [postprocess contract](docs/postprocess-contract.md) |
-| `cargo run -p mulciber-showcase-cube` | Input and two-pass composition for side-by-side review | composes the two above |
+| `cargo run -p mulciber-showcase-cube` | Input and two-pass composition | composes the two above |
 | `cargo run -p mulciber-scene` | 100-object heterogeneous multi-draw scene | [scene contract](docs/scene-contract.md) |
 | `cargo run -p mulciber-instanced-scene` | Same field grouped into four native instance batches | [instancing contract](docs/instancing-contract.md) |
 | `cargo run -p mulciber-material-scene` | Application-authored materials, layouts, uniform bytes, cascaded shadow maps, and a frame-transient HUD overlay | [material contract](docs/material-contract.md) |
-| `cargo run -p mulciber-game-slice` | Playable Forge Run dogfood on `mulciber-runtime` | [game contract](docs/game-slice.md), [comparison](docs/game-slice-comparison.md) |
+| `cargo run -p mulciber-game-slice` | Playable Forge Run game on `mulciber-runtime` | [game contract](docs/game-slice.md) |
 
 The examples are ordinary interactive programs; Mulciber prefers 4x MSAA and reports a fallback to
 1x. The cube examples use `glam` locally for transform math; no Mulciber crate depends on it.
-
-Finite execution, acquired-frame abandonment/recovery, and forced 1x coverage live in explicit API
-probes instead of the examples:
-
-```sh
-cargo run -p mulciber-api-clear -- --frames 120 --abandon-acquired-frame-once
-cargo run -p mulciber-api-cube -- --frames 120 --abandon-acquired-frame-once
-cargo run -p mulciber-api-cube -- --frames 120 --force-one-sample
-```
-
-`mulciber-api-conformance` additionally asserts invalid use, resource destruction/drop churn,
-replacement rendering, direct and postprocessed multi-draw and instancing, mixed-session rejection,
-shared-vertex mixed-width mesh parts in material and shadow passes, and fallible shutdown.
 
 ### Writing your own program
 
 New programs follow the `examples/` pattern: copy an example package (path dependencies on the
 Mulciber crates, `publish = false`, workspace lints), add it to the root workspace `members`, and
-start from the example nearest your workload. Two conventions are easy to miss:
+start from the example nearest your workload. A few conventions to know:
 
 - A field the simulation also needs — terrain displacement, say — is authored once in WGSL and
   generated for the host with `mulciber_shader::compile_host_field` from a `build.rs`, then pulled
@@ -124,151 +69,25 @@ start from the example nearest your workload. Two conventions are easy to miss:
   resumes with visibility, so a program counting presented frames stalls while hidden. See the
   [platform contract](docs/api-platform-contract.md).
 
-## Native probes
+## Validation
 
-The capability reports query each backend directly and emit versioned machine-readable output for
-cross-machine comparison:
-
-```sh
-cargo run -q -p mulciber-metal-info -- --json                      # macOS
-cargo run -q -p mulciber-vulkan-info -- --json                     # Windows
-cargo run -q -p mulciber-vulkan-info -- --platform wayland --json  # Linux; or --platform x11
-```
-
-The presentation probes exercise the full representative native workloads: staging uploads, BC1
-with verified readback, compute-written buffers/images/indirect commands, mip generation with
-mip-tail verification, indexed-indirect drawing, capability-selected 4x MSAA, shadow/scene/post
-passes, timestamps and debug labels, and device-specific pipeline artifacts. The Vulkan probe
-additionally dispatches a WGSL height field over 256 directions and compares the readback with the
-host evaluator generated from that same source. The exercised
-capabilities are itemized in [roadmap sections 1 and 2](docs/roadmap.md).
-
-```sh
-MTL_DEBUG_LAYER=1 cargo run -p mulciber-metal-triangle    # macOS
-cargo run -p mulciber-vulkan-triangle -- --frames 600     # Windows/Linux; validation required
-```
-
-Both probes accept `--frames N` and `--abandon-acquired-frame-once`, print a presentation pacing
-report, and support `--pacing-csv PATH` for per-frame samples plus `--load-spike START:COUNT:MILLIS`
-for the load-spike scenario in the [Gate 4 pacing plan](docs/gate4-pacing-plan.md). The Metal
-report uses native presented-time feedback from drawable presented handlers against the queried
-display cadence; the Vulkan report drains native `VK_EXT_present_timing` presented-stage times
-beside the CPU present-return estimation where the surveyed tier exposes the extension chain
-(currently the Linux Nvidia tier), and remains labeled estimation-only with the observable reason
-elsewhere. The Metal probe generates and
-strictly reloads a device-specific binary archive; pass `--binary-archive PATH` to select a
-different artifact or `--rebuild-binary-archive` after changing shaders, pipeline descriptors, the
-OS, or the GPU. The Vulkan probe requires the Khronos validation layer and loads the platform
-loader dynamically; its pipeline-cache flags, texture-mode controls, and fallback switches are
-documented in the [pipeline cache policy](docs/vulkan-pipeline-cache.md),
-[BC1 decision record](docs/vulkan-bc1.md), and the platform runbooks.
+Native probes exercise backend capabilities, rendering, and presentation lifecycle. API probes
+cover finite runs, acquired-frame abandonment and recovery, and forced single-sample rendering.
+For commands, prerequisites, measured results, and coverage limits, see the
+[macOS](docs/macos-validation.md), [Windows](docs/windows-validation.md), and
+[Linux](docs/linux-validation.md) runbooks.
 
 ## Documentation
 
-- [Vision](docs/vision.md), [viability gates](docs/viability-gates.md), and
-  [support contract](docs/support-contract.md)
-- [Architecture decisions](docs/architecture.md) and
-  [backend contract ledger](docs/backend-contracts.md)
-- [Shared-vertex mesh-parts contract](docs/mesh-parts-contract.md)
-- [Implementation roadmap](docs/roadmap.md) and
-  [API extraction and comparison plan](docs/api-extraction-plan.md)
-- [macOS](docs/macos-validation.md), [Windows](docs/windows-validation.md), and
-  [Linux](docs/linux-validation.md) validation runbooks
-- [Pinned references](docs/references.md)
-
-### Foreground material pass
-
-The first-person weapon workload adds a depth-isolated foreground group before
-postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
-[material contract](docs/material-contract.md)
-for ordering, MSAA storage, and validation limits. Isle of Rán renders its held weapons
-through this pass on all three platforms.
-
-## HDR scene and bloom
-
-The opt-in RGBA16Float material/postprocess path supports independently optional bloom and
-volumetric passes, with cached pipeline selection for live effect toggles. Bloom adds six levels before the final sRGB
-composite and native-resolution HUD. See the [HDR contract](docs/hdr-bloom-contract.md) for APIs,
-format checks, synchronization, ownership and the validation boundary. Isle of Rán renders its
-HDR scene with bloom on all three platforms; the Metal-only faults found on first native run are
-recorded under 0.13.10 below.
-
-## Volumetric HDR scattering
-
-The opt-in HDR path can now sample native-MSAA world depth and the submitted shadow cascades
-for a half-resolution scattering pass, followed by additive depth-aware upscaling before
-foreground and bloom. See the [volumetric contract](docs/volumetric-contract.md) for binding, lifetime and
-validation boundaries. Isle of Rán renders its volumetric scattering on all three platforms;
-per-tier performance measurements live in the platform runbooks.
-
-## Material scene-depth snapshot
-
-HDR materials can sample a world-depth snapshot before volumetric and foreground passes,
-using the existing 1x/4x depth shader support. The first consumer splits the world pass;
-normal depth testing remains active. See the [scene-depth contract](docs/scene-depth-contract.md)
-for ordering, native copy ownership, validation and remaining hardware evidence.
-
-## Metal HDR fixes (0.13.10)
-
-First run of the HDR, scene-depth and volumetric passes on Apple silicon found two Metal-only
-faults. The MSAA scene color carried a resolve texture on intermediate encoders whose store
-action was a plain store, which Metal rejects; only the last writer resolves now. Render target
-creation released an autoreleased texture descriptor, so any target created inside a frame left
-a freed object in the frame pool and every error exit segfaulted instead of returning its
-message. Isle of Rán renders on Metal with both fixes.
-
-## GPU-local Vulkan meshes (0.13.9)
-
-Immutable meshes now prefer device-local storage with frame-owned staged uploads, bounded retained
-staging capacity and an observable host-memory fallback. GPU timing feedback remains ordered across
-frame-slot abandonment. See the [mesh-memory policy and evidence](docs/vulkan-mesh-memory.md).
-
-## Windows mailbox presentation (0.13.11)
-
-Windows Vulkan prefers supported mailbox presentation with FIFO fallback;
-Linux FIFO and Metal behavior are unchanged. Optional presentation timing is
-bounded to native queue capacity, and unavailable timestamps remain untimed.
-The user confirmed the Windows input delay is gone. See
-[Windows validation](docs/windows-validation.md#windows-mailbox-presentation-01311)
-for measured results and hardware coverage.
-
-
-## Vulkan recording and opt-in frame-start pacing (0.13.12 / runtime 0.5.3)
-
-Vulkan material/shadow recording avoids redundant pipeline binds and single-draw indirect
-commands on Windows and Linux. Optional native refresh feedback supports the runtime's new
-opt-in FrameStartLimiter, which waits before input polling; it leaves fixed-step timing
-and interpolation unchanged. Isle of Ran enables limiting only on Windows, retaining Linux
-FIFO behavior. Windows measurements and playtesting support the combined improvement;
-native Linux/macOS performance and AMD coverage remain unmeasured. See
-[validation and measurements](docs/windows-validation.md#vulkan-recording-and-opt-in-frame-start-pacing-01312--runtime-053).
-
-## Sampled floating-point textures (0.13.13)
-
-Native RGBA16Float uploads accept linear f32 RGBA texels, with optional complete authored mip chains.
-Existing material bindings support linear filtering and explicit LOD sampling in vertex and fragment
-stages. The 40-case numerical readback probe passed on Metal/Apple M2; native Vulkan execution remains
-pending. See the [input contract, validation, and consumer migration](docs/float-texture-uploads.md).
-
-## Block-compressed sampled uploads (0.13.15)
-
-`Device::create_block_compressed_texture` and its `_with_mips` peer upload already encoded BC7
-(sRGB or UNORM) and BC5 blocks through the existing `Texture` and material bindings, sampled
-directly by the GPU at a quarter of the RGBA8 footprint. Mulciber never encodes or decodes; the
-application encodes each level of its own filtered chain. Vulkan gates on `textureCompressionBC`
-and Metal on `supportsBCTextureCompression`, returning `Unsupported` rather than decoding on the
-CPU. Isle of Rán uploads its BC7 material textures through this path. See the
-[contract](docs/block-compressed-textures.md).
-
-The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source is identical to
-30.0.0 (only its manifest changed); the cube Vulkan artifact regenerated under 30.0.1 is
-byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
-stands and only its recorded compiler string moves.
-
-## Growable Vulkan descriptor pools (0.13.14)
-
-A Vulkan pipeline's cached descriptor sets are allocated from as many pools as the scene turns
-out to need. Previously each pipeline owned one 64-set pool, so a scene whose distinct sampled
-textures through one pipeline outgrew it failed with `VK_ERROR_OUT_OF_POOL_MEMORY` while Metal,
-which has no such pool, ran on. Growth is transparent; reset and destruction release every pool.
-See the [backend contract note](docs/backend-contracts.md#growable-vulkan-descriptor-pools-01314).
+- [Project vision](docs/vision.md) and [support contract](docs/support-contract.md)
+- [Graphics](docs/api-graphics-contract.md), [platform](docs/api-platform-contract.md), and
+  [runtime](docs/runtime-contract.md) contracts
+- [Shader toolchain](crates/mulciber-shader/README.md)
+- [Materials](docs/material-contract.md), [HDR and bloom](docs/hdr-bloom-contract.md),
+  [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
+- [Floating-point textures](docs/float-texture-uploads.md) and
+  [block-compressed textures](docs/block-compressed-textures.md)
+- [Architecture](docs/architecture.md) and [backend contracts](docs/backend-contracts.md)
+- [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
+  [API extraction plan](docs/api-extraction-plan.md)
+- [Changelog](CHANGELOG.md)

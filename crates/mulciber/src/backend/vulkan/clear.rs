@@ -1487,8 +1487,16 @@ impl DeviceFns {
             cmd_reset_query_pool: load!(c"vkCmdResetQueryPool"),
             cmd_write_timestamp2: load!(c"vkCmdWriteTimestamp2"),
             get_query_pool_results: load!(c"vkGetQueryPoolResults"),
-            cmd_begin_debug_utils_label: load!(c"vkCmdBeginDebugUtilsLabelEXT"),
-            cmd_end_debug_utils_label: load!(c"vkCmdEndDebugUtilsLabelEXT"),
+            cmd_begin_debug_utils_label: if instance.debug_messenger.is_null() {
+                None
+            } else {
+                load!(c"vkCmdBeginDebugUtilsLabelEXT")
+            },
+            cmd_end_debug_utils_label: if instance.debug_messenger.is_null() {
+                None
+            } else {
+                load!(c"vkCmdEndDebugUtilsLabelEXT")
+            },
             create_semaphore: load!(c"vkCreateSemaphore"),
             destroy_semaphore: load!(c"vkDestroySemaphore"),
             create_fence: load!(c"vkCreateFence"),
@@ -2242,6 +2250,13 @@ fn debug_messenger_info() -> vk::VkDebugUtilsMessengerCreateInfoEXT {
 #[cfg(test)]
 #[path = "clear/instance_tests.rs"]
 mod instance_tests;
+
+#[cfg(test)]
+#[path = "clear/device_tests.rs"]
+mod device_tests;
+
+#[path = "clear/gpu_region.rs"]
+mod gpu_region;
 
 #[cfg(test)]
 mod tests {

@@ -1,10 +1,12 @@
 # Implementation roadmap
 
-## Release startup correction (0.13.16)
+## Release startup correction (0.13.17)
 
 Vulkan SDK layers are no longer a requirement for published consumers. The opt-in
 `vulkan-validation` feature preserves strict diagnostics for repository examples and probes.
-Targeted native instance creation/destruction tests need no window; this fix does not advance
+0.13.17 also removes the remaining unconditional device debug-label dependency and retains
+GPU timestamps. Native tests cover device creation and timestamp submission/readback with
+labels enabled and disabled, without a window. This fix does not advance
 any rendering, lifecycle, or hardware viability gate.
 
 Each milestone is a runnable vertical slice. Public abstraction work follows backend evidence rather

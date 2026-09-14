@@ -33,6 +33,7 @@ Published `mulciber` builds do not require Vulkan SDK validation layers. Enable 
 `vulkan-validation` Cargo feature during development to require Khronos validation and its
 debug messenger. Repository examples and probes explicitly enable it; leave it off when
 shipping a game. This feature is independent of debug/release optimization.
+Use 0.13.17 or newer: it also makes device debug labels optional while retaining GPU timing.
 
 ## Examples
 

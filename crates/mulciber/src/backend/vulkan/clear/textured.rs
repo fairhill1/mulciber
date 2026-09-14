@@ -2861,24 +2861,13 @@ impl<'window> TexturedSession<'window> {
             return;
         }
         let start_query = self.gpu_query_base() + start_query;
-        let label = vk::VkDebugUtilsLabelEXT {
-            sType: vk::VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
-            pLabelName: name.as_ptr(),
-            color,
-            ..Default::default()
-        };
         unsafe {
-            let functions = &self.surface.device().functions;
-            functions
-                .cmd_begin_debug_utils_label
-                .expect("loaded function")(
-                self.surface.frame_command_buffer(), &raw const label
-            );
-            functions.cmd_write_timestamp2.expect("loaded function")(
+            self.surface.device().functions.begin_gpu_region(
                 self.surface.frame_command_buffer(),
-                vk::VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 start_query,
+                name,
+                color,
             );
         }
     }
@@ -2889,16 +2878,11 @@ impl<'window> TexturedSession<'window> {
         }
         let end_query = self.gpu_query_base() + end_query;
         unsafe {
-            let functions = &self.surface.device().functions;
-            functions.cmd_write_timestamp2.expect("loaded function")(
+            self.surface.device().functions.end_gpu_region(
                 self.surface.frame_command_buffer(),
-                vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                 self.gpu_timing.query_pool,
                 end_query,
             );
-            functions
-                .cmd_end_debug_utils_label
-                .expect("loaded function")(self.surface.frame_command_buffer());
         }
     }
 

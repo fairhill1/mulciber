@@ -1,13 +1,13 @@
 # Win32/Vulkan validation runbook
 
-## SDK-free consumer startup (0.13.16)
+## SDK-free consumer startup (0.13.17)
 
 The public crate's default build no longer requests Khronos validation or debug-utils.
 Repository examples and probes explicitly enable `vulkan-validation`; their existing checks
 still require the SDK and treat callback warnings/errors as failures. The `native-validation`
 readback feature includes this opt-in. Build profile alone does not enable validation.
 
-Run the targeted instance-only preflight without opening any window:
+Run the targeted windowless startup preflight (the flag retains its original name):
 
 ```powershell
 .\scripts\validate-windows.ps1 -SkipInteractive -InstanceOnly
@@ -15,9 +15,17 @@ Run the targeted instance-only preflight without opening any window:
 
 It builds the release library without optional features and tests native instance creation and
 destruction with layer queries disabled, explicit validation with a debug messenger, and a
-simulated unavailable validation layer. This requires the host's Vulkan loader; the validation-on
-case also requires the SDK layer. It is not rendering, frame submission, or physical lifecycle
-evidence. The complete preflight and interactive matrix remain separate.
+simulated unavailable validation layer. Device tests also load the complete native function
+table and submit/read timestamp queries through the renderer's region-recording methods, with
+labels enabled and disabled. Only surface-presentation support is substituted in these tests;
+present-timing queries are disabled because no surface exists. A Vulkan 1.3 device with GPU
+timestamps is required, plus the SDK layer for the validation-on case. This is not windowed
+rendering, presentation, or physical lifecycle evidence.
+
+On 2026-09-14 the new device test reproduced 0.13.16's missing
+`vkCmdBeginDebugUtilsLabelEXT` failure. After the 0.13.17 fix, all six windowless tests passed:
+`validation-artifacts/windows-vulkan-20260914-184708/native-instances.log`.
+The initial three tests below covered instance creation only and missed device label loading.
 
 On 2026-09-14 all three instance-only cases passed on Windows in a release build with
 no default features. The local log is

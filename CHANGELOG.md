@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Optional Vulkan device labels (0.13.17)
+
+Fix startup without validation: 0.13.16 stopped enabling `VK_EXT_debug_utils` on the
+instance but still required its device label functions. Load and call those functions
+only with validation enabled. GPU region timestamps remain available in ordinary builds.
+Windowless regression tests now create a real device, load its complete function table,
+and submit/read timestamp queries through the renderer's region-recording methods in
+both modes. The device test reproduced the 0.13.16 failure before this correction.
+
 ## Optional Vulkan validation (0.13.16)
 
 Published consumers no longer unconditionally require `VK_LAYER_KHRONOS_validation` or

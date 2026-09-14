@@ -76,3 +76,36 @@ fn native_instance_with_validation_keeps_the_debug_messenger() {
     drop(instance);
     assert_eq!(VALIDATION_MESSAGE_COUNT.load(Ordering::Relaxed), 0);
 }
+
+/// Only presentation support is substituted: no surface exists in this test.
+/// Adapter discovery, logical device creation and every device symbol are native.
+pub(super) fn windowless_device(validation: bool) -> Device {
+    unsafe extern "C" fn presentation_support(
+        _device: vk::VkPhysicalDevice,
+        _family: u32,
+        _surface: vk::VkSurfaceKHR,
+        supported: *mut vk::VkBool32,
+    ) -> vk::VkResult {
+        // SAFETY: The caller provides a writable output.
+        unsafe { *supported = vk::VK_TRUE };
+        vk::VK_SUCCESS
+    }
+    let mut instance = Instance::create(
+        Entry::load().expect("native Vulkan loader"),
+        SURFACE_EXTENSION,
+        validation,
+    )
+    .expect("native instance");
+    instance.functions.get_surface_support = Some(presentation_support);
+    // Present-timing queries require a real surface and are outside this test.
+    instance.surface_capabilities2 = false;
+    Device::new(instance).expect("native device and complete device function table")
+}
+
+#[test]
+#[ignore = "requires native Vulkan; creates no window or surface"]
+fn native_instance_device_without_validation_loads_all_functions() {
+    let device = windowless_device(false);
+    assert!(device.functions.cmd_begin_debug_utils_label.is_none());
+    assert!(device.functions.cmd_end_debug_utils_label.is_none());
+}

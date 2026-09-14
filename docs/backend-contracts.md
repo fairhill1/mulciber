@@ -252,6 +252,21 @@ under Metal API validation. Windows cross-target checks pass; native Windows/Lin
 and wider GPU coverage remain pending. No viability gate is advanced. See the
 [float texture contract and migration handoff](float-texture-uploads.md).
 
+## Block-compressed sampled uploads (0.13.15)
+
+**Cross-backend implementation, native execution pending:** `BlockCompression::{Bc7Srgb,
+Bc7Unorm, Bc5Unorm}` uploads reach the existing `Texture` through one shared sampled-format path
+whose level sizes are measured in whole 4×4 blocks. Vulkan reads `textureCompressionBC` at adapter
+selection and enables it on the device only where reported; Metal asks
+`supportsBCTextureCompression`. Either answers `Unsupported` for the compressed uploads alone.
+Unit tests cover block sizing and chain validation; no native run has been made on either backend
+and no viability gate is advanced. See the [contract](block-compressed-textures.md).
+
+The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source is identical to
+30.0.0 (only its manifest changed); the cube Vulkan artifact regenerated under 30.0.1 is
+byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
+stands and only its recorded compiler string moves.
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 **Vulkan-only correctness fix:** every textured, instanced, material, shadow and postprocess

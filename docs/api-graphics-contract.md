@@ -200,6 +200,15 @@ The clear checkpoint now has validation-enabled finite and physical smoke eviden
 automated Vulkan evidence above. The next implementation step is the representative textured
 depth-tested slice.
 
+## Block-compressed sampled uploads
+
+`Device::create_block_compressed_texture(BlockCompression, width, height, &[u8])` and its
+`_with_mips(BlockCompression, width, height, &[&[u8]])` peer return the existing `Texture` from
+already encoded BC7 sRGB, BC7 UNORM, or BC5 UNORM blocks. Every level is `ceil(w/4) × ceil(h/4)`
+sixteen-byte blocks, tightly packed; sub-block tail levels are one block. Mulciber never encodes,
+decodes, or generates mips. Adapters without BC sampling return `Unsupported` for these calls only.
+See the [full contract](block-compressed-textures.md).
+
 ## Linear floating-point sampled uploads
 
 `Device::create_rgba16_float_texture(width, height, &[[f32; 4]])` and its

@@ -373,6 +373,52 @@ impl Device<'_> {
         self.create_rgba8_texture_with_mips(width, height, levels, SampledTextureFormat::Unorm)
     }
 
+    /// Uploads one level of an already block-compressed texture.
+    ///
+    /// `blocks` holds the base level's 4×4 blocks in row-major order, tightly packed, exactly
+    /// as an encoder writes them. Mulciber never encodes or decodes: it uploads the blocks as
+    /// they are and the GPU samples them directly, so the payload is a quarter of its RGBA8
+    /// equivalent in video memory as well as on disk. Dimensions need not be multiples of four;
+    /// a partial edge block still carries sixteen bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
+    /// for empty dimensions, a byte count that is not the level's block count times the block
+    /// size, or overflow.
+    pub fn create_block_compressed_texture(
+        &self,
+        compression: BlockCompression,
+        width: u32,
+        height: u32,
+        blocks: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture(width, height, blocks, compression.sampled())
+    }
+
+    /// Uploads a block-compressed texture with an application-supplied mip chain.
+    ///
+    /// `levels[0]` holds the base level's blocks; each following level halves both dimensions
+    /// (flooring at one texel) and holds the blocks covering that extent, so the 2×2 and 1×1
+    /// tail levels are each one sixteen-byte block. The chain must run to 1×1. The application
+    /// owns mip content: it filters the RGBA8 chain first and encodes every level, because a
+    /// block cannot be downsampled without decoding it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
+    /// for empty dimensions, a chain that does not run from the base level to 1×1, a level
+    /// whose byte count does not match its block count, or overflow.
+    pub fn create_block_compressed_texture_with_mips(
+        &self,
+        compression: BlockCompression,
+        width: u32,
+        height: u32,
+        levels: &[&[u8]],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_mips(width, height, levels, compression.sampled())
+    }
+
     /// Uploads linear `RGBA16Float` data from row-major RGBA f32 texels (eight GPU bytes/texel).
     ///
     /// Conversion rounds to IEEE binary16, nearest with ties to even. Signed zero and half
@@ -439,7 +485,7 @@ impl Device<'_> {
         texels: &[u8],
         format: SampledTextureFormat,
     ) -> Result<Texture, GraphicsError> {
-        validate_mip_level(width, height, 0, texels)?;
+        validate_mip_level(format, width, height, 0, texels)?;
         let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
@@ -467,7 +513,7 @@ impl Device<'_> {
             )));
         }
         for (level, texels) in (0_u32..).zip(levels) {
-            validate_mip_level(width, height, level, texels)?;
+            validate_mip_level(format, width, height, level, texels)?;
         }
         let id = session_mut(&self.shared)?.create_texture(width, height, levels, format)?;
         Ok(Texture {
@@ -2588,19 +2634,83 @@ pub struct Texture {
     lease: ResourceLease,
 }
 
+/// A block-compressed texture encoding the GPU samples directly.
+///
+/// Every encoding here packs a 4×4 texel block into sixteen bytes, one byte per texel, so
+/// a compressed upload is a quarter of its RGBA8 equivalent. BC7 carries four channels and
+/// suits colour, with or without the sRGB transfer function; BC5 carries two and suits a
+/// tangent-space normal whose Z is reconstructed in the shader. The encoder is the
+/// application's: Mulciber uploads blocks and never decodes or produces them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum BlockCompression {
+    /// BC7 RGBA, decoded through the sRGB transfer function when sampled.
+    Bc7Srgb,
+    /// BC7 RGBA, sampled as stored.
+    Bc7Unorm,
+    /// BC5 two-channel UNORM; the shader reads `.rg` and a sample's `.ba` are undefined.
+    Bc5Unorm,
+}
+
+impl BlockCompression {
+    pub(crate) const fn sampled(self) -> SampledTextureFormat {
+        match self {
+            Self::Bc7Srgb => SampledTextureFormat::Bc7Srgb,
+            Self::Bc7Unorm => SampledTextureFormat::Bc7Unorm,
+            Self::Bc5Unorm => SampledTextureFormat::Bc5Unorm,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SampledTextureFormat {
     Srgb,
     Unorm,
     Float16,
+    Bc7Srgb,
+    Bc7Unorm,
+    Bc5Unorm,
 }
 
 impl SampledTextureFormat {
-    pub(crate) const fn bytes_per_texel(self) -> usize {
+    /// Texels along each side of the unit the format stores: one for an uncompressed
+    /// format, four for a block-compressed one.
+    pub(crate) const fn block_extent(self) -> u32 {
+        match self {
+            Self::Srgb | Self::Unorm | Self::Float16 => 1,
+            Self::Bc7Srgb | Self::Bc7Unorm | Self::Bc5Unorm => 4,
+        }
+    }
+
+    /// Bytes one stored unit takes: a texel for an uncompressed format, a block otherwise.
+    pub(crate) const fn block_bytes(self) -> usize {
         match self {
             Self::Srgb | Self::Unorm => 4,
             Self::Float16 => 8,
+            Self::Bc7Srgb | Self::Bc7Unorm | Self::Bc5Unorm => 16,
         }
+    }
+
+    pub(crate) const fn is_block_compressed(self) -> bool {
+        self.block_extent() > 1
+    }
+
+    /// Stored units along one axis of a level `extent` texels long, rounding a partial
+    /// block up: a compressed level always carries whole blocks.
+    pub(crate) const fn blocks_along(self, extent: u32) -> u32 {
+        extent.div_ceil(self.block_extent())
+    }
+
+    /// Tightly packed bytes in one row of blocks (or texels) of a level `width` texels wide.
+    pub(crate) fn row_bytes(self, width: u32) -> Option<usize> {
+        usize::try_from(self.blocks_along(width))
+            .ok()?
+            .checked_mul(self.block_bytes())
+    }
+
+    /// Tightly packed bytes in a whole level of the given extent.
+    pub(crate) fn level_bytes(self, width: u32, height: u32) -> Option<usize> {
+        self.row_bytes(width)?
+            .checked_mul(usize::try_from(self.blocks_along(height)).ok()?)
     }
 }
 
@@ -3609,8 +3719,10 @@ pub(crate) const fn mip_extent(base: u32, level: u32) -> u32 {
     if scaled == 0 { 1 } else { scaled }
 }
 
-/// Checks that one mip level's byte count matches its tightly packed RGBA8 extent.
+/// Checks that one mip level's byte count matches its tightly packed extent: texels for an
+/// uncompressed format, whole 4×4 blocks for a compressed one.
 fn validate_mip_level(
+    format: SampledTextureFormat,
     width: u32,
     height: u32,
     level: u32,
@@ -3623,14 +3735,9 @@ fn validate_mip_level(
     }
     let level_width = mip_extent(width, level);
     let level_height = mip_extent(height, level);
-    let expected = usize::try_from(level_width)
-        .ok()
-        .and_then(|level_width| {
-            usize::try_from(level_height)
-                .ok()
-                .and_then(|level_height| level_width.checked_mul(level_height))
-        })
-        .and_then(|texels| texels.checked_mul(4))
+    let expected = format
+        .level_bytes(level_width, level_height)
+        .filter(|size| *size <= isize::MAX.cast_unsigned())
         .ok_or_else(|| {
             GraphicsError::invalid_request("texture dimensions overflow address space")
         })?;
@@ -4357,5 +4464,43 @@ mod foreground_tests {
         for (count, split) in [(0, 0), (1, 0), (1, 1), (3, 0), (3, 3), (3, usize::MAX)] {
             assert!(validate_foreground_start(count, split).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod block_compressed_tests {
+    use super::{BlockCompression, SampledTextureFormat, validate_mip_level};
+
+    #[test]
+    fn a_compressed_level_is_whole_blocks_at_every_extent() {
+        let bc7 = BlockCompression::Bc7Srgb.sampled();
+        // A full block row, a partial one, and the tail levels narrower than a block.
+        assert_eq!(bc7.level_bytes(8, 8), Some(64));
+        assert_eq!(bc7.level_bytes(5, 3), Some(32));
+        assert_eq!(bc7.level_bytes(2, 2), Some(16));
+        assert_eq!(bc7.level_bytes(1, 1), Some(16));
+        assert_eq!(bc7.row_bytes(2048), Some(512 * 16));
+        assert_eq!(
+            BlockCompression::Bc5Unorm.sampled().level_bytes(4, 4),
+            Some(16)
+        );
+        // The uncompressed formats keep their texel sizes through the same helper.
+        assert_eq!(SampledTextureFormat::Srgb.level_bytes(3, 3), Some(36));
+        assert_eq!(SampledTextureFormat::Float16.level_bytes(2, 1), Some(16));
+    }
+
+    #[test]
+    fn a_compressed_mip_chain_is_measured_in_blocks() {
+        let bc7 = BlockCompression::Bc7Unorm.sampled();
+        let blocks = [0_u8; 64];
+        assert!(validate_mip_level(bc7, 8, 8, 0, &blocks).is_ok());
+        assert!(validate_mip_level(bc7, 8, 8, 1, &blocks[..16]).is_ok());
+        assert!(validate_mip_level(bc7, 8, 8, 2, &blocks[..16]).is_ok());
+        assert!(validate_mip_level(bc7, 8, 8, 3, &blocks[..16]).is_ok());
+        // The RGBA8 byte count for the same extent is the wrong answer here.
+        assert!(validate_mip_level(bc7, 8, 8, 0, &[0; 256]).is_err());
+        assert!(validate_mip_level(bc7, 8, 8, 3, &[0; 4]).is_err());
+        assert!(validate_mip_level(bc7, 0, 8, 0, &[]).is_err());
+        assert!(validate_mip_level(SampledTextureFormat::Unorm, 8, 8, 0, &[0; 256]).is_ok());
     }
 }

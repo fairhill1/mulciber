@@ -36,15 +36,15 @@ whether the project continues, narrows, or stops.
 
 ## Status
 
-Mulciber is an unstable experimental extraction, not a supported API. Native Metal and Vulkan probes
-established the real platform contracts first; the public slice is derived from that evidence and
-evaluated against the pre-registered comparisons in the
+Mulciber is pre-1.0 and its API still changes between minor releases. It already drives a real
+game: Isle of Rán, an open-world RPG, runs on the published crates on Windows, Linux, and Apple
+silicon. Native Metal and Vulkan probes established the real platform contracts first; the public
+slice is derived from that evidence and evaluated against the pre-registered comparisons in the
 [API extraction and comparison plan](docs/api-extraction-plan.md). Current state:
 
 - `mulciber-platform` owns peer AppKit, Win32, Wayland, and X11 application/window, event, and
-  lifecycle modules, plus a pointer-capture/cursor-mode intent implemented on all four backends —
-  physically verified on the Apple M2 and KDE Linux tiers — with the Win32 implementation
-  cross-checked from Linux only and never executed on Windows
+  lifecycle modules, plus pointer-capture/cursor-mode and fullscreen intents implemented on all
+  four backends and exercised by Isle of Rán on Windows, KDE Linux, and Apple silicon
   ([platform contract](docs/api-platform-contract.md)).
 - `mulciber` exposes experimental device/queue/surface owners, owning resource handles, surface
   generations, nonfatal acquisition outcomes, frame dispositions, drained native presentation
@@ -176,31 +176,32 @@ documented in the [pipeline cache policy](docs/vulkan-pipeline-cache.md),
   [Linux](docs/linux-validation.md) validation runbooks
 - [Pinned references](docs/references.md)
 
-### Foreground material pass (headless checkpoint)
+### Foreground material pass
 
 The first-person weapon workload adds a depth-isolated foreground group before
 postprocessing and the HUD overlay, implemented on Vulkan and Metal. See the
 [material contract](docs/material-contract.md)
-for ordering, MSAA storage, and validation limits. Physical rendering and visual
-validation of this addition remain outstanding.
+for ordering, MSAA storage, and validation limits. Isle of Rán renders its held weapons
+through this pass on all three platforms.
 
 ## HDR scene and bloom
 
 The opt-in RGBA16Float material/postprocess path supports independently optional bloom and
 volumetric passes, with cached pipeline selection for live effect toggles. Bloom adds six levels before the final sRGB
 composite and native-resolution HUD. See the [HDR contract](docs/hdr-bloom-contract.md) for APIs,
-format checks, synchronization, ownership and the validation boundary. Native rendering and visual
-validation of this addition remain outstanding.
+format checks, synchronization, ownership and the validation boundary. Isle of Rán renders its
+HDR scene with bloom on all three platforms; the Metal-only faults found on first native run are
+recorded under 0.13.10 below.
 
 ## Volumetric HDR scattering
 
 The opt-in HDR path can now sample native-MSAA world depth and the submitted shadow cascades
 for a half-resolution scattering pass, followed by additive depth-aware upscaling before
 foreground and bloom. See the [volumetric contract](docs/volumetric-contract.md) for binding, lifetime and
-validation boundaries. This is a headless checkpoint; native visual and performance evidence
-remains outstanding.
+validation boundaries. Isle of Rán renders its volumetric scattering on all three platforms;
+per-tier performance measurements live in the platform runbooks.
 
-## Material scene-depth snapshot (headless checkpoint)
+## Material scene-depth snapshot
 
 HDR materials can sample a world-depth snapshot before volumetric and foreground passes,
 using the existing 1x/4x depth shader support. The first consumer splits the world pass;
@@ -248,6 +249,21 @@ Native RGBA16Float uploads accept linear f32 RGBA texels, with optional complete
 Existing material bindings support linear filtering and explicit LOD sampling in vertex and fragment
 stages. The 40-case numerical readback probe passed on Metal/Apple M2; native Vulkan execution remains
 pending. See the [input contract, validation, and consumer migration](docs/float-texture-uploads.md).
+
+## Block-compressed sampled uploads (0.13.15)
+
+`Device::create_block_compressed_texture` and its `_with_mips` peer upload already encoded BC7
+(sRGB or UNORM) and BC5 blocks through the existing `Texture` and material bindings, sampled
+directly by the GPU at a quarter of the RGBA8 footprint. Mulciber never encodes or decodes; the
+application encodes each level of its own filtered chain. Vulkan gates on `textureCompressionBC`
+and Metal on `supportsBCTextureCompression`, returning `Unsupported` rather than decoding on the
+CPU. Isle of Rán uploads its BC7 material textures through this path. See the
+[contract](docs/block-compressed-textures.md).
+
+The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source is identical to
+30.0.0 (only its manifest changed); the cube Vulkan artifact regenerated under 30.0.1 is
+byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
+stands and only its recorded compiler string moves.
 
 ## Growable Vulkan descriptor pools (0.13.14)
 

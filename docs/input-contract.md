@@ -93,8 +93,9 @@ XTEST-driven X11 run whose pointer stayed pinned at the measured content center 
 motion and moved freely after Escape — in the [Linux runbook](linux-validation.md). Later that day
 the operator physically verified capture on both Linux paths at committed `3075d0e`: relative look
 with a hidden, escape-proof pointer, Escape restoring the cursor, Alt-Tab releasing the capture
-cleanly, and Wayland window teardown from the captured state. The Win32 implementation has no
-execution evidence of any kind; its first Windows session must treat it as untested code.
+cleanly, and Wayland window teardown from the captured state. The Win32 implementation has since
+been exercised by Isle of Rán for mouse look during Windows playtesting (see the
+[Windows runbook](windows-validation.md)).
 
 ## AppKit implementation checkpoint
 

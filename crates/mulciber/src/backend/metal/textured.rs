@@ -28,6 +28,9 @@ use crate::{
 use objc::{Object, Origin3, Region3, Size3};
 
 const PIXEL_FORMAT_RGBA16_FLOAT: usize = 115;
+const PIXEL_FORMAT_BC5_RG_UNORM: usize = 144;
+const PIXEL_FORMAT_BC7_RGBA_UNORM: usize = 152;
+const PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB: usize = 153;
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
 const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
@@ -598,15 +601,27 @@ impl<'window> TexturedSession<'window> {
                 "RGBA16Float uploads require Metal 3 linear filtering and dimensions <= 16384",
             ));
         }
-        let _base_row = usize::try_from(width)
-            .ok()
-            .and_then(|w| w.checked_mul(format.bytes_per_texel()))
+        // BC sampling is a per-device capability on Apple silicon rather than a family
+        // guarantee; Metal answers for the family as a whole.
+        if format.is_block_compressed()
+            && !unsafe { objc::bool_value(self.surface.device, c"supportsBCTextureCompression") }
+        {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                "block-compressed uploads require a Metal device that supports BC texture compression",
+            ));
+        }
+        let _base_row = format
+            .row_bytes(width)
             .ok_or_else(|| GraphicsError::invalid_request("texture row size overflow"))?;
         unsafe {
             let pixel_format = match format {
                 SampledTextureFormat::Srgb => PIXEL_FORMAT_RGBA8_UNORM_SRGB,
                 SampledTextureFormat::Unorm => PIXEL_FORMAT_RGBA8_UNORM,
                 SampledTextureFormat::Float16 => PIXEL_FORMAT_RGBA16_FLOAT,
+                SampledTextureFormat::Bc7Srgb => PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB,
+                SampledTextureFormat::Bc7Unorm => PIXEL_FORMAT_BC7_RGBA_UNORM,
+                SampledTextureFormat::Bc5Unorm => PIXEL_FORMAT_BC5_RG_UNORM,
             };
             let descriptor = required(
                 objc::object_three_usizes_bool(
@@ -649,7 +664,11 @@ impl<'window> TexturedSession<'window> {
                     },
                     level,
                     texels.as_ptr().cast(),
-                    level_width * format.bytes_per_texel(),
+                    // A compressed row is a row of blocks; a level narrower than a block
+                    // still carries one whole block per row.
+                    format
+                        .row_bytes(mip_extent(width, level_index))
+                        .expect("validated texture row fits usize"),
                 );
             }
             let sampler = match create_upload_sampler(self.surface.device) {

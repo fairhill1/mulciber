@@ -69,9 +69,8 @@ Existing surface-format pipelines and targets remain available. HDR scene storag
 is independent of HDR monitor output.
 
 Vulkan validates HDR format roles, sample counts and extent limits. Both native
-backends own bloom resources and their dependencies. This release has headless
-build, lint and unit-test evidence; native HDR presentation and visual validation
-remain outstanding. See the [HDR contract](https://github.com/fairhill1/mulciber/blob/main/docs/hdr-bloom-contract.md).
+backends own bloom resources and their dependencies. Isle of Rán renders its HDR
+scene with bloom on Vulkan and Metal. See the [HDR contract](https://github.com/fairhill1/mulciber/blob/main/docs/hdr-bloom-contract.md).
 
 ## Material scene depth
 
@@ -103,3 +102,12 @@ Vulkan descriptor sets cached per pipeline are allocated from as many pools as n
 number of distinct textures a scene binds through one pipeline is no longer capped at 64.
 A full pool is answered by opening another rather than by `VK_ERROR_OUT_OF_POOL_MEMORY`.
 No API change; Metal was never limited this way.
+
+## Block-compressed sampled uploads (0.13.15)
+
+`device.create_block_compressed_texture_with_mips(BlockCompression::Bc7Srgb, width, height,
+&level_slices)` uploads already encoded BC7 or BC5 blocks and returns a `Texture` for the
+existing material bindings, sampled directly at a quarter of the RGBA8 footprint. The application
+encodes every level of its own filtered chain; Mulciber never encodes or decodes. Adapters without
+BC sampling return `Unsupported` for these uploads and are otherwise unaffected. See the
+[contract](https://github.com/fairhill1/mulciber/blob/main/docs/block-compressed-textures.md).

@@ -40,12 +40,13 @@ pub use presentation::{
 pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErrorKind};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
-    BlendMode, BloomShaders, CascadedShadowPass, DepthMode, Device, DeviceRequest, DeviceSelection,
-    Frame, GeometrySource, GpuFrameTiming, GpuRenderStageTiming, GpuScopeTiming, GpuTimingFeedback,
-    GpuTimingScope, GpuTimingSupport, INSTANCE_SUPPLY_SIZE_LIMIT, InstancedTexturedPipeline,
-    MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT, MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding,
-    MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord, Mesh, MeshIndices, MeshPart,
-    MeshSource, OpenedGraphics, POSTPROCESS_UNIFORM_SIZE_LIMIT, PostprocessPipeline,
+    BlendMode, BlockCompression, BloomShaders, CascadedShadowPass, DepthMode, Device,
+    DeviceRequest, DeviceSelection, Frame, GeometrySource, GpuFrameTiming, GpuRenderStageTiming,
+    GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport,
+    INSTANCE_SUPPLY_SIZE_LIMIT, InstancedTexturedPipeline, MATERIAL_SLOT_LIMIT,
+    MATERIAL_STORAGE_SIZE_LIMIT, MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline,
+    MaterialPipelineDescriptor, MaterialRecord, Mesh, MeshIndices, MeshPart, MeshSource,
+    OpenedGraphics, POSTPROCESS_UNIFORM_SIZE_LIMIT, PostprocessPipeline,
     PostprocessPipelineDescriptor, PostprocessTargets, PostprocessedDraw, PostprocessedScene,
     PresentFeedback, PresentedFrame, Queue, RenderScale, RenderTargets, SHADOW_MAP_LAYER_LIMIT,
     SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,

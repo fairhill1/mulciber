@@ -27,7 +27,7 @@ post_fragment_sha256 = "6de9d167528d552616b5e355181b58346ef60fdec2f92e0892194295
 shadow_vertex_sha256 = "6a6393501daf970fb915c133ca87be72c02781ea0a8edaecf394d9d0e958ed4a"
 
 [cube_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "93556c3cd20184dacdfa2bd5c65dfdc981dbab42044a926eb5b72359447572c7"
@@ -35,7 +35,7 @@ vulkan_artifact_sha256 = "6248a2970f0d1c81c62aa5d2e785762a7a81830dacd2415eb08cd1
 metal_artifact_sha256 = "986cd8c811af3a7686ba2a08d76b78897c51a4bb174c9b1834d0ae8fddfb5345"
 
 [postprocess_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "d34a0524ac63b107d5db5ef1485f408cfcacb08f3cdc30dc292027b5120c0666"
@@ -43,14 +43,14 @@ vulkan_artifact_sha256 = "ac9efc0e14ab02006bd00afd8ad980352d3e130dd1cd1f38b94128
 metal_artifact_sha256 = "55783ff83368f3c858e7c5055ad229786b4ad8e2fdad698259033b7b6d31c42c"
 
 [postprocess_uniform_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "e7882d5f1b6e509e9e1eb071b6059cac2b1b59c6f688746b2cfbc0e0f572c426"
 vulkan_artifact_sha256 = "8c46e5e2c67e69d44bdc896aaae49a82b82849050355997afc1b7d0e8da584e2"
 
 [instanced_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "5b49c8a69c18d95eed3469ed1a08b9ad81bbd6a2e0bb7dafe9cee74089149313"
@@ -61,7 +61,7 @@ metal_artifact_sha256 = "9d70f1ab70cc54790a1b519f984ec2c716f7ed78d1029407a7d68a4
 # The Vulkan probe's host-field source. Its compute SPIR-V and the Rust evaluator that
 # `mulciber-shader` generates from it are both produced by the probe's build script rather than
 # checked in, because the check they support is that the two cannot drift from this one source.
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "cd20c3dd2d423aa5fae31fd2422989637c2ac1a1e2ef7717f4708323001a2253"
@@ -73,7 +73,7 @@ vulkan_win32_h_sha256 = "72f0b6de71287d3b04d12235e4f2fef8f343126f85be4963c516d31
 vk_platform_h_sha256 = "a2cd9085c66776845d2524c3b0e73ccf4827ba046aa6f676c4b8ddbed47d6552"
 
 [float_texture_sample_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "36536ec6d7066dd7ff5b206122ba5ce1924c55e2b4ee809970c55533129452d0"
@@ -81,7 +81,7 @@ vulkan_artifact_sha256 = "7ae247020532e825f7c3ad75119f80f2859cf6865337b6e0414ac9
 metal_artifact_sha256 = "1a21b1c74cb4c0dae55de1a75ad2dfcd6fe97aa62a794dc3c72aab13d2bca89f"
 
 [float_texture_composite_shader]
-compiler = "naga 30.0.0"
+compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "82ea4d53fe06a7b689b7c281667c38a874e97c490208212d9d529411dbb78f2b"

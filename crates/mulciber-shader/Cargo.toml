@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-shader"
-version = "0.5.1"
+version = "0.5.2"
 description = "Offline single-source shader compiler and host-field generator for Mulciber's native Metal and Vulkan backends"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"
@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools::build-utils", "game-
 publish = ["crates-io"]
 
 [dependencies]
-naga = { version = "30.0.0", features = ["wgsl-in", "spv-out", "msl-out"] }
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
 
 [lints]
 workspace = true

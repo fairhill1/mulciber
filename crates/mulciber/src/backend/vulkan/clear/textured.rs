@@ -685,14 +685,22 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<ResourceId, GraphicsError> {
         let mip_levels =
             u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
-        let _base_row = usize::try_from(width)
-            .ok()
-            .and_then(|w| w.checked_mul(format.bytes_per_texel()))
+        let _base_row = format
+            .row_bytes(width)
             .ok_or_else(|| GraphicsError::invalid_request("texture row size overflow"))?;
+        if format.is_block_compressed() && !self.surface.device().adapter.texture_compression_bc {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                "block-compressed uploads require the adapter's textureCompressionBC feature",
+            ));
+        }
         let native_format = match format {
             SampledTextureFormat::Srgb => vk::VK_FORMAT_R8G8B8A8_SRGB,
             SampledTextureFormat::Unorm => vk::VK_FORMAT_R8G8B8A8_UNORM,
             SampledTextureFormat::Float16 => vk::VK_FORMAT_R16G16B16A16_SFLOAT,
+            SampledTextureFormat::Bc7Srgb => vk::VK_FORMAT_BC7_SRGB_BLOCK,
+            SampledTextureFormat::Bc7Unorm => vk::VK_FORMAT_BC7_UNORM_BLOCK,
+            SampledTextureFormat::Bc5Unorm => vk::VK_FORMAT_BC5_UNORM_BLOCK,
         };
         sampled_texture::validate_format(&self.surface, native_format, width, height, mip_levels)?;
         let size = crate::graphics::checked_staging_size(levels.iter().map(|texels| texels.len()))?;

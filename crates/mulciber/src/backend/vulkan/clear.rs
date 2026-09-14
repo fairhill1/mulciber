@@ -1258,6 +1258,9 @@ struct Adapter {
     timestamp_valid_bits: u32,
     timestamp_period: f32,
     present_timing: Result<timing::PresentTimingSelection, &'static str>,
+    /// Whether the adapter samples BC-family block-compressed images. Optional: an adapter
+    /// without it is still selected and refuses only the compressed uploads themselves.
+    texture_compression_bc: bool,
 }
 
 struct DeviceFns {
@@ -1511,9 +1514,17 @@ impl Device {
             );
             extensions.push(vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_ptr().cast());
         }
+        // Core features ride on `pEnabledFeatures`, which the specification allows beside
+        // the versioned feature structs on `pNext` as long as no `VkPhysicalDeviceFeatures2`
+        // is chained. BC sampling is enabled only where the adapter reported it.
+        let core_features = vk::VkPhysicalDeviceFeatures {
+            textureCompressionBC: vk::VkBool32::from(adapter.texture_compression_bc),
+            ..Default::default()
+        };
         let info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
             pNext: (&raw mut features13).cast(),
+            pEnabledFeatures: &raw const core_features,
             queueCreateInfoCount: 1,
             pQueueCreateInfos: &raw const queue_info,
             enabledExtensionCount: u32::try_from(extensions.len())
@@ -1728,6 +1739,8 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         timestamp_valid_bits: family.timestampValidBits,
                         timestamp_period: properties.limits.timestampPeriod,
                         present_timing,
+                        texture_compression_bc: features.features.textureCompressionBC
+                            == vk::VK_TRUE,
                     },
                 ));
                 break;

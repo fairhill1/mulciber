@@ -251,3 +251,17 @@ Apple M2 / macOS 15.7.7 passed 40 numerical vertex/fragment filtering and explic
 under Metal API validation. Windows cross-target checks pass; native Windows/Linux Vulkan execution
 and wider GPU coverage remain pending. No viability gate is advanced. See the
 [float texture contract and migration handoff](float-texture-uploads.md).
+
+## Growable Vulkan descriptor pools (0.13.14)
+
+**Vulkan-only correctness fix:** every textured, instanced, material, shadow and postprocess
+pipeline caches one descriptor set per distinct sampled-identity tuple for as long as the textures
+behind it live, so the set count is a property of the scene rather than of the pipeline. Each
+pipeline previously owned one pool of 64 sets and the first scene to exceed it failed with
+`VK_ERROR_OUT_OF_POOL_MEMORY`; Isle of Ran hit this on entering the church interior, whose
+materials pushed one alpha-cutout shadow pipeline past 64 textures, while the same scene ran on
+Metal. `DescriptorPools` now answers `VK_ERROR_OUT_OF_POOL_MEMORY` and `VK_ERROR_FRAGMENTED_POOL`
+by opening another pool of the same recipe and retrying once; a reset destroys every pool
+together after the ordinary all-frames wait, and pipeline destruction does the same. Pools are
+opened lazily on first allocation. Workspace checks and tests pass; the growth path is exercised
+by the consuming game rather than by a probe, and no viability gate is advanced.

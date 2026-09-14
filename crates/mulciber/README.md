@@ -96,3 +96,10 @@ magnitudes above 65504 are rejected. Signed zero and half subnormals are preserv
 while GPU subnormal arithmetic can differ. Linear material samplers interpolate texels and mips.
 Metal numerical readback passed on Apple M2; native Vulkan numerical validation remains pending.
 See the [contract and migration notes](https://github.com/fairhill1/mulciber/blob/main/docs/float-texture-uploads.md).
+
+## Growable Vulkan descriptor pools (0.13.14)
+
+Vulkan descriptor sets cached per pipeline are allocated from as many pools as needed, so the
+number of distinct textures a scene binds through one pipeline is no longer capped at 64.
+A full pool is answered by opening another rather than by `VK_ERROR_OUT_OF_POOL_MEMORY`.
+No API change; Metal was never limited this way.

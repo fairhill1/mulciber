@@ -1,9 +1,11 @@
 mod bloom;
+mod descriptor_pools;
 mod mesh;
 mod sampled_texture;
 #[cfg(feature = "native-validation")]
 mod validation;
 
+use descriptor_pools::DescriptorPools;
 use mesh::MeshBufferArena;
 mod scene_depth;
 mod volumetric;
@@ -180,7 +182,7 @@ struct PipelineResource {
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
-    descriptor_pool: vk::VkDescriptorPool,
+    descriptor_pools: DescriptorPools,
     sampler: vk::VkSampler,
     /// Declared postprocess uniform size; zero for textured pipelines and no-uniform postprocess
     /// pipelines.
@@ -201,7 +203,7 @@ struct MaterialPipelineResource {
     /// Single-sample no-depth variant for the presentable overlay pass; null unless the
     /// pipeline declares [`DepthMode::Off`].
     overlay_pipeline: vk::VkPipeline,
-    descriptor_pool: vk::VkDescriptorPool,
+    descriptor_pools: DescriptorPools,
     /// One pipeline-owned sampler per declared slot as (binding, sampler).
     samplers: Vec<(u32, vk::VkSampler)>,
     /// Declared uniform slot as (binding, size).
@@ -250,7 +252,7 @@ struct ShadowPipelineResource {
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
-    descriptor_pool: vk::VkDescriptorPool,
+    descriptor_pools: DescriptorPools,
     /// Declared uniform slot as (binding, size).
     uniform: Option<(u32, u32)>,
     /// Declared read-only storage slot as (binding, size).
@@ -618,7 +620,7 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
         self.flush_deferred_abandon()?;
         let acquisition = self.surface.acquire_image(metrics)?;
-        self.reclaim_stale_targets()?;
+        self.reclaim_stale_targets();
         let info = self.surface.info();
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
@@ -901,7 +903,7 @@ impl<'window> TexturedSession<'window> {
     /// in-flight frame fence, and draws reject targets that do not match the acquired generation.
     /// A target older than the current generation therefore cannot be referenced by submitted GPU
     /// work, so its storage is reclaimed instead of growing until shutdown across live resizes.
-    fn reclaim_stale_targets(&mut self) -> Result<(), GraphicsError> {
+    fn reclaim_stale_targets(&mut self) {
         let current = self.surface.info().generation();
         let surface = &self.surface;
         for target in self.targets.iter_mut() {
@@ -935,34 +937,16 @@ impl<'window> TexturedSession<'window> {
             }
         }
         if reclaimed_postprocess_target {
-            self.reset_descriptor_pools(false)?;
-            let device = self.surface.device();
-            for pipeline in self.postprocess_pipelines.iter_mut() {
-                let replacement = create_postprocess_descriptor_pool(device)?;
-                unsafe {
-                    device
-                        .functions
-                        .destroy_descriptor_pool
-                        .expect("loaded function")(
-                        device.handle,
-                        pipeline.descriptor_pool,
-                        ptr::null(),
-                    );
-                }
-                pipeline.descriptor_pool = replacement;
-                pipeline.bindings.clear();
-                pipeline.bloom_sets.clear();
-                pipeline.volume_sets.clear();
-            }
+            self.reset_descriptor_pools(false);
+            self.reset_descriptor_pools(true);
         }
-        Ok(())
     }
 
     pub(crate) fn create_render_targets(
         &mut self,
         info: SurfaceInfo,
     ) -> Result<ResourceId, GraphicsError> {
-        self.reclaim_stale_targets()?;
+        self.reclaim_stale_targets();
         let mut properties = vk::VkFormatProperties::default();
         unsafe {
             self.surface
@@ -1032,7 +1016,7 @@ impl<'window> TexturedSession<'window> {
         scene_extent: crate::SurfaceExtent,
         hdr: bool,
     ) -> Result<ResourceId, GraphicsError> {
-        self.reclaim_stale_targets()?;
+        self.reclaim_stale_targets();
         if hdr {
             volumetric::validate_depth(
                 &self.surface,
@@ -1672,13 +1656,8 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
             &[],
         )?;
-        if let Err(failure) = self
-            .reset_descriptor_pools(false)
-            .and_then(|()| self.reset_descriptor_pools(true))
-        {
-            destroy_buffer(&self.surface, replacement);
-            return Err(failure);
-        }
+        self.reset_descriptor_pools(false);
+        self.reset_descriptor_pools(true);
         let previous = mem::replace(&mut self.storage, replacement);
         destroy_buffer(&self.surface, previous);
         self.storage_capacity = capacity;
@@ -1782,35 +1761,14 @@ impl<'window> TexturedSession<'window> {
         {
             return Ok(*set);
         }
-        let pipeline = &self.shadow_pipelines[pipeline_index];
-        let (set_layout, descriptor_pool, pipeline_uniform, pipeline_storage) = (
-            pipeline.set_layout,
-            pipeline.descriptor_pool,
-            pipeline.uniform,
-            pipeline.storage,
-        );
+        let pipeline = &mut self.shadow_pipelines[pipeline_index];
+        let (set_layout, pipeline_uniform, pipeline_storage) =
+            (pipeline.set_layout, pipeline.uniform, pipeline.storage);
         let texture_bindings = pipeline.texture_bindings.clone();
         let samplers = pipeline.samplers.clone();
-        let allocate = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const set_layout,
-            ..Default::default()
-        };
-        let mut set = ptr::null_mut();
-        check(
-            unsafe {
-                self.surface
-                    .device()
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(
-                    self.surface.device().handle,
-                    &raw const allocate,
-                    &raw mut set,
-                )
-            },
+        let set = pipeline.descriptor_pools.allocate(
+            self.surface.device(),
+            set_layout,
             "vkAllocateDescriptorSets for shadow record",
         )?;
         let uniform_buffer = pipeline_uniform.map(|(binding, size)| {
@@ -1995,13 +1953,8 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
-        if let Err(failure) = self
-            .reset_descriptor_pools(false)
-            .and_then(|()| self.reset_descriptor_pools(true))
-        {
-            destroy_buffer(&self.surface, replacement);
-            return Err(failure);
-        }
+        self.reset_descriptor_pools(false);
+        self.reset_descriptor_pools(true);
         let previous = mem::replace(&mut self.uniform, replacement);
         destroy_buffer(&self.surface, previous);
         self.uniform_capacity = capacity;
@@ -2069,10 +2022,10 @@ impl<'window> TexturedSession<'window> {
                 && self.postprocess_targets.get(request.id).is_ok()
         });
         if reset_scene_descriptors {
-            self.reset_descriptor_pools(false)?;
+            self.reset_descriptor_pools(false);
         }
         if reset_postprocess_descriptors || reset_scene_descriptors {
-            self.reset_descriptor_pools(true)?;
+            self.reset_descriptor_pools(true);
         }
         for &request in requests {
             self.destroy_resource_if_live(request);
@@ -2087,19 +2040,19 @@ impl<'window> TexturedSession<'window> {
         self.surface.wait_for_all_frames()?;
         if request.kind == ResourceKind::Texture {
             self.textures.get(request.id)?;
-            self.reset_descriptor_pools(false)?;
+            self.reset_descriptor_pools(false);
         } else if request.kind == ResourceKind::ShadowMap {
             self.shadow_maps.get(request.id)?;
-            self.reset_descriptor_pools(false)?;
-            self.reset_descriptor_pools(true)?;
+            self.reset_descriptor_pools(false);
+            self.reset_descriptor_pools(true);
         } else if request.kind == ResourceKind::ShadowMapArray {
             self.shadow_map_arrays.get(request.id)?;
-            self.reset_descriptor_pools(false)?;
-            self.reset_descriptor_pools(true)?;
+            self.reset_descriptor_pools(false);
+            self.reset_descriptor_pools(true);
         } else if request.kind == ResourceKind::PostprocessTargets {
             self.postprocess_targets.get(request.id)?;
-            self.reset_descriptor_pools(false)?;
-            self.reset_descriptor_pools(true)?;
+            self.reset_descriptor_pools(false);
+            self.reset_descriptor_pools(true);
         }
         let device = self.surface.device();
         match request.kind {
@@ -2196,80 +2149,35 @@ impl<'window> TexturedSession<'window> {
         };
     }
 
-    fn reset_descriptor_pools(&mut self, postprocess: bool) -> Result<(), GraphicsError> {
+    fn reset_descriptor_pools(&mut self, postprocess: bool) {
         let device = self.surface.device();
         if postprocess {
             for pipeline in self.postprocess_pipelines.iter_mut() {
-                let replacement = create_postprocess_descriptor_pool(device)?;
-                unsafe {
-                    device
-                        .functions
-                        .destroy_descriptor_pool
-                        .expect("loaded function")(
-                        device.handle,
-                        pipeline.descriptor_pool,
-                        ptr::null(),
-                    );
-                }
-                pipeline.descriptor_pool = replacement;
+                pipeline.descriptor_pools.reset(device);
                 pipeline.bindings.clear();
                 pipeline.bloom_sets.clear();
                 pipeline.volume_sets.clear();
             }
-            return Ok(());
+            return;
         }
         for pipeline in self
             .pipelines
             .iter_mut()
             .chain(self.instanced_pipelines.iter_mut())
         {
-            let replacement = create_descriptor_pool(device)?;
-            unsafe {
-                device
-                    .functions
-                    .destroy_descriptor_pool
-                    .expect("loaded function")(
-                    device.handle,
-                    pipeline.descriptor_pool,
-                    ptr::null(),
-                );
-            }
-            pipeline.descriptor_pool = replacement;
+            pipeline.descriptor_pools.reset(device);
             pipeline.bindings.clear();
             pipeline.bloom_sets.clear();
             pipeline.volume_sets.clear();
         }
         for pipeline in self.material_pipelines.iter_mut() {
-            let replacement = create_material_descriptor_pool(device)?;
-            unsafe {
-                device
-                    .functions
-                    .destroy_descriptor_pool
-                    .expect("loaded function")(
-                    device.handle,
-                    pipeline.descriptor_pool,
-                    ptr::null(),
-                );
-            }
-            pipeline.descriptor_pool = replacement;
+            pipeline.descriptor_pools.reset(device);
             pipeline.bindings.clear();
         }
         for pipeline in self.shadow_pipelines.iter_mut() {
-            let replacement = create_material_descriptor_pool(device)?;
-            unsafe {
-                device
-                    .functions
-                    .destroy_descriptor_pool
-                    .expect("loaded function")(
-                    device.handle,
-                    pipeline.descriptor_pool,
-                    ptr::null(),
-                );
-            }
-            pipeline.descriptor_pool = replacement;
+            pipeline.descriptor_pools.reset(device);
             pipeline.bindings.clear();
         }
-        Ok(())
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), GraphicsError> {
@@ -2474,26 +2382,9 @@ impl<'window> TexturedSession<'window> {
             return Ok(*set);
         }
         let pipeline = &mut pipelines[pipeline_index];
-        let allocate = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: pipeline.descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const pipeline.set_layout,
-            ..Default::default()
-        };
-        let mut set = ptr::null_mut();
-        check(
-            unsafe {
-                self.surface
-                    .device()
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(
-                    self.surface.device().handle,
-                    &raw const allocate,
-                    &raw mut set,
-                )
-            },
+        let set = pipeline.descriptor_pools.allocate(
+            self.surface.device(),
+            pipeline.set_layout,
             "vkAllocateDescriptorSets for texture",
         )?;
         let buffer = vk::VkDescriptorBufferInfo {
@@ -2563,8 +2454,8 @@ impl<'window> TexturedSession<'window> {
         {
             return Ok(*set);
         }
-        let pipeline = &self.material_pipelines[pipeline_index];
-        let (set_layout, descriptor_pool) = (pipeline.set_layout, pipeline.descriptor_pool);
+        let pipeline = &mut self.material_pipelines[pipeline_index];
+        let set_layout = pipeline.set_layout;
         let pipeline_uniform = pipeline.uniform;
         let pipeline_storage = pipeline.storage;
         let texture_bindings = pipeline.texture_bindings.clone();
@@ -2573,26 +2464,9 @@ impl<'window> TexturedSession<'window> {
         let depth_texture_binding = pipeline.depth_texture_binding;
         let depth_texture_array_binding = pipeline.depth_texture_array_binding;
         let comparison_sampler = pipeline.comparison_sampler;
-        let allocate = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const set_layout,
-            ..Default::default()
-        };
-        let mut set = ptr::null_mut();
-        check(
-            unsafe {
-                self.surface
-                    .device()
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(
-                    self.surface.device().handle,
-                    &raw const allocate,
-                    &raw mut set,
-                )
-            },
+        let set = pipeline.descriptor_pools.allocate(
+            self.surface.device(),
+            set_layout,
             "vkAllocateDescriptorSets for material record",
         )?;
         let buffer = vk::VkDescriptorBufferInfo {
@@ -2749,26 +2623,9 @@ impl<'window> TexturedSession<'window> {
             .scene_color
             .ok_or_else(|| error("postprocess targets were reclaimed by a newer generation"))?;
         let pipeline = &mut self.postprocess_pipelines[pipeline_index];
-        let allocate = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: pipeline.descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const pipeline.set_layout,
-            ..Default::default()
-        };
-        let mut set = ptr::null_mut();
-        check(
-            unsafe {
-                self.surface
-                    .device()
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(
-                    self.surface.device().handle,
-                    &raw const allocate,
-                    &raw mut set,
-                )
-            },
+        let set = pipeline.descriptor_pools.allocate(
+            self.surface.device(),
+            pipeline.set_layout,
             "vkAllocateDescriptorSets for postprocess target",
         )?;
         let buffer = vk::VkDescriptorBufferInfo {
@@ -4398,7 +4255,7 @@ fn destroy_texture_device(device: &super::Device, texture: TextureResource) {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
+fn destroy_pipeline_device(device: &super::Device, mut pipeline: PipelineResource) {
     for child in pipeline.bloom.into_iter().chain(pipeline.volume) {
         destroy_pipeline_device(device, child);
     }
@@ -4412,10 +4269,7 @@ fn destroy_pipeline_device(device: &super::Device, pipeline: PipelineResource) {
             .functions
             .destroy_pipeline_layout
             .expect("loaded function")(device.handle, pipeline.layout, ptr::null());
-        device
-            .functions
-            .destroy_descriptor_pool
-            .expect("loaded function")(device.handle, pipeline.descriptor_pool, ptr::null());
+        pipeline.descriptor_pools.reset(device);
         device
             .functions
             .destroy_descriptor_set_layout
@@ -4464,7 +4318,7 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
             set_layout: pipeline.set_layout,
             layout: pipeline.layout,
             pipeline: pipeline.pipeline,
-            descriptor_pool: pipeline.descriptor_pool,
+            descriptor_pools: pipeline.descriptor_pools,
             sampler: ptr::null_mut(),
             uniform_size: 0,
             bindings: Vec::new(),
@@ -4527,7 +4381,7 @@ fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipeli
             set_layout: pipeline.set_layout,
             layout: pipeline.layout,
             pipeline: pipeline.pipeline,
-            descriptor_pool: pipeline.descriptor_pool,
+            descriptor_pools: pipeline.descriptor_pools,
             sampler: ptr::null_mut(),
             uniform_size: 0,
             bindings: Vec::new(),
@@ -5691,7 +5545,7 @@ fn create_pipeline(
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
-        descriptor_pool: ptr::null_mut(),
+        descriptor_pools: DescriptorPools::new(create_descriptor_pool),
         sampler: ptr::null_mut(),
         uniform_size: 0,
         bindings: Vec::new(),
@@ -5898,7 +5752,6 @@ fn create_pipeline(
             .expect("loaded function")(device.handle, module, ptr::null());
     };
     result?;
-    resource.descriptor_pool = create_descriptor_pool(device)?;
     Ok(resource)
 }
 
@@ -6029,7 +5882,7 @@ fn create_material_pipeline(
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
         overlay_pipeline: ptr::null_mut(),
-        descriptor_pool: ptr::null_mut(),
+        descriptor_pools: DescriptorPools::new(create_material_descriptor_pool),
         samplers: Vec::with_capacity(config.sampler_bindings.len()),
         uniform: config.uniform,
         storage: config.storage,
@@ -6370,7 +6223,6 @@ fn create_material_pipeline(
         )?;
         resource.comparison_sampler = Some((binding, sampler));
     }
-    resource.descriptor_pool = create_material_descriptor_pool(device)?;
     Ok(resource)
 }
 
@@ -6428,7 +6280,7 @@ fn create_shadow_pipeline(
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
-        descriptor_pool: ptr::null_mut(),
+        descriptor_pools: DescriptorPools::new(create_material_descriptor_pool),
         uniform: config.uniform,
         storage: config.storage,
         texture_bindings: config.texture_bindings.to_vec(),
@@ -6674,7 +6526,6 @@ fn create_shadow_pipeline(
         )?;
         resource.samplers.push((slot.binding, sampler));
     }
-    resource.descriptor_pool = create_material_descriptor_pool(device)?;
     Ok(resource)
 }
 
@@ -6797,7 +6648,7 @@ fn create_postprocess_pipeline_base(
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
-        descriptor_pool: ptr::null_mut(),
+        descriptor_pools: DescriptorPools::new(create_postprocess_descriptor_pool),
         sampler: ptr::null_mut(),
         uniform_size: config.uniform_size,
         bindings: Vec::new(),
@@ -6993,9 +6844,6 @@ fn create_postprocess_pipeline_base(
             },
             "vkCreateSampler for postprocess pipeline",
         )?;
-        if !config.hdr_output {
-            resource.descriptor_pool = create_postprocess_descriptor_pool(device)?;
-        }
         Ok(())
     })();
     if let Err(failure) = result {

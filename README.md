@@ -248,3 +248,11 @@ Native RGBA16Float uploads accept linear f32 RGBA texels, with optional complete
 Existing material bindings support linear filtering and explicit LOD sampling in vertex and fragment
 stages. The 40-case numerical readback probe passed on Metal/Apple M2; native Vulkan execution remains
 pending. See the [input contract, validation, and consumer migration](docs/float-texture-uploads.md).
+
+## Growable Vulkan descriptor pools (0.13.14)
+
+A Vulkan pipeline's cached descriptor sets are allocated from as many pools as the scene turns
+out to need. Previously each pipeline owned one 64-set pool, so a scene whose distinct sampled
+textures through one pipeline outgrew it failed with `VK_ERROR_OUT_OF_POOL_MEMORY` while Metal,
+which has no such pool, ran on. Growth is transparent; reset and destruction release every pool.
+See the [backend contract note](docs/backend-contracts.md#growable-vulkan-descriptor-pools-01314).

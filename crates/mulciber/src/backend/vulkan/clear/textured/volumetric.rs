@@ -92,23 +92,10 @@ pub(super) fn prepare_descriptors(
     let device = surface.device();
     let mut sets = [ptr::null_mut(); 2];
     for (index, set) in sets.iter_mut().enumerate() {
-        let stage = &pipeline.volume[index];
-        let info = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: pipeline.descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const stage.set_layout,
-            ..Default::default()
-        };
-        check(
-            unsafe {
-                device
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(device.handle, &raw const info, set)
-            },
-            "volumetric descriptors",
-        )?;
+        let set_layout = pipeline.volume[index].set_layout;
+        *set = pipeline
+            .descriptor_pools
+            .allocate(device, set_layout, "volumetric descriptors")?;
         let buffer = vk::VkDescriptorBufferInfo {
             buffer: uniform.handle,
             offset: base as u64,

@@ -110,30 +110,20 @@ pub(super) fn descriptor_pool(
 
 pub(super) fn descriptor_sets(
     surface: &ClearSurface<'_>,
-    pipeline: &PipelineResource,
+    pipeline: &mut PipelineResource,
     scene: Image,
     levels: &[Image],
 ) -> Result<[vk::VkDescriptorSet; 6], GraphicsError> {
     let device = surface.device();
     let mut sets = [ptr::null_mut(); 6];
     for (level, set) in sets.iter_mut().enumerate() {
-        let filter = &pipeline.bloom[usize::from(level != 0)];
-        let allocate = vk::VkDescriptorSetAllocateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool: pipeline.descriptor_pool,
-            descriptorSetCount: 1,
-            pSetLayouts: &raw const filter.set_layout,
-            ..Default::default()
+        let (set_layout, sampler) = {
+            let filter = &pipeline.bloom[usize::from(level != 0)];
+            (filter.set_layout, filter.sampler)
         };
-        check(
-            unsafe {
-                device
-                    .functions
-                    .allocate_descriptor_sets
-                    .expect("loaded function")(
-                    device.handle, &raw const allocate, set
-                )
-            },
+        *set = pipeline.descriptor_pools.allocate(
+            device,
+            set_layout,
             "vkAllocateDescriptorSets for bloom level",
         )?;
         let input = if level == 0 { scene } else { levels[level - 1] };
@@ -143,7 +133,7 @@ pub(super) fn descriptor_sets(
             ..Default::default()
         };
         let sampler = vk::VkDescriptorImageInfo {
-            sampler: filter.sampler,
+            sampler,
             ..Default::default()
         };
         let writes = [

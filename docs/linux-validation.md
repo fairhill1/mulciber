@@ -1023,3 +1023,11 @@ validation layer; all 40 cases must pass without warning/error callbacks. This c
 fragment samples, half quantization, small coefficients, spatial filtering and explicit mip LODs.
 Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
 visual or broader hardware evidence. See the [contract](float-texture-uploads.md).
+
+## Growable Vulkan descriptor pools (0.13.14)
+
+Workspace format/check/Clippy/tests pass on this platform. The growth path was reached by
+Isle of Ran entering the church interior on Linux/Vulkan, which previously failed with
+`VK_ERROR_OUT_OF_POOL_MEMORY` on the shadow pipeline's single pool; confirm the same route
+under the ordinary required validation layer after upgrading. No probe exhausts a pool on its
+own, and this is not physical lifecycle, multi-display or visual evidence.

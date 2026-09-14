@@ -2,6 +2,18 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Optional Vulkan validation (0.13.16)
+
+Published consumers no longer unconditionally require `VK_LAYER_KHRONOS_validation` or
+`VK_EXT_debug_utils`. Default builds request no validation layer, install no debug messenger,
+and do not resolve its extension functions. This fixes release startup on machines without
+the Vulkan SDK. The opt-in `vulkan-validation` feature preserves strict layer requirements
+and failure on warning/error callbacks. Repository examples and probes opt in explicitly;
+`native-validation` enables it too. Metal behavior is unchanged.
+
+Windowless native instance tests cover SDK-free creation/destruction, explicit validation
+with a messenger, and rejection when requested validation is unavailable.
+
 ## Block-compressed sampled uploads (0.13.15)
 
 `Device::create_block_compressed_texture` and its `_with_mips` peer upload already encoded BC7

@@ -12,6 +12,9 @@ by the native probes.
 - Win32 owns windows, input, display enumeration, and the event loop.
 - Direct3D is not an initial backend.
 
+Vulkan validation layers are development tools, not a Windows or Linux player prerequisite.
+The published graphics crate requests them only with its `vulkan-validation` Cargo feature.
+
 ## Linux
 
 - Linux on x86-64.

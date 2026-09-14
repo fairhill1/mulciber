@@ -29,6 +29,11 @@ Vulkan 1.4 is requested when exposed by the loader; Metal 4 paths are SDK- and c
 Advanced GPU features are tracked as independent capabilities. See the
 [support contract](docs/support-contract.md) for platform requirements.
 
+Published `mulciber` builds do not require Vulkan SDK validation layers. Enable the
+`vulkan-validation` Cargo feature during development to require Khronos validation and its
+debug messenger. Repository examples and probes explicitly enable it; leave it off when
+shipping a game. This feature is independent of debug/release optimization.
+
 ## Examples
 
 Run an example from this repository. Each uses one safe application source and selects native

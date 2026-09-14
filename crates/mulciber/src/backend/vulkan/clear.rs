@@ -1063,6 +1063,7 @@ impl InstanceFns {
         entry: &Entry,
         instance: vk::VkInstance,
         surface_capabilities2: bool,
+        validation: bool,
     ) -> Result<Self, GraphicsError> {
         macro_rules! load {
             ($name:literal) => {
@@ -1071,8 +1072,16 @@ impl InstanceFns {
         }
         Ok(Self {
             destroy_instance: load!(c"vkDestroyInstance"),
-            create_debug_utils_messenger: load!(c"vkCreateDebugUtilsMessengerEXT"),
-            destroy_debug_utils_messenger: load!(c"vkDestroyDebugUtilsMessengerEXT"),
+            create_debug_utils_messenger: if validation {
+                load!(c"vkCreateDebugUtilsMessengerEXT")
+            } else {
+                None
+            },
+            destroy_debug_utils_messenger: if validation {
+                load!(c"vkDestroyDebugUtilsMessengerEXT")
+            } else {
+                None
+            },
             destroy_surface: load!(c"vkDestroySurfaceKHR"),
             enumerate_physical_devices: load!(c"vkEnumeratePhysicalDevices"),
             get_physical_device_properties: load!(c"vkGetPhysicalDeviceProperties"),
@@ -1109,99 +1118,11 @@ struct Instance {
 }
 
 impl Instance {
-    #[allow(clippy::too_many_lines)]
     fn new(entry: Entry, target: &SurfaceTarget<'_>) -> Result<Self, GraphicsError> {
-        require_name(
-            &enumerate_instance_layers(&entry)?,
-            c"VK_LAYER_KHRONOS_validation",
-            "Vulkan validation layer",
-        )?;
-        let available = enumerate_instance_extensions(&entry)?;
-        let required = [
-            c"VK_KHR_surface",
-            platform::surface_extension(target),
-            c"VK_EXT_debug_utils",
-        ];
-        for name in required {
-            require_name(&available, name, "instance extension")?;
-        }
-        // Surface-capability queries with a pNext chain feed native present-timing selection;
-        // its absence is a recorded fallback reason rather than a hard requirement.
-        let surface_capabilities2 = available.iter().any(|candidate| {
-            candidate
-                == vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
-                    .strip_suffix(&[0])
-                    .expect("NUL suffix")
-        });
-        let application = vk::VkApplicationInfo {
-            sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
-            pApplicationName: c"Mulciber clear slice".as_ptr(),
-            applicationVersion: 0,
-            pEngineName: c"Mulciber".as_ptr(),
-            engineVersion: 0,
-            apiVersion: entry.api_version,
-            ..Default::default()
-        };
-        let layers = [c"VK_LAYER_KHRONOS_validation".as_ptr()];
-        let mut extensions: Vec<*const c_char> =
-            required.iter().map(|name| name.as_ptr()).collect();
-        if surface_capabilities2 {
-            extensions.push(
-                vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
-                    .as_ptr()
-                    .cast(),
-            );
-        }
-        let debug_info = debug_messenger_info();
-        let create_info = vk::VkInstanceCreateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            pNext: (&raw const debug_info).cast(),
-            pApplicationInfo: &raw const application,
-            enabledLayerCount: 1,
-            ppEnabledLayerNames: layers.as_ptr(),
-            enabledExtensionCount: u32::try_from(extensions.len())
-                .expect("instance extension count fits u32"),
-            ppEnabledExtensionNames: extensions.as_ptr(),
-            ..Default::default()
-        };
-        let mut handle = ptr::null_mut();
-        check(
-            unsafe {
-                // SAFETY: Create-info pointers remain live for the call.
-                entry.create_instance.expect("loaded function")(
-                    &raw const create_info,
-                    ptr::null(),
-                    &raw mut handle,
-                )
-            },
-            "vkCreateInstance",
-        )?;
-        let functions = unsafe {
-            // SAFETY: Instance is live and each loaded type matches its symbol.
-            InstanceFns::load(&entry, handle, surface_capabilities2)
-        }?;
-        let mut instance = Self {
+        let mut instance = Self::create(
             entry,
-            functions,
-            handle,
-            debug_messenger: ptr::null_mut(),
-            surface: ptr::null_mut(),
-            surface_capabilities2,
-        };
-        check(
-            unsafe {
-                // SAFETY: Callback and create info are valid.
-                instance
-                    .functions
-                    .create_debug_utils_messenger
-                    .expect("loaded function")(
-                    instance.handle,
-                    &raw const debug_info,
-                    ptr::null(),
-                    &raw mut instance.debug_messenger,
-                )
-            },
-            "vkCreateDebugUtilsMessengerEXT",
+            platform::surface_extension(target),
+            cfg!(feature = "vulkan-validation"),
         )?;
         let create_surface = unsafe {
             // SAFETY: Symbol name and platform ABI are paired by the adapter.
@@ -1224,6 +1145,143 @@ impl Instance {
                 .as_ref(),
         )?;
         Ok(instance)
+    }
+
+    /// Create the instance separately from its window surface so SDK-free startup
+    /// can be exercised against a real loader without opening a window.
+    #[allow(clippy::too_many_lines)]
+    fn create(
+        entry: Entry,
+        surface_extension: &CStr,
+        validation: bool,
+    ) -> Result<Self, GraphicsError> {
+        let requirements = InstanceRequirements::new(surface_extension, validation);
+        // Do not query or request SDK layers in ordinary application builds.
+        if validation {
+            let available = enumerate_instance_layers(&entry)?;
+            for name in &requirements.layers {
+                require_name(&available, name, "Vulkan validation layer")?;
+            }
+        }
+        let available = enumerate_instance_extensions(&entry)?;
+        for name in &requirements.extensions {
+            require_name(&available, name, "instance extension")?;
+        }
+        // Surface-capability queries with a pNext chain feed native present-timing selection;
+        // its absence is a recorded fallback reason rather than a hard requirement.
+        let surface_capabilities2 = available.iter().any(|candidate| {
+            candidate
+                == vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .strip_suffix(&[0])
+                    .expect("NUL suffix")
+        });
+        let application = vk::VkApplicationInfo {
+            sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            pApplicationName: c"Mulciber clear slice".as_ptr(),
+            applicationVersion: 0,
+            pEngineName: c"Mulciber".as_ptr(),
+            engineVersion: 0,
+            apiVersion: entry.api_version,
+            ..Default::default()
+        };
+        let layers: Vec<_> = requirements
+            .layers
+            .iter()
+            .map(|name| name.as_ptr())
+            .collect();
+        let mut extensions: Vec<*const c_char> = requirements
+            .extensions
+            .iter()
+            .map(|name| name.as_ptr())
+            .collect();
+        if surface_capabilities2 {
+            extensions.push(
+                vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+        }
+        let debug_info = debug_messenger_info();
+        let create_info = vk::VkInstanceCreateInfo {
+            sType: vk::VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            pNext: if validation {
+                (&raw const debug_info).cast()
+            } else {
+                ptr::null()
+            },
+            pApplicationInfo: &raw const application,
+            enabledLayerCount: u32::try_from(layers.len()).expect("layer count fits u32"),
+            ppEnabledLayerNames: if layers.is_empty() {
+                ptr::null()
+            } else {
+                layers.as_ptr()
+            },
+            enabledExtensionCount: u32::try_from(extensions.len())
+                .expect("instance extension count fits u32"),
+            ppEnabledExtensionNames: extensions.as_ptr(),
+            ..Default::default()
+        };
+        let mut handle = ptr::null_mut();
+        check(
+            unsafe {
+                // SAFETY: Create-info pointers remain live for the call.
+                entry.create_instance.expect("loaded function")(
+                    &raw const create_info,
+                    ptr::null(),
+                    &raw mut handle,
+                )
+            },
+            "vkCreateInstance",
+        )?;
+        let functions = unsafe {
+            // SAFETY: Instance is live and each loaded type matches its symbol.
+            InstanceFns::load(&entry, handle, surface_capabilities2, validation)
+        }?;
+        let mut instance = Self {
+            entry,
+            functions,
+            handle,
+            debug_messenger: ptr::null_mut(),
+            surface: ptr::null_mut(),
+            surface_capabilities2,
+        };
+        if validation {
+            check(
+                unsafe {
+                    // SAFETY: Callback and create info are valid.
+                    instance
+                        .functions
+                        .create_debug_utils_messenger
+                        .expect("loaded function")(
+                        instance.handle,
+                        &raw const debug_info,
+                        ptr::null(),
+                        &raw mut instance.debug_messenger,
+                    )
+                },
+                "vkCreateDebugUtilsMessengerEXT",
+            )?;
+        }
+        Ok(instance)
+    }
+}
+
+struct InstanceRequirements<'a> {
+    layers: Vec<&'a CStr>,
+    extensions: Vec<&'a CStr>,
+}
+
+impl<'a> InstanceRequirements<'a> {
+    fn new(surface_extension: &'a CStr, validation: bool) -> Self {
+        let mut requirements = Self {
+            layers: Vec::new(),
+            extensions: vec![c"VK_KHR_surface", surface_extension],
+        };
+        if validation {
+            requirements.layers.push(c"VK_LAYER_KHRONOS_validation");
+            requirements.extensions.push(c"VK_EXT_debug_utils");
+        }
+        requirements
     }
 }
 
@@ -2180,6 +2238,10 @@ fn debug_messenger_info() -> vk::VkDebugUtilsMessengerCreateInfoEXT {
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+#[path = "clear/instance_tests.rs"]
+mod instance_tests;
 
 #[cfg(test)]
 mod tests {

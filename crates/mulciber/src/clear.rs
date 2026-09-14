@@ -157,7 +157,7 @@ impl<'window> ClearSurface<'window> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the initial metrics are empty, native validation is unavailable, no
+    /// Returns an error when the initial metrics are empty, explicitly enabled validation is unavailable, no
     /// compatible device can present to the target, or presentation setup fails.
     pub fn new(
         target: SurfaceTarget<'window>,

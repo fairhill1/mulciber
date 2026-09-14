@@ -1,5 +1,30 @@
 # Win32/Vulkan validation runbook
 
+## SDK-free consumer startup (0.13.16)
+
+The public crate's default build no longer requests Khronos validation or debug-utils.
+Repository examples and probes explicitly enable `vulkan-validation`; their existing checks
+still require the SDK and treat callback warnings/errors as failures. The `native-validation`
+readback feature includes this opt-in. Build profile alone does not enable validation.
+
+Run the targeted instance-only preflight without opening any window:
+
+```powershell
+.\scripts\validate-windows.ps1 -SkipInteractive -InstanceOnly
+```
+
+It builds the release library without optional features and tests native instance creation and
+destruction with layer queries disabled, explicit validation with a debug messenger, and a
+simulated unavailable validation layer. This requires the host's Vulkan loader; the validation-on
+case also requires the SDK layer. It is not rendering, frame submission, or physical lifecycle
+evidence. The complete preflight and interactive matrix remain separate.
+
+On 2026-09-14 all three instance-only cases passed on Windows in a release build with
+no default features. The local log is
+`validation-artifacts/windows-vulkan-20260914-183405/native-instances.log`.
+Workspace formatting, all-target checks, warning-denied Clippy, and workspace tests also
+passed. No windowed rendering or interactive lifecycle checks were run for this change.
+
 The Win32 probe was initially compiled and cross-checked from macOS. This runbook captures the
 physical Windows evidence required for each supported hardware and driver tier.
 

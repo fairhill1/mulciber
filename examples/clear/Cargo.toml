@@ -8,7 +8,7 @@ version.workspace = true
 publish = false
 
 [dependencies]
-mulciber = { path = "../../crates/mulciber" }
+mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
 mulciber-platform = { path = "../../crates/mulciber-platform" }
 
 [lints]

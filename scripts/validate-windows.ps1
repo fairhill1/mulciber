@@ -5,7 +5,9 @@ param(
 
     [string]$OutputRoot = "validation-artifacts",
 
-    [switch]$SkipInteractive
+    [switch]$SkipInteractive,
+
+    [switch]$InstanceOnly
 )
 
 Set-StrictMode -Version Latest
@@ -240,6 +242,22 @@ function Write-SystemReport {
         Format-List |
         Out-String |
         Add-Content -Path $ReportPath -Encoding UTF8
+}
+
+if ($InstanceOnly) {
+    $PreviousObsCapture = $env:DISABLE_VULKAN_OBS_CAPTURE
+    try {
+        $env:DISABLE_VULKAN_OBS_CAPTURE = "1"
+        Invoke-NativeLogged "cargo" @(
+            "test", "-p", "mulciber", "--release", "--no-default-features",
+            "native_instance_", "--", "--ignored", "--nocapture", "--test-threads=1"
+        ) "native-instances.log"
+    }
+    finally {
+        $env:DISABLE_VULKAN_OBS_CAPTURE = $PreviousObsCapture
+    }
+    Write-Host "Windowless Vulkan instance validation passed. Logs: $ArtifactDirectory"
+    return
 }
 
 $Failure = $null

@@ -1,5 +1,12 @@
 # Implementation roadmap
 
+## Release startup correction (0.13.16)
+
+Vulkan SDK layers are no longer a requirement for published consumers. The opt-in
+`vulkan-validation` feature preserves strict diagnostics for repository examples and probes.
+Targeted native instance creation/destruction tests need no window; this fix does not advance
+any rendering, lifecycle, or hardware viability gate.
+
 Each milestone is a runnable vertical slice. Public abstraction work follows backend evidence rather
 than preceding it. Once the extraction-entry evidence is established, an unstable public slice may be
 built to test its design and value; stable support claims still require the applicable viability gates.

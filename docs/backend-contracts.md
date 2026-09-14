@@ -1,5 +1,16 @@
 # Cross-backend contract ledger
 
+## Optional Vulkan validation (0.13.16)
+
+The public Vulkan backend defaults to no validation layer or debug-utils extension, in either
+build profile. Explicit `vulkan-validation` builds require both and retain strict warning/error
+handling. Instance creation, extension-function loading, messenger construction, and destruction
+all follow that same choice. Native window and rendering requirements are unchanged. Repository
+examples/probes opt in so their existing validation runs cannot silently lose diagnostics.
+
+Windowless instance tests exercise both modes and a simulated absent layer. They do not establish
+rendering, presentation, lifecycle, or additional hardware coverage; see the Windows runbook.
+
 This ledger records the game-facing requirements demonstrated by Mulciber's native probes before
 those requirements become public API. It is evidence for later design work, not a proposed API and
 not a promise that Metal and Vulkan should expose identical operations.

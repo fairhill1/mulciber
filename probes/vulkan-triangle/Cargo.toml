@@ -15,5 +15,5 @@ naga = { version = "30.0.0", features = ["wgsl-in", "spv-out"] }
 workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
-mulciber = { path = "../../crates/mulciber" }
+mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
 mulciber-platform = { path = "../../crates/mulciber-platform" }

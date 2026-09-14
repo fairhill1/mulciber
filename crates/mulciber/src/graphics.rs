@@ -127,7 +127,7 @@ impl<'window> OpenedGraphics<'window> {
     ///
     /// # Errors
     ///
-    /// Returns an error when validation is unavailable, no surface-compatible device exists, or
+    /// Returns an error when explicitly enabled validation is unavailable, no surface-compatible device exists, or
     /// native device and presentation setup fails.
     pub fn open(
         target: SurfaceTarget<'window>,

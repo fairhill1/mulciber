@@ -46,6 +46,17 @@ The API is experimental and may change without compatibility guarantees. Design 
 decision records, runnable examples, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).
 
+## Vulkan validation
+
+Validation is off by default, including in debug builds. Ordinary applications need a Vulkan
+driver, not the Vulkan SDK. Enable `features = ["vulkan-validation"]` on the `mulciber`
+dependency for development: this requires `VK_LAYER_KHRONOS_validation` and `VK_EXT_debug_utils`
+and preserves failure on every validation warning/error. A missing requested layer is an error,
+not a silent fallback. The repository-only `native-validation` feature also enables it.
+
+Cargo features are additive: do not enable this feature anywhere in a shipped application's
+dependency graph. Repository examples and probes deliberately enable it for their validation runs.
+
 ## Depth-isolated first-person geometry
 
 `SceneContent::MaterialWithForeground { records, foreground_start }` draws the world

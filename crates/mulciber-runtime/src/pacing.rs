@@ -166,6 +166,7 @@ pub struct FramePacer {
     last_schedule_at: Option<Instant>,
     /// Sum of scheduled deltas minus elapsed time since creation or resume.
     pacing_drift_nanos: i128,
+    enabled: bool,
 }
 
 impl Default for FramePacer {
@@ -183,6 +184,17 @@ impl FramePacer {
             last_presented: None,
             last_schedule_at: None,
             pacing_drift_nanos: 0,
+            enabled: true,
+        }
+    }
+
+    /// Enables display-cadence delta smoothing. Disable for immediate presentation so a
+    /// compositor's refresh-quantized feedback cannot distort an uncapped or explicit-cap clock.
+    /// Presentation diagnostics continue recording in either mode.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.pacing_drift_nanos = 0;
         }
     }
 
@@ -240,7 +252,7 @@ impl FramePacer {
     /// Quantizes `elapsed` to whole display intervals, or `None` when cadence or fresh feedback
     /// is missing or quantization would exceed the cumulative smoothing limit.
     fn display_intervals(&self, now: Instant, elapsed: Duration) -> Option<Duration> {
-        if elapsed.is_zero() {
+        if !self.enabled || elapsed.is_zero() {
             return None;
         }
         let cadence = self.diagnostics.estimated_cadence()?;
@@ -389,6 +401,19 @@ mod tests {
             at += STEP;
         }
         (diagnostics, at)
+    }
+
+    #[test]
+    fn immediate_presentation_uses_elapsed_time_despite_vsync_feedback() {
+        let (mut pacer, last) = pacer_after_steady_presents(30);
+        pacer.set_enabled(false);
+        pacer.resume(last);
+        let at = last + Duration::from_millis(20);
+        let frame = pacer.schedule(at);
+        assert!(!frame.paced());
+        assert_eq!(frame.frame_delta(), Duration::from_millis(20));
+        pacer.set_enabled(true);
+        assert!(pacer.schedule(at + STEP).paced());
     }
 
     #[test]

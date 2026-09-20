@@ -3529,7 +3529,32 @@ impl<'window> Cases<'window> {
         }
     }
 
+    fn exercise_presentation_policy(&mut self) -> Result<(), Box<dyn Error>> {
+        if matches!(self.step, 53 | 93 | 133) {
+            let sync = self.step == 93;
+            match self
+                .graphics
+                .as_mut()
+                .expect("session B is open")
+                .surface
+                .set_vsync(sync)
+            {
+                Ok(()) => self.pass(if sync {
+                    "live VSync on"
+                } else {
+                    "live VSync off"
+                }),
+                Err(error) if error.kind() == GraphicsErrorKind::Unsupported && !sync => {
+                    println!("immediate presentation unavailable on this surface: {error}");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
     fn exercise_frame_ring(&mut self, metrics: WindowMetrics) -> Result<bool, Box<dyn Error>> {
+        self.exercise_presentation_policy()?;
         if self.step == 53 {
             self.graphics
                 .as_mut()
@@ -3540,6 +3565,19 @@ impl<'window> Cases<'window> {
         let Some(frame) = self.acquire(metrics)? else {
             return Ok(false);
         };
+        if self.step == 53 {
+            expect_error(
+                self.graphics
+                    .as_mut()
+                    .expect("session B is open")
+                    .surface
+                    .set_vsync(true),
+                GraphicsErrorKind::Lifecycle,
+                "acquired frame is live",
+                "live-frame VSync change rejected",
+            )?;
+            self.pass("live-frame VSync change rejected");
+        }
         if self.step.is_multiple_of(11) {
             frame.abandon()?;
             self.step += 1;

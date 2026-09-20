@@ -293,3 +293,10 @@ by opening another pool of the same recipe and retrying once; a reset destroys e
 together after the ordinary all-frames wait, and pipeline destruction does the same. Pools are
 opened lazily on first allocation. Workspace checks and tests pass; the growth path is exercised
 by the consuming game rather than by a probe, and no viability gate is advanced.
+
+## Explicit presentation and frame caps (0.13.20 / runtime 0.5.4, development)
+
+Immediate/synchronized presentation and arbitrary CPU frame caps are implemented,
+with elapsed-time simulation for immediate presentation. Metal live policy changes
+pass the 99-case native conformance probe; Vulkan is cross-compiled, not physically
+validated here. See [contract and validation](frame-pacing-controls.md).

@@ -148,6 +148,7 @@ pub(crate) struct ClearSurface<'window> {
     gpu_timings: VecDeque<GpuFrameTiming>,
     pending_presents: VecDeque<PendingPresent>,
     presented_count: u64,
+    vsync: bool,
     _window: PhantomData<SurfaceTarget<'window>>,
 }
 
@@ -215,6 +216,7 @@ impl<'window> ClearSurface<'window> {
                 gpu_timings: VecDeque::new(),
                 pending_presents: VecDeque::new(),
                 presented_count: 0,
+                vsync: true,
                 _window: PhantomData,
             })
         }
@@ -222,6 +224,16 @@ impl<'window> ClearSurface<'window> {
 
     pub(crate) const fn info(&self) -> SurfaceInfo {
         self.info
+    }
+
+    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        if self.vsync != enabled {
+            self.finish_all_frames()?;
+            // SAFETY: The live CAMetalLayer is owned by this main-thread surface.
+            unsafe { objc::void_bool(self.layer, c"setDisplaySyncEnabled:", enabled) };
+            self.vsync = enabled;
+        }
+        Ok(())
     }
 
     pub(crate) fn enable_gpu_timing(&mut self, enabled: bool) -> Result<(), GraphicsError> {

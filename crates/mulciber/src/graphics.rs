@@ -2074,6 +2074,26 @@ impl<'window> Surface<'window> {
         }))
     }
 
+    /// Selects synchronized presentation (`true`) or immediate presentation (`false`).
+    ///
+    /// Immediate presentation preserves throughput below the display refresh rate but may tear.
+    /// The default is synchronized. Call between frames, before acquisition; Vulkan applies
+    /// changes through its normal swapchain reconfiguration/retirement path on next acquisition.
+    /// Compositors and variable-refresh displays can impose their own display policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` if immediate presentation is unavailable, without changing policy,
+    /// or a native/session error. Unsupported requests never silently turn synchronization on.
+    pub fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        if Rc::strong_count(&self.shared.inner) != 3 {
+            return Err(GraphicsError::lifecycle(
+                "cannot change VSync while an acquired frame is live",
+            ));
+        }
+        session_mut(&self.shared)?.set_vsync(enabled)
+    }
+
     /// Drains presentation feedback reported by the native backend since the previous drain.
     ///
     /// Feedback is diagnostic and never blocks. Undrained samples are kept in a bounded queue, so

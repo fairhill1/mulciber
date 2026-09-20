@@ -50,3 +50,13 @@ Call `reset` on rendering suspension/resume and supply refreshed display informa
 after a surface or monitor change. Short overruns preserve the deadline grid; long stalls
 restart without a burst of catch-up frames. The final 300 microseconds may busy-wait.
 This utility does not change `Runtime` simulation, interpolation, or presentation policy.
+
+### Explicit caps and immediate presentation
+
+Use `set_frame_rate_limit(NonZeroU16::new(50))` to cap at 50 FPS, independent of
+native refresh feedback and whether the optional native limiter is enabled. `None`
+removes the explicit cap. Caps never round to a display divisor, and overload/wakeup
+lateness never causes a catch-up burst. `reset` preserves the chosen cap.
+When graphics uses immediate presentation, call
+`Runtime::set_presentation_pacing_enabled(false)` so simulation uses elapsed time
+instead of compositor-refresh quantization; fixed-step simulation stays unchanged.

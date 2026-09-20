@@ -126,6 +126,13 @@ impl Runtime {
         self.pacer.record_untimed_presented();
     }
 
+    /// Controls display-cadence simulation-delta smoothing without changing the fixed step.
+    /// Disable when presentation is immediate; elapsed time then remains independent of
+    /// compositor refresh feedback. This does not affect presentation diagnostics.
+    pub fn set_presentation_pacing_enabled(&mut self, enabled: bool) {
+        self.pacer.set_enabled(enabled);
+    }
+
     /// Summarizes the presentation pacing recorded so far.
     #[must_use]
     pub fn pacing_report(&self) -> PacingReport {

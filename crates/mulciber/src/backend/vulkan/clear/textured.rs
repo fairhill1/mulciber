@@ -622,6 +622,10 @@ impl<'window> TexturedSession<'window> {
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
 
+    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        self.surface.set_vsync(enabled)
+    }
+
     pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
         self.surface.take_present_feedback()
     }

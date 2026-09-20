@@ -174,9 +174,51 @@ pub(super) fn choose_present_mode(modes: &[vk::VkPresentModeKHR]) -> Option<vk::
     }
 }
 
+/// An immediate request must not silently fall back to synchronized FIFO/mailbox.
+pub(super) fn choose_present_mode_for_sync(
+    modes: &[vk::VkPresentModeKHR],
+    vsync: bool,
+) -> Option<vk::VkPresentModeKHR> {
+    if vsync {
+        choose_present_mode(modes)
+    } else {
+        modes
+            .contains(&vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
+            .then_some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
+    }
+}
+
 #[cfg(test)]
 mod presentation_tests {
     use super::*;
+
+    #[test]
+    fn immediate_is_explicit_and_never_silently_falls_back() {
+        assert_eq!(
+            choose_present_mode_for_sync(&[vk::VK_PRESENT_MODE_FIFO_KHR], false),
+            None
+        );
+        assert_eq!(
+            choose_present_mode_for_sync(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_IMMEDIATE_KHR
+                ],
+                false
+            ),
+            Some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
+        );
+        assert_eq!(
+            choose_present_mode_for_sync(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_IMMEDIATE_KHR
+                ],
+                true
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_KHR)
+        );
+    }
 
     #[test]
     fn fifo_only_surfaces_remain_supported() {

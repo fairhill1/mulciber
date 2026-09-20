@@ -1119,3 +1119,30 @@ Release review on 2026-09-13 repeated all required workspace checks and the 40-c
 Metal numerical probe with `MTL_DEBUG_LAYER=1`; all passed without validation errors.
 `cargo publish -p mulciber --dry-run --allow-dirty` successfully packaged and verified the
 registry dependency build. No additional Vulkan or visual coverage is claimed.
+
+## Explicit presentation and frame caps (0.13.20 / runtime 0.5.4)
+
+Immediate/synchronized presentation and arbitrary CPU frame caps are implemented,
+with elapsed-time simulation for immediate presentation. Metal live policy changes
+pass the 99-case native conformance probe; Vulkan is cross-compiled, not physically
+validated here. See [contract and validation](frame-pacing-controls.md).
+
+Isle of Rán consumer town walks at 2940 × 1840, 50% scale, all original effects
+including god rays: synchronized/uncapped 51.27 FPS with 34.24 ms p95 completion
+interval; immediate/uncapped 54.73 FPS with 20.53 ms p95. One immediate initial
+sample was 57.65 ms with terrain CPU work; the remaining samples were below 22 ms.
+These are CPU completion intervals, not optical latency or proof of uniform
+whole-frame 50 FPS on fixed 60 Hz. Instruments confirms missed refreshes for sync
+on; its displayed-surface-duration rows are not comparable under immediate mode.
+
+The first explicit 50 FPS trial delivered 47.72 FPS because of OS timer oversleep.
+The corrected adaptive sleep margin measures 20.224 ms mean / 20.949 ms p95 in a
+direct 250-wait timer test with varying synthetic work (first 21 waits omitted).
+The screen was locked during that timer check and two game retries. After unlock,
+the final consumer binary completed the same town walk with a 50 FPS cap: 1,499
+frames, 49.91 FPS, 19.993 ms median, 20.452 ms p95 and 21.086 ms p99. This final
+cap check used the game CSV without Instruments attached, with original graphics
+settings including god rays retained. Settings were restored byte-for-byte.
+No additional optical latency, VRR or Windows-native claim is made.
+Evidence and exact conditions live in the consumer's
+`docs/performance/mac-2026-09-20-frame-pacing.md` and ignored capture directory.

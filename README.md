@@ -20,6 +20,7 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   implementations with window lifecycle, keyboard and pointer events, cursor capture, and fullscreen.
 - **Game loop** (`mulciber-runtime`): input snapshots, fixed-step simulation, bounded catch-up,
   render interpolation, suspension coordination, and optional frame-start pacing.
+  [Presentation controls](docs/frame-pacing-controls.md) also support explicit caps independent of refresh.
 - **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
   Designated WGSL functions can also generate callable Rust evaluators for simulation code.
   No shader compiler ships in the game process.

@@ -1,17 +1,19 @@
-//! Opt-in frame-start pacing using the native display period.
+//! Frame-start pacing with explicit caps or the native display period.
 
 use std::time::{Duration, Instant};
 
 const SPIN: Duration = Duration::from_micros(300);
 
-/// Spaces frame starts before fresh input is sampled. The period must come from
-/// the display, not the interval between rendered or successfully shown frames.
+/// Spaces frame starts before fresh input is sampled. An explicit cap is independent of
+/// display cadence; the optional native-refresh cap uses the display's own period.
 #[derive(Debug)]
 pub struct FrameStartLimiter {
     enabled: bool,
     refresh_interval: Option<Duration>,
     next_start: Option<Instant>,
     cadence: Option<Duration>,
+    frame_interval: Option<Duration>,
+    sleep_margin: Duration,
 }
 
 impl FrameStartLimiter {
@@ -23,14 +25,35 @@ impl FrameStartLimiter {
             refresh_interval: None,
             next_start: None,
             cadence: None,
+            frame_interval: None,
+            sleep_margin: SPIN,
         }
+    }
+
+    /// Sets an explicit frame-rate ceiling independent of the native refresh rate.
+    ///
+    /// `None` removes the explicit cap. A cap works even when the native-refresh limiter
+    /// is disabled, and takes precedence over it: 50 FPS remains 50, never rounded to 30.
+    /// Changing the cap resets the deadline, so the previous cap cannot delay fresh input.
+    pub fn set_frame_rate_limit(&mut self, fps: Option<std::num::NonZeroU16>) {
+        let interval = fps.map(|fps| Duration::from_secs_f64(1.0 / f64::from(fps.get())));
+        if self.frame_interval != interval {
+            self.frame_interval = interval;
+            self.next_start = None;
+            self.cadence = None;
+        }
+    }
+
+    fn target_interval(&self) -> Option<Duration> {
+        self.frame_interval
+            .or_else(|| self.enabled.then_some(self.refresh_interval).flatten())
     }
 
     /// Supplies the native display period, independent of skipped frames.
     pub fn set_refresh_interval(&mut self, interval: Option<Duration>) {
         self.refresh_interval = interval
             .filter(|value| (Duration::from_millis(2)..=Duration::from_millis(50)).contains(value));
-        if self.refresh_interval.is_none() {
+        if self.refresh_interval.is_none() && self.frame_interval.is_none() {
             self.next_start = None;
             self.cadence = None;
         }
@@ -44,21 +67,29 @@ impl FrameStartLimiter {
     }
 
     /// Waits before pumping input. A short spin tail avoids coarse sleep rounding.
-    /// Without a native display period, or when disabled, this returns immediately.
+    /// An explicit cap works without display feedback. Otherwise the native limiter is opt-in.
     pub fn wait(&mut self) {
-        if !self.enabled {
-            return;
-        }
-        let Some(cadence) = self.refresh_interval else {
+        let Some(cadence) = self.target_interval() else {
             return;
         };
         let deadline = self.schedule(Instant::now(), cadence);
         while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            if remaining > SPIN {
-                std::thread::sleep(remaining.saturating_sub(SPIN));
+            if remaining > self.sleep_margin {
+                let sleep_for = remaining.saturating_sub(self.sleep_margin);
+                let started = Instant::now();
+                std::thread::sleep(sleep_for);
+                // Timer coalescing can exceed the nominal spin tail. Learn the wakeup
+                // error so subsequent waits sleep less, bounding busy work to 3 ms.
+                let margin = started.elapsed().saturating_sub(sleep_for) + SPIN;
+                self.sleep_margin = self.sleep_margin.max(margin.min(Duration::from_millis(3)));
             } else {
                 std::hint::spin_loop();
             }
+        }
+        if self.frame_interval.is_some() {
+            // Cap actual frame starts, including OS wakeup lateness. Never repay a missed
+            // deadline with a shorter following frame.
+            self.next_start = Some(Instant::now() + cadence);
         }
     }
 
@@ -73,7 +104,11 @@ impl FrameStartLimiter {
         let deadline = self.next_start.unwrap_or(now);
         // Preserve the grid through short overruns, but never repay a long stall
         // with a burst of frames or wait a whole extra refresh for a late frame.
-        let mut next = deadline + cadence;
+        let mut next = if self.frame_interval.is_some() {
+            deadline.max(now) + cadence
+        } else {
+            deadline + cadence
+        };
         if next <= now {
             next = now + cadence;
         }
@@ -85,6 +120,56 @@ impl FrameStartLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fifty_fps_is_not_rounded_to_a_refresh_divisor() {
+        let mut limiter = FrameStartLimiter::new(false);
+        limiter.set_frame_rate_limit(std::num::NonZeroU16::new(50));
+        limiter.set_refresh_interval(Some(Duration::from_nanos(16_666_667)));
+        let period = limiter.target_interval().unwrap();
+        assert_eq!(period, Duration::from_millis(20));
+        let base = Instant::now();
+        for i in 0..1000 {
+            assert_eq!(
+                limiter.schedule(base + period * i, period),
+                base + period * i
+            );
+        }
+        limiter.reset();
+        assert_eq!(limiter.target_interval(), Some(period));
+        limiter.set_refresh_interval(None);
+        assert_eq!(limiter.target_interval(), Some(period));
+        limiter.set_frame_rate_limit(None);
+        assert_eq!(limiter.target_interval(), None);
+    }
+
+    #[test]
+    fn explicit_caps_do_not_catch_up_after_an_overloaded_frame() {
+        let mut limiter = FrameStartLimiter::new(false);
+        limiter.set_frame_rate_limit(std::num::NonZeroU16::new(50));
+        let period = limiter.target_interval().unwrap();
+        let base = Instant::now();
+        assert_eq!(limiter.schedule(base, period), base);
+        let late = base + Duration::from_millis(27);
+        assert_eq!(limiter.schedule(late, period), late);
+        assert_eq!(
+            limiter.schedule(late + Duration::from_millis(10), period),
+            late + period
+        );
+    }
+
+    #[test]
+    fn a_cap_change_discards_the_previous_deadline() {
+        let mut limiter = FrameStartLimiter::new(false);
+        limiter.set_frame_rate_limit(std::num::NonZeroU16::new(30));
+        let now = Instant::now();
+        limiter.schedule(now, limiter.target_interval().unwrap());
+        limiter.set_frame_rate_limit(std::num::NonZeroU16::new(50));
+        assert_eq!(
+            limiter.schedule(now, limiter.target_interval().unwrap()),
+            now
+        );
+    }
 
     #[test]
     fn short_overruns_preserve_the_grid_and_long_stalls_do_not_burst() {

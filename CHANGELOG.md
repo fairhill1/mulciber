@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Explicit VSync and frame caps (0.13.20 / runtime 0.5.4)
+
+Add `Surface::set_vsync` with live Metal switching and deferred Vulkan swapchain
+reconfiguration. Unsupported immediate presentation is an explicit error. Runtime
+caps accept rates independent of display refresh, avoid catch-up bursts, and allow
+cadence smoothing to be disabled without changing fixed-step simulation. No
+automatic half-rate fallback is introduced. See [contract](docs/frame-pacing-controls.md).
+
 ## Live sample count, and Metal region timing measures what a pass adds (0.13.19)
 
 `Device::set_sample_count` changes the samples per pixel that pipelines and targets are

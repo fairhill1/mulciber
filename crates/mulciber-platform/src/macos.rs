@@ -238,6 +238,7 @@ impl Application {
                 revision: Cell::new(WindowRevision::INITIAL),
                 last_extent: Cell::new(PhysicalExtent::default()),
                 last_scale_factor: Cell::new(0.0),
+                last_display_timing: Cell::new(crate::DisplayTiming::Unknown),
                 last_metrics: Cell::new(None),
                 delegate_state,
                 close_reported: Cell::new(false),
@@ -357,6 +358,7 @@ pub struct Window {
     revision: Cell<WindowRevision>,
     last_extent: Cell<PhysicalExtent>,
     last_scale_factor: Cell<f64>,
+    last_display_timing: Cell<crate::DisplayTiming>,
     last_metrics: Cell<Option<WindowMetrics>>,
     delegate_state: Rc<WindowDelegateState>,
     close_reported: Cell<bool>,
@@ -748,10 +750,21 @@ impl Window {
                 return None;
             }
             let scale_factor = f64_value(self.raw.as_ptr(), c"backingScaleFactor");
+            let screen = object(self.raw.as_ptr(), c"screen");
+            let display_timing = if screen.is_null() {
+                crate::DisplayTiming::Unknown
+            } else {
+                crate::DisplayTiming::from_intervals(
+                    f64_value(screen, c"minimumRefreshInterval"),
+                    f64_value(screen, c"maximumRefreshInterval"),
+                    f64_value(screen, c"displayUpdateGranularity"),
+                )
+            };
             let revision = if self.last_extent.get() == PhysicalExtent::default() {
                 self.revision.get()
             } else if self.last_extent.get() != extent
                 || self.last_scale_factor.get().to_bits() != scale_factor.to_bits()
+                || self.last_display_timing.get() != display_timing
             {
                 let next = self.revision.get().next();
                 self.revision.set(next);
@@ -761,7 +774,11 @@ impl Window {
             };
             self.last_extent.set(extent);
             self.last_scale_factor.set(scale_factor);
-            Some(WindowMetrics::new(extent, scale_factor, revision))
+            self.last_display_timing.set(display_timing);
+            Some(
+                WindowMetrics::new(extent, scale_factor, revision)
+                    .with_display_timing(display_timing),
+            )
         }
     }
 }

@@ -33,6 +33,7 @@ const PRESENT_FEEDBACK_CAP: usize = 1024;
 pub(super) struct PresentTimingSelection {
     /// The single present stage every timing request asks a timestamp for.
     pub(super) stage: u32,
+    pub(super) relative_time: bool,
 }
 
 /// Per-swapchain native present-timing state, replaced with the swapchain it describes.
@@ -41,7 +42,7 @@ pub(super) struct PresentTiming {
     time_domain_id: u64,
     /// Monotonically increasing `VK_KHR_present_id2` value for this swapchain.
     next_present_id: u64,
-    refresh_interval: Option<Duration>,
+    pub(super) refresh_interval: Option<Duration>,
     /// Chained present ids paired with the session frame index they identify, oldest first.
     pending: Vec<(u64, u64)>,
     /// Drain instant and native time of this swapchain's first completed report; later native
@@ -51,6 +52,7 @@ pub(super) struct PresentTiming {
 
 /// One present's native timing request, copied out of the per-swapchain state.
 struct PresentTimingRequest {
+    query: bool,
     present_id: u64,
     time_domain_id: u64,
     stage: u32,
@@ -132,7 +134,11 @@ pub(super) fn choose_present_timing(
     }
     Ok(
         choose_present_stage(timing_capabilities.presentStageQueries)
-            .map(|stage| PresentTimingSelection { stage })
+            .map(|stage| PresentTimingSelection {
+                stage,
+                relative_time: present_timing_features.presentAtRelativeTime == vk::VK_TRUE
+                    && timing_capabilities.presentAtRelativeTimeSupported == vk::VK_TRUE,
+            })
             .ok_or("surface exposes no present-stage timestamps"),
     )
 }
@@ -270,7 +276,15 @@ impl ClearSurface<'_> {
         render_finished: vk::VkSemaphore,
         operation: &str,
     ) -> Result<(), GraphicsError> {
-        let request = self.present_timing_request();
+        let divisor = if self.presentation_mode == crate::PresentationMode::Strict {
+            self.refresh_interval()
+                .map_or(1, |period| self.strict.update(Instant::now(), period))
+        } else if self.presentation_mode == crate::PresentationMode::HalfRefresh {
+            2
+        } else {
+            1
+        };
+        let request = self.present_timing_request(divisor == 2);
         let present_id = request.as_ref().map_or(0, |request| request.present_id);
         let present_id2 = vk::VkPresentId2KHR {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
@@ -280,8 +294,24 @@ impl ClearSurface<'_> {
         };
         let timing_info = vk::VkPresentTimingInfoEXT {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+            flags: if divisor == 2 {
+                vk::VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT as u32
+                    | vk::VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT as u32
+            } else {
+                0
+            },
+            targetTime: if divisor == 2 {
+                self.refresh_interval().map_or(0, |period| {
+                    u64::try_from(period.as_nanos().saturating_mul(2)).unwrap_or(u64::MAX)
+                })
+            } else {
+                0
+            },
             timeDomainId: request.as_ref().map_or(0, |request| request.time_domain_id),
-            presentStageQueries: request.as_ref().map_or(0, |request| request.stage),
+            presentStageQueries: request
+                .as_ref()
+                .map_or(0, |request| if request.query { request.stage } else { 0 }),
+            targetTimeDomainPresentStage: request.as_ref().map_or(0, |request| request.stage),
             ..Default::default()
         };
         let timing_chain = vk::VkPresentTimingsInfoEXT {
@@ -314,7 +344,9 @@ impl ClearSurface<'_> {
         };
         let frame_index = self.presented_count;
         self.presented_count += 1;
-        if let Some(request) = request {
+        if let Some(request) = request
+            && request.query
+        {
             self.record_present_timing_outcome(request.present_id, frame_index);
         }
         if matches!(result, vk::VK_SUBOPTIMAL_KHR | vk::VK_ERROR_OUT_OF_DATE_KHR) {
@@ -327,9 +359,9 @@ impl ClearSurface<'_> {
 
     /// Issues the next present id and timing request for the current swapchain, if native timing
     /// is configured.
-    fn present_timing_request(&mut self) -> Option<PresentTimingRequest> {
+    fn present_timing_request(&mut self, scheduling: bool) -> Option<PresentTimingRequest> {
         let selection = self.device().adapter.present_timing.ok()?;
-        self.present_timing.as_mut()?.request(selection)
+        self.present_timing.as_mut()?.request(selection, scheduling)
     }
 
     /// Records which session frame index a chained present id identifies, so a drained report
@@ -464,15 +496,22 @@ impl PresentTiming {
             anchor_instant.checked_sub(Duration::from_nanos(anchor_time - time))
         }
     }
-    fn request(&mut self, selection: PresentTimingSelection) -> Option<PresentTimingRequest> {
+    fn request(
+        &mut self,
+        selection: PresentTimingSelection,
+        scheduling: bool,
+    ) -> Option<PresentTimingRequest> {
         // Mailbox can submit faster than the display completes timing reports.
         // Reserve no more than the native queue can hold. Omit optional timing
         // for this present when full; never stall or fail presentation for it.
-        if self.pending.len() >= TIMING_QUEUE_SIZE as usize {
+        // Scheduling is independent: a zero-query timing request consumes no result slot.
+        let query = self.pending.len() < TIMING_QUEUE_SIZE as usize;
+        if !query && !scheduling {
             return None;
         }
         self.next_present_id += 1;
         Some(PresentTimingRequest {
+            query,
             present_id: self.next_present_id,
             time_domain_id: self.time_domain_id,
             stage: selection.stage,
@@ -513,17 +552,28 @@ mod queue_capacity_tests {
             pending: Vec::new(),
             anchor: None,
         };
-        let selection = PresentTimingSelection { stage: 1 };
+        let selection = PresentTimingSelection {
+            stage: 1,
+            relative_time: false,
+        };
         for frame in 0..u64::from(TIMING_QUEUE_SIZE) {
-            let request = state.request(selection).expect("queue has room");
+            let request = state.request(selection, false).expect("queue has room");
             state.pending.push((request.present_id, frame));
         }
-        assert!(state.request(selection).is_none());
-        assert!(state.request(selection).is_none());
+        assert!(state.request(selection, false).is_none());
+        assert!(state.request(selection, false).is_none());
         assert_eq!(state.next_present_id, u64::from(TIMING_QUEUE_SIZE));
+        let scheduled = state
+            .request(selection, true)
+            .expect("scheduling needs no result slot");
+        assert!(!scheduled.query);
+        assert_eq!(scheduled.time_domain_id, 7);
+        assert_eq!(scheduled.stage, selection.stage);
+        assert_eq!(state.pending.len(), TIMING_QUEUE_SIZE as usize);
         state.pending.remove(0);
-        let resumed = state.request(selection).expect("drain freed a slot");
-        assert_eq!(resumed.present_id, u64::from(TIMING_QUEUE_SIZE) + 1);
+        let resumed = state.request(selection, false).expect("drain freed a slot");
+        assert_eq!(resumed.present_id, u64::from(TIMING_QUEUE_SIZE) + 2);
+        assert!(resumed.query);
         assert_eq!(resumed.time_domain_id, 7);
     }
 }

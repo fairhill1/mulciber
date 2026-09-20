@@ -32,8 +32,8 @@ pub mod integration {
 }
 
 pub use presentation::{
-    FrameAcquire, FrameDisposition, SurfaceExtent, SurfaceGeneration, SurfaceInfo,
-    SurfaceUnavailable,
+    FrameAcquire, FrameDisposition, PresentationMode, SurfaceExtent, SurfaceGeneration,
+    SurfaceInfo, SurfaceUnavailable,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

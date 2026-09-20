@@ -14,6 +14,7 @@ pub struct FrameStartLimiter {
     cadence: Option<Duration>,
     frame_interval: Option<Duration>,
     sleep_margin: Duration,
+    display_timing: Option<mulciber_platform::DisplayTiming>,
 }
 
 impl FrameStartLimiter {
@@ -27,6 +28,7 @@ impl FrameStartLimiter {
             cadence: None,
             frame_interval: None,
             sleep_margin: SPIN,
+            display_timing: None,
         }
     }
 
@@ -45,8 +47,28 @@ impl FrameStartLimiter {
     }
 
     fn target_interval(&self) -> Option<Duration> {
-        self.frame_interval
-            .or_else(|| self.enabled.then_some(self.refresh_interval).flatten())
+        self.frame_interval.or_else(|| {
+            if !self.enabled {
+                return None;
+            }
+            match self.display_timing {
+                Some(mulciber_platform::DisplayTiming::Fixed(period)) if !period.is_zero() => {
+                    Some(period)
+                }
+                Some(_) => None,
+                None => self.refresh_interval,
+            }
+        })
+    }
+
+    /// Supplies native display timing. Variable/unknown timing disables the implicit refresh
+    /// ceiling; an explicit user cap still applies. This overrides nominal-period feedback.
+    pub fn set_display_timing(&mut self, timing: mulciber_platform::DisplayTiming) {
+        if self.display_timing != Some(timing) {
+            self.display_timing = Some(timing);
+            self.next_start = None;
+            self.cadence = None;
+        }
     }
 
     /// Supplies the native display period, independent of skipped frames.
@@ -62,6 +84,9 @@ impl FrameStartLimiter {
     /// Forgets the display period and pending deadline after suspension.
     pub const fn reset(&mut self) {
         self.refresh_interval = None;
+        if self.display_timing.is_some() {
+            self.display_timing = Some(mulciber_platform::DisplayTiming::Unknown);
+        }
         self.next_start = None;
         self.cadence = None;
     }
@@ -120,6 +145,33 @@ impl FrameStartLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variable_or_unknown_display_has_no_implicit_cap_but_keeps_user_caps() {
+        use mulciber_platform::DisplayTiming;
+        let mut limiter = FrameStartLimiter::new(true);
+        let native = Duration::from_nanos(16_666_667);
+        limiter.set_refresh_interval(Some(native));
+        limiter.set_display_timing(DisplayTiming::Fixed(native));
+        assert_eq!(limiter.target_interval(), Some(native));
+        for timing in [
+            DisplayTiming::Unknown,
+            DisplayTiming::from_intervals(1.0 / 144.0, 1.0 / 48.0, 0.0),
+        ] {
+            limiter.schedule(Instant::now(), native);
+            limiter.set_display_timing(timing);
+            assert!(limiter.next_start.is_none());
+            assert_eq!(limiter.target_interval(), None);
+            limiter.set_refresh_interval(Some(native));
+            assert_eq!(limiter.target_interval(), None);
+            limiter.set_frame_rate_limit(std::num::NonZeroU16::new(50));
+            assert_eq!(limiter.target_interval(), Some(Duration::from_millis(20)));
+            limiter.reset();
+            assert_eq!(limiter.target_interval(), Some(Duration::from_millis(20)));
+            limiter.set_frame_rate_limit(None);
+            assert_eq!(limiter.target_interval(), None);
+        }
+    }
 
     #[test]
     fn fifty_fps_is_not_rounded_to_a_refresh_divisor() {

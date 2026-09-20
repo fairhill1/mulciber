@@ -13,8 +13,8 @@ let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
 ```
 
 The application forwards each `mulciber-platform::WindowEvent` through
-`Runtime::handle_window_event`; the runtime consumes its input and rendering-lifecycle portions while
-redraw, metrics, close, and graphics policy stay with the application. On each redraw it begins a
+`Runtime::handle_window_event`; the runtime consumes its input, rendering lifecycle and native display timing while
+redraw, close, and graphics policy stay with the application. On each redraw it begins a
 scoped `RuntimeFrame`, handles simulation-latched input transitions, runs the requested number of
 fixed updates, runs variable presentation work with the clamped frame delta, and renders its own
 previous/current state with `FramePlan::interpolation()`. Dropping the frame automatically clears
@@ -173,3 +173,12 @@ Call `reset` on rendering suspension/resume and supply refreshed display informa
 after a surface or monitor change. Short overruns preserve the deadline grid; long stalls
 restart without a burst of catch-up frames. The final 300 microseconds may busy-wait.
 This utility does not change `Runtime` simulation, interpolation, or presentation policy.
+
+## Native display policy (platform/runtime 0.5.5)
+
+Window metrics now carry `DisplayTiming`. Runtime smoothing requires `Fixed(period)` and fresh
+presentation feedback; the period is native, never the median of slow application presents.
+`Variable` and `Unknown` preserve elapsed deltas regardless of VSync selection. Display-policy
+changes clear smoothing debt and prior feedback, without discarding elapsed simulation time.
+The frame-start limiter accepts the same metadata: variable/unknown disables only its implicit
+refresh ceiling, while an explicit cap remains unchanged and never rounds to a refresh divisor.

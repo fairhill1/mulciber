@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 pub(crate) mod metal;
+mod pacing;
 #[cfg(target_os = "macos")]
 pub(crate) use metal::{BACKEND_NAME, TexturedFrameToken, TexturedSession};
 #[cfg(target_os = "macos")]

@@ -125,7 +125,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "mulciber"
-version = "0.13.20"
+version = "0.13.21"
 dependencies = [
  "mulciber-platform",
 ]
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-platform"
-version = "0.5.4"
+version = "0.5.5"
 
 [[package]]
 name = "mulciber-postprocess-cube"
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-runtime"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "mulciber-platform",
 ]

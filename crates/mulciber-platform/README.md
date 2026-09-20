@@ -27,3 +27,13 @@ system.
 
 Development, design contracts, runnable probes, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).
+
+## Display timing (0.5.5)
+
+`WindowMetrics::display_timing()` distinguishes fixed, variable and unknown native timing.
+AppKit reads the current window screen's minimum/maximum refresh intervals and update granularity
+and includes changes in metrics revisions/events. Other backends currently report `Unknown`;
+no backend guesses VRR from nominal refresh, application FPS or swapchain present modes.
+A variable range describes native capability, not proof that VRR engaged for a particular frame.
+The native fixed-refresh path is checked on Apple M2; variable-range and display transitions have
+synthetic coverage only. A physical VRR display is still required for end-to-end validation.

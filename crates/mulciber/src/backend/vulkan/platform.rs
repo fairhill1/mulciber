@@ -174,17 +174,22 @@ pub(super) fn choose_present_mode(modes: &[vk::VkPresentModeKHR]) -> Option<vk::
     }
 }
 
-/// An immediate request must not silently fall back to synchronized FIFO/mailbox.
-pub(super) fn choose_present_mode_for_sync(
+/// Never silently substitute synchronized output for a tearing-capable request.
+pub(super) fn choose_present_mode_for_policy(
     modes: &[vk::VkPresentModeKHR],
-    vsync: bool,
+    policy: crate::PresentationMode,
 ) -> Option<vk::VkPresentModeKHR> {
-    if vsync {
-        choose_present_mode(modes)
-    } else {
-        modes
+    match policy {
+        crate::PresentationMode::Synchronized => choose_present_mode(modes),
+        crate::PresentationMode::HalfRefresh | crate::PresentationMode::Strict => modes
+            .contains(&vk::VK_PRESENT_MODE_FIFO_KHR)
+            .then_some(vk::VK_PRESENT_MODE_FIFO_KHR),
+        crate::PresentationMode::Immediate => modes
             .contains(&vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
-            .then_some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
+            .then_some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR),
+        crate::PresentationMode::Adaptive => modes
+            .contains(&vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+            .then_some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR),
     }
 }
 
@@ -193,28 +198,55 @@ mod presentation_tests {
     use super::*;
 
     #[test]
-    fn immediate_is_explicit_and_never_silently_falls_back() {
+    fn adaptive_requires_native_relaxed_fifo() {
         assert_eq!(
-            choose_present_mode_for_sync(&[vk::VK_PRESENT_MODE_FIFO_KHR], false),
-            None
-        );
-        assert_eq!(
-            choose_present_mode_for_sync(
+            choose_present_mode_for_policy(
                 &[
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
-                false
+                crate::PresentationMode::Adaptive
+            ),
+            None
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                ],
+                crate::PresentationMode::Adaptive
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+        );
+    }
+
+    #[test]
+    fn immediate_is_explicit_and_never_silently_falls_back() {
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[vk::VK_PRESENT_MODE_FIFO_KHR],
+                crate::PresentationMode::Immediate
+            ),
+            None
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_IMMEDIATE_KHR
+                ],
+                crate::PresentationMode::Immediate
             ),
             Some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
         );
         assert_eq!(
-            choose_present_mode_for_sync(
+            choose_present_mode_for_policy(
                 &[
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
-                true
+                crate::PresentationMode::Synchronized
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_KHR)
         );

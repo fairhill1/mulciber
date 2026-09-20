@@ -2,12 +2,11 @@
 //!
 //! This module holds both halves of the pacing vocabulary. [`PacingDiagnostics`] observes the
 //! presented cadence a graphics backend reports and summarizes it. [`FramePacer`] consumes the
-//! same presented timestamps and schedules frame work onto the observed presentation grid, so
-//! simulation advances by whole display intervals instead of by jittery wall-clock gaps between
-//! render starts. Timestamps arrive as plain [`Instant`]s so both halves stay independent of any
-//! particular graphics crate or feedback mechanism, including estimated timestamps where native
-//! feedback is absent.
+//! same presented timestamps and known native fixed timing to smooth frame deltas onto the display
+//! grid. Variable and unknown timing retain elapsed deltas. Timestamps arrive as plain [`Instant`]s
+//! so both halves stay independent of any particular graphics crate or feedback mechanism.
 
+use mulciber_platform::DisplayTiming;
 use std::collections::VecDeque;
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -142,11 +141,11 @@ const MAX_PACING_DRIFT_NANOS: i128 = 16_000_000;
 ///
 /// Feed every presented frame through [`Self::record_presented`] (or
 /// [`Self::record_untimed_presented`] when presentation completed without a display time), then
-/// ask [`Self::schedule`] when a frame is about to be built. While a cadence estimate and fresh
-/// feedback exist, each frame delta is a whole number of display intervals: one interval
+/// ask [`Self::schedule`] when a frame is about to be built. When native timing is fixed and fresh
+/// feedback exists, each frame delta is a whole number of display intervals: one interval
 /// normally, more when the wall-clock gap since the previous schedule shows the display consumed
 /// extra intervals. Quantization is accepted only while total scheduled time stays within 16 ms
-/// of elapsed time since creation or resume. Otherwise, or without fresh estimated feedback,
+/// of elapsed time since creation or resume. For variable/unknown timing, or without fresh feedback,
 /// deltas observably fall back to raw wall-clock gaps. The offset is retained across fallbacks;
 /// no backlog is built for later repayment when FPS or display cadence changes.
 ///
@@ -167,6 +166,7 @@ pub struct FramePacer {
     /// Sum of scheduled deltas minus elapsed time since creation or resume.
     pacing_drift_nanos: i128,
     enabled: bool,
+    display_timing: DisplayTiming,
 }
 
 impl Default for FramePacer {
@@ -185,6 +185,7 @@ impl FramePacer {
             last_schedule_at: None,
             pacing_drift_nanos: 0,
             enabled: true,
+            display_timing: DisplayTiming::Unknown,
         }
     }
 
@@ -195,6 +196,17 @@ impl FramePacer {
         if self.enabled != enabled {
             self.enabled = enabled;
             self.pacing_drift_nanos = 0;
+        }
+    }
+
+    /// Supplies native display timing. Variable and unknown timing use elapsed time.
+    /// A mode change discards the previous display's feedback and smoothing debt.
+    pub fn set_display_timing(&mut self, timing: DisplayTiming) {
+        if self.display_timing != timing {
+            self.display_timing = timing;
+            self.pacing_drift_nanos = 0;
+            self.last_presented = None;
+            self.diagnostics = PacingDiagnostics::new();
         }
     }
 
@@ -255,7 +267,12 @@ impl FramePacer {
         if !self.enabled || elapsed.is_zero() {
             return None;
         }
-        let cadence = self.diagnostics.estimated_cadence()?;
+        let DisplayTiming::Fixed(cadence) = self.display_timing else {
+            return None;
+        };
+        if cadence.is_zero() {
+            return None;
+        }
         let presented = self.last_presented?;
         if now.saturating_duration_since(presented) > PACING_STALENESS_LIMIT {
             return None;
@@ -304,7 +321,7 @@ impl FrameSchedule {
         self.frame_delta
     }
 
-    /// Returns whether the delta is a whole number of observed display intervals rather than a
+    /// Returns whether the delta is a whole number of native fixed display intervals rather than a
     /// wall-clock fallback.
     #[must_use]
     pub const fn paced(self) -> bool {
@@ -382,6 +399,7 @@ mod tests {
     /// Feeds `count` steady presents and returns the pacer with the last presented instant.
     fn pacer_after_steady_presents(count: u32) -> (FramePacer, Instant) {
         let mut pacer = FramePacer::new();
+        pacer.set_display_timing(mulciber_platform::DisplayTiming::Fixed(STEP));
         let base = Instant::now();
         let mut at = base;
         for _ in 1..count {
@@ -401,6 +419,69 @@ mod tests {
             at += STEP;
         }
         (diagnostics, at)
+    }
+
+    #[test]
+    fn variable_and_unknown_timing_never_quantize_sub_sixty_motion() {
+        use mulciber_platform::DisplayTiming;
+        for timing in [
+            DisplayTiming::Unknown,
+            DisplayTiming::from_intervals(1.0 / 144.0, 1.0 / 48.0, 0.0),
+        ] {
+            let (mut pacer, mut now) = pacer_after_steady_presents(60);
+            pacer.set_display_timing(timing);
+            pacer.resume(now);
+            // Warm a convincing median, then vary inside/below the VRR range and hitch.
+            for micros in std::iter::repeat_n(20_000, 60).chain(
+                [18_182, 22_222, 28_571, 25_000, 20_000, 120_000]
+                    .into_iter()
+                    .cycle()
+                    .take(240),
+            ) {
+                let elapsed = Duration::from_micros(micros);
+                now += elapsed;
+                pacer.record_presented(now);
+                let frame = pacer.schedule(now);
+                assert!(!frame.paced());
+                assert_eq!(frame.frame_delta(), elapsed);
+            }
+        }
+    }
+
+    #[test]
+    fn display_changes_discard_smoothing_debt_and_old_feedback() {
+        use mulciber_platform::DisplayTiming;
+        let (mut pacer, mut now) = pacer_after_steady_presents(30);
+        pacer.resume(now);
+        now += Duration::from_millis(20);
+        assert!(pacer.schedule(now).paced());
+        assert_ne!(pacer.pacing_drift_nanos, 0);
+        pacer.set_display_timing(DisplayTiming::from_intervals(1.0 / 120.0, 1.0 / 48.0, 0.0));
+        assert_eq!(pacer.pacing_drift_nanos, 0);
+        assert!(pacer.last_presented.is_none());
+        now += Duration::from_millis(20);
+        assert_eq!(pacer.schedule(now).frame_delta(), Duration::from_millis(20));
+        pacer.set_display_timing(DisplayTiming::Fixed(STEP));
+        now += STEP;
+        assert!(!pacer.schedule(now).paced());
+        pacer.record_presented(now);
+        assert!(pacer.schedule(now + STEP).paced());
+    }
+
+    #[test]
+    fn slow_application_feedback_does_not_replace_native_refresh_period() {
+        let mut pacer = FramePacer::new();
+        pacer.set_display_timing(mulciber_platform::DisplayTiming::Fixed(STEP));
+        let mut now = Instant::now();
+        for _ in 0..240 {
+            now += STEP * 2;
+            pacer.record_presented(now);
+        }
+        assert_eq!(pacer.report().estimated_cadence, Some(STEP * 2));
+        pacer.resume(now);
+        let frame = pacer.schedule(now + STEP);
+        assert!(frame.paced());
+        assert_eq!(frame.frame_delta(), STEP);
     }
 
     #[test]

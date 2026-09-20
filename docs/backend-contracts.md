@@ -300,3 +300,33 @@ Immediate/synchronized presentation and arbitrary CPU frame caps are implemented
 with elapsed-time simulation for immediate presentation. Metal live policy changes
 pass the 99-case native conformance probe; Vulkan is cross-compiled, not physically
 validated here. See [contract and validation](frame-pacing-controls.md).
+
+## Native display timing — platform/runtime 0.5.5
+
+The platform exposes fixed, variable and unknown display timing in `WindowMetrics`. AppKit reads
+NSScreen's minimum/maximum refresh intervals and update granularity from the window's current
+screen, with a metrics revision when that timing changes. Win32/Wayland/X11 return `Unknown`
+until their native capability paths have evidence; nominal refresh or present mode does not prove
+VRR. The range describes capability, not per-frame active VRR.
+
+The runtime consumes this metadata from window events. Cadence smoothing now requires a known
+fixed native period plus fresh presentation feedback. Variable/unknown timing retains elapsed
+deltas, including below the reported range; low-frame-rate compensation remains display/driver
+behavior. The limiter accepts the same timing, disabling only its implicit refresh ceiling on
+variable/unknown displays and retaining explicit user caps. No automatic 30 FPS cap is introduced.
+Fixed 60 Hz plus VSync still cannot display 50 FPS at equal intervals.
+
+Regressions cover 35–55 FPS variable intervals, a 120 ms hitch, mode transitions, stale feedback,
+slow application feedback on a fixed screen, and a 50 FPS explicit cap on variable/unknown timing.
+Native fixed-refresh evidence is from the Apple M2 built-in panel (16.666 ms min/max/granularity).
+Physical VRR and multi-display transitions remain unvalidated.
+
+### Adaptive/Strict presentation (graphics 0.13.21)
+
+The graphics API now owns adaptive synchronization and automatic full/half refresh with
+workload-based recovery. Applications query support and select policy; fixed-divisor scheduling
+is native, not a rounded integer CPU cap. The Apple M2 fixed-60-Hz probe demonstrates stable
+full/half/full transitions and API conformance passes 101 cases with Metal validation. Vulkan
+uses FIFO relaxed or capability-gated relative presentation timing; the new paths are compile
+checked, not physically validated here. VRR and multi-display evidence remain outstanding.
+See [behavior, reproduction and limits](frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).

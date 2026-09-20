@@ -2086,12 +2086,67 @@ impl<'window> Surface<'window> {
     /// Returns `Unsupported` if immediate presentation is unavailable, without changing policy,
     /// or a native/session error. Unsupported requests never silently turn synchronization on.
     pub fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        self.set_presentation_mode(if enabled {
+            crate::PresentationMode::Synchronized
+        } else {
+            crate::PresentationMode::Immediate
+        })
+    }
+
+    /// Selects a presentation policy between frames.
+    ///
+    /// Vulkan adaptive uses native FIFO relaxed. Metal starts unsynchronized and enables sync
+    /// only after sustained native-refresh throughput with GPU headroom; a missed deadline
+    /// releases it again. Variable-refresh screens retain native synchronization. Unknown
+    /// Metal timing remains immediate. Adaptive never imposes a lower FPS cap.
+    ///
+    /// Strict automatically chooses full/half native refresh using CPU/GPU workload and
+    /// sustained recovery headroom; `HalfRefresh` always targets half. Both require native
+    /// scheduling support. Metal avoids the divisor on variable-capable displays. Display
+    /// capability alone does not prove per-frame VRR engagement.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` without changing policy if the native mode is unavailable,
+    /// or a lifecycle/native/session error. An acquired frame must be disposed first.
+    pub fn set_presentation_mode(
+        &mut self,
+        mode: crate::PresentationMode,
+    ) -> Result<(), GraphicsError> {
         if Rc::strong_count(&self.shared.inner) != 3 {
             return Err(GraphicsError::lifecycle(
-                "cannot change VSync while an acquired frame is live",
+                "cannot change presentation mode while an acquired frame is live",
             ));
         }
-        session_mut(&self.shared)?.set_vsync(enabled)
+        session_mut(&self.shared)?.set_presentation_mode(mode)
+    }
+
+    /// Reports the currently applied native policy. Metal adaptive resolves to immediate or
+    /// synchronized; native Vulkan FIFO relaxed reports adaptive. Intended for diagnostics.
+    ///
+    /// # Errors
+    /// Returns an error after session shutdown.
+    pub fn active_presentation_mode(&self) -> Result<crate::PresentationMode, GraphicsError> {
+        Ok(session_ref(&self.shared)?.active_presentation_mode())
+    }
+
+    /// Whether this surface can implement the requested mode without substituting another.
+    ///
+    /// # Errors
+    /// Returns native capability-query or session errors.
+    pub fn supports_presentation_mode(
+        &self,
+        mode: crate::PresentationMode,
+    ) -> Result<bool, GraphicsError> {
+        session_ref(&self.shared)?.supports_presentation_mode(mode)
+    }
+
+    /// Native refresh interval, independent of application FPS. Updated by acquisition.
+    /// Variable screens report their fastest interval. Unknown timing returns `None`.
+    ///
+    /// # Errors
+    /// Returns an error after session shutdown.
+    pub fn refresh_interval(&self) -> Result<Option<Duration>, GraphicsError> {
+        Ok(session_ref(&self.shared)?.refresh_interval())
     }
 
     /// Drains presentation feedback reported by the native backend since the previous drain.

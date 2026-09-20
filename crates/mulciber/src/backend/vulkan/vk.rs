@@ -6667,6 +6667,13 @@ pub const VK_PRESENT_STAGE_FLAG_BITS_MAX_ENUM_EXT: VkPresentStageFlagBitsEXT = 2
 pub type VkPresentStageFlagBitsEXT = ::core::ffi::c_int;
 pub type VkPresentStageFlagsEXT = VkFlags;
 pub type VkPastPresentationTimingFlagsEXT = VkFlags;
+pub const VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT: VkPresentTimingInfoFlagBitsEXT =
+    1;
+pub const VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT:
+    VkPresentTimingInfoFlagBitsEXT = 2;
+pub const VK_PRESENT_TIMING_INFO_FLAG_BITS_MAX_ENUM_EXT: VkPresentTimingInfoFlagBitsEXT =
+    2147483647;
+pub type VkPresentTimingInfoFlagBitsEXT = ::core::ffi::c_int;
 pub type VkPresentTimingInfoFlagsEXT = VkFlags;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]

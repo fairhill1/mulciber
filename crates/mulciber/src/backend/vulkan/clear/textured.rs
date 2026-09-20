@@ -64,6 +64,7 @@ struct PendingGpuTiming {
 
 struct GpuTimingState {
     enabled: bool,
+    requested: bool,
     query_pool: vk::VkQueryPool,
     /// One entry per frame slot. Timestamps are written by the GPU and read
     /// back a frame later, so two frames in flight need two sets of them; one
@@ -533,6 +534,7 @@ impl<'window> TexturedSession<'window> {
                 sample_count,
                 gpu_timing: GpuTimingState {
                     enabled: false,
+                    requested: false,
                     query_pool: ptr::null_mut(),
                     pending: [None; super::ClearSurface::frames_in_flight()],
                     completed: VecDeque::new(),
@@ -588,7 +590,7 @@ impl<'window> TexturedSession<'window> {
     }
 
     pub(crate) fn take_gpu_timings(&mut self) -> GpuTimingFeedback {
-        if !self.gpu_timing.enabled {
+        if !self.gpu_timing.requested {
             return GpuTimingFeedback::Disabled;
         }
         if self.gpu_timing.query_pool.is_null() {
@@ -598,6 +600,8 @@ impl<'window> TexturedSession<'window> {
     }
 
     pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+        self.gpu_timing.requested = enabled;
+        let enabled = enabled || self.surface.presentation_mode == crate::PresentationMode::Strict;
         if enabled
             && self.gpu_timing.query_pool.is_null()
             && self.surface.device().adapter.timestamp_valid_bits != 0
@@ -619,11 +623,44 @@ impl<'window> TexturedSession<'window> {
         let acquisition = self.surface.acquire_image(metrics)?;
         self.reclaim_stale_targets();
         let info = self.surface.info();
+        if matches!(acquisition, FrameAcquire::Ready(_)) {
+            self.surface.strict.begin_frame(std::time::Instant::now());
+        }
         Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
     }
 
-    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
-        self.surface.set_vsync(enabled)
+    pub(crate) fn set_presentation_mode(
+        &mut self,
+        mode: crate::PresentationMode,
+    ) -> Result<(), GraphicsError> {
+        if !self.supports_presentation_mode(mode)? {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                "requested presentation mode requires unavailable native scheduling or GPU timing",
+            ));
+        }
+        self.surface.set_presentation_mode(mode)?;
+        self.set_gpu_timing_enabled(self.gpu_timing.requested)
+    }
+
+    pub(crate) fn supports_presentation_mode(
+        &self,
+        mode: crate::PresentationMode,
+    ) -> Result<bool, GraphicsError> {
+        if mode == crate::PresentationMode::Strict
+            && self.gpu_timing_support() == GpuTimingSupport::Unsupported
+        {
+            return Ok(false);
+        }
+        self.surface.supports_presentation_mode(mode)
+    }
+
+    pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.surface.refresh_interval()
+    }
+
+    pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
+        self.surface.active_presentation_mode()
     }
 
     pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {
@@ -2833,7 +2870,15 @@ impl<'window> TexturedSession<'window> {
             },
             "vkGetQueryPoolResults for GPU frame diagnostics",
         )?;
-        if !self.gpu_timing.enabled {
+        let frame_time = self
+            .gpu_scope_timing(
+                GpuTimingScope::Frame,
+                values[FRAME_QUERY_START as usize],
+                values[FRAME_QUERY_START as usize + 1],
+            )
+            .duration();
+        self.surface.strict.record_gpu_time(frame_time);
+        if !self.gpu_timing.requested {
             return Ok(());
         }
         let mut scopes = Vec::with_capacity(4);

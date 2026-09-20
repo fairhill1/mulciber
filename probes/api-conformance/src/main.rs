@@ -7,6 +7,7 @@
 //! rejection, material declaration/interface validation, frame-transient geometry supply and
 //! validation, and fallible shutdown.
 
+mod pacing;
 use std::error::Error;
 use std::time::Instant;
 
@@ -259,6 +260,9 @@ const TRIANGLE_VERTICES: [Vertex; 3] = [
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|arg| arg == "--pacing") {
+        return pacing::run();
+    }
     let mut application = Application::new()?;
     let window = application.create_window(&WindowDescriptor::new(
         "Mulciber — public API conformance",
@@ -3530,6 +3534,18 @@ impl<'window> Cases<'window> {
     }
 
     fn exercise_presentation_policy(&mut self) -> Result<(), Box<dyn Error>> {
+        if matches!(self.step, 73 | 113) {
+            let mode = if self.step == 73 {
+                mulciber::PresentationMode::Adaptive
+            } else {
+                mulciber::PresentationMode::Strict
+            };
+            let graphics = self.graphics.as_mut().expect("session B is open");
+            if graphics.surface.supports_presentation_mode(mode)? {
+                graphics.surface.set_presentation_mode(mode)?;
+                self.pass("live adaptive/strict presentation selection");
+            }
+        }
         if matches!(self.step, 53 | 93 | 133) {
             let sync = self.step == 93;
             match self

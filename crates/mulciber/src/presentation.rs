@@ -1,3 +1,20 @@
+/// Requested synchronization policy for a presentation surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PresentationMode {
+    /// Present as soon as possible, permitting tearing.
+    Immediate,
+    /// Synchronize while keeping up; permit tearing when late.
+    Adaptive,
+    /// Always synchronize, even when frames miss refresh deadlines.
+    #[default]
+    Synchronized,
+    /// Tear-free presentation at half the native refresh rate (including fractional rates).
+    HalfRefresh,
+    /// Keep synchronization and automatically choose full or half native refresh with hysteresis.
+    Strict,
+}
+
 use core::num::NonZeroU64;
 
 /// A two-dimensional extent in physical surface pixels.

@@ -13,8 +13,10 @@ Forward platform events to `Runtime::handle_window_event`, drain presentation fe
 `FramePlan` specifies the exact number and duration of fixed updates plus the interpolation fraction
 for rendering between the previous and current simulation states.
 
-Frame deltas follow observed presentation cadence when fresh feedback is available and fall back to
-wall-clock timing otherwise. Cadence smoothing keeps cumulative scheduled time within 16 ms of
+Frame deltas follow the native fixed display period when fresh presentation feedback is available.
+Variable or unknown display timing always uses elapsed time, even with synchronized presentation.
+`handle_window_event` consumes this timing from window metrics; custom event loops can call
+`set_display_timing` directly. Observed application FPS is never treated as the native refresh rate. Cadence smoothing keeps cumulative scheduled time within 16 ms of
 elapsed time; an outdated FPS estimate cannot accelerate gameplay for seconds after recovery.
 Fallback preserves this bounded offset, and resume resets it. Catch-up work and accepted frame time
 are bounded so a hitch cannot create an unbounded simulation spiral; discarded time remains visible through diagnostics.
@@ -43,11 +45,13 @@ The complete experimental contract and validation record live in the
 ## Optional frame-start limiting
 
 `FrameStartLimiter::new(true)` enables an independent CPU frame-start limiter. Supply
-the native display period through `set_refresh_interval`, then call `wait` before pumping
+`WindowMetrics::display_timing()` through `set_display_timing`, then call `wait` before pumping
 fresh input. Use `new(false)` on paths already paced by presentation. Without a usable
 native period it performs no wait; never substitute measured FPS for the display period.
 Call `reset` on rendering suspension/resume and supply refreshed display information
-after a surface or monitor change. Short overruns preserve the deadline grid; long stalls
+after a surface or monitor change. Variable/unknown timing disables this implicit ceiling; explicit
+user caps still apply. `set_refresh_interval` remains available for callers with a known fixed native
+period; once `set_display_timing` is used, it takes precedence over that legacy input. Short overruns preserve the deadline grid; long stalls
 restart without a burst of catch-up frames. The final 300 microseconds may busy-wait.
 This utility does not change `Runtime` simulation, interpolation, or presentation policy.
 

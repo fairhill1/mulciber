@@ -1,3 +1,4 @@
+mod adaptive;
 #[allow(missing_docs)]
 pub mod objc;
 mod timing;
@@ -149,6 +150,10 @@ pub(crate) struct ClearSurface<'window> {
     pending_presents: VecDeque<PendingPresent>,
     presented_count: u64,
     vsync: bool,
+    display_timing: mulciber_platform::DisplayTiming,
+    presentation_mode: crate::PresentationMode,
+    adaptive: adaptive::AdaptiveSync,
+    strict: super::pacing::StrictPacing,
     _window: PhantomData<SurfaceTarget<'window>>,
 }
 
@@ -217,6 +222,10 @@ impl<'window> ClearSurface<'window> {
                 pending_presents: VecDeque::new(),
                 presented_count: 0,
                 vsync: true,
+                display_timing: metrics.display_timing(),
+                presentation_mode: crate::PresentationMode::Synchronized,
+                adaptive: adaptive::AdaptiveSync::default(),
+                strict: super::pacing::StrictPacing::default(),
                 _window: PhantomData,
             })
         }
@@ -226,7 +235,73 @@ impl<'window> ClearSurface<'window> {
         self.info
     }
 
-    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
+    pub(crate) fn set_presentation_mode(
+        &mut self,
+        mode: crate::PresentationMode,
+    ) -> Result<(), GraphicsError> {
+        if !self.supports_presentation_mode(mode)? {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "strict/half refresh requires native display timing",
+            ));
+        }
+        if self.presentation_mode != mode {
+            self.apply_sync(matches!(
+                mode,
+                crate::PresentationMode::Synchronized
+                    | crate::PresentationMode::HalfRefresh
+                    | crate::PresentationMode::Strict
+            ))?;
+            self.adaptive = adaptive::AdaptiveSync::default();
+            self.strict = super::pacing::StrictPacing::default();
+            self.presentation_mode = mode;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn refresh_interval(&self) -> Option<Duration> {
+        match self.display_timing {
+            mulciber_platform::DisplayTiming::Fixed(period) => Some(period),
+            mulciber_platform::DisplayTiming::Variable {
+                minimum_interval, ..
+            } => Some(minimum_interval),
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // Shares the fallible Vulkan capability-query interface.
+    pub(crate) fn supports_presentation_mode(
+        &self,
+        mode: crate::PresentationMode,
+    ) -> Result<bool, GraphicsError> {
+        Ok(!matches!(
+            mode,
+            crate::PresentationMode::HalfRefresh | crate::PresentationMode::Strict
+        ) || self.refresh_interval().is_some())
+    }
+
+    pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
+        if self.presentation_mode == crate::PresentationMode::Strict {
+            if self.strict.divisor() == 2
+                && matches!(
+                    self.display_timing,
+                    mulciber_platform::DisplayTiming::Fixed(_)
+                )
+            {
+                crate::PresentationMode::HalfRefresh
+            } else {
+                crate::PresentationMode::Synchronized
+            }
+        } else if self.presentation_mode == crate::PresentationMode::HalfRefresh {
+            crate::PresentationMode::HalfRefresh
+        } else if self.vsync {
+            crate::PresentationMode::Synchronized
+        } else {
+            crate::PresentationMode::Immediate
+        }
+    }
+
+    fn apply_sync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
         if self.vsync != enabled {
             self.finish_all_frames()?;
             // SAFETY: The live CAMetalLayer is owned by this main-thread surface.
@@ -288,6 +363,7 @@ impl<'window> ClearSurface<'window> {
         &mut self,
         metrics: WindowMetrics,
     ) -> Result<FrameAcquire<MetalFrameToken>, GraphicsError> {
+        self.display_timing = metrics.display_timing();
         // Harvest completed frames without blocking. Only reuse of the next slot
         // waits; neither drawable unavailability nor abandonment advances the ring.
         for offset in 0..FRAMES_IN_FLIGHT {
@@ -304,6 +380,18 @@ impl<'window> ClearSurface<'window> {
             }
         }
         self.finish_frame(self.frame_slot)?;
+        if self.presentation_mode == crate::PresentationMode::Adaptive {
+            let sync = self
+                .adaptive
+                .update(Instant::now(), metrics.display_timing());
+            if sync != self.vsync {
+                self.apply_sync(sync)?;
+                std::eprintln!(
+                    "Metal adaptive presentation: {}",
+                    if sync { "synchronized" } else { "immediate" }
+                );
+            }
+        }
         let Ok(extent) = surface_extent(metrics) else {
             return Ok(FrameAcquire::Unavailable(SurfaceUnavailable::Suspended));
         };
@@ -357,6 +445,7 @@ impl<'window> ClearSurface<'window> {
         if let Some(counters) = &self.frames[self.frame_slot].counters {
             counters.begin(self.device);
         }
+        self.strict.begin_frame(Instant::now());
         Ok(FrameAcquire::Ready(MetalFrameToken {
             drawable,
             pool,
@@ -441,7 +530,33 @@ impl<'window> ClearSurface<'window> {
         unsafe {
             let drawable_id = objc::usize_value(drawable, c"drawableID");
             objc::void_object(drawable, c"addPresentedHandler:", presented_handler_block());
-            objc::void_object(command_buffer, c"presentDrawable:", drawable);
+            let period = self.refresh_interval();
+            let divisor = if self.presentation_mode == crate::PresentationMode::Strict
+                && matches!(
+                    self.display_timing,
+                    mulciber_platform::DisplayTiming::Variable { .. }
+                ) {
+                1
+            } else if self.presentation_mode == crate::PresentationMode::Strict {
+                period.map_or(1, |period| self.strict.update(Instant::now(), period))
+            } else if self.presentation_mode == crate::PresentationMode::HalfRefresh {
+                2
+            } else {
+                1
+            };
+            if divisor == 2
+                && let Some(period) = period
+            {
+                // Synchronized scanout rounds this tolerance up to two refreshes.
+                objc::void_object_f64(
+                    command_buffer,
+                    c"presentDrawable:afterMinimumDuration:",
+                    drawable,
+                    period.as_secs_f64() * 1.99,
+                );
+            } else {
+                objc::void_object(command_buffer, c"presentDrawable:", drawable);
+            }
             objc::void(command_buffer, c"retain");
             objc::void(command_buffer, c"commit");
             debug_assert!(self.frames[self.frame_slot].command_buffer.is_null());
@@ -534,6 +649,19 @@ impl<'window> ClearSurface<'window> {
         // MTLCommandBufferStatusCompleted is 4; status 5 is an error.
         let status = unsafe { objc::usize_value(command_buffer, c"status") };
         let result = if status == 4 {
+            if matches!(
+                self.presentation_mode,
+                crate::PresentationMode::Adaptive | crate::PresentationMode::Strict
+            ) {
+                // Basic completion timestamps require no counter sampling or profiler capture.
+                let start = unsafe { objc::f64_value(command_buffer, c"GPUStartTime") };
+                let end = unsafe { objc::f64_value(command_buffer, c"GPUEndTime") };
+                if start.is_finite() && end.is_finite() && start > 0.0 && end >= start {
+                    let duration = Duration::from_secs_f64(end - start);
+                    self.adaptive.record_gpu_time(duration);
+                    self.strict.record_gpu_time(duration);
+                }
+            }
             if self.gpu_timing_enabled
                 && let Some(frame_index) = frame_index
             {

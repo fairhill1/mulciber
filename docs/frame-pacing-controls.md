@@ -1,6 +1,6 @@
 # Presentation choice and explicit frame caps
 
-Release versions: graphics 0.13.20 and runtime 0.5.4.
+Release versions: graphics 0.13.21, platform/runtime 0.5.5.
 
 `Surface::set_vsync(false)` requests immediate presentation, preserving available
 throughput below refresh at the cost of possible tearing. `true` retains the
@@ -25,7 +25,8 @@ reanchors the next explicit-cap deadline. The wait learns OS sleep overshoot wit
 a spin margin bounded at 3 ms; this avoids systematic timer-coalescing underdelivery
 without spinning for the entire frame budget. A cap change discards the old deadline,
 and suspension reset preserves the cap but discards display timing/deadlines.
-There is no automatic 60-to-30 downgrade and no rounding to refresh divisors.
+The explicit limiter does not round caps to refresh divisors. The separate Strict presentation
+policy below deliberately chooses full/half native refresh.
 
 Use `Runtime::set_presentation_pacing_enabled(false)` with immediate presentation.
 The fixed simulation step, catch-up bound and interpolation are unchanged; deltas
@@ -44,3 +45,85 @@ Windows x86_64 compilation covers the Vulkan implementation. Native Vulkan,
 variable-refresh, multi-display and physical input-to-display latency are not
 validated by these checks. Consumer pacing traces are recorded separately in the
 macOS runbook; no viability gate is advanced.
+
+## Native display timing — platform/runtime 0.5.5
+
+The platform exposes fixed, variable and unknown display timing in `WindowMetrics`. AppKit reads
+NSScreen's minimum/maximum refresh intervals and update granularity from the window's current
+screen, with a metrics revision when that timing changes. Win32/Wayland/X11 return `Unknown`
+until their native capability paths have evidence; nominal refresh or present mode does not prove
+VRR. The range describes capability, not per-frame active VRR.
+
+The runtime consumes this metadata from window events. Cadence smoothing now requires a known
+fixed native period plus fresh presentation feedback. Variable/unknown timing retains elapsed
+deltas, including below the reported range; low-frame-rate compensation remains display/driver
+behavior. The limiter accepts the same timing, disabling only its implicit refresh ceiling on
+variable/unknown displays and retaining explicit user caps. Native timing metadata itself never introduces a 30 FPS cap.
+Fixed 60 Hz plus VSync still cannot display 50 FPS at equal intervals.
+
+Regressions cover 35–55 FPS variable intervals, a 120 ms hitch, mode transitions, stale feedback,
+slow application feedback on a fixed screen, and a 50 FPS explicit cap on variable/unknown timing.
+Native fixed-refresh evidence is from the Apple M2 built-in panel (16.666 ms min/max/granularity).
+Physical VRR and multi-display transitions remain unvalidated.
+
+## Adaptive and Strict presentation — graphics 0.13.21
+
+`Surface::set_presentation_mode` adds policies alongside the compatible boolean API:
+
+| Policy | Native behavior |
+| --- | --- |
+| Immediate | Allow tearing; present as soon as possible. |
+| Adaptive | Synchronize while keeping up; permit tearing when late. |
+| Synchronized | Retain synchronization even when deadlines are missed. |
+| HalfRefresh | Always schedule each image for two native refresh periods. |
+| Strict | Keep synchronization; choose full/half refresh from measured CPU/GPU work. |
+
+Query `supports_presentation_mode` before offering a policy. Unsupported requests return an
+error without substituting another mode. `active_presentation_mode` exposes the current native
+choice for diagnostics. A game may offer four choices, using Strict instead of the fixed
+HalfRefresh primitive. It should explain any fallback when loading an unsupported saved choice.
+
+Metal Adaptive starts immediate, enables display sync after 45 consecutive refresh-rate starts
+with GPU headroom, and releases it after a missed deadline or GPU overload. It ignores three
+already-queued old-cadence frames after recovery, preventing transition oscillation. Unknown
+native timing stays immediate. Variable-capable screens retain native synchronization, without
+assuming that capability proves VRR engagement; macOS adaptive scheduling also requires the
+appropriate display setting and fullscreen presentation.
+
+Strict starts conservatively at half refresh. CPU/GPU work above 97% of a native interval or a
+missed full-rate cadence steps it down; 90 fresh GPU samples with CPU/GPU work below 80% recover
+full rate. Queued half-rate frames do not immediately reverse recovery. The target is derived
+from the native period: 75 Hz uses 37.5 FPS, not 30. It does not guarantee smooth motion when the
+workload exceeds even the half-rate budget. On Metal variable-capable displays it leaves cadence
+to native synchronization rather than imposing a fixed divisor. A real VRR display remains
+necessary to validate that path, including window/fullscreen and below-range behavior.
+
+Metal schedules half refresh with `presentDrawable:afterMinimumDuration:` and a small tolerance
+below two periods, rounded by synchronized scanout. Vulkan Adaptive requires FIFO relaxed;
+Strict/HalfRefresh require FIFO plus `VK_EXT_present_timing` relative-time scheduling, a native
+refresh duration, and (for Strict) GPU timestamps. Vulkan's requested relative presentation time
+is two native periods with nearest-refresh scheduling. Scheduling continues with zero timing
+queries if the diagnostics queue is full, so optional telemetry cannot disable the policy. Vulkan currently cannot distinguish active
+VRR from a fixed display; Strict is therefore a fixed-divisor policy there. No nominal refresh
+rate is treated as VRR detection. Unavailable native support remains unavailable in the API/UI.
+
+### Native fixed-refresh transition evidence
+
+Reproduce with `MTL_DEBUG_LAYER=1 target/debug/mulciber-api-conformance --pacing`.
+The probe alternates a small textured workload and 22 ms of work after acquisition. On this
+Apple M2 fixed 60 Hz display, the last 60 frames of each settled phase reported:
+
+| Phase | Active policy | Median frame-completion interval | Native presentation interval |
+| --- | --- | --- | --- |
+| Adaptive light | Synchronized | 16.681 ms | 16.667 ms |
+| Adaptive slow | Immediate | 23.812 ms | Unlocked; not a uniform scanout claim |
+| Adaptive recovery | Synchronized | 16.652 ms | 16.667 ms |
+| Strict light | Synchronized | 16.657 ms | 16.667 ms |
+| Strict slow | HalfRefresh | 33.313 ms | 33.333 ms |
+| Strict recovery | Synchronized | 16.687 ms | 16.667 ms |
+
+The settled Strict slow phase's 60 native presentation intervals span 33.332958–33.333542 ms.
+The ordinary Metal API conformance run passes 101 cases with validation enabled, including live
+Adaptive/Strict selection. Unit tests cover fractional display rates, workload changes, queued
+transitions, and conservative recovery. Windows/Vulkan is compile/lint checked only for these new
+policies; native Vulkan, VRR, multi-display, and optical input latency are not established here.

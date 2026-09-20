@@ -5,6 +5,9 @@
 
 use core::fmt;
 
+mod display;
+pub use display::DisplayTiming;
+
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -154,6 +157,7 @@ impl WindowRevision {
 /// The current drawable metrics of a window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowMetrics {
+    display_timing: DisplayTiming,
     extent: PhysicalExtent,
     scale_factor: f64,
     revision: WindowRevision,
@@ -173,7 +177,20 @@ impl WindowMetrics {
             extent,
             scale_factor,
             revision,
+            display_timing: DisplayTiming::Unknown,
         }
+    }
+
+    /// Native timing for the current screen, independent of this application's frame rate.
+    #[must_use]
+    pub const fn display_timing(self) -> DisplayTiming {
+        self.display_timing
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) const fn with_display_timing(mut self, timing: DisplayTiming) -> Self {
+        self.display_timing = timing;
+        self
     }
 
     /// Returns the drawable extent in physical pixels.

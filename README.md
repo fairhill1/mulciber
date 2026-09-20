@@ -98,3 +98,21 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
   [API extraction plan](docs/api-extraction-plan.md)
 - [Changelog](CHANGELOG.md)
+
+### Display-aware pacing (platform/runtime 0.5.5)
+
+Native AppKit timing now distinguishes fixed/variable/unknown refresh; the runtime smooths only
+a known fixed period and uses elapsed time otherwise. Explicit caps remain independent. Other
+platforms report unknown until native capability evidence is added. Fixed-panel native evidence
+and synthetic VRR regressions do not establish physical VRR support or advance a viability gate.
+See [frame-pacing controls](docs/frame-pacing-controls.md).
+
+### Adaptive/Strict presentation (graphics 0.13.21)
+
+The graphics API now owns adaptive synchronization and automatic full/half refresh with
+workload-based recovery. Applications query support and select policy; fixed-divisor scheduling
+is native, not a rounded integer CPU cap. The Apple M2 fixed-60-Hz probe demonstrates stable
+full/half/full transitions and API conformance passes 101 cases with Metal validation. Vulkan
+uses FIFO relaxed or capability-gated relative presentation timing; the new paths are compile
+checked, not physically validated here. VRR and multi-display evidence remain outstanding.
+See [behavior, reproduction and limits](docs/frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).

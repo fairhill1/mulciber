@@ -133,6 +133,12 @@ impl Runtime {
         self.pacer.set_enabled(enabled);
     }
 
+    /// Supplies native display timing when not forwarding window events.
+    /// Fixed refresh may be smoothed; variable or unknown refresh always uses elapsed time.
+    pub fn set_display_timing(&mut self, timing: mulciber_platform::DisplayTiming) {
+        self.pacer.set_display_timing(timing);
+    }
+
     /// Summarizes the presentation pacing recorded so far.
     #[must_use]
     pub fn pacing_report(&self) -> PacingReport {
@@ -146,13 +152,20 @@ impl Runtime {
 
     /// Applies the input and rendering-lifecycle parts of one platform window event.
     ///
-    /// Redraw, metrics, and close policy remain with the application. Lower-level input, suspend,
+    /// Native display timing is consumed from metrics; redraw and close policy remain with the
+    /// application. Lower-level input, suspend,
     /// and resume methods remain available when an application uses a different coordination shape.
     pub fn handle_window_event(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::Input(input) => self.handle_input(input),
             WindowEvent::RenderingSuspended => self.suspend(),
-            WindowEvent::RenderingResumed(_) => self.resume(Instant::now()),
+            WindowEvent::RenderingResumed(metrics) => {
+                self.set_display_timing(metrics.display_timing());
+                self.resume(Instant::now());
+            }
+            WindowEvent::MetricsChanged(metrics) | WindowEvent::RedrawRequested(metrics) => {
+                self.set_display_timing(metrics.display_timing());
+            }
             _ => {}
         }
     }
@@ -165,9 +178,10 @@ impl Runtime {
 
     /// Begins a scoped frame with fixed simulation work, input, and render interpolation.
     ///
-    /// While recorded presentation feedback yields a fresh cadence estimate, the frame delta is a
+    /// With fixed native display timing and fresh presentation feedback, the frame delta is a
     /// whole number of display intervals if doing so keeps cumulative pacing drift within 16 ms
-    /// of elapsed time. Call this once per frame that will be presented. Without fresh feedback,
+    /// of elapsed time. Call this once per frame that will be presented. Variable/unknown timing,
+    /// missing fresh feedback,
     /// or when the drift limit would be exceeded, the delta observably falls back to the wall-clock
     /// gap since the previous frame — see
     /// [`RuntimeFrame::schedule`].
@@ -224,6 +238,7 @@ mod tests {
     fn runtime_after_steady_presents(count: u32) -> (Runtime, Instant) {
         let mut at = Instant::now();
         let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), at);
+        runtime.set_display_timing(mulciber_platform::DisplayTiming::Fixed(STEP));
         for _ in 1..count {
             runtime.record_presented(at);
             at += STEP;
@@ -263,6 +278,7 @@ mod tests {
             let start = Instant::now();
             let mut now = start;
             let mut runtime = Runtime::new(config, start);
+            runtime.set_display_timing(mulciber_platform::DisplayTiming::Fixed(STEP));
             let mut feedback = VecDeque::new();
             let mut scheduled = Duration::ZERO;
             let mut simulated = Duration::ZERO;

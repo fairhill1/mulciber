@@ -564,8 +564,26 @@ impl<'window> TexturedSession<'window> {
         Ok(acquisition.map_ready(TexturedFrameToken))
     }
 
-    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
-        self.surface.set_vsync(enabled)
+    pub(crate) fn set_presentation_mode(
+        &mut self,
+        mode: crate::PresentationMode,
+    ) -> Result<(), GraphicsError> {
+        self.surface.set_presentation_mode(mode)
+    }
+
+    pub(crate) fn supports_presentation_mode(
+        &self,
+        mode: crate::PresentationMode,
+    ) -> Result<bool, GraphicsError> {
+        self.surface.supports_presentation_mode(mode)
+    }
+
+    pub(crate) fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.surface.refresh_interval()
+    }
+
+    pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
+        self.surface.active_presentation_mode()
     }
 
     pub(crate) fn take_present_feedback(&mut self) -> PresentFeedback {

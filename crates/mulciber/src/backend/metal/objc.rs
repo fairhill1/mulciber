@@ -224,6 +224,12 @@ pub unsafe fn void_object(receiver: Object, name: &CStr, argument: Object) {
     unsafe { function(receiver, selector(name), argument) };
 }
 
+pub unsafe fn void_object_f64(receiver: Object, name: &CStr, object: Object, value: f64) {
+    let function: unsafe extern "C" fn(Object, Selector, Object, f64) =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), object, value) };
+}
+
 pub unsafe fn void_object_usize(receiver: Object, name: &CStr, object: Object, index: usize) {
     let function: unsafe extern "C" fn(Object, Selector, Object, usize) =
         unsafe { mem::transmute(objc_msgSend as *const ()) };

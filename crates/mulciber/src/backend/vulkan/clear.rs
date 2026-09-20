@@ -84,7 +84,8 @@ pub(crate) struct ClearSurface<'window> {
     next_frame_index: Option<usize>,
     info: SurfaceInfo,
     recreate_after_present: bool,
-    vsync: bool,
+    presentation_mode: crate::PresentationMode,
+    strict: super::super::pacing::StrictPacing,
     resize_pace: Duration,
     last_resize_recreate: Option<Instant>,
     deferred_error: Option<GraphicsError>,
@@ -129,7 +130,8 @@ impl<'window> ClearSurface<'window> {
             next_frame_index: None,
             info: SurfaceInfo::initial(extent).expect("extent was checked"),
             recreate_after_present: false,
-            vsync: true,
+            presentation_mode: crate::PresentationMode::Synchronized,
+            strict: super::super::pacing::StrictPacing::default(),
             resize_pace,
             last_resize_recreate: None,
             deferred_error: None,
@@ -143,14 +145,64 @@ impl<'window> ClearSurface<'window> {
         Ok(surface)
     }
 
-    pub(crate) fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
-        if self.vsync != enabled {
-            // Validate before changing policy or retiring any live swapchain.
-            choose_present_mode(self.device.as_ref().expect("live surface"), enabled)?;
-            self.vsync = enabled;
+    pub(crate) fn set_presentation_mode(
+        &mut self,
+        mode: crate::PresentationMode,
+    ) -> Result<(), GraphicsError> {
+        if !self.supports_presentation_mode(mode)? {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "requested presentation mode is unavailable",
+            ));
+        }
+        if self.presentation_mode != mode {
+            choose_present_mode(self.device.as_ref().expect("live surface"), mode)?;
+            self.presentation_mode = mode;
+            self.strict = super::super::pacing::StrictPacing::default();
             self.recreate_after_present = true;
         }
         Ok(())
+    }
+
+    pub(crate) fn refresh_interval(&self) -> Option<Duration> {
+        self.present_timing
+            .as_ref()
+            .and_then(|timing| timing.refresh_interval)
+    }
+
+    pub(crate) fn supports_presentation_mode(
+        &self,
+        mode: crate::PresentationMode,
+    ) -> Result<bool, GraphicsError> {
+        if matches!(
+            mode,
+            crate::PresentationMode::HalfRefresh | crate::PresentationMode::Strict
+        ) && (!self
+            .device()
+            .adapter
+            .present_timing
+            .is_ok_and(|selection| selection.relative_time)
+            || self.refresh_interval().is_none())
+        {
+            return Ok(false);
+        }
+        match choose_present_mode(self.device(), mode) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == GraphicsErrorKind::Unsupported => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
+        if matches!(self.presentation_mode, crate::PresentationMode::Strict) {
+            if self.strict.divisor() == 2 {
+                crate::PresentationMode::HalfRefresh
+            } else {
+                crate::PresentationMode::Synchronized
+            }
+        } else {
+            self.presentation_mode
+        }
     }
 
     pub(crate) const fn info(&self) -> SurfaceInfo {
@@ -456,7 +508,7 @@ impl<'window> ClearSurface<'window> {
         let formats = surface_formats(device)?;
         let format = choose_surface_format(&formats)
             .ok_or_else(|| unsupported("surface exposes no supported sRGB format"))?;
-        let present_mode = choose_present_mode(device, self.vsync)?;
+        let present_mode = choose_present_mode(device, self.presentation_mode)?;
         let extent = choose_extent(capabilities, requested);
         let extent_info = SurfaceExtent::new(extent.width, extent.height);
         let mut image_count = capabilities
@@ -1569,6 +1621,14 @@ impl Device {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT,
             pNext: (&raw mut present_id2_features).cast(),
             presentTiming: vk::VK_TRUE,
+            presentAtRelativeTime: if adapter
+                .present_timing
+                .is_ok_and(|selection| selection.relative_time)
+            {
+                vk::VK_TRUE
+            } else {
+                vk::VK_FALSE
+            },
             ..Default::default()
         };
         let timing_head: *mut c_void = if adapter.present_timing.is_ok() {
@@ -1985,7 +2045,7 @@ fn surface_formats(device: &Device) -> Result<Vec<vk::VkSurfaceFormatKHR>, Graph
 
 fn choose_present_mode(
     device: &Device,
-    vsync: bool,
+    presentation_mode: crate::PresentationMode,
 ) -> Result<vk::VkPresentModeKHR, GraphicsError> {
     let function = device
         .instance
@@ -2016,11 +2076,15 @@ fn choose_present_mode(
         },
         "enumerate present modes",
     )?;
-    if let Some(mode) = platform::choose_present_mode_for_sync(&values[..count as usize], vsync) {
+    if let Some(mode) =
+        platform::choose_present_mode_for_policy(&values[..count as usize], presentation_mode)
+    {
         eprintln!(
             "Vulkan presentation: {}",
             if mode == vk::VK_PRESENT_MODE_IMMEDIATE_KHR {
                 "immediate"
+            } else if mode == vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR {
+                "adaptive (fifo relaxed)"
             } else if mode == vk::VK_PRESENT_MODE_MAILBOX_KHR {
                 "mailbox"
             } else {
@@ -2031,7 +2095,7 @@ fn choose_present_mode(
     } else {
         Err(GraphicsError::with_kind(
             GraphicsErrorKind::Unsupported,
-            "surface does not expose the requested synchronized/immediate presentation mode",
+            "surface does not expose the requested presentation mode",
         ))
     }
 }

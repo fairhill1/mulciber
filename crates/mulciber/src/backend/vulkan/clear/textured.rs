@@ -443,10 +443,11 @@ impl<'window> TexturedSession<'window> {
         request: DeviceRequest,
     ) -> Result<(Self, SampleCount), GraphicsError> {
         let surface = ClearSurface::new(target, metrics)?;
-        let sample_count = if request.preferred_sample_count == SampleCount::Four
-            && surface.device().adapter.sample_count == vk::VK_SAMPLE_COUNT_4_BIT
+        let requested = request.preferred_sample_count.samples().cast_signed();
+        let sample_count = if requested > vk::VK_SAMPLE_COUNT_1_BIT
+            && surface.device().adapter.sample_counts & requested.cast_unsigned() != 0
         {
-            vk::VK_SAMPLE_COUNT_4_BIT
+            requested
         } else {
             vk::VK_SAMPLE_COUNT_1_BIT
         };
@@ -570,11 +571,8 @@ impl<'window> TexturedSession<'window> {
                 postprocess_targets: Arena::new("postprocess targets"),
                 deferred_token: None,
             },
-            if sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
-                SampleCount::Four
-            } else {
-                SampleCount::One
-            },
+            SampleCount::from_samples(sample_count.cast_unsigned())
+                .expect("sample count was taken from a SampleCount"),
         ))
     }
 
@@ -817,7 +815,7 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        config.validate_scene_depth_samples(self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT)?;
+        config.validate_scene_depth_samples(self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT)?;
         if config.hdr {
             bloom::validate_format(&self.surface, self.sample_count, 1, 1)?;
         }
@@ -987,7 +985,7 @@ impl<'window> TexturedSession<'window> {
             self.sample_count,
             1,
         )?;
-        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+        let multisample_color = if self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT {
             match create_image(
                 &self.surface,
                 extent.width(),
@@ -1083,7 +1081,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_4_BIT {
+        let multisample_color = if self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT {
             match create_image(
                 &self.surface,
                 scene_extent.width(),
@@ -6549,7 +6547,7 @@ fn create_postprocess_pipeline(
         }
     }
     if let Some(volume) = config.volume {
-        let shaders = if samples == 4 {
+        let shaders = if samples > 1 {
             [volume.scatter_msaa, volume.composite_msaa]
         } else {
             [volume.scatter, volume.composite]

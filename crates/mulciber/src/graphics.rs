@@ -34,14 +34,46 @@ const LAZY_RECLAIM_BUDGET: usize = 8;
 pub enum SampleCount {
     /// One sample per pixel.
     One,
+    /// Two samples per pixel.
+    Two,
     /// Four samples per pixel.
     Four,
+}
+
+impl SampleCount {
+    /// Samples per pixel as the number the native APIs take.
+    #[must_use]
+    pub const fn samples(self) -> u32 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Four => 4,
+        }
+    }
+
+    /// The count for a native sample number, which is one of the three or nothing.
+    #[must_use]
+    pub const fn from_samples(samples: u32) -> Option<Self> {
+        match samples {
+            1 => Some(Self::One),
+            2 => Some(Self::Two),
+            4 => Some(Self::Four),
+            _ => None,
+        }
+    }
+
+    /// Whether the scene is rendered into a multisample target that is resolved.
+    #[must_use]
+    pub const fn is_multisampled(self) -> bool {
+        !matches!(self, Self::One)
+    }
 }
 
 /// Preferences used while selecting a surface-compatible graphics device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeviceRequest {
-    /// Preferred sample count. Unsupported four-sample rendering falls back observably to one.
+    /// Preferred sample count. A multisample count the device cannot render falls back
+    /// observably to one sample per pixel.
     pub preferred_sample_count: SampleCount,
 }
 
@@ -80,7 +112,7 @@ impl DeviceSelection {
         self.backend
     }
 
-    /// Actual sample count, including a visible fallback from four to one.
+    /// Actual sample count, including a visible fallback from a multisample count to one.
     #[must_use]
     pub const fn sample_count(&self) -> SampleCount {
         self.sample_count

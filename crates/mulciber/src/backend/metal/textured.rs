@@ -477,10 +477,11 @@ impl<'window> TexturedSession<'window> {
         request: DeviceRequest,
     ) -> Result<(Self, SampleCount), GraphicsError> {
         let surface = ClearSurface::new(target, metrics)?;
-        let sample_count = if request.preferred_sample_count == SampleCount::Four
-            && unsafe { objc::bool_usize(surface.device, c"supportsTextureSampleCount:", 4) }
+        let requested = request.preferred_sample_count.samples() as usize;
+        let sample_count = if requested > 1
+            && unsafe { objc::bool_usize(surface.device, c"supportsTextureSampleCount:", requested) }
         {
-            4
+            requested
         } else {
             1
         };
@@ -505,11 +506,8 @@ impl<'window> TexturedSession<'window> {
                 targets: Arena::new("render targets"),
                 postprocess_targets: Arena::new("postprocess targets"),
             },
-            if sample_count == 4 {
-                SampleCount::Four
-            } else {
-                SampleCount::One
-            },
+            SampleCount::from_samples(u32::try_from(sample_count).expect("sample count"))
+                .expect("sample count was taken from a SampleCount"),
         ))
     }
 
@@ -732,7 +730,7 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        config.validate_scene_depth_samples(self.sample_count == 4)?;
+        config.validate_scene_depth_samples(self.sample_count > 1)?;
         self.material_pipelines.insert(create_material_pipeline(
             self.surface.device,
             shader.payload(),
@@ -886,13 +884,13 @@ impl<'window> TexturedSession<'window> {
             self.sample_count,
             TEXTURE_USAGE_RENDER_TARGET,
         )?;
-        let multisample_color = if self.sample_count == 4 {
+        let multisample_color = if self.sample_count > 1 {
             match create_target_texture(
                 self.surface.device,
                 PIXEL_FORMAT_BGRA8_UNORM_SRGB,
                 width,
                 height,
-                4,
+                self.sample_count,
                 TEXTURE_USAGE_RENDER_TARGET,
             ) {
                 Ok(color) => color,
@@ -953,13 +951,13 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let multisample_color = if self.sample_count == 4 {
+        let multisample_color = if self.sample_count > 1 {
             match create_target_texture_with_storage(
                 self.surface.device,
                 format,
                 width,
                 height,
-                4,
+                self.sample_count,
                 TEXTURE_USAGE_RENDER_TARGET,
                 false,
             ) {
@@ -2051,7 +2049,7 @@ impl<'window> TexturedSession<'window> {
                 "color attachment zero",
             )?;
             let targets = &self.targets[target];
-            if self.sample_count == 4 {
+            if self.sample_count > 1 {
                 objc::void_object(color, c"setTexture:", targets.multisample_color);
                 objc::void_object(color, c"setResolveTexture:", drawable_texture);
                 objc::void_usize(color, c"setStoreAction:", STORE_ACTION_MULTISAMPLE_RESOLVE);
@@ -3848,7 +3846,7 @@ fn create_postprocess_pipeline(
         }
     }
     if let Some(volume) = config.volume {
-        let shaders = if samples == 4 {
+        let shaders = if samples > 1 {
             [volume.scatter_msaa, volume.composite_msaa]
         } else {
             [volume.scatter, volume.composite]
@@ -4095,7 +4093,7 @@ fn create_target_texture(
         height,
         sample_count,
         usage,
-        sample_count == 4,
+        sample_count > 1,
     )
 }
 
@@ -4158,9 +4156,9 @@ fn create_target_texture_with_storage(
             ),
             "Metal target texture descriptor",
         )?;
-        if sample_count == 4 {
+        if sample_count > 1 {
             objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_2D_MULTISAMPLE);
-            objc::void_usize(descriptor, c"setSampleCount:", 4);
+            objc::void_usize(descriptor, c"setSampleCount:", sample_count);
         }
         objc::void_usize(
             descriptor,

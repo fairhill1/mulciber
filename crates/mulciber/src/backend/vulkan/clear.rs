@@ -1312,7 +1312,8 @@ impl Drop for Instance {
 struct Adapter {
     handle: vk::VkPhysicalDevice,
     queue_family: u32,
-    sample_count: vk::VkSampleCountFlagBits,
+    /// Sample counts both the colour and the depth attachments can be rendered at.
+    sample_counts: vk::VkSampleCountFlags,
     timestamp_valid_bits: u32,
     timestamp_period: f32,
     present_timing: Result<timing::PresentTimingSelection, &'static str>,
@@ -1793,15 +1794,8 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                     Adapter {
                         handle,
                         queue_family: u32::try_from(index).expect("queue family index"),
-                        sample_count: if properties.limits.framebufferColorSampleCounts
-                            & properties.limits.framebufferDepthSampleCounts
-                            & vk::VK_SAMPLE_COUNT_4_BIT as u32
-                            != 0
-                        {
-                            vk::VK_SAMPLE_COUNT_4_BIT
-                        } else {
-                            vk::VK_SAMPLE_COUNT_1_BIT
-                        },
+                        sample_counts: properties.limits.framebufferColorSampleCounts
+                            & properties.limits.framebufferDepthSampleCounts,
                         timestamp_valid_bits: family.timestampValidBits,
                         timestamp_period: properties.limits.timestampPeriod,
                         present_timing,

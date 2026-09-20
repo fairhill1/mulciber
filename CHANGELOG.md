@@ -2,6 +2,16 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Two-sample rendering (0.13.18)
+
+`SampleCount::Two` joins `One` and `Four`. Each backend asks the device for the requested
+count (`supportsTextureSampleCount:` on Metal, the framebuffer colour and depth sample-count
+limits on Vulkan) and falls back observably to one sample per pixel, as the four-sample
+request already did. `SampleCount::samples`, `from_samples` and `is_multisampled` replace
+the assumption that multisampled means four. Shaders that read scene depth through a
+multisampled texture are unchanged: the sample count is a property of the texture, not
+the shader.
+
 ## Optional Vulkan device labels (0.13.17)
 
 Fix startup without validation: 0.13.16 stopped enabling `VK_EXT_debug_utils` on the

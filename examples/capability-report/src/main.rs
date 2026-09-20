@@ -37,8 +37,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("backend: {}", graphics.selection.backend());
     println!("requested samples: {requested:?}");
     println!("selected samples: {selected:?}");
-    if requested == SampleCount::Four && selected == SampleCount::One {
-        println!("fallback: four-sample rendering is unsupported; one sample per pixel selected");
+    if requested != selected {
+        println!(
+            "fallback: {}-sample rendering is unsupported; one sample per pixel selected",
+            requested.samples()
+        );
     }
 
     graphics.shutdown()?;

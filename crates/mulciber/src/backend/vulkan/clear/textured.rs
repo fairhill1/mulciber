@@ -175,6 +175,8 @@ struct TextureResource {
 }
 
 struct PipelineResource {
+    /// Samples per pixel the pipeline was built for; drawing at another count is refused.
+    sample_count: vk::VkSampleCountFlagBits,
     volume: Vec<PipelineResource>,
     bloom: Vec<PipelineResource>,
     volume_sets: Vec<volumetric::DescriptorSets>,
@@ -197,6 +199,8 @@ struct PipelineResource {
 }
 
 struct MaterialPipelineResource {
+    /// Samples per pixel the pipeline was built for; drawing at another count is refused.
+    sample_count: vk::VkSampleCountFlagBits,
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
@@ -270,11 +274,13 @@ struct ShadowPipelineResource {
 
 struct TargetResource {
     info: SurfaceInfo,
+    sample_count: vk::VkSampleCountFlagBits,
     multisample_color: Option<Image>,
     depth: Option<Image>,
 }
 
 struct PostprocessTargetResource {
+    sample_count: vk::VkSampleCountFlagBits,
     depth_snapshot: Option<Image>,
     scattering: Option<Image>,
     bloom: Vec<Image>,
@@ -443,14 +449,7 @@ impl<'window> TexturedSession<'window> {
         request: DeviceRequest,
     ) -> Result<(Self, SampleCount), GraphicsError> {
         let surface = ClearSurface::new(target, metrics)?;
-        let requested = request.preferred_sample_count.samples().cast_signed();
-        let sample_count = if requested > vk::VK_SAMPLE_COUNT_1_BIT
-            && surface.device().adapter.sample_counts & requested.cast_unsigned() != 0
-        {
-            requested
-        } else {
-            vk::VK_SAMPLE_COUNT_1_BIT
-        };
+        let sample_count = select_sample_count(&surface, request.preferred_sample_count);
         let uniform = create_buffer(
             &surface,
             DRAW_UNIFORM_STRIDE * ClearSurface::frames_in_flight(),
@@ -780,11 +779,36 @@ impl<'window> TexturedSession<'window> {
         }
     }
 
+    /// Changes the samples per pixel new pipelines and targets are built for,
+    /// falling back to one the way opening does, and returns the count in use.
+    pub(crate) fn set_sample_count(&mut self, preferred: SampleCount) -> SampleCount {
+        self.sample_count = select_sample_count(&self.surface, preferred);
+        SampleCount::from_samples(self.sample_count.cast_unsigned())
+            .expect("sample count was taken from a SampleCount")
+    }
+
+    fn check_sample_count(
+        &self,
+        built: vk::VkSampleCountFlagBits,
+        what: &str,
+    ) -> Result<(), GraphicsError> {
+        if built == self.sample_count {
+            return Ok(());
+        }
+        Err(error(format!(
+            "{what} was built for {built} sample(s) per pixel and the device now renders at {}; \
+             recreate it after changing the sample count",
+            self.sample_count
+        )))
+    }
+
     pub(crate) fn create_pipeline(
         &mut self,
         shader: ShaderArtifact<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        let resource = create_pipeline(&self.surface, shader.payload(), self.sample_count, false)?;
+        let mut resource =
+            create_pipeline(&self.surface, shader.payload(), self.sample_count, false)?;
+        resource.sample_count = self.sample_count;
         self.pipelines.insert(resource)
     }
 
@@ -792,7 +816,9 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         shader: ShaderArtifact<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        let resource = create_pipeline(&self.surface, shader.payload(), self.sample_count, true)?;
+        let mut resource =
+            create_pipeline(&self.surface, shader.payload(), self.sample_count, true)?;
+        resource.sample_count = self.sample_count;
         self.instanced_pipelines.insert(resource)
     }
 
@@ -801,12 +827,13 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &PostprocessPipelineConfig,
     ) -> Result<ResourceId, GraphicsError> {
-        let resource = create_postprocess_pipeline(
+        let mut resource = create_postprocess_pipeline(
             &self.surface,
             shader.payload(),
             config,
             self.sample_count.cast_unsigned(),
         )?;
+        resource.sample_count = self.sample_count;
         self.postprocess_pipelines.insert(resource)
     }
 
@@ -819,8 +846,9 @@ impl<'window> TexturedSession<'window> {
         if config.hdr {
             bloom::validate_format(&self.surface, self.sample_count, 1, 1)?;
         }
-        let resource =
+        let mut resource =
             create_material_pipeline(&self.surface, shader.payload(), config, self.sample_count)?;
+        resource.sample_count = self.sample_count;
         self.material_pipelines.insert(resource)
     }
 
@@ -985,7 +1013,9 @@ impl<'window> TexturedSession<'window> {
             self.sample_count,
             1,
         )?;
-        let multisample_color = if self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT {
+        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_1_BIT {
+            None
+        } else {
             match create_image(
                 &self.surface,
                 extent.width(),
@@ -1002,11 +1032,10 @@ impl<'window> TexturedSession<'window> {
                     return Err(failure);
                 }
             }
-        } else {
-            None
         };
         self.targets.insert(TargetResource {
             info,
+            sample_count: self.sample_count,
             multisample_color,
             depth: Some(depth),
         })
@@ -1081,7 +1110,9 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let multisample_color = if self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT {
+        let multisample_color = if self.sample_count == vk::VK_SAMPLE_COUNT_1_BIT {
+            None
+        } else {
             match create_image(
                 &self.surface,
                 scene_extent.width(),
@@ -1099,10 +1130,9 @@ impl<'window> TexturedSession<'window> {
                     return Err(failure);
                 }
             }
-        } else {
-            None
         };
         let mut resource = PostprocessTargetResource {
+            sample_count: self.sample_count,
             depth_snapshot: None,
             scattering: None,
             bloom: Vec::new(),
@@ -1149,6 +1179,7 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target_index = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
         if self.targets[target_index].info != token.info {
             return Err(error(
                 "render targets do not match acquired Vulkan generation",
@@ -1177,6 +1208,14 @@ impl<'window> TexturedSession<'window> {
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target_index = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target_index].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline_index].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target_index].info != token.info {
             return Err(error(
                 "postprocess targets do not match acquired Vulkan generation",
@@ -1206,6 +1245,7 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target_index = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
         if self.targets[target_index].info != token.info {
             return Err(error(
                 "render targets do not match acquired Vulkan generation",
@@ -1234,6 +1274,14 @@ impl<'window> TexturedSession<'window> {
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target_index = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target_index].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline_index].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target_index].info != token.info {
             return Err(error(
                 "postprocess targets do not match acquired Vulkan generation",
@@ -1308,6 +1356,7 @@ impl<'window> TexturedSession<'window> {
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target_index = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
         if self.targets[target_index].info != token.info {
             return Err(error(
                 "render targets do not match acquired Vulkan generation",
@@ -1341,6 +1390,14 @@ impl<'window> TexturedSession<'window> {
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target_index = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target_index].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline_index].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target_index].info != token.info {
             return Err(error(
                 "postprocess targets do not match acquired Vulkan generation",
@@ -1575,6 +1632,10 @@ impl<'window> TexturedSession<'window> {
                 }
             };
             let pipeline = self.material_pipelines.index_of(record.pipeline.id())?;
+            self.check_sample_count(
+                self.material_pipelines[pipeline].sample_count,
+                "material pipeline",
+            )?;
             if index >= records.len()
                 && self.material_pipelines[pipeline].overlay_pipeline.is_null()
             {
@@ -1883,6 +1944,7 @@ impl<'window> TexturedSession<'window> {
             let mesh = self.meshes.index_of(draw.mesh.id())?;
             let texture = self.textures.index_of(draw.texture.id())?;
             let pipeline = self.pipelines.index_of(draw.pipeline.id())?;
+            self.check_sample_count(self.pipelines[pipeline].sample_count, "textured pipeline")?;
             let descriptor = self.descriptor_set(pipeline, texture, draw.texture.id(), false)?;
             self.resolved_draws.push(ResolvedDraw {
                 mesh,
@@ -1919,6 +1981,10 @@ impl<'window> TexturedSession<'window> {
             let mesh = self.meshes.index_of(batch.mesh.id())?;
             let texture = self.textures.index_of(batch.texture.id())?;
             let pipeline = self.instanced_pipelines.index_of(batch.pipeline.id())?;
+            self.check_sample_count(
+                self.instanced_pipelines[pipeline].sample_count,
+                "instanced textured pipeline",
+            )?;
             let descriptor = self.descriptor_set(pipeline, texture, batch.texture.id(), true)?;
             self.resolved_instance_batches.push(ResolvedInstanceBatch {
                 mesh,
@@ -4301,6 +4367,7 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
     destroy_pipeline_device(
         device,
         PipelineResource {
+            sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
             volume: Vec::new(),
             bloom: Vec::new(),
             volume_sets: Vec::new(),
@@ -4364,6 +4431,7 @@ fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipeli
     destroy_pipeline_device(
         device,
         PipelineResource {
+            sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
             volume: Vec::new(),
             bloom: Vec::new(),
             volume_sets: Vec::new(),
@@ -5528,6 +5596,7 @@ fn create_pipeline(
         ..Default::default()
     };
     let mut resource = PipelineResource {
+        sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
         volume: Vec::new(),
         bloom: Vec::new(),
         volume_sets: Vec::new(),
@@ -5868,6 +5937,7 @@ fn create_material_pipeline(
         ..Default::default()
     };
     let mut resource = MaterialPipelineResource {
+        sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),
@@ -6519,6 +6589,21 @@ fn create_shadow_pipeline(
     Ok(resource)
 }
 
+/// The requested samples per pixel when both colour and depth can carry them, else one.
+fn select_sample_count(
+    surface: &ClearSurface<'_>,
+    preferred: SampleCount,
+) -> vk::VkSampleCountFlagBits {
+    let requested = preferred.samples().cast_signed();
+    if requested > vk::VK_SAMPLE_COUNT_1_BIT
+        && surface.device().adapter.sample_counts & requested.cast_unsigned() != 0
+    {
+        requested
+    } else {
+        vk::VK_SAMPLE_COUNT_1_BIT
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn create_postprocess_pipeline(
     surface: &ClearSurface<'_>,
@@ -6631,6 +6716,7 @@ fn create_postprocess_pipeline_base(
         ..Default::default()
     };
     let mut resource = PipelineResource {
+        sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
         volume: Vec::new(),
         bloom: Vec::new(),
         volume_sets: Vec::new(),

@@ -112,7 +112,9 @@ impl DeviceSelection {
         self.backend
     }
 
-    /// Actual sample count, including a visible fallback from a multisample count to one.
+    /// Sample count chosen when the session opened, including a visible fallback from a
+    /// multisample count to one. [`Device::set_sample_count`] changes the count in use later
+    /// and returns the new one; this selection is not updated.
     #[must_use]
     pub const fn sample_count(&self) -> SampleCount {
         self.sample_count
@@ -551,6 +553,24 @@ impl Device<'_> {
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
         })
+    }
+
+    /// Changes the samples per pixel that pipelines and targets created from now on are built
+    /// for, and returns the count actually in use after the same fallback as opening: an
+    /// unsupported count becomes one sample per pixel.
+    ///
+    /// Nothing already created is rebuilt. Every textured, instanced, material and postprocess
+    /// pipeline and every render or postprocess target remembers the count it was built for,
+    /// and submitting one built for another count is refused with an error naming it. Shadow
+    /// maps and shadow pipelines are single-sample and unaffected. Destroy the old resources
+    /// and create replacements, then draw; frames in flight that used the old resources
+    /// complete normally.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after session shutdown.
+    pub fn set_sample_count(&self, preferred: SampleCount) -> Result<SampleCount, GraphicsError> {
+        Ok(session_mut(&self.shared)?.set_sample_count(preferred))
     }
 
     /// Creates a depth-tested textured pipeline from target-selected offline shader code.
@@ -3007,8 +3027,9 @@ pub enum MaterialBinding {
     /// output; unavailable in foreground, overlay and shadow passes. The engine supplies
     /// the texture, so it occupies neither `textures` nor `shadow_map` on the record.
     /// Depth is in the scene's native 0..1 projection (including reversed Z), at render
-    /// scale with top-left texel origin. Declare `texture_depth_2d` at 1x or
-    /// `texture_depth_multisampled_2d` at 4x, matching [`DeviceSelection::sample_count`].
+    /// scale with top-left texel origin. Declare `texture_depth_2d` at one sample or
+    /// `texture_depth_multisampled_2d` at more, matching the count in use when the pipeline
+    /// is created ([`DeviceSelection::sample_count`] or [`Device::set_sample_count`]).
     /// Use `textureLoad` with fragment pixel coordinates; MSAA reduction is shader-owned.
     /// The snapshot is captured once per submission and survives foreground depth clears.
     SceneDepth {

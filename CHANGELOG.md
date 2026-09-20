@@ -2,7 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Metal region timing measures what a pass adds (0.13.19)
+## Live sample count, and Metal region timing measures what a pass adds (0.13.19)
+
+`Device::set_sample_count` changes the samples per pixel that pipelines and targets are
+built for after the session is open, with the same observable fallback to one sample as
+opening. Every textured, instanced, material and postprocess pipeline and every render or
+postprocess target now remembers the count it was built for, and submitting one built for
+another count is refused with an error naming it, on both backends, instead of a native
+sample-count mismatch. Nothing is rebuilt for the caller: shaders are not retained, so the
+application destroys and recreates its own resources. `DeviceSelection::sample_count` keeps
+the count chosen at open.
+
 
 Fix the Metal shadow, scene and postprocess regions overstating light passes. A region was
 the span from its earliest stage start to its latest stage end, and on Apple's tile-based

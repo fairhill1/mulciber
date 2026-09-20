@@ -219,6 +219,8 @@ struct TextureResource {
 struct PipelineResource {
     pipeline: Object,
     depth_state: Object,
+    /// Samples per pixel the pipeline was built for; drawing at another count is refused.
+    sample_count: usize,
 }
 
 struct PostprocessPipelineResource {
@@ -227,9 +229,13 @@ struct PostprocessPipelineResource {
     pipeline: Object,
     sampler: Object,
     uniform_size: u32,
+    /// Samples per pixel the scene it reads was built for.
+    sample_count: usize,
 }
 
 struct MaterialPipelineResource {
+    /// Samples per pixel the pipeline was built for; drawing at another count is refused.
+    sample_count: usize,
     pipeline: Object,
     /// Single-sample no-depth variant for the presentable overlay pass; null unless the
     /// pipeline declares [`DepthMode::Off`].
@@ -287,11 +293,13 @@ struct ShadowPipelineResource {
 
 struct TargetResource {
     info: SurfaceInfo,
+    sample_count: usize,
     multisample_color: Object,
     depth: Object,
 }
 
 struct PostprocessTargetResource {
+    sample_count: usize,
     depth_snapshot: Object,
     scattering: Object,
     bloom: Vec<Object>,
@@ -477,15 +485,7 @@ impl<'window> TexturedSession<'window> {
         request: DeviceRequest,
     ) -> Result<(Self, SampleCount), GraphicsError> {
         let surface = ClearSurface::new(target, metrics)?;
-        let requested = request.preferred_sample_count.samples() as usize;
-        let sample_count = if requested > 1
-            && unsafe {
-                objc::bool_usize(surface.device, c"supportsTextureSampleCount:", requested)
-            } {
-            requested
-        } else {
-            1
-        };
+        let sample_count = select_sample_count(surface.device, request.preferred_sample_count);
         let frames = (0..super::FRAMES_IN_FLIGHT)
             .map(|_| FrameResources::new(surface.device))
             .collect::<Result<Vec<_>, _>>()?;
@@ -514,6 +514,25 @@ impl<'window> TexturedSession<'window> {
 
     pub(crate) const fn info(&self) -> SurfaceInfo {
         self.surface.info()
+    }
+
+    /// Changes the samples per pixel new pipelines and targets are built for,
+    /// falling back to one the way opening does, and returns the count in use.
+    pub(crate) fn set_sample_count(&mut self, preferred: SampleCount) -> SampleCount {
+        self.sample_count = select_sample_count(self.surface.device, preferred);
+        SampleCount::from_samples(u32::try_from(self.sample_count).expect("sample count"))
+            .expect("sample count was taken from a SampleCount")
+    }
+
+    fn check_sample_count(&self, built: usize, what: &str) -> Result<(), GraphicsError> {
+        if built == self.sample_count {
+            return Ok(());
+        }
+        Err(GraphicsError::new(std::format!(
+            "{what} was built for {built} sample(s) per pixel and the device now renders at {}; \
+             recreate it after changing the sample count",
+            self.sample_count
+        )))
     }
 
     pub(crate) fn gpu_timing_support(&self) -> crate::GpuTimingSupport {
@@ -905,6 +924,7 @@ impl<'window> TexturedSession<'window> {
         };
         self.targets.insert(TargetResource {
             info,
+            sample_count: self.sample_count,
             multisample_color,
             depth,
         })
@@ -975,6 +995,7 @@ impl<'window> TexturedSession<'window> {
             ptr::null_mut()
         };
         let mut resource = PostprocessTargetResource {
+            sample_count: self.sample_count,
             depth_snapshot: ptr::null_mut(),
             scattering: ptr::null_mut(),
             bloom: Vec::new(),
@@ -1014,6 +1035,7 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target].sample_count, "render targets")?;
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "render targets do not match acquired Metal generation",
@@ -1046,6 +1068,14 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "postprocess targets do not match acquired Metal generation",
@@ -1078,6 +1108,7 @@ impl<'window> TexturedSession<'window> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target].sample_count, "render targets")?;
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "render targets do not match acquired Metal generation",
@@ -1110,6 +1141,14 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "postprocess targets do not match acquired Metal generation",
@@ -1187,6 +1226,7 @@ impl<'window> TexturedSession<'window> {
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let target = self.targets.index_of(targets)?;
+        self.check_sample_count(self.targets[target].sample_count, "render targets")?;
         if self.targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "render targets do not match acquired Metal generation",
@@ -1224,6 +1264,14 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target = self.postprocess_targets.index_of(targets)?;
+        self.check_sample_count(
+            self.postprocess_targets[target].sample_count,
+            "postprocess targets",
+        )?;
+        self.check_sample_count(
+            self.postprocess_pipelines[postprocess_pipeline].sample_count,
+            "postprocess pipeline",
+        )?;
         if self.postprocess_targets[target].info != token.info() {
             return Err(GraphicsError::new(
                 "postprocess targets do not match acquired Metal generation",
@@ -1279,7 +1327,8 @@ impl<'window> TexturedSession<'window> {
             if let Some(mesh) = record.geometry.uploaded_mesh() {
                 self.meshes.get(mesh.id())?;
             }
-            self.material_pipelines.get(record.pipeline.id())?;
+            let pipeline = self.material_pipelines.get(record.pipeline.id())?;
+            self.check_sample_count(pipeline.sample_count, "material pipeline")?;
             for texture in record.textures {
                 self.textures.get(texture.id())?;
             }
@@ -1793,7 +1842,8 @@ impl<'window> TexturedSession<'window> {
         for draw in draws {
             self.meshes.get(draw.mesh.id())?;
             self.textures.get(draw.texture.id())?;
-            self.pipelines.get(draw.pipeline.id())?;
+            let pipeline = self.pipelines.get(draw.pipeline.id())?;
+            self.check_sample_count(pipeline.sample_count, "textured pipeline")?;
         }
         if draws.len() > self.frame().uniform_capacity {
             let capacity = draws
@@ -1873,6 +1923,10 @@ impl<'window> TexturedSession<'window> {
             let mesh = self.meshes.index_of(batch.mesh.id())?;
             let texture = self.textures.index_of(batch.texture.id())?;
             let pipeline = self.instanced_pipelines.index_of(batch.pipeline.id())?;
+            self.check_sample_count(
+                self.instanced_pipelines[pipeline].sample_count,
+                "instanced textured pipeline",
+            )?;
             let instance_count = batch.model_view_projections.len();
             self.resolved_instance_batches.push(ResolvedInstanceBatch {
                 mesh,
@@ -2879,6 +2933,7 @@ fn release_pipeline(pipeline: PipelineResource) {
     let PipelineResource {
         pipeline,
         depth_state,
+        sample_count: _,
     } = pipeline;
     unsafe {
         objc::void(depth_state, c"release");
@@ -2889,6 +2944,7 @@ fn release_pipeline(pipeline: PipelineResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_postprocess_pipeline(pipeline: PostprocessPipelineResource) {
     let PostprocessPipelineResource {
+        sample_count: _,
         bloom,
         volume,
         pipeline,
@@ -2969,6 +3025,7 @@ fn release_shadow_pipeline(pipeline: ShadowPipelineResource) {
 fn release_target(target: TargetResource) {
     let TargetResource {
         info: _,
+        sample_count: _,
         multisample_color,
         depth,
     } = target;
@@ -2985,6 +3042,7 @@ fn release_target(target: TargetResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_postprocess_target(target: PostprocessTargetResource) {
     let PostprocessTargetResource {
+        sample_count: _,
         bloom,
         scattering,
         depth_snapshot,
@@ -3029,6 +3087,19 @@ struct IndexedIndirectArguments {
     index_start: u32,
     base_vertex: i32,
     base_instance: u32,
+}
+
+/// The requested samples per pixel when the device can render them, else one.
+fn select_sample_count(device: Object, preferred: SampleCount) -> usize {
+    let requested = preferred.samples() as usize;
+    // SAFETY: `supportsTextureSampleCount:` is on every MTLDevice.
+    if requested > 1
+        && unsafe { objc::bool_usize(device, c"supportsTextureSampleCount:", requested) }
+    {
+        requested
+    } else {
+        1
+    }
 }
 
 fn create_pipeline(
@@ -3123,6 +3194,7 @@ fn create_pipeline(
         Ok(PipelineResource {
             pipeline,
             depth_state,
+            sample_count,
         })
     }
 }
@@ -3504,6 +3576,7 @@ fn create_material_pipeline(
             objc::void(object, c"release");
         }
         Ok(MaterialPipelineResource {
+            sample_count,
             pipeline,
             overlay_pipeline,
             depth_state,
@@ -3827,6 +3900,7 @@ fn create_postprocess_pipeline(
     samples: u32,
 ) -> Result<PostprocessPipelineResource, GraphicsError> {
     let mut resource = create_postprocess_pipeline_base(device, bytes, config)?;
+    resource.sample_count = samples as usize;
     if let Some(shaders) = config.bloom {
         for shader in shaders {
             let child = PostprocessPipelineConfig {
@@ -3989,6 +4063,7 @@ fn create_postprocess_pipeline_base(
             pipeline,
             sampler,
             uniform_size: config.uniform_size,
+            sample_count: 1,
         })
     }
 }

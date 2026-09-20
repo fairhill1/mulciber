@@ -479,8 +479,9 @@ impl<'window> TexturedSession<'window> {
         let surface = ClearSurface::new(target, metrics)?;
         let requested = request.preferred_sample_count.samples() as usize;
         let sample_count = if requested > 1
-            && unsafe { objc::bool_usize(surface.device, c"supportsTextureSampleCount:", requested) }
-        {
+            && unsafe {
+                objc::bool_usize(surface.device, c"supportsTextureSampleCount:", requested)
+            } {
             requested
         } else {
             1

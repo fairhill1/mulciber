@@ -2,6 +2,19 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Metal region timing measures what a pass adds (0.13.19)
+
+Fix the Metal shadow, scene and postprocess regions overstating light passes. A region was
+the span from its earliest stage start to its latest stage end, and on Apple's tile-based
+GPUs a pass's vertex stage starts under the previous pass's fragment stage and waits
+there, so an almost empty shadow cascade reported the fragment time of the cascade before
+it, and the regions of a frame overlapped instead of adding up. A region is now measured
+from the previous pass finishing to this pass finishing, carrying the previous frame's
+last tick into the first pass, which is what removing the pass would save. Replayed
+against an Instruments capture of a 31 ms frame, the old spans summed to 119 ms and the
+new regions to 31.7 ms. The vertex and fragment stage intervals are unchanged and documented: the
+fragment interval is a pass's own work, the vertex interval includes the wait.
+
 ## Two-sample rendering (0.13.18)
 
 `SampleCount::Two` joins `One` and `Four`. Each backend asks the device for the requested

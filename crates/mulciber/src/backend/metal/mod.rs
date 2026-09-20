@@ -142,6 +142,8 @@ pub(crate) struct ClearSurface<'window> {
     /// Next slot to acquire; advances only after an actual submission.
     frame_slot: usize,
     counter_set: Option<timing::CounterSet>,
+    /// GPU tick the last resolved frame finished on; frames complete in order.
+    previous_frame_end: Option<u64>,
     gpu_timing_enabled: bool,
     gpu_timings: VecDeque<GpuFrameTiming>,
     pending_presents: VecDeque<PendingPresent>,
@@ -208,6 +210,7 @@ impl<'window> ClearSurface<'window> {
                 frames: core::array::from_fn(|_| FrameSlot::default()),
                 frame_slot: 0,
                 counter_set: timing::CounterSet::find(device),
+                previous_frame_end: None,
                 gpu_timing_enabled: false,
                 gpu_timings: VecDeque::new(),
                 pending_presents: VecDeque::new(),
@@ -535,7 +538,7 @@ impl<'window> ClearSurface<'window> {
                         Duration::from_secs_f64(end - start)
                     )];
                     if let Some(counters) = &self.frames[slot].counters {
-                        scopes.extend(counters.resolve(self.device));
+                        scopes.extend(counters.resolve(self.device, &mut self.previous_frame_end));
                     }
                     self.gpu_timings
                         .push_back(GpuFrameTiming::new(frame_index, scopes));

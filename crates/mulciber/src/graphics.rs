@@ -2156,6 +2156,10 @@ pub struct GpuScopeTiming {
 /// Durations sum the individual stage intervals when a region contains several
 /// render passes (for example shadow cascades). Stages and passes may overlap;
 /// these are elapsed intervals, not additive GPU utilization or CPU wait time.
+/// On a tile-based GPU the vertex interval of a pass includes time spent
+/// waiting behind the fragment stage of the pass before it, so a long vertex
+/// interval on a light pass is the previous pass's cost, not this one's. The
+/// fragment interval is the pass's own work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpuRenderStageTiming {
     vertex: Duration,
@@ -2193,8 +2197,8 @@ impl GpuScopeTiming {
 
     /// Native render-stage intervals when the backend exposes them.
     ///
-    /// A region's overall duration may include gaps between vertex and fragment
-    /// execution. These details distinguish those gaps from the stage intervals.
+    /// A region's overall duration is what the region added to the frame. These
+    /// details show how that time was spent within the passes themselves.
     #[must_use]
     pub const fn render_stages(&self) -> Option<GpuRenderStageTiming> {
         self.render_stages
@@ -2207,6 +2211,12 @@ impl GpuScopeTiming {
     }
 
     /// Elapsed time in the backend's GPU timestamp domain.
+    ///
+    /// For [`GpuTimingScope::Frame`] this is the whole submission. For the
+    /// fixed regions it is the time the region added to the frame: measured
+    /// from the previous region finishing to this one finishing, so the
+    /// regions of one frame add up rather than overlap. Removing a region's
+    /// work should shorten the frame by about this much.
     #[must_use]
     pub const fn duration(&self) -> Duration {
         self.duration
@@ -2236,8 +2246,8 @@ impl GpuFrameTiming {
 
     /// Backend-supported regions in recording order.
     ///
-    /// Metal currently reports only [`GpuTimingScope::Frame`]. Vulkan reports the complete frame
-    /// plus the fixed shadow, scene, and postprocess regions that were present in the submission.
+    /// Both backends report the complete frame plus the fixed shadow, scene, and postprocess
+    /// regions that were present in the submission, when the queue supports region timing.
     #[must_use]
     pub fn scopes(&self) -> &[GpuScopeTiming] {
         &self.scopes

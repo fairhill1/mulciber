@@ -2,6 +2,19 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Queue-ordered float texture updates (0.13.23)
+
+Add `Device::update_rgba16_float_texture` for same-sized, single-level replacements
+that retain texture handles and material bindings. Uploads are ordered before the
+next scene submission without waiting for device idle, with staging reuse on
+Vulkan and retained blit buffers on Metal. Earlier submitted frames retain their
+old contents; pending updates coalesce to the last write. The API uses the same
+checked binary16 conversion as texture creation.
+
+Linux/Vulkan numerical validation covers repeated updates across in-flight frames.
+Metal cross-compiles cleanly; physical Metal validation remains outstanding. See
+[the replacement contract](docs/float-texture-uploads.md#queue-ordered-replacement).
+
 ## Adaptive presentation on drivers with no relaxed FIFO (0.13.22)
 
 `PresentationMode::Adaptive` now has two native Vulkan spellings and takes whichever the

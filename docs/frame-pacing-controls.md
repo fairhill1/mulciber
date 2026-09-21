@@ -73,7 +73,7 @@ Physical VRR and multi-display transitions remain unvalidated.
 | Policy | Native behavior |
 | --- | --- |
 | Immediate | Allow tearing; present as soon as possible. |
-| Adaptive | Synchronize while keeping up; permit tearing when late. |
+| Adaptive | Synchronize without letting the queue cost latency; whether a late frame tears is the adapter's answer. |
 | Synchronized | Retain synchronization even when deadlines are missed. |
 | HalfRefresh | Always schedule each image for two native refresh periods. |
 | Strict | Keep synchronization; choose full/half refresh from measured CPU/GPU work. |
@@ -99,13 +99,26 @@ to native synchronization rather than imposing a fixed divisor. A real VRR displ
 necessary to validate that path, including window/fullscreen and below-range behavior.
 
 Metal schedules half refresh with `presentDrawable:afterMinimumDuration:` and a small tolerance
-below two periods, rounded by synchronized scanout. Vulkan Adaptive requires FIFO relaxed;
+below two periods, rounded by synchronized scanout.
+
+Vulkan Adaptive takes either of its two native spellings. FIFO relaxed is preferred where the
+driver exposes it; otherwise `VK_KHR_present_mode_fifo_latest_ready`, or its original EXT name,
+with the `presentModeFifoLatestReady` feature enabled at device creation. An adapter offering
+both keeps relaxed FIFO, so no machine already served changes behavior. The two differ in
+whether a late frame tears: relaxed FIFO presents it immediately and tears, latest-ready keeps
+every present on a vertical blank and discards the images that went stale waiting for one.
+Latest-ready releases images at every blank, so an uncapped application can render past the
+refresh rate and have most of those frames discarded; pair it with a frame cap where power
+matters. A surface lists latest-ready whether or not the device enabled the feature, so
+availability is gated on the device rather than on the surface query.
+
 Strict/HalfRefresh require FIFO plus `VK_EXT_present_timing` relative-time scheduling, a native
 refresh duration, and (for Strict) GPU timestamps. Vulkan's requested relative presentation time
 is two native periods with nearest-refresh scheduling. Scheduling continues with zero timing
-queries if the diagnostics queue is full, so optional telemetry cannot disable the policy. Vulkan currently cannot distinguish active
-VRR from a fixed display; Strict is therefore a fixed-divisor policy there. No nominal refresh
-rate is treated as VRR detection. Unavailable native support remains unavailable in the API/UI.
+queries if the diagnostics queue is full, so optional telemetry cannot disable the policy. Vulkan
+currently cannot distinguish active VRR from a fixed display; Strict is therefore a fixed-divisor
+policy there. No nominal refresh rate is treated as VRR detection. Unavailable native support
+remains unavailable in the API/UI.
 
 ### Native fixed-refresh transition evidence
 

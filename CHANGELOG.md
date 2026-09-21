@@ -2,6 +2,26 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Adaptive presentation on drivers with no relaxed FIFO (0.13.22)
+
+`PresentationMode::Adaptive` now has two native Vulkan spellings and takes whichever the
+driver offers. FIFO relaxed is still preferred, so an adapter that already served the
+policy is unchanged; where a driver exposes none, the device enables
+`VK_KHR_present_mode_fifo_latest_ready` (or its original EXT name) with the
+`presentModeFifoLatestReady` feature, and the policy selects that mode instead. NVIDIA's
+Linux driver exposes no relaxed FIFO on Wayland, XCB/Xlib or `VK_KHR_display` surfaces, so
+Adaptive was unavailable on every surface it offers.
+
+The two are not interchangeable in what the player sees, which is why neither stands in for
+the other's absence. Relaxed FIFO lets a late frame through immediately and tears;
+latest-ready keeps every present on a vertical blank and discards the images that went
+stale waiting for one. `Adaptive` now promises only that a queued image never costs
+latency, and an application that cares which it got should ask for the active native mode.
+Plain `Synchronized` never takes latest-ready: it promises every rendered frame reaches the
+screen. Availability is gated on the device having enabled the feature rather than on the
+surface listing the mode, which it does regardless. See
+[contract](docs/frame-pacing-controls.md).
+
 ## Explicit VSync and frame caps (0.13.20 / runtime 0.5.4)
 
 Add `Surface::set_vsync` with live Metal switching and deferred Vulkan swapchain

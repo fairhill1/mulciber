@@ -85,6 +85,12 @@ pub(crate) struct ClearSurface<'window> {
     info: SurfaceInfo,
     recreate_after_present: bool,
     presentation_mode: crate::PresentationMode,
+    /// The last native present mode a swapchain here was actually built with, so the
+    /// diagnostic reports adoptions rather than rebuilds on the same mode.
+    reported_present_mode: Option<vk::VkPresentModeKHR>,
+    /// The last screen period reported, so a swapchain rebuilt on an unchanged screen
+    /// is silent.
+    reported_refresh_interval: Option<Duration>,
     strict: super::super::pacing::StrictPacing,
     resize_pace: Duration,
     last_resize_recreate: Option<Instant>,
@@ -130,6 +136,8 @@ impl<'window> ClearSurface<'window> {
             next_frame_index: None,
             info: SurfaceInfo::initial(extent).expect("extent was checked"),
             recreate_after_present: false,
+            reported_present_mode: None,
+            reported_refresh_interval: None,
             presentation_mode: crate::PresentationMode::Synchronized,
             strict: super::super::pacing::StrictPacing::default(),
             resize_pace,
@@ -579,6 +587,14 @@ impl<'window> ClearSurface<'window> {
             SurfaceInfo::initial(extent_info).expect("Vulkan returned a non-empty extent")
         };
         self.recreate_after_present = false;
+        // Reported where a swapchain has really adopted one, and only when it differs from
+        // the last: a window the compositor is still sizing rebuilds its swapchain over and
+        // over on the same mode, and selection itself is silent because it is also how the
+        // surface answers whether a policy is available.
+        if self.reported_present_mode != Some(present_mode) {
+            self.reported_present_mode = Some(present_mode);
+            eprintln!("Vulkan presentation: {}", present_mode_name(present_mode));
+        }
         Ok(())
     }
 
@@ -1381,6 +1397,14 @@ struct Adapter {
     timestamp_valid_bits: u32,
     timestamp_period: f32,
     present_timing: Result<timing::PresentTimingSelection, &'static str>,
+    /// The name of the latest-ready present mode extension this adapter offers with its
+    /// feature, which the device then enables, or `None` where it offers neither spelling.
+    /// Optional, and the second native spelling of the adaptive presentation policy on
+    /// drivers exposing no relaxed FIFO. Carried as the name rather than a flag because
+    /// the KHR promotion and the original EXT differ only in the string the device is
+    /// created with. Distinct from the surface merely listing the mode, which it does
+    /// whether or not the feature was enabled and presenting in it is therefore legal.
+    latest_ready: Option<&'static [u8]>,
     /// Whether the adapter samples BC-family block-compressed images. Optional: an adapter
     /// without it is still selected and refuses only the compressed uploads themselves.
     texture_compression_bc: bool,
@@ -1643,16 +1667,16 @@ impl Device {
             dynamicRendering: vk::VK_TRUE,
             ..Default::default()
         };
-        let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
-        if adapter.present_timing.is_ok() {
-            extensions.push(vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr().cast());
-            extensions.push(
-                vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
-                    .as_ptr()
-                    .cast(),
-            );
-            extensions.push(vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_ptr().cast());
-        }
+        // Enabled wherever the adapter offers it, because the adaptive presentation policy
+        // may ask for it later and a present mode cannot be adopted without the feature the
+        // device was created with. The mode is still only used when the policy asks.
+        let mut latest_ready_features = vk::VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR {
+            sType:
+                vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR,
+            pNext: (&raw mut features13).cast(),
+            presentModeFifoLatestReady: vk::VK_TRUE,
+        };
+        let extensions = enabled_device_extensions(&adapter);
         // Core features ride on `pEnabledFeatures`, which the specification allows beside
         // the versioned feature structs on `pNext` as long as no `VkPhysicalDeviceFeatures2`
         // is chained. BC sampling is enabled only where the adapter reported it.
@@ -1662,7 +1686,11 @@ impl Device {
         };
         let info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext: (&raw mut features13).cast(),
+            pNext: if adapter.latest_ready.is_some() {
+                (&raw mut latest_ready_features).cast()
+            } else {
+                (&raw mut features13).cast()
+            },
             pEnabledFeatures: &raw const core_features,
             queueCreateInfoCount: 1,
             pQueueCreateInfos: &raw const queue_info,
@@ -1789,9 +1817,23 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
             pNext: timing_head,
             ..Default::default()
         };
+        // Both spellings carry the same feature struct, and the KHR promotion is preferred
+        // where a driver exposes it. The query is chained only when one of them is present:
+        // a feature struct for an unsupported extension has no defined answer to read.
+        let latest_ready_extension = latest_ready_extension_name(&extensions);
+        let mut latest_ready_features = vk::VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR {
+            sType:
+                vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR,
+            pNext: (&raw mut features13).cast(),
+            ..Default::default()
+        };
         let mut features = vk::VkPhysicalDeviceFeatures2 {
             sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            pNext: (&raw mut features13).cast(),
+            pNext: if latest_ready_extension.is_some() {
+                (&raw mut latest_ready_features).cast()
+            } else {
+                (&raw mut features13).cast()
+            },
             ..Default::default()
         };
         unsafe {
@@ -1871,6 +1913,9 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         timestamp_valid_bits: family.timestampValidBits,
                         timestamp_period: properties.limits.timestampPeriod,
                         present_timing,
+                        latest_ready: latest_ready_extension.filter(|_| {
+                            latest_ready_features.presentModeFifoLatestReady == vk::VK_TRUE
+                        }),
                         texture_compression_bc: features.features.textureCompressionBC
                             == vk::VK_TRUE,
                     },
@@ -2076,27 +2121,38 @@ fn choose_present_mode(
         },
         "enumerate present modes",
     )?;
-    if let Some(mode) =
-        platform::choose_present_mode_for_policy(&values[..count as usize], presentation_mode)
-    {
-        eprintln!(
-            "Vulkan presentation: {}",
-            if mode == vk::VK_PRESENT_MODE_IMMEDIATE_KHR {
-                "immediate"
-            } else if mode == vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR {
-                "adaptive (fifo relaxed)"
-            } else if mode == vk::VK_PRESENT_MODE_MAILBOX_KHR {
-                "mailbox"
-            } else {
-                "fifo"
-            }
-        );
-        Ok(mode)
-    } else {
-        Err(GraphicsError::with_kind(
+    platform::choose_present_mode_for_policy(
+        &values[..count as usize],
+        presentation_mode,
+        device.adapter.latest_ready.is_some(),
+    )
+    .ok_or_else(|| {
+        GraphicsError::with_kind(
             GraphicsErrorKind::Unsupported,
             "surface does not expose the requested presentation mode",
-        ))
+        )
+    })
+}
+
+/// The diagnostic name of an adopted native present mode.
+///
+/// Selection is silent because it is also how the surface answers whether a
+/// policy is available at all, which an application asks once per offered
+/// policy and repeats whenever the swapchain generation moves. Writing a line
+/// per question puts synchronous terminal output on the frame loop, and a
+/// caller that asks about four policies while the compositor is still settling
+/// the window pays it every frame.
+const fn present_mode_name(mode: vk::VkPresentModeKHR) -> &'static str {
+    if mode == vk::VK_PRESENT_MODE_IMMEDIATE_KHR {
+        "immediate"
+    } else if mode == vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR {
+        "adaptive (fifo relaxed)"
+    } else if mode == vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR {
+        "adaptive (fifo latest ready)"
+    } else if mode == vk::VK_PRESENT_MODE_MAILBOX_KHR {
+        "mailbox"
+    } else {
+        "fifo"
     }
 }
 
@@ -2127,6 +2183,42 @@ fn swapchain_images(
     )?;
     values.truncate(count as usize);
     Ok(values)
+}
+
+/// The device extensions to create the adapter's device with: the swapchain it was
+/// selected for, and each optional group the adapter reported whole.
+fn enabled_device_extensions(adapter: &Adapter) -> Vec<*const c_char> {
+    let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
+    if let Some(name) = adapter.latest_ready {
+        extensions.push(name.as_ptr().cast());
+    }
+    if adapter.present_timing.is_ok() {
+        extensions.push(vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr().cast());
+        extensions.push(
+            vk::VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+                .as_ptr()
+                .cast(),
+        );
+        extensions.push(vk::VK_EXT_PRESENT_TIMING_EXTENSION_NAME.as_ptr().cast());
+    }
+    extensions
+}
+
+/// Picks the latest-ready present mode extension to create the device with.
+///
+/// The KHR promotion first: a driver carrying both exposes one extension twice,
+/// and the promoted name is the one that outlives the other.
+fn latest_ready_extension_name(extensions: &[Vec<u8>]) -> Option<&'static [u8]> {
+    [
+        vk::VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME.as_slice(),
+        vk::VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME.as_slice(),
+    ]
+    .into_iter()
+    .find(|candidate| {
+        extensions
+            .iter()
+            .any(|name| name == candidate.strip_suffix(&[0]).expect("NUL suffix"))
+    })
 }
 
 fn device_extensions(

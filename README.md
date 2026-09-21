@@ -113,6 +113,7 @@ The graphics API now owns adaptive synchronization and automatic full/half refre
 workload-based recovery. Applications query support and select policy; fixed-divisor scheduling
 is native, not a rounded integer CPU cap. The Apple M2 fixed-60-Hz probe demonstrates stable
 full/half/full transitions and API conformance passes 101 cases with Metal validation. Vulkan
-uses FIFO relaxed or capability-gated relative presentation timing; the new paths are compile
-checked, not physically validated here. VRR and multi-display evidence remain outstanding.
+Adaptive uses FIFO relaxed where a driver exposes it and otherwise
+`VK_KHR_present_mode_fifo_latest_ready`; Strict/HalfRefresh use capability-gated relative
+presentation timing. The new paths are compile checked, not physically validated here. VRR and multi-display evidence remain outstanding.
 See [behavior, reproduction and limits](docs/frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).

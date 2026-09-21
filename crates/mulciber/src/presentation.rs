@@ -4,7 +4,16 @@
 pub enum PresentationMode {
     /// Present as soon as possible, permitting tearing.
     Immediate,
-    /// Synchronize while keeping up; permit tearing when late.
+    /// Synchronize without letting the queue cost latency: never hold a fresh image
+    /// back for a stale one.
+    ///
+    /// Whether a late frame tears is the adapter's to answer, so a policy-sensitive
+    /// application should query [`crate::OpenedGraphics`] for the active native mode
+    /// rather than assume. Vulkan takes relaxed FIFO where the driver exposes it,
+    /// which presents a late frame immediately and tears; otherwise latest-ready,
+    /// which stays on the vertical blank and discards the images that went stale
+    /// waiting for one. Metal begins immediate and enables display sync once the
+    /// workload sustains the refresh rate.
     Adaptive,
     /// Always synchronize, even when frames miss refresh deadlines.
     #[default]

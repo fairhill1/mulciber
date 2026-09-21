@@ -174,10 +174,30 @@ pub(super) fn choose_present_mode(modes: &[vk::VkPresentModeKHR]) -> Option<vk::
     }
 }
 
-/// Never silently substitute synchronized output for a tearing-capable request.
+/// Never silently substitute plain synchronized output for a request that asked
+/// not to be stalled by synchronization.
+///
+/// [`crate::PresentationMode::Adaptive`] has two native spellings and takes
+/// whichever the driver offers. Relaxed FIFO lets a late frame through
+/// immediately, tearing rather than holding the previous image for another
+/// whole interval. Latest-ready instead keeps every present on a vertical
+/// blank and discards the images that went stale waiting for one, so a frame
+/// finished during the interval is shown at the next blank rather than behind
+/// the ones queued before it. They differ in whether the screen may tear and
+/// agree on the thing the policy is asked for, which is that the queue never
+/// costs the player latency. Neither is offered in place of the other's
+/// availability: an adapter with both takes relaxed FIFO, and an adapter with
+/// neither reports the policy unsupported rather than falling back to FIFO.
+///
+/// `latest_ready` is whether the device enabled
+/// `VK_KHR_present_mode_fifo_latest_ready` and its feature, not merely whether
+/// the surface lists the mode. A surface advertises it to any query, and
+/// presenting in a mode the device did not enable the feature for is invalid
+/// usage.
 pub(super) fn choose_present_mode_for_policy(
     modes: &[vk::VkPresentModeKHR],
     policy: crate::PresentationMode,
+    latest_ready: bool,
 ) -> Option<vk::VkPresentModeKHR> {
     match policy {
         crate::PresentationMode::Synchronized => choose_present_mode(modes),
@@ -187,9 +207,15 @@ pub(super) fn choose_present_mode_for_policy(
         crate::PresentationMode::Immediate => modes
             .contains(&vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
             .then_some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR),
-        crate::PresentationMode::Adaptive => modes
-            .contains(&vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
-            .then_some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR),
+        crate::PresentationMode::Adaptive => {
+            if modes.contains(&vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+                Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+            } else if latest_ready && modes.contains(&vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR) {
+                Some(vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -198,14 +224,15 @@ mod presentation_tests {
     use super::*;
 
     #[test]
-    fn adaptive_requires_native_relaxed_fifo() {
+    fn adaptive_requires_one_of_the_two_native_spellings() {
         assert_eq!(
             choose_present_mode_for_policy(
                 &[
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
-                crate::PresentationMode::Adaptive
+                crate::PresentationMode::Adaptive,
+                true
             ),
             None
         );
@@ -215,9 +242,57 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
                 ],
-                crate::PresentationMode::Adaptive
+                crate::PresentationMode::Adaptive,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
+                ],
+                crate::PresentationMode::Adaptive,
+                true
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)
+        );
+    }
+
+    /// Relaxed FIFO is what the policy was written for, so an adapter offering
+    /// both keeps it rather than changing behaviour under machines it already
+    /// worked on.
+    #[test]
+    fn relaxed_fifo_wins_where_both_spellings_exist() {
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                ],
+                crate::PresentationMode::Adaptive,
+                true
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+        );
+    }
+
+    /// A surface lists latest-ready whether or not the device enabled the
+    /// feature that makes presenting in it legal.
+    #[test]
+    fn latest_ready_is_refused_until_the_device_enables_it() {
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
+                ],
+                crate::PresentationMode::Adaptive,
+                false
+            ),
+            None
         );
     }
 
@@ -226,7 +301,8 @@ mod presentation_tests {
         assert_eq!(
             choose_present_mode_for_policy(
                 &[vk::VK_PRESENT_MODE_FIFO_KHR],
-                crate::PresentationMode::Immediate
+                crate::PresentationMode::Immediate,
+                true
             ),
             None
         );
@@ -236,7 +312,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
-                crate::PresentationMode::Immediate
+                crate::PresentationMode::Immediate,
+                true
             ),
             Some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
         );
@@ -246,7 +323,26 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_KHR,
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
-                crate::PresentationMode::Synchronized
+                crate::PresentationMode::Synchronized,
+                true
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_KHR)
+        );
+    }
+
+    /// Latest-ready is the adaptive policy's second spelling and must never
+    /// become a quieter answer to a plain synchronized request, which promises
+    /// every rendered frame reaches the screen.
+    #[test]
+    fn synchronized_never_takes_the_latest_ready_shortcut() {
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
+                ],
+                crate::PresentationMode::Synchronized,
+                true
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_KHR)
         );

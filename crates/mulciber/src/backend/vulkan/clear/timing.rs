@@ -144,7 +144,7 @@ pub(super) fn choose_present_timing(
 }
 
 impl ClearSurface<'_> {
-    fn native_refresh_interval(&self) -> Result<Option<Duration>, GraphicsError> {
+    fn native_refresh_interval(&mut self) -> Result<Option<Duration>, GraphicsError> {
         let mut refresh = vk::VkSwapchainTimingPropertiesEXT {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT,
             ..Default::default()
@@ -167,11 +167,17 @@ impl ClearSurface<'_> {
         )?;
         let refresh_interval =
             (refresh.refreshDuration != 0).then(|| Duration::from_nanos(refresh.refreshDuration));
-        if let Some(interval) = refresh_interval {
-            std::eprintln!(
-                "Vulkan refresh interval: {:.6} ms",
-                interval.as_secs_f64() * 1000.0
-            );
+        // Read again for every swapchain, so reported only when the screen's period really
+        // changed. A window the compositor is still sizing rebuilds its swapchain on every
+        // frame, and a line per rebuild is synchronous terminal output on the frame loop.
+        if refresh_interval.is_some() && self.reported_refresh_interval != refresh_interval {
+            self.reported_refresh_interval = refresh_interval;
+            if let Some(interval) = refresh_interval {
+                std::eprintln!(
+                    "Vulkan refresh interval: {:.6} ms",
+                    interval.as_secs_f64() * 1000.0
+                );
+            }
         }
         Ok(refresh_interval)
     }

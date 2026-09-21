@@ -23,7 +23,11 @@ pub const VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME: &[u8; 30] =
     b"VK_KHR_swapchain_maintenance1\0";
 pub const VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME: &[u8; 29] =
     b"VK_KHR_calibrated_timestamps\0";
+pub const VK_KHR_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME: &[u8; 38] =
+    b"VK_KHR_present_mode_fifo_latest_ready\0";
 pub const VK_EXT_PRESENT_TIMING_EXTENSION_NAME: &[u8; 22] = b"VK_EXT_present_timing\0";
+pub const VK_EXT_PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME: &[u8; 38] =
+    b"VK_EXT_present_mode_fifo_latest_ready\0";
 pub type VkBool32 = u32;
 pub type VkDeviceSize = u64;
 pub type VkFlags = u32;
@@ -6523,6 +6527,22 @@ pub const VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT: VkTimeDomainKHR = 2;
 pub const VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT: VkTimeDomainKHR = 3;
 pub const VK_TIME_DOMAIN_MAX_ENUM_KHR: VkTimeDomainKHR = 2147483647;
 pub type VkTimeDomainKHR = ::core::ffi::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentModeFifoLatestReady: VkBool32,
+}
+impl Default for VkPhysicalDevicePresentModeFifoLatestReadyFeaturesKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct VkDebugUtilsMessengerEXT_T {

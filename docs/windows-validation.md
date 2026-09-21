@@ -755,3 +755,32 @@ validation layer; all 40 cases must pass without warning/error callbacks. This c
 fragment samples, half quantization, small coefficients, spatial filtering and explicit mip LODs.
 Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
 visual or broader hardware evidence. See the [contract](float-texture-uploads.md).
+
+
+## Strict recovery correction (0.13.24, 2026-09-21)
+
+Strict now starts at full refresh, requires three overload samples to step down,
+and recovers with five percent headroom instead of twenty percent. Regressions
+cover 85 and 90 FPS workloads on a 75 Hz display, isolated hitches, sustained
+overload, delayed GPU results, queued half-rate frames and native submission waits.
+Vulkan ends CPU workload timing before queue submission; Strict waits for image
+availability before all GPU commands so display waiting cannot inflate its
+whole-frame GPU timestamp span.
+
+Validation: Windows graphics unit tests passed (55 passed, 6 native tests ignored),
+graphics all-target Clippy passed with warnings denied, and graphics all-target
+Apple-silicon macOS cross-compilation passed. No window or game was launched by
+the agent. Physical presentation behavior, VRR and multi-display validation remain
+outstanding. The user confirmed the consuming game works on Windows / RTX 3060 Ti / 75 Hz, but reported that Strict remains irregular. This release improves the policy; it does not claim Strict pacing is fully resolved.
+
+
+Release validation for 0.13.24: workspace formatting, all-target compilation,
+workspace tests and doctests, and graphics all-target Clippy passed. The package
+passed `cargo publish --dry-run` against published mulciber-platform 0.5.5.
+`scripts/validate-windows.ps1 -SkipInteractive -InstanceOnly` passed all six
+windowless Vulkan instance/device/timestamp tests, with and without validation
+layers; logs are in `validation-artifacts/windows-vulkan-20260921-202518/`.
+Full workspace Clippy remains blocked by the pre-existing unused
+`WindowMetrics::with_display_timing` helper in Windows platform test builds.
+The GUI portion of the Windows preflight was not run under the user's no-window
+instruction. These checks do not establish smooth Strict presentation.

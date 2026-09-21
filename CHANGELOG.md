@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Strict full-rate recovery (0.13.24)
+
+Start Strict at full refresh and step down only after sustained overload. Recovery
+requires five percent headroom instead of twenty percent, permitting 85-90 FPS
+workloads to run at 75 Hz. Exclude Vulkan submission and image-availability waits
+from the workload measurements used by Strict. See the pacing controls document
+for regression coverage and physical-validation limits.
+
 ## Queue-ordered float texture updates (0.13.23)
 
 Add `Device::update_rgba16_float_texture` for same-sized, single-level replacements

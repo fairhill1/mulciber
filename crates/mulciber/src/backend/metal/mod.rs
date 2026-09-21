@@ -530,6 +530,7 @@ impl<'window> ClearSurface<'window> {
         unsafe {
             let drawable_id = objc::usize_value(drawable, c"drawableID");
             objc::void_object(drawable, c"addPresentedHandler:", presented_handler_block());
+            self.strict.end_frame(Instant::now());
             let period = self.refresh_interval();
             let divisor = if self.presentation_mode == crate::PresentationMode::Strict
                 && matches!(

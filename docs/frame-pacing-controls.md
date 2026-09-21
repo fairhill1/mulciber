@@ -90,9 +90,13 @@ native timing stays immediate. Variable-capable screens retain native synchroniz
 assuming that capability proves VRR engagement; macOS adaptive scheduling also requires the
 appropriate display setting and fullscreen presentation.
 
-Strict starts conservatively at half refresh. CPU/GPU work above 97% of a native interval or a
-missed full-rate cadence steps it down; 90 fresh GPU samples with CPU/GPU work below 80% recover
-full rate. Queued half-rate frames do not immediately reverse recovery. The target is derived
+Strict starts at full refresh. Three consecutive overload samples (CPU or fresh GPU work
+longer than a native interval) step it down; 90 fresh GPU samples with CPU/GPU work below 95%
+recover full rate. This permits an 85-90 FPS workload to recover 75 Hz, while retaining a small
+hysteresis margin. Missing GPU results do not manufacture overload or recovery. Acquisition gaps
+and queued half-rate frames are not workload samples. Vulkan stops measuring CPU work before
+native queue submission and waits for image availability before its Strict GPU timestamp span,
+so presentation backpressure is excluded from both workload measurements. The target is derived
 from the native period: 75 Hz uses 37.5 FPS, not 30. It does not guarantee smooth motion when the
 workload exceeds even the half-rate budget. On Metal variable-capable displays it leaves cadence
 to native synchronization rather than imposing a fixed divisor. A real VRR display remains
@@ -140,3 +144,32 @@ The ordinary Metal API conformance run passes 101 cases with validation enabled,
 Adaptive/Strict selection. Unit tests cover fractional display rates, workload changes, queued
 transitions, and conservative recovery. Windows/Vulkan is compile/lint checked only for these new
 policies; native Vulkan, VRR, multi-display, and optical input latency are not established here.
+
+
+## Strict recovery correction (0.13.24, 2026-09-21)
+
+Strict now starts at full refresh, requires three overload samples to step down,
+and recovers with five percent headroom instead of twenty percent. Regressions
+cover 85 and 90 FPS workloads on a 75 Hz display, isolated hitches, sustained
+overload, delayed GPU results, queued half-rate frames and native submission waits.
+Vulkan ends CPU workload timing before queue submission; Strict waits for image
+availability before all GPU commands so display waiting cannot inflate its
+whole-frame GPU timestamp span.
+
+Validation: Windows graphics unit tests passed (55 passed, 6 native tests ignored),
+graphics all-target Clippy passed with warnings denied, and graphics all-target
+Apple-silicon macOS cross-compilation passed. No window or game was launched by
+the agent. Physical presentation behavior, VRR and multi-display validation remain
+outstanding. The user confirmed the consuming game works on Windows / RTX 3060 Ti / 75 Hz, but reported that Strict remains irregular. This release improves the policy; it does not claim Strict pacing is fully resolved.
+
+
+Release validation for 0.13.24: workspace formatting, all-target compilation,
+workspace tests and doctests, and graphics all-target Clippy passed. The package
+passed `cargo publish --dry-run` against published mulciber-platform 0.5.5.
+`scripts/validate-windows.ps1 -SkipInteractive -InstanceOnly` passed all six
+windowless Vulkan instance/device/timestamp tests, with and without validation
+layers; logs are in `validation-artifacts/windows-vulkan-20260921-202518/`.
+Full workspace Clippy remains blocked by the pre-existing unused
+`WindowMetrics::with_display_timing` helper in Windows platform test builds.
+The GUI portion of the Windows preflight was not run under the user's no-window
+instruction. These checks do not establish smooth Strict presentation.

@@ -669,6 +669,7 @@ impl<'window> ClearSurface<'window> {
             "vkEndCommandBuffer",
         )?;
 
+        self.strict.end_frame(std::time::Instant::now());
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             semaphore: self.frame_image_available(),

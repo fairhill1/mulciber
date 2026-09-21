@@ -590,3 +590,14 @@ See [behavior, reproduction and limits](frame-pacing-controls.md#adaptive-and-st
 without recreating bindings or waiting for device idle. See the
 [replacement contract and validation evidence](float-texture-uploads.md#queue-ordered-replacement).
 Linux native numerical validation passed; physical Metal validation remains open.
+
+
+### Strict pacing correction (graphics 0.13.24)
+
+Strict starts at full refresh, steps down after sustained workload overload, and
+recovers with five percent headroom. Vulkan workload timing excludes native
+submission and image-availability waits. Regression tests cover 85-90 FPS capacity
+on a 75 Hz display. The user reports the consuming game works on Windows / RTX
+3060 Ti / 75 Hz but Strict still behaves irregularly; this is not a claim of
+fully resolved Strict pacing or broader hardware coverage. See
+[the correction and validation limits](frame-pacing-controls.md#strict-recovery-correction-01324-2026-09-21).

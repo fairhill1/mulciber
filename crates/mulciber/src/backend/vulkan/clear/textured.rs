@@ -4561,10 +4561,18 @@ impl ClearSurface<'_> {
     fn submit_recorded(&mut self, image_index: u32) -> Result<FrameDisposition, GraphicsError> {
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
         let render_finished = self.swapchain.render_finished[slot];
+        self.strict.end_frame(std::time::Instant::now());
         let wait = vk::VkSemaphoreSubmitInfo {
             sType: vk::VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             semaphore: self.frame_image_available(),
-            stageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            // Strict's whole-frame GPU timestamp must start after image acquisition.
+            // A COLOR_OUTPUT-only wait lets TOP_OF_PIPE run early and counts display
+            // waiting as GPU work, which can trap the policy at half refresh.
+            stageMask: if self.presentation_mode == crate::PresentationMode::Strict {
+                vk::VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+            } else {
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+            },
             ..Default::default()
         };
         let command = vk::VkCommandBufferSubmitInfo {

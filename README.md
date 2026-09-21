@@ -117,3 +117,14 @@ Adaptive uses FIFO relaxed where a driver exposes it and otherwise
 `VK_KHR_present_mode_fifo_latest_ready`; Strict/HalfRefresh use capability-gated relative
 presentation timing. The new paths are compile checked, not physically validated here. VRR and multi-display evidence remain outstanding.
 See [behavior, reproduction and limits](docs/frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).
+
+
+### Strict pacing correction (graphics 0.13.24)
+
+Strict starts at full refresh, steps down after sustained workload overload, and
+recovers with five percent headroom. Vulkan workload timing excludes native
+submission and image-availability waits. Regression tests cover 85-90 FPS capacity
+on a 75 Hz display. The user reports the consuming game works on Windows / RTX
+3060 Ti / 75 Hz but Strict still behaves irregularly; this is not a claim of
+fully resolved Strict pacing or broader hardware coverage. See
+[the correction and validation limits](docs/frame-pacing-controls.md#strict-recovery-correction-01324-2026-09-21).

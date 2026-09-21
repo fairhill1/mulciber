@@ -139,3 +139,29 @@ near-zero coefficients, filtered results and final lighting against the original
 choosing scaled or unscaled float storage. Mulciber contains none of the game's packing policy.
 
 Release version: **0.13.13**. The native Vulkan validation boundary above also applies to this release.
+
+## Queue-ordered replacement
+
+`Device::update_rgba16_float_texture(&texture, width, height, &texels)` replaces a
+single-level float texture without changing its handle or material bindings. It
+uses the same checked binary16 conversion as creation. Foreign/stale handles,
+changed dimensions, other formats, and mip chains are rejected before replacing
+any pending write. The caller may release its input immediately.
+
+Writes are consumed before draws in the next textured/material submission;
+multiple pending writes coalesce to the last one. Earlier submitted frames see
+the previous contents. Dropping the texture cancels unsubmitted writes. No
+queue/device-idle operation is introduced. Vulkan uses one reusable host staging
+buffer per acquired frame slot, guarded by that slot's fence, and barriers from
+vertex/fragment sampling to transfer and back. Staging storage follows the
+texture's existing GPU retirement. Metal encodes an ordered buffer-to-texture
+blit with 256-byte row alignment; the command buffer retains staging through
+completion. Resizing and mip replacement are deliberately outside this API.
+
+The float-texture probe now alternates replacements on an existing texture,
+submits nine frames between readbacks to exercise staging reuse,
+checks last-write-wins, and verifies that rejected dimension/mip writes preserve
+the valid contents. On 2026-09-21, Linux/Vulkan (RTX 3060 Ti) passed all 40
+vertex/fragment sampling cases with validation enabled, within two half ULPs.
+Metal compiled and passed Clippy for `aarch64-apple-darwin`; physical Metal
+replacement/lifetime validation remains outstanding.

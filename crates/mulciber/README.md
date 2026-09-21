@@ -20,6 +20,11 @@ commonly absorb
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
 application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
 normal maps, with either one level or a complete application-authored mip chain.
+Sampled `RGBA16Float` textures support creation with or without authored mips.
+`Device::update_rgba16_float_texture` queues same-sized, single-level replacements
+before the next scene submission without recreating bindings or waiting for device
+idle. Input is copied immediately; pending writes coalesce and submitted frames
+retain their prior contents.
 Immutable meshes may keep one vertex region with multiple mixed-width indexed parts; material and
 shadow records borrow a selected part without creating another resource lease or allocation, while
 the existing mesh APIs remain the one-part/default-part path.

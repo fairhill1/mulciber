@@ -73,12 +73,12 @@ fn reference_half(value: f32) -> u16 {
     }
     best | if value.is_sign_negative() { 0x8000 } else { 0 }
 }
-fn expected(query: [f32; 3], mips: bool) -> [u16; 4] {
+fn expected(query: [f32; 3], mips: bool, input: [[f32; 4]; 4]) -> [u16; 4] {
     let x = (query[0] * 2.0 - 0.5).clamp(0.0, 1.0);
     let y = (query[1] * 2.0 - 0.5).clamp(0.0, 1.0);
     let lod = if mips { query[2].clamp(0.0, 1.0) } else { 0.0 };
     std::array::from_fn(|channel| {
-        let base = BASE.map(|texel| decode(reference_half(texel[channel])));
+        let base = input.map(|texel| decode(reference_half(texel[channel])));
         let top = base[0] * (1.0 - x) + base[1] * x;
         let bottom = base[2] * (1.0 - x) + base[3] * x;
         let interpolated = (top * (1.0 - y) + bottom * y) * (1.0 - lod)
@@ -144,6 +144,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let mut targets = None;
     let mut completed = 0;
+    let mut queued_frames = 0;
     let started = Instant::now();
     while completed < QUERIES.len() * 4 {
         if started.elapsed().as_secs() > 60 {
@@ -161,6 +162,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mips = completed / (QUERIES.len() * 2) != 0;
             let fragment = !(completed / QUERIES.len()).is_multiple_of(2);
             let query = QUERIES[completed % QUERIES.len()];
+            let mut updated = BASE;
+            if mips {
+                assert!(graphics.device.update_rgba16_float_texture(&textures[1], 2, 2, &updated).is_err());
+            } else {
+                if (completed + queued_frames) % 2 == 1 { updated.reverse(); }
+                graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &[[1.0;4];4])?;
+                graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &updated)?;
+                assert!(graphics.device.update_rgba16_float_texture(&textures[0], 1, 4, &updated).is_err());
+            }
             let uniform: Vec<u8> = [query[0], query[1], query[2], f32::from(fragment)].iter().flat_map(|v| v.to_ne_bytes()).collect();
             graphics.queue.render_and_present(frame, SceneSubmission {
                 content: SceneContent::Material(&[MaterialRecord {
@@ -171,8 +181,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 output: SceneOutput::Postprocessed { pipeline: &composite, targets: target, uniform: &[] },
                 shadow: None, overlay: None, clear: ClearColor::BLACK,
             })?;
+            // Exercise more submissions than the frame ring without a readback wait.
+            if queued_frames < 8 { queued_frames += 1; return Ok(()); }
+            queued_frames = 0;
             let actual = mulciber::integration::read_hdr_validation_pixel(&graphics.queue, target)?;
-            let reference = expected(query, mips);
+            let reference = expected(query, mips, updated);
             for channel in 0..4 {
                 // Permit two half ULPs for native filtering and final half render-target rounding.
                 // Small channels were amplified exactly, so a flushed coefficient cannot pass.

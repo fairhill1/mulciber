@@ -492,6 +492,40 @@ impl Device<'_> {
         self.upload_rgba16_float(width, height, levels, true)
     }
 
+    /// Queues a full replacement of a single-level `RGBA16Float` texture.
+    ///
+    /// The texture must belong to this device and retain its original dimensions.
+    /// Values follow `create_rgba16_float_texture`. The bytes are copied now;
+    /// the next textured/material scene submission uploads them before any draws.
+    /// Earlier submitted frames keep their original contents. Multiple writes
+    /// before that submission coalesce to the last write. No device-idle wait or
+    /// texture/descriptor recreation is required. Dropping a texture before the
+    /// next scene cancels its pending replacement.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign or stale texture, incompatible format or
+    /// dimensions, invalid texels, or an unavailable graphics session.
+    pub fn update_rgba16_float_texture(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<(), GraphicsError> {
+        if texture.lease.session != self.shared.id {
+            return Err(GraphicsError::invalid_request(
+                "texture belongs to another graphics session",
+            ));
+        }
+        let mut packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed.remove(0),
+        )
+    }
+
     fn upload_rgba16_float(
         &self,
         width: u32,

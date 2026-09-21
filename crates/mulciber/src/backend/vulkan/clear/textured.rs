@@ -8,6 +8,7 @@ mod validation;
 use descriptor_pools::DescriptorPools;
 use mesh::MeshBufferArena;
 mod scene_depth;
+mod streaming;
 mod volumetric;
 
 use core::ffi::c_void;
@@ -173,6 +174,12 @@ fn plan_mesh_storage(
 struct TextureResource {
     image: Image,
     sampler: vk::VkSampler,
+    extent: [u32; 2],
+    format: SampledTextureFormat,
+    mip_levels: u32,
+    pending: Option<Vec<u8>>,
+    uploads: [Buffer; ClearSurface::frames_in_flight()],
+    upload_ready: bool,
 }
 
 struct PipelineResource {
@@ -714,6 +721,7 @@ impl<'window> TexturedSession<'window> {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     pub(crate) fn create_texture(
         &mut self,
         width: u32,
@@ -811,10 +819,19 @@ impl<'window> TexturedSession<'window> {
             destroy_image(&self.surface, image);
             return Err(failure);
         }
-        match self.textures.insert(TextureResource { image, sampler }) {
+        match self.textures.insert(TextureResource::new(
+            image,
+            sampler,
+            [width, height],
+            format,
+            mip_levels,
+        )) {
             Ok(id) => Ok(id),
             Err(failure) => {
-                destroy_texture_device(self.surface.device(), TextureResource { image, sampler });
+                destroy_texture_device(
+                    self.surface.device(),
+                    TextureResource::new(image, sampler, [width, height], format, mip_levels),
+                );
                 Err(failure)
             }
         }
@@ -3319,6 +3336,7 @@ impl<'window> TexturedSession<'window> {
         // for the frame just submitted is what kept the CPU and GPU serialized.
         self.collect_gpu_timing()?;
         self.mesh_buffers.prepare_uploads(&self.surface)?;
+        self.prepare_texture_updates()?;
         let frame_fence = self.surface.frame_fence();
         let device = self.surface.device();
         check(
@@ -3361,6 +3379,7 @@ impl<'window> TexturedSession<'window> {
         )?;
         self.begin_gpu_frame();
         self.mesh_buffers.record_uploads(&self.surface);
+        self.record_texture_updates();
         self.recorded_has_shadow = self.pending_shadow_target.is_some();
         if self.recorded_has_shadow {
             self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
@@ -3574,6 +3593,7 @@ impl<'window> TexturedSession<'window> {
         // wait on the rest is exactly the serialization being removed.
         self.collect_gpu_timing()?;
         self.mesh_buffers.prepare_uploads(&self.surface)?;
+        self.prepare_texture_updates()?;
         if !uniform.is_empty() {
             let base = self.postprocess_uniform_base();
             write_postprocess_uniform(&self.surface, &self.postprocess_uniform, base, uniform)?;
@@ -3620,6 +3640,7 @@ impl<'window> TexturedSession<'window> {
         )?;
         self.begin_gpu_frame();
         self.mesh_buffers.record_uploads(&self.surface);
+        self.record_texture_updates();
         self.recorded_has_shadow = self.pending_shadow_target.is_some();
         if self.recorded_has_shadow {
             self.begin_gpu_region(c"shadow", [0.55, 0.25, 0.8, 1.0], SHADOW_QUERY_START);
@@ -4350,6 +4371,9 @@ impl Drop for TexturedSession<'_> {
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_texture_device(device: &super::Device, texture: TextureResource) {
     unsafe {
+        for staging in texture.uploads {
+            destroy_buffer_device(device, staging);
+        }
         device.functions.destroy_sampler.expect("loaded function")(
             device.handle,
             texture.sampler,

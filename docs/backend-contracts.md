@@ -331,3 +331,10 @@ Adaptive uses FIFO relaxed where a driver exposes it and otherwise
 `VK_KHR_present_mode_fifo_latest_ready`; Strict/HalfRefresh use capability-gated relative
 presentation timing. The new paths are compile checked, not physically validated here. VRR and multi-display evidence remain outstanding.
 See [behavior, reproduction and limits](frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).
+
+### Streaming float texture replacement
+
+`Device::update_rgba16_float_texture` queues same-sized, single-level updates
+without recreating bindings or waiting for device idle. See the
+[replacement contract and validation evidence](float-texture-uploads.md#queue-ordered-replacement).
+Linux native numerical validation passed; physical Metal validation remains open.

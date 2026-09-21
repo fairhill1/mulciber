@@ -1,5 +1,6 @@
 mod bloom;
 mod scene_depth;
+mod streaming;
 #[cfg(feature = "native-validation")]
 mod validation;
 mod volumetric;
@@ -214,6 +215,10 @@ fn mesh_index_bytes(indices: MeshIndices<'_>) -> &[u8] {
 struct TextureResource {
     texture: Object,
     sampler: Object,
+    extent: [u32; 2],
+    format: SampledTextureFormat,
+    mip_levels: usize,
+    pending: Option<Vec<u8>>,
 }
 
 struct PipelineResource {
@@ -718,7 +723,14 @@ impl<'window> TexturedSession<'window> {
                     return Err(failure);
                 }
             };
-            match self.textures.insert(TextureResource { texture, sampler }) {
+            match self.textures.insert(TextureResource {
+                texture,
+                sampler,
+                extent: [width, height],
+                format,
+                mip_levels: levels.len(),
+                pending: None,
+            }) {
                 Ok(id) => Ok(id),
                 Err(failure) => {
                     objc::void(sampler, c"release");
@@ -2155,6 +2167,7 @@ impl<'window> TexturedSession<'window> {
                 objc::object(self.surface.queue, c"commandBuffer"),
                 "Metal cube command buffer",
             )?;
+            self.encode_texture_updates(command)?;
             if let (Some(shadow), PreparedScene::Materials(records, _)) = (shadow, scene) {
                 self.encode_shadow_prepass(
                     command,
@@ -2228,6 +2241,11 @@ impl<'window> TexturedSession<'window> {
                 objc::object(drawable, c"texture"),
                 "Metal postprocess drawable texture",
             )?;
+            let command = required(
+                objc::object(self.surface.queue, c"commandBuffer"),
+                "Metal postprocess command buffer",
+            )?;
+            self.encode_texture_updates(command)?;
             let targets = &self.postprocess_targets[target];
             let scene_pass = required(
                 objc::object(
@@ -2309,10 +2327,6 @@ impl<'window> TexturedSession<'window> {
                 },
             );
 
-            let command = required(
-                objc::object(self.surface.queue, c"commandBuffer"),
-                "Metal postprocess command buffer",
-            )?;
             if let (Some(shadow), PreparedScene::Materials(records, _)) = (shadow, scene) {
                 self.encode_shadow_prepass(
                     command,
@@ -2943,7 +2957,9 @@ fn release_mesh(mesh: MeshResource) {
 
 #[allow(clippy::needless_pass_by_value)]
 fn release_texture(texture: TextureResource) {
-    let TextureResource { texture, sampler } = texture;
+    let TextureResource {
+        texture, sampler, ..
+    } = texture;
     unsafe {
         objc::void(sampler, c"release");
         objc::void(texture, c"release");

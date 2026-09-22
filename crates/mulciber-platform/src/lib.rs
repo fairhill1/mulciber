@@ -187,7 +187,7 @@ impl WindowMetrics {
         self.display_timing
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(target_os = "macos")]
     pub(crate) const fn with_display_timing(mut self, timing: DisplayTiming) -> Self {
         self.display_timing = timing;
         self

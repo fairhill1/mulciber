@@ -78,6 +78,9 @@ start from the example nearest your workload. A few conventions to know:
 
 ## Validation
 
+The unreleased Vulkan acquisition/attachment fix has a reproduced Windows
+before/after synchronization check; see [evidence and limits](docs/swapchain-synchronization.md).
+
 Native probes exercise backend capabilities, rendering, and presentation lifecycle. API probes
 cover finite runs, acquired-frame abandonment and recovery, and forced single-sample rendering.
 For commands, prerequisites, measured results, and coverage limits, see the

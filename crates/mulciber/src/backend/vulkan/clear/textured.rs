@@ -21,7 +21,7 @@ use std::{format, vec::Vec};
 
 use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
-use super::{ClearSurface, check, color_subresource_range, error, vk};
+use super::{ClearSurface, acquired_image_barrier, check, color_subresource_range, error, vk};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
     SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
@@ -3389,29 +3389,20 @@ impl<'window> TexturedSession<'window> {
             self.write_empty_gpu_region(SHADOW_QUERY_START);
         }
         let device = self.surface.device();
-        let color_barrier = image_barrier(
-            image,
-            old_layout,
-            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            if old_layout == vk::VK_IMAGE_LAYOUT_UNDEFINED {
-                vk::VK_PIPELINE_STAGE_2_NONE
-            } else {
-                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-            },
-            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk::VK_ACCESS_2_NONE,
-            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            color_subresource_range(),
-        );
+        let color_barrier = acquired_image_barrier(image, old_layout);
+        // These attachments are shared by the overlapping frame slots. Discarding
+        // their contents still needs to wait for the previous frame's accesses.
         let depth_barrier = image_barrier(
             target_depth.handle,
             vk::VK_IMAGE_LAYOUT_UNDEFINED,
             vk::VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            vk::VK_PIPELINE_STAGE_2_NONE,
             vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                 | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            vk::VK_ACCESS_2_NONE,
+            vk::VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                | vk::VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                | vk::VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             depth_subresource_range(),
         );
         let multisample_barrier = multisample_color.map(|color| {
@@ -3419,9 +3410,9 @@ impl<'window> TexturedSession<'window> {
                 color.handle,
                 vk::VK_IMAGE_LAYOUT_UNDEFINED,
                 vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                vk::VK_PIPELINE_STAGE_2_NONE,
                 vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                vk::VK_ACCESS_2_NONE,
+                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 color_subresource_range(),
             )
@@ -3650,20 +3641,7 @@ impl<'window> TexturedSession<'window> {
             self.write_empty_gpu_region(SHADOW_QUERY_START);
         }
         let device = self.surface.device();
-        let swapchain_barrier = image_barrier(
-            image,
-            old_layout,
-            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            if old_layout == vk::VK_IMAGE_LAYOUT_UNDEFINED {
-                vk::VK_PIPELINE_STAGE_2_NONE
-            } else {
-                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-            },
-            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk::VK_ACCESS_2_NONE,
-            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            color_subresource_range(),
-        );
+        let swapchain_barrier = acquired_image_barrier(image, old_layout);
         let scene_barrier = image_barrier(
             scene_color.handle,
             vk::VK_IMAGE_LAYOUT_UNDEFINED,

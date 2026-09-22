@@ -349,3 +349,9 @@ on a 75 Hz display. The user reports the consuming game works on Windows / RTX
 3060 Ti / 75 Hz but Strict still behaves irregularly; this is not a claim of
 fully resolved Strict pacing or broader hardware coverage. See
 [the correction and validation limits](frame-pacing-controls.md#strict-recovery-correction-01324-2026-09-21).
+# Vulkan synchronization correction (2026-09-22)
+
+First-use acquired-image transitions must chain to the acquisition semaphore
+wait even when contents are discarded. Direct-render depth/MSAA targets are
+shared across in-flight slots and require attachment reuse dependencies.
+See [the reproduced hazards and corrected barriers](swapchain-synchronization.md).

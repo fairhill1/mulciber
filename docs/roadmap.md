@@ -601,3 +601,10 @@ on a 75 Hz display. The user reports the consuming game works on Windows / RTX
 3060 Ti / 75 Hz but Strict still behaves irregularly; this is not a claim of
 fully resolved Strict pacing or broader hardware coverage. See
 [the correction and validation limits](frame-pacing-controls.md#strict-recovery-correction-01324-2026-09-21).
+# Vulkan synchronization correction (2026-09-22)
+
+Corrected first-use acquired-image transition ordering and direct-render
+attachment reuse after synchronization validation exposed both in the game menu.
+The [before/after evidence](swapchain-synchronization.md) is limited to this run;
+it does not advance a hardware-coverage gate or establish the reported RTX 4070
+device-loss cause.

@@ -2,6 +2,16 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Vulkan acquisition and attachment synchronization (0.13.25)
+
+Chain first-use swapchain layout transitions to the acquisition semaphore wait
+in every draw path. Synchronize direct-render depth and MSAA attachment reuse
+across overlapping frames. Synchronization validation reproduced the original
+hazards on Windows / RTX 3060 Ti and no longer reports them in the patched game
+menu or the subsequent map/dialogue test. This does not establish resolution of
+the RTX 4070 playtest device loss.
+See [evidence and limits](docs/swapchain-synchronization.md).
+
 ## Strict full-rate recovery (0.13.24)
 
 Start Strict at full refresh and step down only after sustained overload. Recovery

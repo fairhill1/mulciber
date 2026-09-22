@@ -784,3 +784,10 @@ Full workspace Clippy remains blocked by the pre-existing unused
 `WindowMetrics::with_display_timing` helper in Windows platform test builds.
 The GUI portion of the Windows preflight was not run under the user's no-window
 instruction. These checks do not establish smooth Strict presentation.
+## Acquisition/attachment synchronization correction (0.13.25, 2026-09-22)
+
+Synchronization validation in the consuming game reproduced acquisition layout
+transition and cross-frame direct-depth hazards on RTX 3060 Ti. The patched
+menu and subsequent map/dialogue test no longer report those hazards. The OBS layer API warning remains;
+RTX 4070 device-loss resolution is not established. See
+[the exact configuration, source correction, and evidence](swapchain-synchronization.md).

@@ -727,24 +727,7 @@ impl<'window> ClearSurface<'window> {
         color: ClearColor,
     ) {
         let range = color_subresource_range();
-        let to_attachment = vk::VkImageMemoryBarrier2 {
-            sType: vk::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            srcStageMask: if old_layout == vk::VK_IMAGE_LAYOUT_UNDEFINED {
-                vk::VK_PIPELINE_STAGE_2_NONE
-            } else {
-                vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-            },
-            srcAccessMask: vk::VK_ACCESS_2_NONE,
-            dstStageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            dstAccessMask: vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            oldLayout: old_layout,
-            newLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
-            dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
-            image,
-            subresourceRange: range,
-            ..Default::default()
-        };
+        let to_attachment = acquired_image_barrier(image, old_layout);
         let dependency = vk::VkDependencyInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
             imageMemoryBarrierCount: 1,
@@ -2331,6 +2314,28 @@ fn choose_composite_alpha(
     .find(|mode| supported & (*mode).cast_unsigned() != 0)
 }
 
+/// Chain the layout transition to the acquisition semaphore's `COLOR_ATTACHMENT_OUTPUT`
+/// wait, including the first use. `UNDEFINED` discards pixels, not presentation ownership.
+fn acquired_image_barrier(
+    image: vk::VkImage,
+    old_layout: vk::VkImageLayout,
+) -> vk::VkImageMemoryBarrier2 {
+    vk::VkImageMemoryBarrier2 {
+        sType: vk::VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        srcStageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        srcAccessMask: vk::VK_ACCESS_2_NONE,
+        dstStageMask: vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        dstAccessMask: vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        oldLayout: old_layout,
+        newLayout: vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
+        image,
+        subresourceRange: color_subresource_range(),
+        ..Default::default()
+    }
+}
+
 const fn color_subresource_range() -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
@@ -2430,6 +2435,24 @@ mod gpu_region;
 mod tests {
     use super::{check, vk};
     use crate::GraphicsErrorKind;
+
+    #[test]
+    fn first_and_repeated_swapchain_transitions_chain_to_the_acquire_wait() {
+        for old_layout in [
+            vk::VK_IMAGE_LAYOUT_UNDEFINED,
+            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        ] {
+            let barrier = super::acquired_image_barrier(core::ptr::null_mut(), old_layout);
+            let wait_stage = vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            assert_ne!(barrier.srcStageMask & wait_stage, 0);
+            assert_ne!(barrier.dstStageMask & wait_stage, 0);
+            assert_eq!(barrier.oldLayout, old_layout);
+            assert_eq!(
+                barrier.newLayout,
+                vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            );
+        }
+    }
 
     #[test]
     fn vulkan_results_map_to_recovery_categories() {

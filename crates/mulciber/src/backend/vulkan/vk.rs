@@ -6460,6 +6460,39 @@ impl Default for VkPhysicalDevicePresentId2FeaturesKHR {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct VkSurfacePresentModeKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentMode: VkPresentModeKHR,
+}
+impl Default for VkSurfacePresentModeKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSurfacePresentModeCompatibilityKHR {
+    pub sType: VkStructureType,
+    pub pNext: *mut ::core::ffi::c_void,
+    pub presentModeCount: u32,
+    pub pPresentModes: *mut VkPresentModeKHR,
+}
+impl Default for VkSurfacePresentModeCompatibilityKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
     pub sType: VkStructureType,
     pub pNext: *mut ::core::ffi::c_void,
@@ -6483,6 +6516,40 @@ pub struct VkSwapchainPresentFenceInfoKHR {
     pub pFences: *const VkFence,
 }
 impl Default for VkSwapchainPresentFenceInfoKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSwapchainPresentModesCreateInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub presentModeCount: u32,
+    pub pPresentModes: *const VkPresentModeKHR,
+}
+impl Default for VkSwapchainPresentModesCreateInfoKHR {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct VkSwapchainPresentModeInfoKHR {
+    pub sType: VkStructureType,
+    pub pNext: *const ::core::ffi::c_void,
+    pub swapchainCount: u32,
+    pub pPresentModes: *const VkPresentModeKHR,
+}
+impl Default for VkSwapchainPresentModeInfoKHR {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {

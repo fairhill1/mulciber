@@ -177,17 +177,22 @@ pub(super) fn choose_present_mode(modes: &[vk::VkPresentModeKHR]) -> Option<vk::
 /// Never silently substitute plain synchronized output for a request that asked
 /// not to be stalled by synchronization.
 ///
-/// [`crate::PresentationMode::Adaptive`] has two native spellings and takes
-/// whichever the driver offers. Relaxed FIFO lets a late frame through
-/// immediately, tearing rather than holding the previous image for another
-/// whole interval. Latest-ready instead keeps every present on a vertical
-/// blank and discards the images that went stale waiting for one, so a frame
-/// finished during the interval is shown at the next blank rather than behind
-/// the ones queued before it. They differ in whether the screen may tear and
-/// agree on the thing the policy is asked for, which is that the queue never
-/// costs the player latency. Neither is offered in place of the other's
-/// availability: an adapter with both takes relaxed FIFO, and an adapter with
-/// neither reports the policy unsupported rather than falling back to FIFO.
+/// [`crate::PresentationMode::Adaptive`] synchronizes while the application keeps
+/// up and presents immediately once it cannot, so a slow stretch tears rather
+/// than halving the frame rate. Relaxed FIFO is that policy in one native mode
+/// and is taken wherever the surface lists it.
+///
+/// Where it does not, as on NVIDIA's Linux driver on every surface type, the
+/// same policy is built from two modes in one swapchain: `switchable` says the
+/// device enabled `VK_KHR_swapchain_maintenance1` and the surface reports FIFO
+/// and immediate as compatible, and the swapchain is then created in FIFO with
+/// immediate beside it, each present choosing between them from measured
+/// throughput. Latest-ready is the last resort. It keeps every present on a
+/// vertical blank and only discards stale images, so a frame that misses one
+/// blank still waits for the next, which is exactly the half-rate stutter the
+/// policy exists to avoid; it is offered only because it at least never queues
+/// latency. An adapter with none of the three reports the policy unsupported
+/// rather than falling back to plain FIFO.
 ///
 /// `latest_ready` is whether the device enabled
 /// `VK_KHR_present_mode_fifo_latest_ready` and its feature, not merely whether
@@ -198,6 +203,7 @@ pub(super) fn choose_present_mode_for_policy(
     modes: &[vk::VkPresentModeKHR],
     policy: crate::PresentationMode,
     latest_ready: bool,
+    switchable: bool,
 ) -> Option<vk::VkPresentModeKHR> {
     match policy {
         crate::PresentationMode::Synchronized => choose_present_mode(modes),
@@ -210,6 +216,11 @@ pub(super) fn choose_present_mode_for_policy(
         crate::PresentationMode::Adaptive => {
             if modes.contains(&vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
                 Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+            } else if switchable
+                && modes.contains(&vk::VK_PRESENT_MODE_FIFO_KHR)
+                && modes.contains(&vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
+            {
+                Some(vk::VK_PRESENT_MODE_FIFO_KHR)
             } else if latest_ready && modes.contains(&vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR) {
                 Some(vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)
             } else {
@@ -232,7 +243,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
                 crate::PresentationMode::Adaptive,
-                true
+                true,
+                false
             ),
             None
         );
@@ -243,6 +255,7 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
                 ],
                 crate::PresentationMode::Adaptive,
+                false,
                 false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
@@ -254,9 +267,47 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
                 ],
                 crate::PresentationMode::Adaptive,
-                true
+                true,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)
+        );
+    }
+
+    /// Without relaxed FIFO the policy switches FIFO and immediate in one
+    /// swapchain, which beats latest-ready, and only where the surface allows it.
+    #[test]
+    fn adaptive_switches_fifo_and_immediate_before_taking_latest_ready() {
+        let modes = [
+            vk::VK_PRESENT_MODE_FIFO_KHR,
+            vk::VK_PRESENT_MODE_IMMEDIATE_KHR,
+            vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR,
+        ];
+        let adaptive = crate::PresentationMode::Adaptive;
+        assert_eq!(
+            choose_present_mode_for_policy(&modes, adaptive, true, true),
+            Some(vk::VK_PRESENT_MODE_FIFO_KHR)
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(&modes, adaptive, true, false),
+            Some(vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR)
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(&modes[..1], adaptive, false, true),
+            None
+        );
+        assert_eq!(
+            choose_present_mode_for_policy(
+                &[
+                    vk::VK_PRESENT_MODE_FIFO_KHR,
+                    vk::VK_PRESENT_MODE_IMMEDIATE_KHR,
+                    vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                ],
+                adaptive,
+                false,
+                true
+            ),
+            Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
         );
     }
 
@@ -273,7 +324,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR
                 ],
                 crate::PresentationMode::Adaptive,
-                true
+                true,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
         );
@@ -290,6 +342,7 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
                 ],
                 crate::PresentationMode::Adaptive,
+                false,
                 false
             ),
             None
@@ -302,7 +355,8 @@ mod presentation_tests {
             choose_present_mode_for_policy(
                 &[vk::VK_PRESENT_MODE_FIFO_KHR],
                 crate::PresentationMode::Immediate,
-                true
+                true,
+                false
             ),
             None
         );
@@ -313,7 +367,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
                 crate::PresentationMode::Immediate,
-                true
+                true,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_IMMEDIATE_KHR)
         );
@@ -324,7 +379,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_IMMEDIATE_KHR
                 ],
                 crate::PresentationMode::Synchronized,
-                true
+                true,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_KHR)
         );
@@ -342,7 +398,8 @@ mod presentation_tests {
                     vk::VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
                 ],
                 crate::PresentationMode::Synchronized,
-                true
+                true,
+                false
             ),
             Some(vk::VK_PRESENT_MODE_FIFO_KHR)
         );

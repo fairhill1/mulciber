@@ -1,4 +1,4 @@
-mod adaptive;
+use super::adaptive;
 #[allow(missing_docs)]
 pub mod objc;
 mod timing;

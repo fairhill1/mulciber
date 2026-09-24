@@ -105,16 +105,34 @@ necessary to validate that path, including window/fullscreen and below-range beh
 Metal schedules half refresh with `presentDrawable:afterMinimumDuration:` and a small tolerance
 below two periods, rounded by synchronized scanout.
 
-Vulkan Adaptive takes either of its two native spellings. FIFO relaxed is preferred where the
-driver exposes it; otherwise `VK_KHR_present_mode_fifo_latest_ready`, or its original EXT name,
-with the `presentModeFifoLatestReady` feature enabled at device creation. An adapter offering
-both keeps relaxed FIFO, so no machine already served changes behavior. The two differ in
-whether a late frame tears: relaxed FIFO presents it immediately and tears, latest-ready keeps
-every present on a vertical blank and discards the images that went stale waiting for one.
-Latest-ready releases images at every blank, so an uncapped application can render past the
-refresh rate and have most of those frames discarded; pair it with a frame cap where power
-matters. A surface lists latest-ready whether or not the device enabled the feature, so
-availability is gated on the device rather than on the surface query.
+Vulkan Adaptive means what relaxed FIFO means: synchronized while frames keep up with the
+screen, immediate once they cannot, so a slow stretch tears instead of alternating one- and
+two-refresh frames. Relaxed FIFO is taken wherever the surface lists it, so no machine already
+served changes behavior.
+
+NVIDIA's Linux driver lists it on no surface type. There the device enables
+`VK_KHR_swapchain_maintenance1`, the instance `VK_KHR_surface_maintenance1`, and where the surface
+reports FIFO and immediate as compatible the swapchain is created in FIFO with immediate beside
+it, sized for whichever mode needs more images. Each present chains
+`VkSwapchainPresentModeInfoKHR` choosing between them from the same throughput policy Metal uses
+(`backend/adaptive.rs`): a present interval over 1.15 refresh periods or a GPU frame over one
+period releases to immediate at once; returning to FIFO needs 45 consecutive refresh-rate presents
+with GPU frames at 90% of the period or less. GPU timestamps are therefore collected whenever
+Adaptive is selected. The refresh period comes from `VK_EXT_present_timing`; until it is known
+the swapchain presents immediately.
+
+`VK_KHR_present_mode_fifo_latest_ready` is the last resort, used only where neither of the above
+is available. It keeps every present on a vertical blank and discards the images that went stale
+waiting for one, so it never queues latency, but a frame that misses one blank still waits for
+the next: a workload near the refresh period alternates 1x and 2x refresh intervals, which is the
+stutter the policy exists to avoid. A surface lists latest-ready whether or not the device enabled
+the feature, so availability is gated on the device rather than on the surface query.
+
+Measured on an RTX 3060 Ti (driver 615.71.09), KDE Wayland, 2560x1440 at 74.97 Hz, in the Isle of
+Ran mead-hall trace with a GPU frame of about 14.8 ms: latest-ready alternated 13.34 ms and
+26.68 ms intervals (16-18% of frames at two refreshes, sd 4.9-5.1 ms, 64-65 FPS); switching held
+14.84 ms median intervals (sd 0.08-0.10 ms, p99 15.0-15.1 ms, 67.4-67.5 FPS). Intervals are frame
+completion, not optical display timing. Vulkan validation reported no messages.
 
 Strict/HalfRefresh require FIFO plus `VK_EXT_present_timing` relative-time scheduling, a native
 refresh duration, and (for Strict) GPU timestamps. Vulkan's requested relative presentation time

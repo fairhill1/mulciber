@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Adaptive presentation without relaxed FIFO (0.13.26)
+
+Where a Vulkan driver exposes no FIFO relaxed, as NVIDIA's Linux driver does on every surface,
+Adaptive now switches one swapchain between FIFO and immediate per present with
+`VK_KHR_swapchain_maintenance1`, driven by the throughput policy Metal already used, which moves
+to a shared `backend/adaptive.rs`. Latest-ready becomes the last resort: it alternated one- and
+two-refresh frames whenever the workload sat near the refresh period. See
+[frame-pacing controls](docs/frame-pacing-controls.md) for measurements and limits.
+
 ## Vulkan acquisition and attachment synchronization (0.13.25)
 
 Chain first-use swapchain layout transitions to the acquisition semaphore wait

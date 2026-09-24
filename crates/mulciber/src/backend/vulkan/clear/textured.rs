@@ -608,7 +608,12 @@ impl<'window> TexturedSession<'window> {
 
     pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
         self.gpu_timing.requested = enabled;
-        let enabled = enabled || self.surface.presentation_mode == crate::PresentationMode::Strict;
+        // Strict pacing and adaptive switching both judge the workload by GPU frame time.
+        let enabled = enabled
+            || matches!(
+                self.surface.presentation_mode,
+                crate::PresentationMode::Strict | crate::PresentationMode::Adaptive
+            );
         if enabled
             && self.gpu_timing.query_pool.is_null()
             && self.surface.device().adapter.timestamp_valid_bits != 0
@@ -2895,6 +2900,7 @@ impl<'window> TexturedSession<'window> {
             )
             .duration();
         self.surface.strict.record_gpu_time(frame_time);
+        self.surface.adaptive.record_gpu_time(frame_time);
         if !self.gpu_timing.requested {
             return Ok(());
         }

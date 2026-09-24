@@ -13,9 +13,12 @@
 //! recreations, whose domains restart at unrelated epochs.
 
 use core::ptr;
+use std::eprintln;
 use std::time::{Duration, Instant};
 use std::vec;
 use std::vec::Vec;
+
+use mulciber_platform::DisplayTiming;
 
 use super::{ClearSurface, Instance, check, check_enumeration, vk};
 use crate::{GraphicsError, PresentFeedback, PresentedFrame};
@@ -276,6 +279,35 @@ impl ClearSurface<'_> {
     /// Presents one frame, chaining a present id and native timing request when configured, and
     /// drains completed reports afterward. Every call consumes one session frame index so
     /// feedback indices count presented dispositions.
+    /// The mode a switching swapchain presents this frame in. Such a swapchain is the
+    /// adaptive policy without relaxed FIFO: synchronized while frames keep up with the
+    /// screen, immediate once they cannot.
+    fn switching_present_mode(&mut self) -> vk::VkPresentModeKHR {
+        if !self.swapchain.switching {
+            return vk::VK_PRESENT_MODE_FIFO_KHR;
+        }
+        let timing = self
+            .refresh_interval()
+            .map_or(DisplayTiming::Unknown, DisplayTiming::Fixed);
+        let synchronized = self.adaptive.update(Instant::now(), timing);
+        if self.adaptive_synchronized != Some(synchronized) {
+            self.adaptive_synchronized = Some(synchronized);
+            eprintln!(
+                "Vulkan adaptive presentation: {}",
+                if synchronized {
+                    "synchronized"
+                } else {
+                    "immediate"
+                }
+            );
+        }
+        if synchronized {
+            vk::VK_PRESENT_MODE_FIFO_KHR
+        } else {
+            vk::VK_PRESENT_MODE_IMMEDIATE_KHR
+        }
+    }
+
     pub(super) fn queue_present_with_feedback(
         &mut self,
         image_index: u32,
@@ -326,12 +358,24 @@ impl ClearSurface<'_> {
             swapchainCount: 1,
             pTimingInfos: &raw const timing_info,
         };
+        let timing_head: *const core::ffi::c_void = if request.is_some() {
+            (&raw const timing_chain).cast()
+        } else {
+            ptr::null()
+        };
+        let switch_mode = self.switching_present_mode();
+        let mode_info = vk::VkSwapchainPresentModeInfoKHR {
+            sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_KHR,
+            pNext: timing_head,
+            swapchainCount: 1,
+            pPresentModes: &raw const switch_mode,
+        };
         let present = vk::VkPresentInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            pNext: if request.is_some() {
-                (&raw const timing_chain).cast()
+            pNext: if self.swapchain.switching {
+                (&raw const mode_info).cast()
             } else {
-                ptr::null()
+                timing_head
             },
             waitSemaphoreCount: 1,
             pWaitSemaphores: &raw const render_finished,

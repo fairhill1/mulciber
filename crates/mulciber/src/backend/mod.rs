@@ -1,3 +1,4 @@
+mod adaptive;
 #[cfg(target_os = "macos")]
 pub(crate) mod metal;
 mod pacing;

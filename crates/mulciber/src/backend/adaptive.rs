@@ -1,4 +1,5 @@
-//! Metal has no FIFO-relaxed mode: use measured throughput with asymmetric recovery.
+//! Adaptive presentation where no native relaxed FIFO exists: measured throughput with
+//! asymmetric recovery chooses between synchronized and immediate presentation.
 use mulciber_platform::DisplayTiming;
 use std::time::{Duration, Instant};
 

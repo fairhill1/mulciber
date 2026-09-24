@@ -87,11 +87,15 @@ pub(crate) struct ClearSurface<'window> {
     presentation_mode: crate::PresentationMode,
     /// The last native present mode a swapchain here was actually built with, so the
     /// diagnostic reports adoptions rather than rebuilds on the same mode.
-    reported_present_mode: Option<vk::VkPresentModeKHR>,
+    reported_present_mode: Option<(vk::VkPresentModeKHR, bool)>,
     /// The last screen period reported, so a swapchain rebuilt on an unchanged screen
     /// is silent.
     reported_refresh_interval: Option<Duration>,
     strict: super::super::pacing::StrictPacing,
+    adaptive: super::super::adaptive::AdaptiveSync,
+    /// Whether a switching swapchain last presented synchronized, for the diagnostic
+    /// reporting each change.
+    adaptive_synchronized: Option<bool>,
     resize_pace: Duration,
     last_resize_recreate: Option<Instant>,
     deferred_error: Option<GraphicsError>,
@@ -140,6 +144,8 @@ impl<'window> ClearSurface<'window> {
             reported_refresh_interval: None,
             presentation_mode: crate::PresentationMode::Synchronized,
             strict: super::super::pacing::StrictPacing::default(),
+            adaptive: super::super::adaptive::AdaptiveSync::default(),
+            adaptive_synchronized: None,
             resize_pace,
             last_resize_recreate: None,
             deferred_error: None,
@@ -167,6 +173,8 @@ impl<'window> ClearSurface<'window> {
             choose_present_mode(self.device.as_ref().expect("live surface"), mode)?;
             self.presentation_mode = mode;
             self.strict = super::super::pacing::StrictPacing::default();
+            self.adaptive = super::super::adaptive::AdaptiveSync::default();
+            self.adaptive_synchronized = None;
             self.recreate_after_present = true;
         }
         Ok(())
@@ -517,19 +525,50 @@ impl<'window> ClearSurface<'window> {
         let format = choose_surface_format(&formats)
             .ok_or_else(|| unsupported("surface exposes no supported sRGB format"))?;
         let present_mode = choose_present_mode(device, self.presentation_mode)?;
+        let switching = self.presentation_mode == crate::PresentationMode::Adaptive
+            && present_mode == vk::VK_PRESENT_MODE_FIFO_KHR;
+        let switch_modes = [
+            vk::VK_PRESENT_MODE_FIFO_KHR,
+            vk::VK_PRESENT_MODE_IMMEDIATE_KHR,
+        ];
         let extent = choose_extent(capabilities, requested);
         let extent_info = SurfaceExtent::new(extent.width, extent.height);
-        let mut image_count = capabilities
-            .minImageCount
-            .saturating_add(1)
-            .max(SWAPCHAIN_IMAGE_COUNT);
-        if capabilities.maxImageCount != 0 {
-            image_count = image_count.min(capabilities.maxImageCount);
+        // A switching swapchain must hold enough images for whichever of its modes needs
+        // the most, which each mode reports for itself.
+        let (mut min_images, mut max_images) =
+            (capabilities.minImageCount, capabilities.maxImageCount);
+        if switching {
+            for mode in switch_modes {
+                let (limits, _) = surface_present_mode_capabilities(device, mode)?;
+                min_images = min_images.max(limits.minImageCount);
+                if limits.maxImageCount != 0 {
+                    max_images = if max_images == 0 {
+                        limits.maxImageCount
+                    } else {
+                        max_images.min(limits.maxImageCount)
+                    };
+                }
+            }
         }
+        let mut image_count = min_images.saturating_add(1).max(SWAPCHAIN_IMAGE_COUNT);
+        if max_images != 0 {
+            image_count = image_count.min(max_images);
+        }
+        let switch_info = vk::VkSwapchainPresentModesCreateInfoKHR {
+            sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_KHR,
+            presentModeCount: u32::try_from(switch_modes.len()).expect("two modes"),
+            pPresentModes: switch_modes.as_ptr(),
+            ..Default::default()
+        };
         let composite_alpha = choose_composite_alpha(capabilities.supportedCompositeAlpha)
             .ok_or_else(|| unsupported("surface exposes no supported composite-alpha mode"))?;
         let create_info = vk::VkSwapchainCreateInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            pNext: if switching {
+                (&raw const switch_info).cast()
+            } else {
+                ptr::null()
+            },
             flags: if device.adapter.present_timing.is_ok() {
                 (vk::VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR
                     | vk::VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) as u32
@@ -568,6 +607,7 @@ impl<'window> ClearSurface<'window> {
             handle,
             format: format.format,
             extent,
+            switching,
             ..Default::default()
         };
         if let Err(error) = populate_swapchain(device, &mut next) {
@@ -591,9 +631,13 @@ impl<'window> ClearSurface<'window> {
         // the last: a window the compositor is still sizing rebuilds its swapchain over and
         // over on the same mode, and selection itself is silent because it is also how the
         // surface answers whether a policy is available.
-        if self.reported_present_mode != Some(present_mode) {
-            self.reported_present_mode = Some(present_mode);
-            eprintln!("Vulkan presentation: {}", present_mode_name(present_mode));
+        if self.reported_present_mode != Some((present_mode, switching)) {
+            self.reported_present_mode = Some((present_mode, switching));
+            if switching {
+                eprintln!("Vulkan presentation: adaptive (fifo/immediate switching)");
+            } else {
+                eprintln!("Vulkan presentation: {}", present_mode_name(present_mode));
+            }
         }
         Ok(())
     }
@@ -1006,6 +1050,9 @@ struct Swapchain {
     views: Vec<vk::VkImageView>,
     render_finished: Vec<vk::VkSemaphore>,
     initialized: Vec<bool>,
+    /// Created in FIFO with immediate beside it, each present choosing between them:
+    /// the adaptive policy on a driver with no relaxed FIFO.
+    switching: bool,
 }
 
 struct Entry {
@@ -1179,6 +1226,9 @@ struct Instance {
     debug_messenger: vk::VkDebugUtilsMessengerEXT,
     surface: vk::VkSurfaceKHR,
     surface_capabilities2: bool,
+    /// Per-present-mode surface queries, which is how the adaptive policy learns
+    /// whether one swapchain may present both synchronized and immediate.
+    surface_maintenance1: bool,
 }
 
 impl Instance {
@@ -1239,6 +1289,13 @@ impl Instance {
                     .strip_suffix(&[0])
                     .expect("NUL suffix")
         });
+        let surface_maintenance1 = surface_capabilities2
+            && available.iter().any(|candidate| {
+                candidate
+                    == vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME
+                        .strip_suffix(&[0])
+                        .expect("NUL suffix")
+            });
         let application = vk::VkApplicationInfo {
             sType: vk::VK_STRUCTURE_TYPE_APPLICATION_INFO,
             pApplicationName: c"Mulciber clear slice".as_ptr(),
@@ -1261,6 +1318,13 @@ impl Instance {
         if surface_capabilities2 {
             extensions.push(
                 vk::VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME
+                    .as_ptr()
+                    .cast(),
+            );
+        }
+        if surface_maintenance1 {
+            extensions.push(
+                vk::VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME
                     .as_ptr()
                     .cast(),
             );
@@ -1308,6 +1372,7 @@ impl Instance {
             debug_messenger: ptr::null_mut(),
             surface: ptr::null_mut(),
             surface_capabilities2,
+            surface_maintenance1,
         };
         if validation {
             check(
@@ -1389,6 +1454,10 @@ struct Adapter {
     /// created with. Distinct from the surface merely listing the mode, which it does
     /// whether or not the feature was enabled and presenting in it is therefore legal.
     latest_ready: Option<&'static [u8]>,
+    /// Whether the device enables `VK_KHR_swapchain_maintenance1` with its feature, which
+    /// lets one swapchain switch present mode per present. Optional: the adaptive policy
+    /// uses it to emulate relaxed FIFO where a driver exposes none.
+    swapchain_maintenance1: bool,
     /// Whether the adapter samples BC-family block-compressed images. Optional: an adapter
     /// without it is still selected and refuses only the compressed uploads themselves.
     texture_compression_bc: bool,
@@ -1610,6 +1679,7 @@ struct Device {
 }
 
 impl Device {
+    #[allow(clippy::too_many_lines)]
     fn new(instance: Instance) -> Result<Self, GraphicsError> {
         let adapter = choose_adapter(&instance)?;
         let priority = 1.0;
@@ -1660,6 +1730,15 @@ impl Device {
             pNext: (&raw mut features13).cast(),
             presentModeFifoLatestReady: vk::VK_TRUE,
         };
+        let mut maintenance1_features = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+            pNext: if adapter.latest_ready.is_some() {
+                (&raw mut latest_ready_features).cast()
+            } else {
+                (&raw mut features13).cast()
+            },
+            swapchainMaintenance1: vk::VK_TRUE,
+        };
         let extensions = enabled_device_extensions(&adapter);
         // Core features ride on `pEnabledFeatures`, which the specification allows beside
         // the versioned feature structs on `pNext` as long as no `VkPhysicalDeviceFeatures2`
@@ -1670,10 +1749,10 @@ impl Device {
         };
         let info = vk::VkDeviceCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext: if adapter.latest_ready.is_some() {
-                (&raw mut latest_ready_features).cast()
+            pNext: if adapter.swapchain_maintenance1 {
+                (&raw mut maintenance1_features).cast()
             } else {
-                (&raw mut features13).cast()
+                maintenance1_features.pNext
             },
             pEnabledFeatures: &raw const core_features,
             queueCreateInfoCount: 1,
@@ -1811,12 +1890,26 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
             pNext: (&raw mut features13).cast(),
             ..Default::default()
         };
-        let mut features = vk::VkPhysicalDeviceFeatures2 {
-            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        let maintenance1_extension = extensions.iter().any(|name| {
+            name == vk::VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+                .strip_suffix(&[0])
+                .expect("NUL suffix")
+        });
+        let mut maintenance1_features = vk::VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
             pNext: if latest_ready_extension.is_some() {
                 (&raw mut latest_ready_features).cast()
             } else {
                 (&raw mut features13).cast()
+            },
+            ..Default::default()
+        };
+        let mut features = vk::VkPhysicalDeviceFeatures2 {
+            sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            pNext: if maintenance1_extension {
+                (&raw mut maintenance1_features).cast()
+            } else {
+                maintenance1_features.pNext
             },
             ..Default::default()
         };
@@ -1900,6 +1993,8 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         latest_ready: latest_ready_extension.filter(|_| {
                             latest_ready_features.presentModeFifoLatestReady == vk::VK_TRUE
                         }),
+                        swapchain_maintenance1: maintenance1_extension
+                            && maintenance1_features.swapchainMaintenance1 == vk::VK_TRUE,
                         texture_compression_bc: features.features.textureCompressionBC
                             == vk::VK_TRUE,
                     },
@@ -2105,10 +2200,15 @@ fn choose_present_mode(
         },
         "enumerate present modes",
     )?;
+    let modes = &values[..count as usize];
+    let switchable = presentation_mode == crate::PresentationMode::Adaptive
+        && !modes.contains(&vk::VK_PRESENT_MODE_FIFO_RELAXED_KHR)
+        && fifo_immediate_switchable(device)?;
     platform::choose_present_mode_for_policy(
-        &values[..count as usize],
+        modes,
         presentation_mode,
         device.adapter.latest_ready.is_some(),
+        switchable,
     )
     .ok_or_else(|| {
         GraphicsError::with_kind(
@@ -2116,6 +2216,75 @@ fn choose_present_mode(
             "surface does not expose the requested presentation mode",
         )
     })
+}
+
+/// Whether one swapchain on this surface may present both FIFO and immediate,
+/// switching per present, which is how the adaptive policy is built where the
+/// driver exposes no relaxed FIFO.
+fn fifo_immediate_switchable(device: &Device) -> Result<bool, GraphicsError> {
+    if !device.instance.surface_maintenance1 || !device.adapter.swapchain_maintenance1 {
+        return Ok(false);
+    }
+    let (_, compatible) = surface_present_mode_capabilities(device, vk::VK_PRESENT_MODE_FIFO_KHR)?;
+    Ok(compatible.contains(&vk::VK_PRESENT_MODE_IMMEDIATE_KHR))
+}
+
+/// The surface capabilities for one present mode, and the modes a swapchain created in
+/// it may switch to. Requires `VK_KHR_surface_maintenance1` on the instance.
+fn surface_present_mode_capabilities(
+    device: &Device,
+    mode: vk::VkPresentModeKHR,
+) -> Result<(vk::VkSurfaceCapabilitiesKHR, Vec<vk::VkPresentModeKHR>), GraphicsError> {
+    let present_mode = vk::VkSurfacePresentModeKHR {
+        sType: vk::VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR,
+        presentMode: mode,
+        ..Default::default()
+    };
+    let surface_info = vk::VkPhysicalDeviceSurfaceInfo2KHR {
+        sType: vk::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+        pNext: (&raw const present_mode).cast(),
+        surface: device.instance.surface,
+    };
+    let query = |modes: *mut vk::VkPresentModeKHR, count: u32| {
+        let mut compatibility = vk::VkSurfacePresentModeCompatibilityKHR {
+            sType: vk::VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR,
+            presentModeCount: count,
+            pPresentModes: modes,
+            ..Default::default()
+        };
+        let mut capabilities = vk::VkSurfaceCapabilities2KHR {
+            sType: vk::VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
+            pNext: (&raw mut compatibility).cast(),
+            ..Default::default()
+        };
+        check(
+            unsafe {
+                // SAFETY: Adapter and surface are live, and the query chain is writable
+                // with room for `count` modes.
+                device
+                    .instance
+                    .functions
+                    .get_surface_capabilities2
+                    .expect("loaded function")(
+                    device.adapter.handle,
+                    &raw const surface_info,
+                    &raw mut capabilities,
+                )
+            },
+            "vkGetPhysicalDeviceSurfaceCapabilities2KHR",
+        )
+        .map(|()| {
+            (
+                capabilities.surfaceCapabilities,
+                compatibility.presentModeCount,
+            )
+        })
+    };
+    let (_, count) = query(ptr::null_mut(), 0)?;
+    let mut modes = vec![0; count as usize];
+    let (capabilities, count) = query(modes.as_mut_ptr(), count)?;
+    modes.truncate(count as usize);
+    Ok((capabilities, modes))
 }
 
 /// The diagnostic name of an adopted native present mode.
@@ -2175,6 +2344,13 @@ fn enabled_device_extensions(adapter: &Adapter) -> Vec<*const c_char> {
     let mut extensions = vec![vk::VK_KHR_SWAPCHAIN_EXTENSION_NAME.as_ptr().cast()];
     if let Some(name) = adapter.latest_ready {
         extensions.push(name.as_ptr().cast());
+    }
+    if adapter.swapchain_maintenance1 {
+        extensions.push(
+            vk::VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+                .as_ptr()
+                .cast(),
+        );
     }
     if adapter.present_timing.is_ok() {
         extensions.push(vk::VK_KHR_PRESENT_ID_2_EXTENSION_NAME.as_ptr().cast());

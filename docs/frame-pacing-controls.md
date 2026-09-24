@@ -83,10 +83,9 @@ error without substituting another mode. `active_presentation_mode` exposes the 
 choice for diagnostics. A game may offer four choices, using Strict instead of the fixed
 HalfRefresh primitive. It should explain any fallback when loading an unsupported saved choice.
 
-Metal Adaptive starts immediate, enables display sync after 45 consecutive refresh-rate starts
-with GPU headroom, and releases it after a missed deadline or GPU overload. It ignores three
-already-queued old-cadence frames after recovery, preventing transition oscillation. Unknown
-native timing stays immediate. Variable-capable screens retain native synchronization, without
+Metal Adaptive starts synchronized and judges the workload exactly as Strict does (below): three
+consecutive overloaded frames release display sync, and 90 fresh samples with 5% CPU and GPU
+headroom restore it. Unknown native timing stays immediate. Variable-capable screens retain native synchronization, without
 assuming that capability proves VRR engagement; macOS adaptive scheduling also requires the
 appropriate display setting and fullscreen presentation.
 
@@ -114,10 +113,16 @@ NVIDIA's Linux driver lists it on no surface type. There the device enables
 `VK_KHR_swapchain_maintenance1`, the instance `VK_KHR_surface_maintenance1`, and where the surface
 reports FIFO and immediate as compatible the swapchain is created in FIFO with immediate beside
 it, sized for whichever mode needs more images. Each present chains
-`VkSwapchainPresentModeInfoKHR` choosing between them from the same throughput policy Metal uses
-(`backend/adaptive.rs`): a present interval over 1.15 refresh periods or a GPU frame over one
-period releases to immediate at once; returning to FIFO needs 45 consecutive refresh-rate presents
-with GPU frames at 90% of the period or less. GPU timestamps are therefore collected whenever
+`VkSwapchainPresentModeInfoKHR` choosing between them from the policy Metal uses (`backend/adaptive.rs`), which is Strict's
+workload judgement: three consecutive frames whose CPU or GPU work exceeds the period release to
+immediate, and 90 fresh samples at 95% of the period or less return to FIFO.
+
+0.13.26 judged the interval between presents instead, releasing on any one over 1.15 periods and
+recovering after 45 within 1.03. An application capping itself at the refresh rate lands on the
+period with jitter either side, so a single hitch released it and ordinary jitter delayed
+recovery: on an RTX 3060 Ti at 74.97 Hz with frames costing half the period it alternated every
+second or so, and each immediate stretch put a stationary tear line near the bottom of the
+screen, because presents capped at the refresh rate land at the same scanout phase every frame. GPU timestamps are therefore collected whenever
 Adaptive is selected. The refresh period comes from `VK_EXT_present_timing`; until it is known
 the swapchain presents immediately.
 

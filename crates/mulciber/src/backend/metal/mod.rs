@@ -152,7 +152,6 @@ pub(crate) struct ClearSurface<'window> {
     vsync: bool,
     display_timing: mulciber_platform::DisplayTiming,
     presentation_mode: crate::PresentationMode,
-    adaptive: adaptive::AdaptiveSync,
     strict: super::pacing::StrictPacing,
     _window: PhantomData<SurfaceTarget<'window>>,
 }
@@ -224,7 +223,6 @@ impl<'window> ClearSurface<'window> {
                 vsync: true,
                 display_timing: metrics.display_timing(),
                 presentation_mode: crate::PresentationMode::Synchronized,
-                adaptive: adaptive::AdaptiveSync::default(),
                 strict: super::pacing::StrictPacing::default(),
                 _window: PhantomData,
             })
@@ -252,7 +250,6 @@ impl<'window> ClearSurface<'window> {
                     | crate::PresentationMode::HalfRefresh
                     | crate::PresentationMode::Strict
             ))?;
-            self.adaptive = adaptive::AdaptiveSync::default();
             self.strict = super::pacing::StrictPacing::default();
             self.presentation_mode = mode;
         }
@@ -381,9 +378,8 @@ impl<'window> ClearSurface<'window> {
         }
         self.finish_frame(self.frame_slot)?;
         if self.presentation_mode == crate::PresentationMode::Adaptive {
-            let sync = self
-                .adaptive
-                .update(Instant::now(), metrics.display_timing());
+            let sync =
+                adaptive::synchronized(&mut self.strict, Instant::now(), metrics.display_timing());
             if sync != self.vsync {
                 self.apply_sync(sync)?;
                 std::eprintln!(
@@ -659,7 +655,6 @@ impl<'window> ClearSurface<'window> {
                 let end = unsafe { objc::f64_value(command_buffer, c"GPUEndTime") };
                 if start.is_finite() && end.is_finite() && start > 0.0 && end >= start {
                     let duration = Duration::from_secs_f64(end - start);
-                    self.adaptive.record_gpu_time(duration);
                     self.strict.record_gpu_time(duration);
                 }
             }

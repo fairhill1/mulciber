@@ -92,7 +92,6 @@ pub(crate) struct ClearSurface<'window> {
     /// is silent.
     reported_refresh_interval: Option<Duration>,
     strict: super::super::pacing::StrictPacing,
-    adaptive: super::super::adaptive::AdaptiveSync,
     /// Whether a switching swapchain last presented synchronized, for the diagnostic
     /// reporting each change.
     adaptive_synchronized: Option<bool>,
@@ -144,7 +143,6 @@ impl<'window> ClearSurface<'window> {
             reported_refresh_interval: None,
             presentation_mode: crate::PresentationMode::Synchronized,
             strict: super::super::pacing::StrictPacing::default(),
-            adaptive: super::super::adaptive::AdaptiveSync::default(),
             adaptive_synchronized: None,
             resize_pace,
             last_resize_recreate: None,
@@ -173,7 +171,6 @@ impl<'window> ClearSurface<'window> {
             choose_present_mode(self.device.as_ref().expect("live surface"), mode)?;
             self.presentation_mode = mode;
             self.strict = super::super::pacing::StrictPacing::default();
-            self.adaptive = super::super::adaptive::AdaptiveSync::default();
             self.adaptive_synchronized = None;
             self.recreate_after_present = true;
         }

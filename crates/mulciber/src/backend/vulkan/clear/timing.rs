@@ -289,7 +289,8 @@ impl ClearSurface<'_> {
         let timing = self
             .refresh_interval()
             .map_or(DisplayTiming::Unknown, DisplayTiming::Fixed);
-        let synchronized = self.adaptive.update(Instant::now(), timing);
+        let synchronized =
+            super::super::super::adaptive::synchronized(&mut self.strict, Instant::now(), timing);
         if self.adaptive_synchronized != Some(synchronized) {
             self.adaptive_synchronized = Some(synchronized);
             eprintln!(

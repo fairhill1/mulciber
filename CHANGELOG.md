@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Adaptive judges the workload, not the present interval (0.13.27)
+
+Adaptive now chooses synchronized or immediate presentation from Strict's CPU and GPU workload
+measurement: three consecutive overloaded frames release sync and 90 frames with 5% headroom
+restore it. The 0.13.26 policy released on any single present interval over 1.15 periods, which
+an application capped at the refresh rate hits with every hitch, so it alternated between the two
+modes about once a second and tore in the immediate stretches. See
+[frame-pacing controls](docs/frame-pacing-controls.md).
+
 ## Adaptive presentation without relaxed FIFO (0.13.26)
 
 Where a Vulkan driver exposes no FIFO relaxed, as NVIDIA's Linux driver does on every surface,

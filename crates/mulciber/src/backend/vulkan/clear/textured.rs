@@ -2900,7 +2900,6 @@ impl<'window> TexturedSession<'window> {
             )
             .duration();
         self.surface.strict.record_gpu_time(frame_time);
-        self.surface.adaptive.record_gpu_time(frame_time);
         if !self.gpu_timing.requested {
             return Ok(());
         }

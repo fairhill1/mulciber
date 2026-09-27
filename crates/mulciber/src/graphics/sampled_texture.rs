@@ -210,7 +210,7 @@ mod tests {
             assert_eq!(finite_f32_to_f16(decode(bits)), bits);
         }
         for bits in 0_u16..0x7bff {
-            let midpoint = (decode(bits) + decode(bits + 1)) * 0.5;
+            let midpoint = f32::midpoint(decode(bits), decode(bits + 1));
             assert_eq!(finite_f32_to_f16(midpoint), bits + (bits & 1));
             assert_eq!(finite_f32_to_f16(-midpoint), 0x8000 | (bits + (bits & 1)));
         }

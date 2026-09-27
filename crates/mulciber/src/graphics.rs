@@ -2991,11 +2991,29 @@ pub const TRANSIENT_GEOMETRY_SIZE_LIMIT: u32 = 4_194_304;
 /// ```
 pub const INSTANCE_SUPPLY_SIZE_LIMIT: u32 = 4_194_304;
 
-/// Largest supported material binding slot and vertex attribute location.
+/// Largest supported material sampler slot and vertex attribute location.
 ///
-/// The range 0 through 15 fits inside every native binding namespace both backends guarantee,
-/// including Metal's sixteen sampler-state slots.
+/// Metal guarantees sixteen sampler-state slots per stage and Vulkan sixteen vertex attributes.
+/// A WGSL binding number is its native index, and textures and buffers live in namespaces of
+/// their own, so their slots are capped separately by [`MATERIAL_TEXTURE_SLOT_LIMIT`] and
+/// [`MATERIAL_BUFFER_SLOT_LIMIT`].
 pub const MATERIAL_SLOT_LIMIT: u32 = 15;
+
+/// Largest supported material texture slot, sampled or depth.
+///
+/// Metal's texture argument table holds 31 entries per stage on every GPU family.
+pub const MATERIAL_TEXTURE_SLOT_LIMIT: u32 = 30;
+
+/// Largest supported material uniform or storage slot.
+///
+/// Metal's buffer argument table holds 31 entries per stage, and the backend feeds per-vertex and
+/// per-instance data through the top two.
+pub const MATERIAL_BUFFER_SLOT_LIMIT: u32 = 28;
+
+/// Most textures, sampled and depth together, one material pipeline may declare.
+///
+/// Vulkan guarantees sixteen sampled images per shader stage.
+pub const MATERIAL_TEXTURE_COUNT_LIMIT: u32 = 16;
 
 /// Largest supported shadow map extent along either axis.
 pub const SHADOW_MAP_SIZE_LIMIT: u32 = 8192;
@@ -4186,6 +4204,43 @@ const fn interface_binding_label(kind: u8) -> &'static str {
     }
 }
 
+/// The native argument table a binding kind is placed in, since a WGSL binding number is used
+/// as the native index unchanged.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotNamespace {
+    Buffer,
+    Texture,
+    Sampler,
+}
+
+impl SlotNamespace {
+    const fn of(kind: u8) -> Self {
+        match kind {
+            shader::INTERFACE_BINDING_UNIFORM | shader::INTERFACE_BINDING_STORAGE => Self::Buffer,
+            shader::INTERFACE_BINDING_SAMPLER | shader::INTERFACE_BINDING_COMPARISON_SAMPLER => {
+                Self::Sampler
+            }
+            _ => Self::Texture,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Buffer => "buffer",
+            Self::Texture => "texture",
+            Self::Sampler => "sampler",
+        }
+    }
+
+    const fn ceiling(self) -> u32 {
+        match self {
+            Self::Buffer => MATERIAL_BUFFER_SLOT_LIMIT,
+            Self::Texture => MATERIAL_TEXTURE_SLOT_LIMIT,
+            Self::Sampler => MATERIAL_SLOT_LIMIT,
+        }
+    }
+}
+
 /// Requires the declared slots and the artifact's recorded bindings to match exactly, naming the
 /// first offending slot, and rejects interface constructs outside the material vocabulary.
 #[allow(clippy::too_many_lines)]
@@ -4329,12 +4384,14 @@ fn validate_bindings_against_interface(
                 (binding, shader::INTERFACE_BINDING_COMPARISON_SAMPLER, 0)
             }
         };
-        if slot > MATERIAL_SLOT_LIMIT {
+        let namespace = SlotNamespace::of(kind);
+        if slot > namespace.ceiling() {
             return Err(GraphicsError::with_kind(
                 GraphicsErrorKind::Unsupported,
                 format!(
-                    "material binding slot {slot} exceeds the supported slots 0 through \
-                     {MATERIAL_SLOT_LIMIT}"
+                    "material {} slot {slot} exceeds the supported slots 0 through {}",
+                    namespace.label(),
+                    namespace.ceiling()
                 ),
             ));
         }
@@ -4344,6 +4401,19 @@ fn validate_bindings_against_interface(
             )));
         }
         declared.push((slot, kind, size));
+    }
+    let textures = declared
+        .iter()
+        .filter(|&&(_, kind, _)| SlotNamespace::of(kind) == SlotNamespace::Texture)
+        .count();
+    if textures > MATERIAL_TEXTURE_COUNT_LIMIT as usize {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            format!(
+                "material bindings declare {textures} textures, more than the supported \
+                 {MATERIAL_TEXTURE_COUNT_LIMIT}"
+            ),
+        ));
     }
     for &(slot, kind, size) in &declared {
         let Some(recorded) = interface
@@ -4674,5 +4744,125 @@ mod block_compressed_tests {
         assert!(validate_mip_level(bc7, 8, 8, 3, &[0; 4]).is_err());
         assert!(validate_mip_level(bc7, 0, 8, 0, &[]).is_err());
         assert!(validate_mip_level(SampledTextureFormat::Unorm, 8, 8, 0, &[0; 256]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::{
+        MATERIAL_BUFFER_SLOT_LIMIT, MATERIAL_SLOT_LIMIT, MATERIAL_TEXTURE_COUNT_LIMIT,
+        MATERIAL_TEXTURE_SLOT_LIMIT, MaterialBinding, SamplerAddress, SamplerFilter,
+        validate_bindings_against_interface,
+    };
+    use std::{vec, vec::Vec};
+
+    use crate::shader::{
+        INTERFACE_BINDING_SAMPLED_TEXTURE, INTERFACE_BINDING_SAMPLER, INTERFACE_BINDING_UNIFORM,
+        InterfaceBinding, ShaderInterface,
+    };
+
+    fn interface(bindings: &[(u32, u8, u32)]) -> ShaderInterface {
+        ShaderInterface {
+            entry_points: vec![],
+            bindings: bindings
+                .iter()
+                .map(|&(binding, kind, size)| InterfaceBinding {
+                    group: 0,
+                    binding,
+                    kind,
+                    size,
+                })
+                .collect(),
+        }
+    }
+
+    fn sampler(binding: u32) -> MaterialBinding {
+        MaterialBinding::Sampler {
+            binding,
+            filter: SamplerFilter::Linear,
+            address: SamplerAddress::Repeat,
+        }
+    }
+
+    #[test]
+    fn each_kind_of_slot_is_capped_by_its_own_native_table() {
+        let texture = MATERIAL_TEXTURE_SLOT_LIMIT;
+        let buffer = MATERIAL_BUFFER_SLOT_LIMIT;
+        let highest = interface(&[
+            (texture, INTERFACE_BINDING_SAMPLED_TEXTURE, 0),
+            (buffer, INTERFACE_BINDING_UNIFORM, 64),
+            (MATERIAL_SLOT_LIMIT, INTERFACE_BINDING_SAMPLER, 0),
+        ]);
+        let declaration = validate_bindings_against_interface(
+            &[
+                MaterialBinding::Texture { binding: texture },
+                MaterialBinding::Uniform {
+                    binding: buffer,
+                    size: 64,
+                },
+                sampler(MATERIAL_SLOT_LIMIT),
+            ],
+            &highest,
+        )
+        .expect("every kind reaches its own ceiling");
+        assert_eq!(declaration.texture_bindings, [texture]);
+
+        for (binding, kind, declared) in [
+            (
+                texture + 1,
+                INTERFACE_BINDING_SAMPLED_TEXTURE,
+                MaterialBinding::Texture {
+                    binding: texture + 1,
+                },
+            ),
+            (
+                buffer + 1,
+                INTERFACE_BINDING_UNIFORM,
+                MaterialBinding::Uniform {
+                    binding: buffer + 1,
+                    size: 64,
+                },
+            ),
+            (
+                MATERIAL_SLOT_LIMIT + 1,
+                INTERFACE_BINDING_SAMPLER,
+                sampler(MATERIAL_SLOT_LIMIT + 1),
+            ),
+        ] {
+            let size = if kind == INTERFACE_BINDING_UNIFORM {
+                64
+            } else {
+                0
+            };
+            assert!(
+                validate_bindings_against_interface(
+                    &[declared],
+                    &interface(&[(binding, kind, size)])
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn a_material_declares_no_more_textures_than_vulkan_guarantees_a_stage() {
+        let slots = |count: u32| {
+            (0..count)
+                .map(|binding| (binding, INTERFACE_BINDING_SAMPLED_TEXTURE, 0))
+                .collect::<Vec<_>>()
+        };
+        let declare = |count: u32| {
+            (0..count)
+                .map(|binding| MaterialBinding::Texture { binding })
+                .collect::<Vec<_>>()
+        };
+        let most = MATERIAL_TEXTURE_COUNT_LIMIT;
+        assert!(
+            validate_bindings_against_interface(&declare(most), &interface(&slots(most))).is_ok()
+        );
+        assert!(
+            validate_bindings_against_interface(&declare(most + 1), &interface(&slots(most + 1)))
+                .is_err()
+        );
     }
 }

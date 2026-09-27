@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Material slots capped per native table (0.13.28)
+
+A WGSL binding number is its native index, and Metal keeps textures, samplers and buffers in
+separate tables, yet material pipelines capped every binding at slot 15, the sampler table's
+size. A material with thirteen textures and two samplers failed as soon as a texture landed on
+binding 16. Each kind now has its own ceiling: samplers stay at `MATERIAL_SLOT_LIMIT` (15),
+textures reach `MATERIAL_TEXTURE_SLOT_LIMIT` (30) and uniform or storage buffers
+`MATERIAL_BUFFER_SLOT_LIMIT` (28, clear of the two vertex buffer indices). A pipeline may declare
+at most `MATERIAL_TEXTURE_COUNT_LIMIT` (16) textures, Vulkan's guaranteed sampled images per
+stage. See the [material contract](docs/material-contract.md).
+
 ## Adaptive judges the workload, not the present interval (0.13.27)
 
 Adaptive now chooses synchronized or immediate presentation from Strict's CPU and GPU workload

@@ -12,8 +12,13 @@ postprocessed output). The three fixed pipeline recipes and their recorded count
 named vertex and fragment entry points, a `VertexLayout` (stride plus located, formatted,
 offset `VertexAttribute`s), and a `MaterialBinding` declaration — at most one uniform slot with
 an explicit byte size (capped at `MATERIAL_UNIFORM_SIZE_LIMIT`, 256), sampled-texture slots,
-and sampler slots, all identified by their WGSL group-0 binding numbers and capped at
-`MATERIAL_SLOT_LIMIT` (15), a range inside every native namespace both backends guarantee.
+and sampler slots, all identified by their WGSL group-0 binding numbers. A binding number is
+the native index in its own kind's table, so each kind has its own ceiling inside what both
+backends guarantee: samplers `MATERIAL_SLOT_LIMIT` (15, Metal's sixteen sampler states),
+textures `MATERIAL_TEXTURE_SLOT_LIMIT` (30, Metal's 31 texture entries) and uniform or storage
+buffers `MATERIAL_BUFFER_SLOT_LIMIT` (28, clear of the two buffer indices the Metal backend feeds
+vertex data through). A pipeline declares at most `MATERIAL_TEXTURE_COUNT_LIMIT` (16) textures,
+Vulkan's guaranteed sampled images per stage.
 
 `mulciber-shader` records the module's interface — per entry point its stage, name, and
 vertex-input locations with formats, plus the module's bindings with kinds and, for uniform

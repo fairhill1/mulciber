@@ -49,8 +49,8 @@ const VERTEX_FORMAT_UINT: usize = 36;
 const VERTEX_FORMAT_UINT2: usize = 37;
 const VERTEX_FORMAT_UINT3: usize = 38;
 const VERTEX_FORMAT_UINT4: usize = 39;
-/// Buffer index feeding material vertex data. Declared material binding slots are capped at
-/// [`crate::MATERIAL_SLOT_LIMIT`], so this index cannot collide with a WGSL buffer binding.
+/// Buffer index feeding material vertex data. Declared material buffer slots are capped at
+/// [`crate::MATERIAL_BUFFER_SLOT_LIMIT`], so this index cannot collide with a WGSL buffer binding.
 const MATERIAL_VERTEX_BUFFER_INDEX: usize = 30;
 const VERTEX_STEP_FUNCTION_PER_INSTANCE: usize = 2;
 const LOAD_ACTION_DONT_CARE: usize = 0;
@@ -91,8 +91,10 @@ const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
 /// Vertex buffer index carrying instance-rate attributes for material and shadow records,
 /// beside the per-vertex data at [`MATERIAL_VERTEX_BUFFER_INDEX`] and clear of the material
-/// binding slots 0 through 15.
+/// buffer slots 0 through [`crate::MATERIAL_BUFFER_SLOT_LIMIT`].
 const MATERIAL_INSTANCE_BUFFER_INDEX: usize = 29;
+const _: () =
+    assert!((crate::MATERIAL_BUFFER_SLOT_LIMIT as usize) < MATERIAL_INSTANCE_BUFFER_INDEX);
 
 #[link(name = "System")]
 unsafe extern "C" {

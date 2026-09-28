@@ -41,7 +41,7 @@ const DEPTH_CLEAR_FAR: f32 = 1.0;
 /// The specification's `VK_LOD_CLAMP_NONE`, absent from the generated bindings.
 const LOD_CLAMP_NONE: f32 = 1000.0;
 const DRAW_UNIFORM_SIZE: usize = 64;
-const DRAW_UNIFORM_STRIDE: usize = 256;
+const DRAW_UNIFORM_STRIDE: usize = crate::MATERIAL_UNIFORM_SIZE_LIMIT as usize;
 
 /// Alignment for per-record offsets into the frame's read-only storage region: the
 /// specification's cap on `minStorageBufferOffsetAlignment`, valid on every implementation.
@@ -5708,8 +5708,10 @@ fn create_pipeline(
         "vkCreatePipelineLayout for textured pipeline",
     )?;
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     let module_info = vk::VkShaderModuleCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -6053,8 +6055,10 @@ fn create_material_pipeline(
         "vkCreatePipelineLayout for material pipeline",
     )?;
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     let module_info = vk::VkShaderModuleCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -6447,8 +6451,10 @@ fn create_shadow_pipeline(
         "vkCreatePipelineLayout for shadow pipeline",
     )?;
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect();
     let module_info = vk::VkShaderModuleCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -6829,8 +6835,10 @@ fn create_postprocess_pipeline_base(
             "vkCreatePipelineLayout for postprocess pipeline",
         )?;
         let words: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes(*word))
             .collect();
         let module_info = vk::VkShaderModuleCreateInfo {
             sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,

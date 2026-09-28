@@ -11,7 +11,7 @@ postprocessed output). The three fixed pipeline recipes and their recorded count
 `Device::create_material_pipeline` consumes a `MaterialPipelineDescriptor`: a `ShaderArtifact`,
 named vertex and fragment entry points, a `VertexLayout` (stride plus located, formatted,
 offset `VertexAttribute`s), and a `MaterialBinding` declaration — at most one uniform slot with
-an explicit byte size (capped at `MATERIAL_UNIFORM_SIZE_LIMIT`, 256), sampled-texture slots,
+an explicit byte size (capped at `MATERIAL_UNIFORM_SIZE_LIMIT`, 512), sampled-texture slots,
 and sampler slots, all identified by their WGSL group-0 binding numbers. A binding number is
 the native index in its own kind's table, so each kind has its own ceiling inside what both
 backends guarantee: samplers `MATERIAL_SLOT_LIMIT` (15, Metal's sixteen sampler states),
@@ -65,7 +65,7 @@ WGSL `var<storage, read>` whose creation-fixed byte size must match the recorded
 capped at `MATERIAL_STORAGE_SIZE_LIMIT` (64 KiB). Each record supplies the bytes per frame
 through the same frame-transient region model as uniforms — `MaterialRecord.storage` — sized
 exactly to the declaration; the slot exists for skeletal animation's bone palettes, which
-outgrow the 256-byte uniform stride. Shadow pipelines accept the same slot
+outgrow the 512-byte uniform stride. Shadow pipelines accept the same slot
 (`ShadowRecord.storage`), so a skinned caster shadows with the same palette as its material
 record. No persistent application-owned buffer handle is part of the vocabulary.
 
@@ -151,7 +151,7 @@ identity. Mixed index widths are permitted between parts.
 ## Native behavior
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
-images, samplers), reuses the shared 256-byte-stride dynamic uniform buffer for per-record
+images, samplers), reuses the shared 512-byte-stride dynamic uniform buffer for per-record
 bytes, caches descriptor sets per texture-identity tuple, and draws through the existing
 indexed-indirect path; descriptor pools reset with the same texture-reclamation and
 buffer-growth rules as the fixed pipelines. Immutable Vulkan meshes pack their vertex, index,

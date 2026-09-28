@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Material uniforms up to 512 bytes (0.13.29)
+
+`MATERIAL_UNIFORM_SIZE_LIMIT` rises from 256 to 512 bytes. The per-draw uniform stride in both
+backends is now derived from the limit rather than written down beside it, so the two cannot
+disagree; it stays a multiple of 256, the largest dynamic offset alignment Vulkan permits. A lit
+material whose parameters had filled 256 bytes can now take another block of state without
+moving it into a storage slot. The per-draw region costs twice as much per record. See the
+[material contract](docs/material-contract.md).
+
 ## Material slots capped per native table (0.13.28)
 
 A WGSL binding number is its native index, and Metal keeps textures, samplers and buffers in

@@ -400,9 +400,9 @@ impl Renderer {
                 command.firstInstance,
             )));
         }
-        for (index, actual) in texels.chunks_exact(RGBA8_TEXEL_SIZE).enumerate() {
+        for (index, actual) in texels.as_chunks::<RGBA8_TEXEL_SIZE>().0.iter().enumerate() {
             let expected = expected_compute_texel(index);
-            if actual != expected {
+            if *actual != expected {
                 return Err(ProbeError(format!(
                     "compute image readback mismatch at texel {index}: expected {expected:?}, got {actual:?}"
                 )));

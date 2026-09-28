@@ -2956,9 +2956,11 @@ impl<'inputs> From<ShaderArtifact<'inputs>> for PostprocessPipelineDescriptor<'i
 
 /// Largest supported material uniform declaration in bytes.
 ///
-/// Material uniform data flows through the session's per-draw uniform region, whose stride caps
-/// one declaration at this size.
-pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 256;
+/// Material uniform data flows through the session's per-draw uniform region, whose stride is
+/// this size in both backends, so it caps one declaration. It stays a multiple of 256 bytes, the
+/// largest dynamic uniform offset alignment Vulkan permits and Metal's buffer-offset alignment.
+pub const MATERIAL_UNIFORM_SIZE_LIMIT: u32 = 512;
+const _: () = assert!(MATERIAL_UNIFORM_SIZE_LIMIT.is_multiple_of(256));
 
 /// Largest supported read-only storage declaration in bytes.
 ///

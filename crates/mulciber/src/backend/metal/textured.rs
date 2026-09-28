@@ -84,9 +84,9 @@ const SAMPLER_MIP_FILTER_LINEAR: usize = 2;
 const SAMPLER_ADDRESS_CLAMP_TO_EDGE: usize = 0;
 const SAMPLER_ADDRESS_REPEAT: usize = 2;
 const DRAW_UNIFORM_SIZE: usize = 64;
-const DRAW_UNIFORM_STRIDE: usize = 256;
-/// Alignment for per-record offsets into the frame's read-only storage region, matching the
-/// uniform stride and every Metal buffer-offset requirement.
+const DRAW_UNIFORM_STRIDE: usize = crate::MATERIAL_UNIFORM_SIZE_LIMIT as usize;
+/// Alignment for per-record offsets into the frame's read-only storage region, meeting every
+/// Metal buffer-offset requirement.
 const STORAGE_OFFSET_ALIGNMENT: usize = 256;
 const INSTANCE_TRANSFORM_SIZE: usize = 64;
 /// Vertex buffer index carrying instance-rate attributes for material and shadow records,

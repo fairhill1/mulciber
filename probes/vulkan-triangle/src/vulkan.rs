@@ -2416,8 +2416,10 @@ fn spirv_words(bytes: &[u8]) -> Result<Vec<u32>, ProbeError> {
         ));
     }
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("four-byte chunk")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect();
     if words.first() != Some(&0x0723_0203) {
         return Err(ProbeError("shader does not contain SPIR-V magic".into()));

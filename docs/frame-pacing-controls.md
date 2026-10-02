@@ -196,3 +196,47 @@ Full workspace Clippy remains blocked by the pre-existing unused
 `WindowMetrics::with_display_timing` helper in Windows platform test builds.
 The GUI portion of the Windows preflight was not run under the user's no-window
 instruction. These checks do not establish smooth Strict presentation.
+
+
+## Backend-reported fixed refresh (graphics 0.13.30, runtime 0.5.6)
+
+Win32, Wayland and X11 window metrics still report `Unknown`, which left cadence smoothing off on
+every Vulkan platform. `VK_EXT_present_timing` answers the question the window system does not:
+`VkSwapchainTimingPropertiesEXT::refreshInterval` equals `refreshDuration` for fixed refresh, is
+`UINT64_MAX` for variable refresh (where `refreshDuration` is only the fastest period), and is zero
+when the presentation engine cannot tell. `Surface::fixed_refresh_interval` returns the period only
+in the first case; `Surface::refresh_interval` keeps returning the duration in all three, since
+Strict and Adaptive schedule against it. Metal repeats a fixed `DisplayTiming` from the window.
+
+`Runtime::set_fixed_refresh_interval` gives the pacer that period. It is the cadence only while the
+platform's timing is `Unknown`: a platform fixed period wins and a variable range keeps elapsed
+deltas. Supplying the same value every frame is not a change; withdrawing or changing it discards
+the feedback and smoothing debt gathered against the old period, while a platform later reporting
+the same period it already paced on discards nothing.
+
+A driver may report the duration and leave the mode undetermined, which NVIDIA 615.71.09 does
+under KDE Wayland with VRR off (`Vulkan refresh interval: 13.338490 ms (refresh mode
+undetermined)`), so a strict reading never paces there. `Runtime::set_nominal_refresh_interval`
+takes the unvouched duration and lets the presents settle it: a fixed display presents only on its
+grid, missed blanks included, while a variable display presents a slow frame between the lines. The
+nominal period becomes the cadence, after the platform's and the backend's fixed periods, once 30
+consecutive presented intervals land within 5% of whole multiples of it, and stops at the first
+that does not; gaps over four periods count neither way. A platform variable range still keeps
+elapsed deltas. Replaying the native present gaps of two traces on that machine (173 and 423
+timed intervals) confirms the grid after 29 intervals, with the largest deviation 0.57% of a period
+and no revocation.
+
+Pacing is only right while presents wait for a vertical blank. Vulkan Adaptive on a switching
+swapchain now resolves `active_presentation_mode` to `Synchronized` or `Immediate` from the mode
+its latest present chose, as Metal does, so an application can enable pacing exactly while it is
+synchronized. Native relaxed FIFO still reports `Adaptive`, because the driver decides.
+
+Evidence: Isle of Rán traces on an RTX 3060 Ti (driver 615.71.09), KDE Wayland, 74.97 Hz, Adaptive
+in FIFO. Before this change every frame was unpaced: a mountain trace's build-start gaps ran 6–24
+ms (p5 7.4, p95 19.3) while native present gaps held 13.315–13.390 ms. Replaying that trace's 888
+recorded gaps through the pacer's quantization gives 885 single-interval steps, one two-interval
+step and one wall-clock fallback, with drift within 11.8 ms. That replay is arithmetic over recorded
+gaps, not a paced run; the paced in-game trace remains to be recorded, and whether this driver
+reports `refreshInterval` equal to `refreshDuration` is established only by that run. It does not:
+the first run with this change reported the mode undetermined and stayed unpaced, which is what
+the nominal grid above answers.

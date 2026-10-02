@@ -46,6 +46,9 @@ pub(super) struct PresentTiming {
     /// Monotonically increasing `VK_KHR_present_id2` value for this swapchain.
     next_present_id: u64,
     pub(super) refresh_interval: Option<Duration>,
+    /// Whether the presentation engine says `refresh_interval` is a fixed period rather than the
+    /// fastest a variable-refresh display allows.
+    pub(super) fixed_refresh: bool,
     /// Chained present ids paired with the session frame index they identify, oldest first.
     pending: Vec<(u64, u64)>,
     /// Drain instant and native time of this swapchain's first completed report; later native
@@ -147,7 +150,7 @@ pub(super) fn choose_present_timing(
 }
 
 impl ClearSurface<'_> {
-    fn native_refresh_interval(&mut self) -> Result<Option<Duration>, GraphicsError> {
+    fn native_refresh(&mut self) -> Result<(Option<Duration>, bool), GraphicsError> {
         let mut refresh = vk::VkSwapchainTimingPropertiesEXT {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT,
             ..Default::default()
@@ -168,21 +171,27 @@ impl ClearSurface<'_> {
             },
             "vkGetSwapchainTimingPropertiesEXT",
         )?;
-        let refresh_interval =
-            (refresh.refreshDuration != 0).then(|| Duration::from_nanos(refresh.refreshDuration));
+        let (refresh_interval, fixed_refresh) =
+            refresh_from_properties(refresh.refreshDuration, refresh.refreshInterval);
         // Read again for every swapchain, so reported only when the screen's period really
         // changed. A window the compositor is still sizing rebuilds its swapchain on every
         // frame, and a line per rebuild is synchronous terminal output on the frame loop.
-        if refresh_interval.is_some() && self.reported_refresh_interval != refresh_interval {
-            self.reported_refresh_interval = refresh_interval;
+        let reported = refresh_interval.map(|interval| (interval, fixed_refresh));
+        if reported.is_some() && self.reported_refresh != reported {
+            self.reported_refresh = reported;
             if let Some(interval) = refresh_interval {
                 std::eprintln!(
-                    "Vulkan refresh interval: {:.6} ms",
-                    interval.as_secs_f64() * 1000.0
+                    "Vulkan refresh interval: {:.6} ms ({})",
+                    interval.as_secs_f64() * 1000.0,
+                    match refresh.refreshInterval {
+                        _ if fixed_refresh => "fixed",
+                        u64::MAX => "variable, fastest",
+                        _ => "refresh mode undetermined",
+                    }
                 );
             }
         }
-        Ok(refresh_interval)
+        Ok((refresh_interval, fixed_refresh))
     }
 
     /// Configures native present timing for the freshly created current swapchain. A swapchain
@@ -206,7 +215,7 @@ impl ClearSurface<'_> {
             },
             "vkSetSwapchainPresentTimingQueueSizeEXT",
         )?;
-        let refresh_interval = self.native_refresh_interval()?;
+        let (refresh_interval, fixed_refresh) = self.native_refresh()?;
         let function = self
             .device()
             .functions
@@ -263,6 +272,7 @@ impl ClearSurface<'_> {
                 time_domain_id,
                 next_present_id: 0,
                 refresh_interval,
+                fixed_refresh,
                 pending: Vec::new(),
                 anchor: None,
             });
@@ -570,6 +580,31 @@ impl PresentTiming {
     }
 }
 
+/// Reads `VkSwapchainTimingPropertiesEXT`. `refreshDuration` is the period of a fixed-refresh
+/// display and the shortest period of a variable one, and zero when unknown. `refreshInterval`
+/// is what tells them apart: equal to the duration when fixed, `UINT64_MAX` when variable, and
+/// zero when the presentation engine cannot say.
+fn refresh_from_properties(duration: u64, interval: u64) -> (Option<Duration>, bool) {
+    let refresh = (duration != 0).then(|| Duration::from_nanos(duration));
+    (refresh, refresh.is_some() && interval == duration)
+}
+
+#[cfg(test)]
+mod refresh_properties_tests {
+    use super::*;
+
+    const PERIOD: u64 = 13_338_669;
+
+    #[test]
+    fn only_an_interval_equal_to_the_duration_is_fixed_refresh() {
+        let period = Some(Duration::from_nanos(PERIOD));
+        assert_eq!(refresh_from_properties(PERIOD, PERIOD), (period, true));
+        assert_eq!(refresh_from_properties(PERIOD, u64::MAX), (period, false));
+        assert_eq!(refresh_from_properties(PERIOD, 0), (period, false));
+        assert_eq!(refresh_from_properties(0, 0), (None, false));
+    }
+}
+
 #[cfg(test)]
 mod queue_capacity_tests {
     use super::*;
@@ -580,6 +615,7 @@ mod queue_capacity_tests {
             time_domain_id: 7,
             next_present_id: 0,
             refresh_interval: None,
+            fixed_refresh: false,
             pending: Vec::new(),
             anchor: None,
         };
@@ -600,6 +636,7 @@ mod queue_capacity_tests {
             time_domain_id: 7,
             next_present_id: 0,
             refresh_interval: None,
+            fixed_refresh: false,
             pending: Vec::new(),
             anchor: None,
         };

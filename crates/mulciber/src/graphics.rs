@@ -2154,8 +2154,10 @@ impl<'window> Surface<'window> {
         session_mut(&self.shared)?.set_presentation_mode(mode)
     }
 
-    /// Reports the currently applied native policy. Metal adaptive resolves to immediate or
-    /// synchronized; native Vulkan FIFO relaxed reports adaptive. Intended for diagnostics.
+    /// Reports the currently applied native policy. Adaptive resolves to immediate or
+    /// synchronized where Mulciber makes that choice per present (Metal, and Vulkan switching
+    /// between FIFO and immediate); native Vulkan FIFO relaxed reports adaptive, because the
+    /// driver decides. A frame clock may pace onto the refresh only while this is synchronized.
     ///
     /// # Errors
     /// Returns an error after session shutdown.
@@ -2181,6 +2183,18 @@ impl<'window> Surface<'window> {
     /// Returns an error after session shutdown.
     pub fn refresh_interval(&self) -> Result<Option<Duration>, GraphicsError> {
         Ok(session_ref(&self.shared)?.refresh_interval())
+    }
+
+    /// Native refresh interval when the presentation backend reports the screen as fixed-refresh,
+    /// for pacing a frame clock onto. `None` for a variable-refresh screen, where
+    /// [`Self::refresh_interval`] is only the fastest period, and wherever fixedness is
+    /// unknown. Vulkan reads `VK_EXT_present_timing`, which can say so on platforms whose window
+    /// metrics cannot; Metal repeats the window's fixed display timing.
+    ///
+    /// # Errors
+    /// Returns an error after session shutdown.
+    pub fn fixed_refresh_interval(&self) -> Result<Option<Duration>, GraphicsError> {
+        Ok(session_ref(&self.shared)?.fixed_refresh_interval())
     }
 
     /// Drains presentation feedback reported by the native backend since the previous drain.

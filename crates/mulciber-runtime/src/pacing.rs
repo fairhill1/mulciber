@@ -2,8 +2,9 @@
 //!
 //! This module holds both halves of the pacing vocabulary. [`PacingDiagnostics`] observes the
 //! presented cadence a graphics backend reports and summarizes it. [`FramePacer`] consumes the
-//! same presented timestamps and known native fixed timing to smooth frame deltas onto the display
-//! grid. Variable and unknown timing retain elapsed deltas. Timestamps arrive as plain [`Instant`]s
+//! same presented timestamps and a known fixed refresh period, from the platform or else from the
+//! graphics backend, to smooth frame deltas onto the display grid. Variable timing, and unknown
+//! timing with no backend period, retain elapsed deltas. Timestamps arrive as plain [`Instant`]s
 //! so both halves stay independent of any particular graphics crate or feedback mechanism.
 
 use mulciber_platform::DisplayTiming;
@@ -136,6 +137,71 @@ const PACING_STALENESS_LIMIT: Duration = Duration::from_millis(250);
 /// Smoothing may shift time by less than one 60 Hz tick, never accumulate seconds of drift.
 /// This accommodates the measured ±7 ms build-start jitter without trusting a stale cadence.
 const MAX_PACING_DRIFT_NANOS: i128 = 16_000_000;
+/// Consecutive on-grid presented intervals before a nominal refresh period is trusted as fixed:
+/// about 0.4 s at 75 Hz.
+const GRID_CONFIRMATION_INTERVALS: usize = 30;
+/// How far a presented interval may sit from a whole number of periods, as a fraction of one.
+/// Native present gaps on KDE Wayland held within 0.6% of the period; a variable-refresh display
+/// presenting a frame that took a fifth of a period longer lands four times further out than this.
+const GRID_TOLERANCE: f64 = 0.05;
+/// Gaps longer than this many periods neither confirm nor revoke the grid: after a hitch that
+/// long, landing near a multiple is no evidence either way.
+const GRID_MAX_MULTIPLE: f64 = 4.0;
+
+/// Whether recent presents keep landing on the grid of a refresh period nobody vouched for as
+/// fixed, such as a Vulkan refresh duration whose driver leaves the refresh mode undetermined.
+/// A fixed display presents only on its grid, missed blanks included; a variable one presents a
+/// slow frame whenever it is ready, between the lines.
+#[derive(Debug, Default)]
+struct GridEvidence {
+    period: Option<Duration>,
+    last_presented: Option<Instant>,
+    on_grid_run: usize,
+}
+
+impl GridEvidence {
+    fn set_period(&mut self, period: Option<Duration>) {
+        if self.period != period {
+            *self = Self {
+                period,
+                ..Self::default()
+            };
+        }
+    }
+
+    fn record_presented(&mut self, presented_at: Instant) {
+        let Some(period) = self.period else {
+            return;
+        };
+        if let Some(previous) = self.last_presented
+            && let Some(gap) = presented_at.checked_duration_since(previous)
+            && !gap.is_zero()
+        {
+            match on_grid(gap, period) {
+                Some(true) => self.on_grid_run = self.on_grid_run.saturating_add(1),
+                Some(false) => self.on_grid_run = 0,
+                None => {}
+            }
+        }
+        self.last_presented = Some(
+            self.last_presented
+                .map_or(presented_at, |previous| previous.max(presented_at)),
+        );
+    }
+
+    fn confirmed(&self) -> Option<Duration> {
+        self.period
+            .filter(|_| self.on_grid_run >= GRID_CONFIRMATION_INTERVALS)
+    }
+}
+
+/// `Some(true)` when `gap` is a whole number of periods within tolerance, `None` when it is too
+/// long to say.
+fn on_grid(gap: Duration, period: Duration) -> Option<bool> {
+    let periods = gap.as_secs_f64() / period.as_secs_f64();
+    (periods <= GRID_MAX_MULTIPLE + 0.5)
+        .then(|| (periods - periods.round().max(1.0)).abs() <= GRID_TOLERANCE)
+}
 
 /// Derives display-cadence frame deltas from presented-frame feedback.
 ///
@@ -167,6 +233,10 @@ pub struct FramePacer {
     pacing_drift_nanos: i128,
     enabled: bool,
     display_timing: DisplayTiming,
+    /// A fixed period the graphics backend reported, standing in for unknown display timing.
+    backend_fixed_refresh: Option<Duration>,
+    /// A period the backend reported without saying it is fixed, trusted only on evidence.
+    nominal_grid: GridEvidence,
 }
 
 impl Default for FramePacer {
@@ -186,6 +256,8 @@ impl FramePacer {
             pacing_drift_nanos: 0,
             enabled: true,
             display_timing: DisplayTiming::Unknown,
+            backend_fixed_refresh: None,
+            nominal_grid: GridEvidence::default(),
         }
     }
 
@@ -203,16 +275,75 @@ impl FramePacer {
     /// A mode change discards the previous display's feedback and smoothing debt.
     pub fn set_display_timing(&mut self, timing: DisplayTiming) {
         if self.display_timing != timing {
+            let cadence = self.cadence();
             self.display_timing = timing;
-            self.pacing_drift_nanos = 0;
-            self.last_presented = None;
-            self.diagnostics = PacingDiagnostics::new();
+            self.forget_display(cadence);
         }
+    }
+
+    /// Supplies the fixed refresh period the graphics backend reports for its own presents, such
+    /// as Vulkan present timing on a platform whose window metrics leave display timing unknown.
+    /// It is the cadence only while the platform's timing is [`DisplayTiming::Unknown`]: a
+    /// platform fixed period takes precedence, and a variable range keeps elapsed time. Pass
+    /// `None` when the backend reports variable refresh or cannot tell; a zero period is `None`.
+    pub fn set_fixed_refresh_interval(&mut self, interval: Option<Duration>) {
+        let interval = interval.filter(|interval| !interval.is_zero());
+        if self.backend_fixed_refresh != interval {
+            let cadence = self.cadence();
+            self.backend_fixed_refresh = interval;
+            if self.cadence() != cadence {
+                self.forget_display(None);
+            }
+        }
+    }
+
+    /// Supplies a refresh period the graphics backend reports without saying whether the display
+    /// holds it fixed, such as a Vulkan refresh duration from a driver that leaves the refresh mode
+    /// undetermined. It becomes the cadence, after the platform's fixed period and
+    /// [`Self::set_fixed_refresh_interval`], only once 30 consecutive presented intervals have
+    /// landed within 5% of whole multiples of it, and stops being one at the first interval that
+    /// does not. Missed blanks stay on the grid; a variable-refresh display's slow frames do not.
+    /// Gaps over four periods count neither way. A variable platform range still keeps elapsed
+    /// time. Supplying the same period every frame is not a change; a zero period is `None`.
+    pub fn set_nominal_refresh_interval(&mut self, interval: Option<Duration>) {
+        let interval = interval.filter(|interval| !interval.is_zero());
+        if self.nominal_grid.period != interval {
+            let cadence = self.cadence();
+            self.nominal_grid.set_period(interval);
+            if self.cadence() != cadence {
+                self.forget_display(None);
+            }
+        }
+    }
+
+    /// The fixed display period deltas are quantized to, if any is known.
+    fn cadence(&self) -> Option<Duration> {
+        match self.display_timing {
+            DisplayTiming::Fixed(period) => Some(period),
+            DisplayTiming::Unknown => self
+                .backend_fixed_refresh
+                .or_else(|| self.nominal_grid.confirmed()),
+            _ => None,
+        }
+        .filter(|period| !period.is_zero())
+    }
+
+    /// Discards feedback and smoothing debt that belonged to another display or cadence. Called
+    /// with the cadence before a platform timing change, so that the backend period standing in
+    /// for the old unknown timing does not count as a change once the platform reports it too.
+    fn forget_display(&mut self, previous_cadence: Option<Duration>) {
+        if previous_cadence.is_some() && previous_cadence == self.cadence() {
+            return;
+        }
+        self.pacing_drift_nanos = 0;
+        self.last_presented = None;
+        self.diagnostics = PacingDiagnostics::new();
     }
 
     /// Records one presented frame with the display time the backend reported for it.
     pub fn record_presented(&mut self, presented_at: Instant) {
         self.diagnostics.record_presented(presented_at);
+        self.nominal_grid.record_presented(presented_at);
         self.last_presented = Some(match self.last_presented {
             Some(previous) => previous.max(presented_at),
             None => presented_at,
@@ -267,12 +398,7 @@ impl FramePacer {
         if !self.enabled || elapsed.is_zero() {
             return None;
         }
-        let DisplayTiming::Fixed(cadence) = self.display_timing else {
-            return None;
-        };
-        if cadence.is_zero() {
-            return None;
-        }
+        let cadence = self.cadence()?;
         let presented = self.last_presented?;
         if now.saturating_duration_since(presented) > PACING_STALENESS_LIMIT {
             return None;
@@ -392,7 +518,10 @@ impl fmt::Display for PacingReport {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{FramePacer, MIN_ESTIMATION_INTERVALS, PACING_STALENESS_LIMIT, PacingDiagnostics};
+    use super::{
+        FramePacer, GRID_CONFIRMATION_INTERVALS, MIN_ESTIMATION_INTERVALS, PACING_STALENESS_LIMIT,
+        PacingDiagnostics,
+    };
 
     const STEP: Duration = Duration::from_micros(16_667);
 
@@ -466,6 +595,202 @@ mod tests {
         assert!(!pacer.schedule(now).paced());
         pacer.record_presented(now);
         assert!(pacer.schedule(now + STEP).paced());
+    }
+
+    /// Linux and Windows report no display timing in window metrics, while Vulkan present timing
+    /// does on hardware that has it. Measured on an RTX 3060 Ti under KDE Wayland at 74.97 Hz: build
+    /// starts alternating 18, 8 and 13 ms against presents 13.34 ms apart.
+    #[test]
+    fn a_backend_fixed_period_paces_unknown_timing() {
+        use mulciber_platform::DisplayTiming;
+        const PERIOD: Duration = Duration::from_nanos(13_338_669);
+        let mut pacer = FramePacer::new();
+        pacer.set_display_timing(DisplayTiming::Unknown);
+        pacer.set_fixed_refresh_interval(Some(PERIOD));
+        let mut presented = Instant::now();
+        for _ in 0..30 {
+            presented += PERIOD;
+            pacer.record_presented(presented);
+        }
+        let mut now = presented + Duration::from_millis(1);
+        pacer.resume(now);
+        let gaps = [
+            PERIOD + Duration::from_micros(4_600),
+            PERIOD.checked_sub(Duration::from_micros(5_300)).unwrap(),
+            PERIOD + Duration::from_micros(700),
+        ];
+        for gap in gaps.repeat(60) {
+            now += gap;
+            let schedule = pacer.schedule(now);
+            assert!(schedule.paced());
+            assert_eq!(schedule.frame_delta(), PERIOD);
+            presented += PERIOD;
+            pacer.record_presented(presented);
+        }
+    }
+
+    #[test]
+    fn a_backend_period_never_overrides_platform_timing() {
+        use mulciber_platform::DisplayTiming;
+        let backend = Duration::from_micros(13_339);
+        // A platform fixed period is the cadence, whatever the backend says.
+        let (mut pacer, last) = pacer_after_steady_presents(30);
+        pacer.set_fixed_refresh_interval(Some(backend));
+        assert_eq!(pacer.cadence(), Some(STEP));
+        pacer.resume(last);
+        assert_eq!(pacer.schedule(last + STEP).frame_delta(), STEP);
+        // A variable range keeps elapsed time even with a backend period on hand.
+        pacer.set_display_timing(DisplayTiming::from_intervals(1.0 / 144.0, 1.0 / 48.0, 0.0));
+        assert_eq!(pacer.cadence(), None);
+        let mut now = last + STEP;
+        for _ in 0..30 {
+            now += Duration::from_millis(9);
+            pacer.record_presented(now);
+            let frame = pacer.schedule(now);
+            assert!(!frame.paced());
+            assert_eq!(frame.frame_delta(), Duration::from_millis(9));
+        }
+    }
+
+    #[test]
+    fn withdrawing_or_changing_the_backend_period_discards_its_feedback() {
+        use mulciber_platform::DisplayTiming;
+        let period = Duration::from_micros(13_339);
+        let mut pacer = FramePacer::new();
+        pacer.set_fixed_refresh_interval(Some(period));
+        let mut now = Instant::now();
+        pacer.record_presented(now);
+        pacer.resume(now);
+        now += period;
+        assert!(pacer.schedule(now).paced());
+        // Reporting the same period every frame is not a change.
+        pacer.set_fixed_refresh_interval(Some(period));
+        assert!(pacer.last_presented.is_some());
+        // Variable or undetermined refresh withdraws it.
+        pacer.set_fixed_refresh_interval(None);
+        assert!(pacer.last_presented.is_none());
+        now += Duration::from_millis(9);
+        assert!(!pacer.schedule(now).paced());
+        // A zero period is no period.
+        pacer.set_fixed_refresh_interval(Some(Duration::ZERO));
+        assert_eq!(pacer.cadence(), None);
+        // Once the platform learns the same period it already paced on, nothing is discarded.
+        pacer.set_fixed_refresh_interval(Some(period));
+        pacer.record_presented(now);
+        pacer.set_display_timing(DisplayTiming::Fixed(period));
+        assert!(pacer.last_presented.is_some());
+    }
+
+    const NOMINAL: Duration = Duration::from_nanos(13_338_490);
+
+    /// A pacer told only a nominal period, as NVIDIA's Linux driver reports it, with `presents`
+    /// spaced by `gaps` in turn. Returns the pacer and the last present.
+    fn nominal_pacer(presents: usize, gaps: &[Duration]) -> (FramePacer, Instant) {
+        let mut pacer = FramePacer::new();
+        pacer.set_nominal_refresh_interval(Some(NOMINAL));
+        let mut at = Instant::now();
+        pacer.record_presented(at);
+        for gap in gaps.iter().cycle().take(presents) {
+            at += *gap;
+            pacer.record_presented(at);
+        }
+        (pacer, at)
+    }
+
+    /// RTX 3060 Ti, driver 615.71.09, KDE Wayland at 74.97 Hz with VRR off: the driver reports a
+    /// 13.338490 ms duration with the refresh mode undetermined, and presents land 13.315 to
+    /// 13.415 ms apart.
+    #[test]
+    fn a_nominal_period_paces_once_presents_land_on_its_grid() {
+        let measured = [
+            Duration::from_micros(13_315),
+            Duration::from_micros(13_415),
+            Duration::from_micros(13_338),
+        ];
+        let (pacer, _) = nominal_pacer(GRID_CONFIRMATION_INTERVALS - 1, &measured);
+        assert_eq!(pacer.cadence(), None);
+        let (mut pacer, last) = nominal_pacer(GRID_CONFIRMATION_INTERVALS, &measured);
+        assert_eq!(pacer.cadence(), Some(NOMINAL));
+        pacer.resume(last);
+        let frame = pacer.schedule(last + NOMINAL + Duration::from_millis(5));
+        assert!(frame.paced());
+        assert_eq!(frame.frame_delta(), NOMINAL);
+    }
+
+    #[test]
+    fn missed_blanks_stay_on_the_grid() {
+        let (pacer, _) = nominal_pacer(60, &[NOMINAL, NOMINAL * 2, NOMINAL, NOMINAL * 3]);
+        assert_eq!(pacer.cadence(), Some(NOMINAL));
+    }
+
+    #[test]
+    fn variable_refresh_slow_frames_never_confirm_a_nominal_period() {
+        // A variable display at a 13.34 ms fastest period, presenting frames as they finish.
+        let gaps: Vec<Duration> = [15_100, 16_700, 13_400, 18_900, 14_200, 21_000]
+            .into_iter()
+            .map(Duration::from_micros)
+            .collect();
+        let (mut pacer, mut now) = nominal_pacer(600, &gaps);
+        assert_eq!(pacer.cadence(), None);
+        pacer.resume(now);
+        for gap in gaps.iter().cycle().take(60) {
+            now += *gap;
+            pacer.record_presented(now);
+            let frame = pacer.schedule(now);
+            assert!(!frame.paced());
+            assert_eq!(frame.frame_delta(), *gap);
+        }
+    }
+
+    #[test]
+    fn an_off_grid_present_revokes_until_the_grid_is_seen_again() {
+        let (mut pacer, mut at) = nominal_pacer(40, &[NOMINAL]);
+        assert_eq!(pacer.cadence(), Some(NOMINAL));
+        at += NOMINAL.mul_f64(1.4);
+        pacer.record_presented(at);
+        assert_eq!(pacer.cadence(), None);
+        for presented in 1..=GRID_CONFIRMATION_INTERVALS {
+            at += NOMINAL;
+            pacer.record_presented(at);
+            assert_eq!(
+                pacer.cadence().is_some(),
+                presented == GRID_CONFIRMATION_INTERVALS
+            );
+        }
+        // A long hitch says nothing either way.
+        at += Duration::from_millis(250);
+        pacer.record_presented(at);
+        assert_eq!(pacer.cadence(), Some(NOMINAL));
+    }
+
+    #[test]
+    fn a_nominal_period_yields_to_every_vouched_timing() {
+        use mulciber_platform::DisplayTiming;
+        let (mut pacer, _) = nominal_pacer(60, &[NOMINAL]);
+        let fixed = Duration::from_micros(13_339);
+        pacer.set_fixed_refresh_interval(Some(fixed));
+        assert_eq!(pacer.cadence(), Some(fixed));
+        pacer.set_fixed_refresh_interval(None);
+        pacer.set_display_timing(DisplayTiming::Fixed(STEP));
+        assert_eq!(pacer.cadence(), Some(STEP));
+        pacer.set_display_timing(DisplayTiming::from_intervals(1.0 / 144.0, 1.0 / 48.0, 0.0));
+        assert_eq!(pacer.cadence(), None);
+    }
+
+    #[test]
+    fn changing_the_nominal_period_starts_the_evidence_over() {
+        let (mut pacer, mut at) = nominal_pacer(60, &[NOMINAL]);
+        pacer.set_nominal_refresh_interval(Some(NOMINAL));
+        assert_eq!(pacer.cadence(), Some(NOMINAL));
+        pacer.set_nominal_refresh_interval(Some(STEP));
+        assert_eq!(pacer.cadence(), None);
+        for _ in 0..=GRID_CONFIRMATION_INTERVALS {
+            at += STEP;
+            pacer.record_presented(at);
+        }
+        assert_eq!(pacer.cadence(), Some(STEP));
+        pacer.set_nominal_refresh_interval(Some(Duration::ZERO));
+        assert_eq!(pacer.cadence(), None);
     }
 
     #[test]

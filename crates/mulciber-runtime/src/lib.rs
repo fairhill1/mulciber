@@ -10,7 +10,11 @@
 //! cadence when that keeps cumulative drift within 16 ms of elapsed time. Otherwise it uses
 //! wall-clock gaps between build starts. Unsmoothed wall-clock gaps can reintroduce
 //! visible judder on a steadily presenting display even with fixed simulation steps. Skipping the
-//! feedback drain observably degrades every frame to the wall-clock fallback; check
+//! feedback drain observably degrades every frame to the wall-clock fallback. Smoothing needs a
+//! fixed refresh period: window metrics supply it where the platform knows one, and elsewhere pass
+//! the surface's `fixed_refresh_interval` to [`Runtime::set_fixed_refresh_interval`] and its
+//! `refresh_interval` to [`Runtime::set_nominal_refresh_interval`], which is trusted once presents
+//! are seen landing on its grid. Check
 //! [`RuntimeFrame::schedule`] or [`Runtime::pacing_report`] rather than assuming pacing engaged.
 //!
 //! The canonical loop, with presented instants standing in for a drained
@@ -40,7 +44,7 @@ mod limiter;
 mod pacing;
 mod timing;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub use input::{InputSnapshot, ScrollSample};
 pub use limiter::FrameStartLimiter;
@@ -134,9 +138,23 @@ impl Runtime {
     }
 
     /// Supplies native display timing when not forwarding window events.
-    /// Fixed refresh may be smoothed; variable or unknown refresh always uses elapsed time.
+    /// Fixed refresh may be smoothed; variable refresh always uses elapsed time, and unknown
+    /// refresh does unless [`Self::set_fixed_refresh_interval`] supplies a period.
     pub fn set_display_timing(&mut self, timing: mulciber_platform::DisplayTiming) {
         self.pacer.set_display_timing(timing);
+    }
+
+    /// Supplies the fixed refresh period the graphics backend reports, for platforms whose window
+    /// metrics leave display timing unknown. See [`FramePacer::set_fixed_refresh_interval`].
+    pub fn set_fixed_refresh_interval(&mut self, interval: Option<Duration>) {
+        self.pacer.set_fixed_refresh_interval(interval);
+    }
+
+    /// Supplies a refresh period the graphics backend reports without vouching that it is fixed,
+    /// trusted once presents are seen landing on its grid. See
+    /// [`FramePacer::set_nominal_refresh_interval`].
+    pub fn set_nominal_refresh_interval(&mut self, interval: Option<Duration>) {
+        self.pacer.set_nominal_refresh_interval(interval);
     }
 
     /// Summarizes the presentation pacing recorded so far.

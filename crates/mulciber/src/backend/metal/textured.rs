@@ -589,6 +589,10 @@ impl<'window> TexturedSession<'window> {
         self.surface.refresh_interval()
     }
 
+    pub(crate) fn fixed_refresh_interval(&self) -> Option<std::time::Duration> {
+        self.surface.fixed_refresh_interval()
+    }
+
     pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
         self.surface.active_presentation_mode()
     }

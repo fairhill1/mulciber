@@ -256,6 +256,13 @@ impl<'window> ClearSurface<'window> {
         Ok(())
     }
 
+    pub(crate) const fn fixed_refresh_interval(&self) -> Option<Duration> {
+        match self.display_timing {
+            mulciber_platform::DisplayTiming::Fixed(period) => Some(period),
+            _ => None,
+        }
+    }
+
     pub(crate) fn refresh_interval(&self) -> Option<Duration> {
         match self.display_timing {
             mulciber_platform::DisplayTiming::Fixed(period) => Some(period),

@@ -90,7 +90,8 @@ pub(crate) struct ClearSurface<'window> {
     reported_present_mode: Option<(vk::VkPresentModeKHR, bool)>,
     /// The last screen period reported, so a swapchain rebuilt on an unchanged screen
     /// is silent.
-    reported_refresh_interval: Option<Duration>,
+    /// Last refresh period and fixedness written to the terminal.
+    reported_refresh: Option<(Duration, bool)>,
     strict: super::super::pacing::StrictPacing,
     /// Whether a switching swapchain last presented synchronized, for the diagnostic
     /// reporting each change.
@@ -140,7 +141,7 @@ impl<'window> ClearSurface<'window> {
             info: SurfaceInfo::initial(extent).expect("extent was checked"),
             recreate_after_present: false,
             reported_present_mode: None,
-            reported_refresh_interval: None,
+            reported_refresh: None,
             presentation_mode: crate::PresentationMode::Synchronized,
             strict: super::super::pacing::StrictPacing::default(),
             adaptive_synchronized: None,
@@ -183,6 +184,13 @@ impl<'window> ClearSurface<'window> {
             .and_then(|timing| timing.refresh_interval)
     }
 
+    pub(crate) fn fixed_refresh_interval(&self) -> Option<Duration> {
+        self.present_timing
+            .as_ref()
+            .filter(|timing| timing.fixed_refresh)
+            .and_then(|timing| timing.refresh_interval)
+    }
+
     pub(crate) fn supports_presentation_mode(
         &self,
         mode: crate::PresentationMode,
@@ -207,14 +215,21 @@ impl<'window> ClearSurface<'window> {
     }
 
     pub(crate) fn active_presentation_mode(&self) -> crate::PresentationMode {
-        if matches!(self.presentation_mode, crate::PresentationMode::Strict) {
-            if self.strict.divisor() == 2 {
+        match self.presentation_mode {
+            crate::PresentationMode::Strict if self.strict.divisor() == 2 => {
                 crate::PresentationMode::HalfRefresh
-            } else {
-                crate::PresentationMode::Synchronized
             }
-        } else {
-            self.presentation_mode
+            crate::PresentationMode::Strict => crate::PresentationMode::Synchronized,
+            // A switching swapchain chose the mode of its latest present itself, so it can say
+            // which, as Metal does. Native relaxed FIFO decides inside the driver and cannot.
+            crate::PresentationMode::Adaptive if self.swapchain.switching => {
+                match self.adaptive_synchronized {
+                    Some(true) => crate::PresentationMode::Synchronized,
+                    Some(false) => crate::PresentationMode::Immediate,
+                    None => crate::PresentationMode::Adaptive,
+                }
+            }
+            mode => mode,
         }
     }
 

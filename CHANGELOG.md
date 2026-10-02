@@ -2,6 +2,23 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Pacing onto a refresh the backend reports (graphics 0.13.30, runtime 0.5.6)
+
+Window metrics on Win32, Wayland and X11 report display timing as unknown, so the runtime's frame
+pacer never engaged there and every delta was the wall-clock gap between build starts: on an RTX
+3060 Ti at 74.97 Hz under KDE Wayland, presents landed 13.34 ms apart while deltas ran from 6 to
+24 ms, which is visible judder on a display that never missed a refresh.
+`Surface::fixed_refresh_interval` reports the period when `VK_EXT_present_timing` says the
+refresh is fixed (`refreshInterval` equal to `refreshDuration`; variable refresh and an
+undetermined mode report `None`), and `Runtime::set_fixed_refresh_interval` hands it to the pacer,
+which uses it only while platform timing is unknown. NVIDIA's Linux driver (615.71.09) reports the
+duration but leaves the refresh mode undetermined, so `Runtime::set_nominal_refresh_interval`
+also takes `Surface::refresh_interval` and trusts it once 30 consecutive presents have landed
+within 5% of its grid, revoking it at the first that does not. `Surface::active_presentation_mode` now
+resolves Adaptive on a Vulkan swapchain that switches between FIFO and immediate to the mode of
+its latest present, as Metal already did, so an application can pace exactly while presents are
+synchronized. See [frame-pacing controls](docs/frame-pacing-controls.md).
+
 ## Material uniforms up to 512 bytes (0.13.29)
 
 `MATERIAL_UNIFORM_SIZE_LIMIT` rises from 256 to 512 bytes. The per-draw uniform stride in both

@@ -2,6 +2,18 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Metal culls back faces as Vulkan does (0.13.31)
+
+Vulkan's fixed, material and shadow pipelines have always culled back faces with counter-clockwise
+front faces, but the Metal backend never set a cull mode, and Metal's default is to cull nothing.
+On macOS every triangle was rasterized from both sides, so a model that supplied both windings of
+a surface (a glTF double-sided material expanded by the application) drew a coincident reverse
+face that fought the front one in the depth test, and closed meshes paid for binning and, under
+alpha-tested materials, shading the half of their triangles facing away. Metal now sets the same
+winding and cull mode on every encoder that records scene, material or shadow draws, including
+the overlay records after postprocess; the postprocess, bloom and volumetric passes still cull
+nothing. Verified by build, clippy and tests only; physical Metal visual validation remains open.
+
 ## Pacing onto a refresh the backend reports (graphics 0.13.30, runtime 0.5.6)
 
 Window metrics on Win32, Wayland and X11 report display timing as unknown, so the runtime's frame

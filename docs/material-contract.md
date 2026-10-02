@@ -165,6 +165,11 @@ and draws through the existing indirect encoder path. Both backends bake the dec
 depth modes into native creation-time state: Vulkan through the pipeline's color-blend,
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
+Fixed, material and shadow draws cull back faces with counter-clockwise front faces on both
+backends: Vulkan in each pipeline's rasterization state, Metal on every render encoder that
+records them, because Metal keeps culling on the encoder and otherwise culls nothing. Postprocess,
+bloom and volumetric passes cull nothing on either. A material that wants both sides of a surface
+supplies both windings.
 
 For a multi-part mesh, Vulkan stores the shared vertices, aligned index regions, and per-part
 indirect commands in one arena suballocation; Metal stores the same regions in one `MTLBuffer`.

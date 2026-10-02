@@ -60,6 +60,8 @@ const STORE_ACTION_STORE: usize = 1;
 const STORE_ACTION_DONT_CARE: usize = 0;
 const STORE_ACTION_MULTISAMPLE_RESOLVE: usize = 2;
 const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
+const WINDING_COUNTER_CLOCKWISE: usize = 1;
+const CULL_MODE_BACK: usize = 2;
 const INDEX_TYPE_UINT16: usize = 0;
 const INDEX_TYPE_UINT32: usize = 1;
 const STORAGE_MODE_PRIVATE: usize = 2;
@@ -1759,6 +1761,7 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal shadow render encoder",
             )?;
+            cull_back_faces(encoder);
             for record in records {
                 let pipeline =
                     &self.shadow_pipelines[self.shadow_pipelines.index_of(record.pipeline.id())?];
@@ -2510,6 +2513,7 @@ impl<'window> TexturedSession<'window> {
         scene: PreparedScene<'_>,
     ) -> Result<(), GraphicsError> {
         unsafe {
+            cull_back_faces(encoder);
             match scene {
                 PreparedScene::Draws(draws) => {
                     for (index, draw) in draws.iter().enumerate() {
@@ -2642,6 +2646,7 @@ impl<'window> TexturedSession<'window> {
         snapshot: Object,
     ) -> Result<(), GraphicsError> {
         unsafe {
+            cull_back_faces(encoder);
             let mut storage_offset = storage_base;
             let mut transient_offset = transient_base;
             let mut instance_offset = instance_base;
@@ -2948,6 +2953,21 @@ impl<'window> TexturedSession<'window> {
         self.targets = Arena::new("render targets");
         self.postprocess_targets = Arena::new("postprocess targets");
         self.meshes = Arena::new("mesh");
+    }
+}
+
+/// Counter-clockwise front faces with back faces culled, the rasterizer state
+/// every Vulkan scene, material and shadow pipeline bakes in. Metal holds it on
+/// the encoder rather than the pipeline and defaults to culling nothing, so an
+/// encoder that is not told draws both sides of every triangle.
+unsafe fn cull_back_faces(encoder: Object) {
+    unsafe {
+        objc::void_usize(
+            encoder,
+            c"setFrontFacingWinding:",
+            WINDING_COUNTER_CLOCKWISE,
+        );
+        objc::void_usize(encoder, c"setCullMode:", CULL_MODE_BACK);
     }
 }
 

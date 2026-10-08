@@ -2990,12 +2990,17 @@ impl MeshIndices<'_> {
 
     fn out_of_range(&self, vertex_count: usize) -> bool {
         match *self {
+            // The largest index decides; `max` vectorises where an early-out `any` can't.
             Self::U16(indices) => indices
                 .iter()
-                .any(|&index| usize::from(index) >= vertex_count),
+                .copied()
+                .max()
+                .is_some_and(|index| usize::from(index) >= vertex_count),
             Self::U32(indices) => indices
                 .iter()
-                .any(|&index| usize::try_from(index).map_or(true, |index| index >= vertex_count)),
+                .copied()
+                .max()
+                .is_some_and(|index| usize::try_from(index).map_or(true, |index| index >= vertex_count)),
         }
     }
 
@@ -5847,5 +5852,20 @@ mod entry_point_binding_tests {
         assert!(
             validate_entry_point_bindings(&declare(true), &interface, &[prop, fragment]).is_ok()
         );
+    }
+}
+
+#[cfg(test)]
+mod mesh_indices_tests {
+    use super::MeshIndices;
+
+    #[test]
+    fn out_of_range_checks_the_largest_index() {
+        assert!(!MeshIndices::U16(&[0, 2, 1]).out_of_range(3));
+        assert!(MeshIndices::U16(&[0, 3, 1]).out_of_range(3));
+        assert!(!MeshIndices::U16(&[]).out_of_range(0));
+        assert!(!MeshIndices::U32(&[5, 0, 4]).out_of_range(6));
+        assert!(MeshIndices::U32(&[0, 1, 6]).out_of_range(6));
+        assert!(MeshIndices::U32(&[u32::MAX, 0]).out_of_range(1 << 20));
     }
 }

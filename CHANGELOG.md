@@ -2,6 +2,11 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased
+
+- Index range checks for meshes and transient geometry take the largest index, which vectorizes,
+  instead of stopping at the first bad one.
+
 ## Faster float texture conversion (graphics 0.13.33)
 
 `RGBA16Float` creation and replacement convert to binary16 about 15 times faster: F16C, eight values

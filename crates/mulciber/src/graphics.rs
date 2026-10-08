@@ -2996,11 +2996,9 @@ impl MeshIndices<'_> {
                 .copied()
                 .max()
                 .is_some_and(|index| usize::from(index) >= vertex_count),
-            Self::U32(indices) => indices
-                .iter()
-                .copied()
-                .max()
-                .is_some_and(|index| usize::try_from(index).map_or(true, |index| index >= vertex_count)),
+            Self::U32(indices) => indices.iter().copied().max().is_some_and(|index| {
+                usize::try_from(index).map_or(true, |index| index >= vertex_count)
+            }),
         }
     }
 

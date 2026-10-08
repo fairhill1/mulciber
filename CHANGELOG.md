@@ -6,6 +6,9 @@ Release notes moved from the README. This is a partial history of changes.
 
 - Index range checks for meshes and transient geometry take the largest index, which vectorizes,
   instead of stopping at the first bad one.
+- Vulkan maps the per-frame buffers (uniforms, record storage, instances, transient geometry,
+  post-processing uniforms) once when it creates them, instead of mapping and unmapping each one
+  on every frame's write.
 
 ## Faster float texture conversion (graphics 0.13.33)
 

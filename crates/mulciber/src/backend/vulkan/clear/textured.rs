@@ -76,11 +76,24 @@ struct GpuTimingState {
     completed: VecDeque<GpuFrameTiming>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Buffer {
     handle: vk::VkBuffer,
     memory: vk::VkDeviceMemory,
     size: vk::VkDeviceSize,
+    /// The whole buffer's host address while [`create_mapped_buffer`] keeps it mapped, else null.
+    mapped: *mut u8,
+}
+
+impl Default for Buffer {
+    fn default() -> Self {
+        Self {
+            handle: ptr::null_mut(),
+            memory: ptr::null_mut(),
+            size: 0,
+            mapped: ptr::null_mut(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -466,13 +479,13 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<(Self, SampleCount), GraphicsError> {
         let surface = ClearSurface::new(target, metrics)?;
         let sample_count = select_sample_count(&surface, request.preferred_sample_count);
-        let uniform = create_buffer(
+        let uniform = create_mapped_buffer(
             &surface,
             DRAW_UNIFORM_STRIDE * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
             &[],
         )?;
-        let postprocess_uniform = match create_buffer(
+        let postprocess_uniform = match create_mapped_buffer(
             &surface,
             usize::try_from(crate::POSTPROCESS_UNIFORM_SIZE_LIMIT).expect("limit fits usize")
                 * ClearSurface::frames_in_flight(),
@@ -487,7 +500,7 @@ impl<'window> TexturedSession<'window> {
         };
         // Each per-frame region starts at its frame slot's base, so even the initial one-region
         // capacity is allocated once per frame in flight, as the uniform buffer above is.
-        let storage = match create_buffer(
+        let storage = match create_mapped_buffer(
             &surface,
             STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
@@ -500,7 +513,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let transient_geometry = match create_buffer(
+        let transient_geometry = match create_mapped_buffer(
             &surface,
             STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT) as u32,
@@ -514,7 +527,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let instance_transforms = match create_buffer(
+        let instance_transforms = match create_mapped_buffer(
             &surface,
             INSTANCE_TRANSFORM_SIZE * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
@@ -529,7 +542,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let record_instances = match create_buffer(
+        let record_instances = match create_mapped_buffer(
             &surface,
             STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
@@ -1625,14 +1638,7 @@ impl<'window> TexturedSession<'window> {
             .map_err(|_| error("Vulkan material uniform offsets exceed u32"))?;
         self.ensure_uniform_capacity(uniform_slots)?;
         let uniform_base = self.uniform_base();
-        write_material_uniforms(
-            &self.surface,
-            &self.uniform,
-            uniform_base,
-            records,
-            overlay,
-            shadow,
-        )?;
+        write_material_uniforms(&self.uniform, uniform_base, records, overlay, shadow)?;
         let (mut storage_offsets, storage_bytes) =
             material_storage_offsets(records, overlay, shadow)?;
         self.ensure_storage_capacity(storage_bytes)?;
@@ -1645,14 +1651,7 @@ impl<'window> TexturedSession<'window> {
                 .checked_add(storage_base)
                 .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
         }
-        write_material_storage(
-            &self.surface,
-            &self.storage,
-            records,
-            overlay,
-            shadow,
-            &storage_offsets,
-        )?;
+        write_material_storage(&self.storage, records, overlay, shadow, &storage_offsets)?;
         self.stage_transient_geometry(records, overlay)?;
         let (mut instance_offsets, instance_bytes) =
             record_instance_offsets(records, overlay, shadow)?;
@@ -1664,7 +1663,6 @@ impl<'window> TexturedSession<'window> {
                 .ok_or_else(|| error("Vulkan record instance offsets overflow"))?;
         }
         write_record_instances(
-            &self.surface,
             &self.record_instances,
             records,
             overlay,
@@ -1858,7 +1856,7 @@ impl<'window> TexturedSession<'window> {
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan record storage capacity overflow"))?;
         self.surface.wait_for_all_frames()?;
-        let replacement = create_buffer(
+        let replacement = create_mapped_buffer(
             &self.surface,
             capacity * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
@@ -1904,13 +1902,7 @@ impl<'window> TexturedSession<'window> {
             })?;
         self.ensure_transient_capacity(geometry_bytes)?;
         let base = self.transient_base();
-        write_transient_geometry(
-            &self.surface,
-            &self.transient_geometry,
-            base,
-            records,
-            overlay,
-        )
+        write_transient_geometry(&self.transient_geometry, base, records, overlay)
     }
 
     fn ensure_record_instance_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
@@ -1921,7 +1913,7 @@ impl<'window> TexturedSession<'window> {
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan record instance capacity overflow"))?;
         self.surface.wait_for_all_frames()?;
-        let replacement = create_buffer(
+        let replacement = create_mapped_buffer(
             &self.surface,
             capacity * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
@@ -1941,7 +1933,7 @@ impl<'window> TexturedSession<'window> {
             .checked_next_power_of_two()
             .ok_or_else(|| error("Vulkan transient geometry capacity overflow"))?;
         self.surface.wait_for_all_frames()?;
-        let replacement = create_buffer(
+        let replacement = create_mapped_buffer(
             &self.surface,
             capacity * super::ClearSurface::frames_in_flight(),
             (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT) as u32,
@@ -2079,7 +2071,7 @@ impl<'window> TexturedSession<'window> {
             .map_err(|_| error("Vulkan scene transform offsets exceed u32"))?;
         self.ensure_uniform_capacity(draws.len())?;
         let uniform_base = self.uniform_base();
-        write_scene_transforms(&self.surface, &self.uniform, uniform_base, draws)?;
+        write_scene_transforms(&self.uniform, uniform_base, draws)?;
         self.resolved_draws.clear();
         for (index, draw) in draws.iter().enumerate() {
             let mesh = self.meshes.index_of(draw.mesh.id())?;
@@ -2110,12 +2102,7 @@ impl<'window> TexturedSession<'window> {
         })?;
         self.ensure_instance_capacity(instance_count)?;
         let instance_base = self.instance_transform_base();
-        write_instance_transforms(
-            &self.surface,
-            &self.instance_transforms,
-            instance_base,
-            batches,
-        )?;
+        write_instance_transforms(&self.instance_transforms, instance_base, batches)?;
         self.resolved_instance_batches.clear();
         let mut transform_offset = instance_base;
         for batch in batches {
@@ -2160,7 +2147,7 @@ impl<'window> TexturedSession<'window> {
             .checked_mul(DRAW_UNIFORM_STRIDE)
             .ok_or_else(|| error("Vulkan scene transform storage is too large"))?;
         self.surface.wait_for_all_frames()?;
-        let replacement = create_buffer(
+        let replacement = create_mapped_buffer(
             &self.surface,
             bytes * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT as u32,
@@ -2185,7 +2172,7 @@ impl<'window> TexturedSession<'window> {
             .checked_mul(INSTANCE_TRANSFORM_SIZE)
             .ok_or_else(|| error("Vulkan instance transform storage is too large"))?;
         self.surface.wait_for_all_frames()?;
-        let replacement = create_buffer(
+        let replacement = create_mapped_buffer(
             &self.surface,
             bytes * super::ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
@@ -3678,7 +3665,7 @@ impl<'window> TexturedSession<'window> {
         self.prepare_texture_updates()?;
         if !uniform.is_empty() {
             let base = self.postprocess_uniform_base();
-            write_postprocess_uniform(&self.surface, &self.postprocess_uniform, base, uniform)?;
+            write_postprocess_uniform(&self.postprocess_uniform, base, uniform)?;
         }
         let frame_fence = self.surface.frame_fence();
         let device = self.surface.device();
@@ -4697,6 +4684,36 @@ fn create_buffer(
     )
 }
 
+/// A host-visible buffer mapped once for its whole life: the per-frame buffers, written every
+/// frame, skip a map and unmap per write.
+fn create_mapped_buffer(
+    surface: &ClearSurface<'_>,
+    size: usize,
+    usage: u32,
+    bytes: &[u8],
+) -> Result<Buffer, GraphicsError> {
+    let mut buffer = create_buffer(surface, size, usage, bytes)?;
+    match map_buffer(surface, &buffer) {
+        Ok(mapped) => {
+            buffer.mapped = mapped;
+            Ok(buffer)
+        }
+        Err(failure) => {
+            destroy_buffer(surface, buffer);
+            Err(failure)
+        }
+    }
+}
+
+/// The host address of a buffer from [`create_mapped_buffer`].
+fn persistent_mapping(buffer: &Buffer) -> Result<*mut u8, GraphicsError> {
+    if buffer.mapped.is_null() {
+        Err(error("frame buffer is not persistently mapped"))
+    } else {
+        Ok(buffer.mapped)
+    }
+}
+
 fn create_buffer_with_memory(
     surface: &ClearSurface<'_>,
     size: usize,
@@ -4916,35 +4933,28 @@ fn write_buffer(
     if size > buffer.size {
         return Err(error("buffer write exceeds allocation"));
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory",
-    )?;
+    let persistent = !buffer.mapped.is_null();
+    let mapped = if persistent {
+        buffer.mapped
+    } else {
+        map_buffer(surface, buffer)?
+    };
     unsafe {
-        let mut destination = mapped.cast::<u8>();
+        let mut destination = mapped;
         for part in parts {
             ptr::copy_nonoverlapping(part.as_ptr(), destination, part.len());
             // Stays within the mapping: the parts' sum was checked against its size.
             destination = destination.add(part.len());
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+        if !persistent {
+            let device = surface.device();
+            device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+        }
     }
     Ok(())
 }
 
 fn write_scene_transforms(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     base: usize,
     draws: &[TexturedSceneDraw<'_>],
@@ -4960,21 +4970,7 @@ fn write_scene_transforms(
     {
         return Err(error("scene transform write exceeds allocation"));
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for scene transforms",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         for (index, draw) in draws.iter().enumerate() {
             ptr::copy_nonoverlapping(
@@ -4983,13 +4979,11 @@ fn write_scene_transforms(
                 DRAW_UNIFORM_SIZE,
             );
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
 
 fn write_material_uniforms(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     base: usize,
     records: &[MaterialRecord<'_>],
@@ -5022,21 +5016,7 @@ fn write_material_uniforms(
             .all(|uniform| uniform.len() <= DRAW_UNIFORM_STRIDE),
         "uniform sizes were validated at pipeline creation"
     );
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for material uniforms",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         let uniforms = records
             .iter()
@@ -5054,7 +5034,6 @@ fn write_material_uniforms(
                 uniform.len(),
             );
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
@@ -5117,7 +5096,6 @@ const fn dynamic_offsets_in_binding_order(
 }
 
 fn write_material_storage(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     records: &[MaterialRecord<'_>],
     overlay: &[MaterialRecord<'_>],
@@ -5141,21 +5119,7 @@ fn write_material_storage(
     {
         return Ok(());
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for record storage",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         for (bytes, &offset) in contents.zip(offsets) {
             debug_assert!(
@@ -5168,7 +5132,6 @@ fn write_material_storage(
                 bytes.len(),
             );
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
@@ -5207,7 +5170,6 @@ fn record_instance_offsets(
 }
 
 fn write_record_instances(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     records: &[MaterialRecord<'_>],
     overlay: &[MaterialRecord<'_>],
@@ -5231,21 +5193,7 @@ fn write_record_instances(
     {
         return Ok(());
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for record instances",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         for (bytes, &offset) in contents.zip(offsets) {
             debug_assert!(
@@ -5254,7 +5202,6 @@ fn write_record_instances(
             );
             ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast::<u8>().add(offset), bytes.len());
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
@@ -5278,7 +5225,6 @@ fn resolved_instances(
 }
 
 fn write_transient_geometry(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     base: usize,
     records: &[MaterialRecord<'_>],
@@ -5291,21 +5237,7 @@ fn write_transient_geometry(
     {
         return Ok(());
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for transient geometry",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         let mut offset = base;
         for record in records.iter().chain(overlay) {
@@ -5340,13 +5272,11 @@ fn write_transient_geometry(
                 .byte_len()
                 .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
 
 fn write_instance_transforms(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     base: usize,
     batches: &[TexturedInstanceBatch<'_>],
@@ -5364,21 +5294,7 @@ fn write_instance_transforms(
     {
         return Err(error("instance transform write exceeds allocation"));
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for instance transforms",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         let mut offset = base;
         for batch in batches {
@@ -5390,13 +5306,11 @@ fn write_instance_transforms(
             );
             offset += bytes;
         }
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
 
 fn write_postprocess_uniform(
-    surface: &ClearSurface<'_>,
     buffer: &Buffer,
     base: usize,
     uniform: &[u8],
@@ -5407,28 +5321,13 @@ fn write_postprocess_uniform(
     {
         return Err(error("postprocess uniform write exceeds allocation"));
     }
-    let device = surface.device();
-    let mut mapped = ptr::null_mut();
-    check(
-        unsafe {
-            device.functions.map_memory.expect("loaded function")(
-                device.handle,
-                buffer.memory,
-                0,
-                buffer.size,
-                0,
-                &raw mut mapped,
-            )
-        },
-        "vkMapMemory for postprocess uniform",
-    )?;
+    let mapped = persistent_mapping(buffer)?;
     unsafe {
         ptr::copy_nonoverlapping(
             uniform.as_ptr(),
             mapped.cast::<u8>().add(base),
             uniform.len(),
         );
-        device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())
 }
@@ -7255,6 +7154,9 @@ fn destroy_buffer(surface: &ClearSurface<'_>, buffer: Buffer) {
 }
 unsafe fn destroy_buffer_device(device: &super::Device, buffer: Buffer) {
     unsafe {
+        if !buffer.mapped.is_null() {
+            device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
+        }
         if !buffer.handle.is_null() {
             device.functions.destroy_buffer.expect("loaded function")(
                 device.handle,

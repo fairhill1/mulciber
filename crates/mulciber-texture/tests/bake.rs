@@ -206,7 +206,10 @@ fn a_bake_is_used_while_current_and_the_sources_otherwise() {
 
     let fallback = recipe.prepare().unwrap();
     assert_eq!(fallback.origin, Origin::Sources(Fallback::NoBake));
-    assert!(matches!(fallback.pixels, Pixels::Rgba8 { srgb: true, .. }));
+    match &fallback.pixels {
+        Pixels::Rgba8GeneratedMips { srgb: true, base } => assert_eq!(base.len(), 16 * 8 * 4),
+        other => panic!("a colour fallback leaves its mips to the GPU: {other:?}"),
+    }
     assert_eq!((fallback.width, fallback.height), (16, 8));
     assert_eq!(fallback.stats.min_alpha, 100);
 

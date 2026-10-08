@@ -528,6 +528,141 @@ impl Device<'_> {
         self.upload_rgba16_float(width, height, levels, true)
     }
 
+    /// Uploads linear `RGBA16Float` data from IEEE binary16 bit patterns, four per texel in
+    /// RGBA order, as the `half` crate's `f16::to_bits` gives them.
+    ///
+    /// The bits upload unchanged, with no conversion pass, so data already in half precision
+    /// (an HDR image decoded to `f16`, say) costs one copy. Infinity and NaN (an all-ones
+    /// exponent) are rejected, as [`Self::create_rgba16_float_texture`] rejects them. Otherwise
+    /// it behaves as that function.
+    ///
+    /// # Errors
+    /// Returns an error for zero dimensions, mismatched texel counts, size overflow, a non-finite
+    /// component, allocation/upload failure, or unsupported linearly filterable native storage.
+    pub fn create_rgba16_float_texture_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Uploads a complete application-authored `RGBA16Float` mip chain of binary16 bit patterns,
+    /// laid out as [`Self::create_rgba16_float_texture_with_mips`] takes it.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], plus incomplete or
+    /// extra mip levels and mismatched per-level texel counts.
+    pub fn create_rgba16_float_texture_with_mips_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[[u16; 4]]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Uploads level 0 of an `RGBA16Float` texture and generates the rest of its full mip chain
+    /// on the GPU.
+    ///
+    /// Each level is a linear-filtered half-size copy of the one above (a 2×2 box filter for
+    /// even extents, as Vulkan blits and Metal's `generateMipmapsForTexture:` compute it),
+    /// through 1×1. Values and errors follow [`Self::create_rgba16_float_texture`]; the texture
+    /// can be replaced with [`Self::update_rgba16_float_texture_with_generated_mips`] or
+    /// [`Self::update_rgba16_float_texture_with_mips`]. Sample it with a material sampler whose
+    /// filter interpolates between mips.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture`], and `Unsupported` when the
+    /// adapter cannot blit the format with linear filtering.
+    pub fn create_rgba16_float_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, true)
+    }
+
+    /// [`Self::create_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], and `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering.
+    pub fn create_rgba16_float_texture_with_generated_mips_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, true)
+    }
+
+    /// Uploads a tightly packed RGBA8 sRGB base level and generates the rest of its full mip
+    /// chain on the GPU.
+    ///
+    /// Filtering happens on linear values: the GPU decodes sRGB before averaging and encodes the
+    /// result, as an sRGB blit or Metal mip generation does.
+    ///
+    /// # Errors
+    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
+    pub fn create_rgba8_srgb_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_generated_mips(
+            width,
+            height,
+            texels,
+            SampledTextureFormat::Srgb,
+        )
+    }
+
+    /// Uploads a tightly packed RGBA8 UNORM base level and generates the rest of its full mip
+    /// chain on the GPU, averaging the stored values directly.
+    ///
+    /// # Errors
+    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
+    pub fn create_rgba8_unorm_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_generated_mips(
+            width,
+            height,
+            texels,
+            SampledTextureFormat::Unorm,
+        )
+    }
+
+    fn create_rgba8_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+        format: SampledTextureFormat,
+    ) -> Result<Texture, GraphicsError> {
+        validate_mip_level(format, width, height, 0, texels)?;
+        let id = session_mut(&self.shared)?
+            .create_texture_with_generated_mips(width, height, texels, format)?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::D2,
+        })
+    }
+
     /// Uploads a tightly packed RGBA8 sRGB cube texture of six `size`×`size` faces.
     ///
     /// `faces` is in the standard cube layer order +X, -X, +Y, -Y, +Z, -Z, each face's texels
@@ -782,14 +917,109 @@ impl Device<'_> {
         self.update_rgba16_float(texture, width, height, levels, true)
     }
 
-    fn update_rgba16_float(
+    /// [`Self::update_rgba16_float_texture`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture`], with non-finite bits as the
+    /// invalid texels.
+    pub fn update_rgba16_float_texture_from_bits(
         &self,
         texture: &Texture,
         width: u32,
         height: u32,
-        levels: &[&[[f32; 4]]],
-        complete: bool,
+        texels: &[[u16; 4]],
     ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
+    }
+
+    /// [`Self::update_rgba16_float_texture_with_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_with_mips_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture_with_mips`], with non-finite
+    /// bits as the invalid texels.
+    pub fn update_rgba16_float_texture_with_mips_from_bits(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[u16; 4]]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
+    }
+
+    /// Queues a replacement of level 0 of a texture created by
+    /// [`Self::create_rgba16_float_texture_with_generated_mips`] (or its `_from_bits` form),
+    /// and regenerates every other level from it on the GPU.
+    ///
+    /// The next textured/material scene submission copies level 0 and blits the chain before
+    /// any draw, in its own command buffer, so a texture rewritten every frame (an animated
+    /// height field, say) needs no CPU downsampling. Values, queuing, coalescing and
+    /// cancellation follow [`Self::update_rgba16_float_texture`].
+    ///
+    /// # Errors
+    /// Returns an error for a foreign or stale texture, a texture not created with generated
+    /// mips, incompatible format or dimensions, invalid texels, or an unavailable session.
+    pub fn update_rgba16_float_texture_with_generated_mips(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            true,
+        )
+    }
+
+    /// [`Self::update_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture_with_generated_mips`], with
+    /// non-finite bits as the invalid texels.
+    pub fn update_rgba16_float_texture_with_generated_mips_from_bits(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            true,
+        )
+    }
+
+    fn check_float_update(&self, texture: &Texture) -> Result<(), GraphicsError> {
         if texture.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "texture belongs to another graphics session",
@@ -800,8 +1030,26 @@ impl Device<'_> {
                 "float texture updates replace 2D textures only, not cube textures",
             ));
         }
+        Ok(())
+    }
+
+    fn update_rgba16_float(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+        complete: bool,
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
         let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
-        session_mut(&self.shared)?.update_float_texture(texture.lease.id, width, height, packed)
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
     }
 
     fn upload_rgba16_float(
@@ -812,13 +1060,31 @@ impl Device<'_> {
         complete: bool,
     ) -> Result<Texture, GraphicsError> {
         let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
-        let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
-        let id = session_mut(&self.shared)?.create_texture(
-            width,
-            height,
-            &slices,
-            SampledTextureFormat::Float16,
-        )?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Creates an `RGBA16Float` texture from packed levels; with `generate_mips`, `packed`
+    /// holds level 0 alone and the GPU fills the rest of the full chain.
+    fn upload_packed_float(
+        &self,
+        width: u32,
+        height: u32,
+        packed: &[Vec<u8>],
+        generate_mips: bool,
+    ) -> Result<Texture, GraphicsError> {
+        let mut session = session_mut(&self.shared)?;
+        let id = if generate_mips {
+            session.create_texture_with_generated_mips(
+                width,
+                height,
+                &packed[0],
+                SampledTextureFormat::Float16,
+            )?
+        } else {
+            let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
+            session.create_texture(width, height, &slices, SampledTextureFormat::Float16)?
+        };
+        drop(session);
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
@@ -1096,41 +1362,7 @@ impl Device<'_> {
         descriptor: MaterialPipelineDescriptor<'_>,
         hdr: bool,
     ) -> Result<MaterialPipeline, GraphicsError> {
-        let layout = validate_vertex_layout(descriptor.vertex_layout)?;
-        let instance_layout = descriptor
-            .instance_layout
-            .map(|instance| validate_instance_layout(&layout, instance))
-            .transpose()?;
-        let interface = descriptor.shader.parse_interface();
-        let vertex_entry = find_entry_point(
-            &interface,
-            descriptor.vertex_entry,
-            shader::INTERFACE_STAGE_VERTEX,
-            "vertex",
-        )?;
-        let fragment_entry = find_entry_point(
-            &interface,
-            descriptor.fragment_entry,
-            shader::INTERFACE_STAGE_FRAGMENT,
-            "fragment",
-        )?;
-        validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
-        let declaration = validate_entry_point_bindings(
-            descriptor.bindings,
-            &interface,
-            &[vertex_entry, fragment_entry],
-        )?;
-        if declaration.scene_depth.is_some()
-            && (!hdr
-                || matches!(
-                    descriptor.depth,
-                    DepthMode::TestWrite | DepthMode::TestWriteGreater
-                ))
-        {
-            return Err(GraphicsError::invalid_request(
-                "scene-depth materials require HDR and must not write depth",
-            ));
-        }
+        let (layout, instance_layout, declaration) = check_material_descriptor(descriptor, hdr)?;
         let config = MaterialPipelineConfig {
             hdr,
             vertex_entry: descriptor.vertex_entry,
@@ -3527,13 +3759,57 @@ pub enum SamplerFilter {
     Linear,
 }
 
-/// Texture-coordinate addressing for one material sampler slot, applied on both axes.
+/// Texture-coordinate addressing for one material sampler slot, applied on every axis by
+/// [`MaterialBinding::Sampler`] or on one axis of a [`SamplerAddressPerAxis`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SamplerAddress {
     /// Coordinates wrap, tiling the texture.
     Repeat,
     /// Coordinates clamp to the edge texel.
     ClampToEdge,
+}
+
+/// Texture-coordinate addressing chosen separately for each axis of one material sampler slot,
+/// declared through [`MaterialBinding::SamplerPerAxis`].
+///
+/// `u` and `v` address a 2D texture's horizontal and vertical coordinates; `w` is the third
+/// coordinate, which 2D textures never read. An equirectangular panorama, for instance, wraps
+/// round the horizon and clamps at the poles:
+///
+/// ```
+/// # use mulciber::{SamplerAddress, SamplerAddressPerAxis};
+/// let panorama = SamplerAddressPerAxis {
+///     v: SamplerAddress::ClampToEdge,
+///     ..SamplerAddressPerAxis::all(SamplerAddress::Repeat)
+/// };
+/// assert_eq!(panorama.u, SamplerAddress::Repeat);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SamplerAddressPerAxis {
+    /// Addressing of the first (horizontal) coordinate.
+    pub u: SamplerAddress,
+    /// Addressing of the second (vertical) coordinate.
+    pub v: SamplerAddress,
+    /// Addressing of the third coordinate.
+    pub w: SamplerAddress,
+}
+
+impl SamplerAddressPerAxis {
+    /// The same addressing on every axis, as [`MaterialBinding::Sampler`] applies it.
+    #[must_use]
+    pub const fn all(address: SamplerAddress) -> Self {
+        Self {
+            u: address,
+            v: address,
+            w: address,
+        }
+    }
+}
+
+impl From<SamplerAddress> for SamplerAddressPerAxis {
+    fn from(address: SamplerAddress) -> Self {
+        Self::all(address)
+    }
 }
 
 /// How a material pipeline's fragment output combines with the color target.
@@ -3597,7 +3873,7 @@ impl DepthMode {
 pub(crate) struct SamplerSlot {
     pub(crate) binding: u32,
     pub(crate) filter: SamplerFilter,
-    pub(crate) address: SamplerAddress,
+    pub(crate) address: SamplerAddressPerAxis,
 }
 
 /// One resource slot declared by a material pipeline, identified by its WGSL binding number in
@@ -3649,8 +3925,18 @@ pub enum MaterialBinding {
         binding: u32,
         /// Minification and magnification filtering.
         filter: SamplerFilter,
-        /// Texture-coordinate addressing on both axes.
+        /// Texture-coordinate addressing on every axis.
         address: SamplerAddress,
+    },
+    /// A pipeline-owned sampler like [`MaterialBinding::Sampler`] whose addressing is chosen
+    /// separately for each axis, such as repeating horizontally and clamping vertically.
+    SamplerPerAxis {
+        /// WGSL binding number.
+        binding: u32,
+        /// Minification and magnification filtering.
+        filter: SamplerFilter,
+        /// Texture-coordinate addressing per axis.
+        address: SamplerAddressPerAxis,
     },
     /// A depth snapshot of preceding world records, at the scene's sample count.
     ///
@@ -3706,6 +3992,7 @@ impl MaterialBinding {
             | Self::Texture { binding }
             | Self::CubeTexture { binding }
             | Self::Sampler { binding, .. }
+            | Self::SamplerPerAxis { binding, .. }
             | Self::SceneDepth { binding }
             | Self::DepthTexture { binding }
             | Self::DepthTextureArray { binding }
@@ -3741,6 +4028,83 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub blend: BlendMode,
     /// How the pipeline interacts with the scene depth target.
     pub depth: DepthMode,
+}
+
+impl MaterialPipelineDescriptor<'_> {
+    /// Checks the declaration against the artifact's recorded interface exactly as
+    /// [`Device::create_material_pipeline`] does, without a device.
+    ///
+    /// A test can hold an application's vertex layouts, binding list and uniform and storage
+    /// sizes to the compiled shader this way. Passing does not promise native creation succeeds:
+    /// the device can still refuse the module or run out of memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_material_pipeline`] reports.
+    pub fn validate(&self) -> Result<(), GraphicsError> {
+        check_material_descriptor(*self, false).map(drop)
+    }
+
+    /// Checks the declaration as [`Device::create_hdr_material_pipeline`] does, without a
+    /// device; unlike [`Self::validate`] it accepts a [`MaterialBinding::SceneDepth`] slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_hdr_material_pipeline`] reports.
+    pub fn validate_hdr(&self) -> Result<(), GraphicsError> {
+        check_material_descriptor(*self, true).map(drop)
+    }
+}
+
+/// The device-independent half of material pipeline creation: the declaration checked against
+/// the artifact's recorded interface.
+fn check_material_descriptor(
+    descriptor: MaterialPipelineDescriptor<'_>,
+    hdr: bool,
+) -> Result<
+    (
+        OwnedVertexLayout,
+        Option<OwnedVertexLayout>,
+        BindingDeclaration,
+    ),
+    GraphicsError,
+> {
+    let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+    let instance_layout = descriptor
+        .instance_layout
+        .map(|instance| validate_instance_layout(&layout, instance))
+        .transpose()?;
+    let interface = descriptor.shader.parse_interface();
+    let vertex_entry = find_entry_point(
+        &interface,
+        descriptor.vertex_entry,
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    let fragment_entry = find_entry_point(
+        &interface,
+        descriptor.fragment_entry,
+        shader::INTERFACE_STAGE_FRAGMENT,
+        "fragment",
+    )?;
+    validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
+    let declaration = validate_entry_point_bindings(
+        descriptor.bindings,
+        &interface,
+        &[vertex_entry, fragment_entry],
+    )?;
+    if declaration.scene_depth.is_some()
+        && (!hdr
+            || matches!(
+                descriptor.depth,
+                DepthMode::TestWrite | DepthMode::TestWriteGreater
+            ))
+    {
+        return Err(GraphicsError::invalid_request(
+            "scene-depth materials require HDR and must not write depth",
+        ));
+    }
+    Ok((layout, instance_layout, declaration))
 }
 
 /// Application-authored material pipeline with declared blend and depth modes.
@@ -4421,7 +4785,7 @@ impl Drop for Frame<'_> {
 }
 
 /// Number of levels in a full mip chain from the base extent down to its 1x1 level.
-fn full_mip_chain_len(width: u32, height: u32) -> usize {
+pub(crate) fn full_mip_chain_len(width: u32, height: u32) -> usize {
     let largest = width.max(height);
     usize::try_from(32 - largest.leading_zeros()).expect("level count fits usize")
 }
@@ -4906,6 +5270,18 @@ fn validate_bindings_against_interface(
                 (binding, shader::INTERFACE_BINDING_CUBE_TEXTURE, 0)
             }
             MaterialBinding::Sampler {
+                binding,
+                filter,
+                address,
+            } => {
+                declaration.sampler_bindings.push(SamplerSlot {
+                    binding,
+                    filter,
+                    address: SamplerAddressPerAxis::all(address),
+                });
+                (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
+            }
+            MaterialBinding::SamplerPerAxis {
                 binding,
                 filter,
                 address,
@@ -5408,8 +5784,8 @@ mod block_compressed_tests {
 mod slot_tests {
     use super::{
         MATERIAL_BUFFER_SLOT_LIMIT, MATERIAL_SLOT_LIMIT, MATERIAL_TEXTURE_COUNT_LIMIT,
-        MATERIAL_TEXTURE_SLOT_LIMIT, MaterialBinding, SamplerAddress, SamplerFilter,
-        validate_bindings_against_interface,
+        MATERIAL_TEXTURE_SLOT_LIMIT, MaterialBinding, SamplerAddress, SamplerAddressPerAxis,
+        SamplerFilter, validate_bindings_against_interface,
     };
     use std::{vec, vec::Vec};
 
@@ -5499,6 +5875,68 @@ mod slot_tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn samplers_carry_their_addressing_per_axis() {
+        let slots = interface(&[
+            (1, INTERFACE_BINDING_SAMPLER, 0),
+            (2, INTERFACE_BINDING_SAMPLER, 0),
+        ]);
+        let panorama = SamplerAddressPerAxis {
+            v: SamplerAddress::ClampToEdge,
+            ..SamplerAddress::Repeat.into()
+        };
+        let declaration = validate_bindings_against_interface(
+            &[
+                MaterialBinding::SamplerPerAxis {
+                    binding: 2,
+                    filter: SamplerFilter::Linear,
+                    address: panorama,
+                },
+                sampler(1),
+            ],
+            &slots,
+        )
+        .expect("a per-axis sampler fills a sampler slot");
+        let addresses: Vec<_> = declaration
+            .sampler_bindings
+            .iter()
+            .map(|slot| (slot.binding, slot.address))
+            .collect();
+        assert_eq!(
+            addresses,
+            [
+                (1, SamplerAddressPerAxis::all(SamplerAddress::Repeat)),
+                (2, panorama)
+            ]
+        );
+        // It is a sampler like any other: a texture slot refuses it, and a slot is declared once.
+        assert!(
+            validate_bindings_against_interface(
+                &[MaterialBinding::SamplerPerAxis {
+                    binding: 0,
+                    filter: SamplerFilter::Nearest,
+                    address: panorama,
+                }],
+                &interface(&[(0, INTERFACE_BINDING_SAMPLED_TEXTURE, 0)]),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_bindings_against_interface(
+                &[
+                    sampler(1),
+                    MaterialBinding::SamplerPerAxis {
+                        binding: 1,
+                        filter: SamplerFilter::Linear,
+                        address: panorama,
+                    }
+                ],
+                &interface(&[(1, INTERFACE_BINDING_SAMPLER, 0)]),
+            )
+            .is_err()
+        );
     }
 
     #[test]

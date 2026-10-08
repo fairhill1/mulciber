@@ -5637,6 +5637,7 @@ pub const VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT: VkPipelineStageFlagBits2 = 819
 pub const VK_PIPELINE_STAGE_2_HOST_BIT: VkPipelineStageFlagBits2 = 16384;
 pub const VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT: VkPipelineStageFlagBits2 = 65536;
 pub const VK_PIPELINE_STAGE_2_COPY_BIT: VkPipelineStageFlagBits2 = 4294967296;
+pub const VK_PIPELINE_STAGE_2_BLIT_BIT: VkPipelineStageFlagBits2 = 17179869184;
 pub type VkAccessFlags2 = VkFlags64;
 pub type VkAccessFlagBits2 = VkFlags64;
 pub const VK_ACCESS_2_NONE: VkAccessFlagBits2 = 0;

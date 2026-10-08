@@ -3,6 +3,7 @@ mod capture;
 mod descriptor_cache;
 mod descriptor_pools;
 mod mesh;
+mod mip_generation;
 mod sampled_texture;
 #[cfg(feature = "native-validation")]
 mod validation;
@@ -195,7 +196,11 @@ struct TextureResource {
     mip_levels: u32,
     /// Array layers: one for a 2D texture, six for a cube.
     layers: u32,
-    /// The last queued replacement: every mip level, tightly packed, base level first.
+    /// Whether the texture was created to generate its own mips: its image is also a transfer
+    /// source, and a replacement may supply level 0 alone.
+    generates_mips: bool,
+    /// The last queued replacement, tightly packed, base level first: every mip level, or level 0
+    /// alone for the GPU to regenerate the rest.
     pending: Option<Vec<Vec<u8>>>,
     /// Per-frame-slot staging, sized to the whole chain on first use.
     uploads: [Buffer; ClearSurface::frames_in_flight()],
@@ -768,7 +773,18 @@ impl<'window> TexturedSession<'window> {
         levels: &[&[u8]],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(width, height, &[levels], format, ImageShape::Single)
+        self.create_sampled_texture(width, height, &[levels], format, ImageShape::Single, false)
+    }
+
+    /// Uploads level 0 of a 2D texture and fills the rest of its full mip chain with GPU blits.
+    pub(crate) fn create_texture_with_generated_mips(
+        &mut self,
+        width: u32,
+        height: u32,
+        base: &[u8],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(width, height, &[&[base]], format, ImageShape::Single, true)
     }
 
     /// Uploads six validated square faces, each with the same mip chain length, into one
@@ -779,11 +795,12 @@ impl<'window> TexturedSession<'window> {
         faces: &[&[&[u8]]; 6],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(size, size, faces, format, ImageShape::Cube)
+        self.create_sampled_texture(size, size, faces, format, ImageShape::Cube, false)
     }
 
     /// Uploads one sampled image: a single 2D layer, or six cube faces in +X, -X, +Y, -Y, +Z,
-    /// -Z layer order. Every layer carries the same mip chain, already validated.
+    /// -Z layer order. Every layer carries the same mip chain, already validated; with
+    /// `generate_mips` each carries level 0 alone and blits fill the rest of the full chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     fn create_sampled_texture(
         &mut self,
@@ -792,11 +809,16 @@ impl<'window> TexturedSession<'window> {
         layers: &[&[&[u8]]],
         format: SampledTextureFormat,
         shape: ImageShape,
+        generate_mips: bool,
     ) -> Result<ResourceId, GraphicsError> {
         debug_assert_eq!(layers.len(), shape.layers() as usize);
         let levels = layers.first().copied().unwrap_or_default();
-        let mip_levels =
-            u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
+        let mip_levels = if generate_mips {
+            u32::try_from(crate::graphics::full_mip_chain_len(width, height))
+                .map_err(|_| error("mip chain length exceeds u32"))?
+        } else {
+            u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?
+        };
         let _base_row = format
             .row_bytes(width)
             .ok_or_else(|| GraphicsError::invalid_request("texture row size overflow"))?;
@@ -827,6 +849,7 @@ impl<'window> TexturedSession<'window> {
             height,
             mip_levels,
             shape,
+            generate_mips,
         )?;
         let size = crate::graphics::checked_staging_size(
             layers.iter().copied().flatten().map(|texels| texels.len()),
@@ -853,7 +876,7 @@ impl<'window> TexturedSession<'window> {
             width,
             height,
             native_format,
-            (vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT) as u32,
+            sampled_texture::usage(generate_mips),
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,
             mip_levels,
@@ -865,7 +888,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let upload = self.upload_texture(&staging, &image, width, height, layers);
+        let upload = self.upload_texture(&staging, &image, width, height, layers, mip_levels);
         destroy_buffer(&self.surface, staging);
         if let Err(failure) = upload {
             destroy_image(&self.surface, image);
@@ -910,6 +933,7 @@ impl<'window> TexturedSession<'window> {
                 format,
                 mip_levels,
                 shape.layers(),
+                generate_mips,
             )
         };
         match self.textures.insert(resource()) {
@@ -2401,10 +2425,9 @@ impl<'window> TexturedSession<'window> {
         width: u32,
         height: u32,
         layers: &[&[&[u8]]],
+        mip_levels: u32,
     ) -> Result<(), GraphicsError> {
         let levels = layers.first().copied().unwrap_or_default();
-        let mip_levels =
-            u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
         let layer_count =
             u32::try_from(layers.len()).map_err(|_| error("texture layer count exceeds u32"))?;
         let mut regions = Vec::with_capacity(layers.len() * levels.len());
@@ -2473,21 +2496,33 @@ impl<'window> TexturedSession<'window> {
                 self.surface.upload_command_buffer(), &raw const copy
             );
         }
-        let to_sampled = image_barrier(
-            image.handle,
-            vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            vk::VK_PIPELINE_STAGE_2_COPY_BIT,
-            vk::VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            color_subresource_layers(mip_levels, layer_count),
-        );
-        pipeline_barrier(
-            &self.surface,
-            self.surface.upload_command_buffer(),
-            &to_sampled,
-        );
+        if levels.len() < mip_levels as usize {
+            mip_generation::record_generated_mips(
+                self.surface.device(),
+                self.surface.upload_command_buffer(),
+                image.handle,
+                [width, height],
+                mip_levels,
+                layer_count,
+            );
+        } else {
+            let to_sampled = image_barrier(
+                image.handle,
+                vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                vk::VK_PIPELINE_STAGE_2_COPY_BIT,
+                vk::VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
+                    | vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                color_subresource_layers(mip_levels, layer_count),
+            );
+            pipeline_barrier(
+                &self.surface,
+                self.surface.upload_command_buffer(),
+                &to_sampled,
+            );
+        }
         self.end_upload()
     }
 
@@ -6403,7 +6438,6 @@ fn create_material_pipeline(
     overlay_result?;
     for slot in config.sampler_bindings {
         let filter = material_filter(slot.filter);
-        let address = material_address(slot.address);
         let mipmap_mode = match slot.filter {
             SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
             SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -6413,9 +6447,9 @@ fn create_material_pipeline(
             magFilter: filter,
             minFilter: filter,
             mipmapMode: mipmap_mode,
-            addressModeU: address,
-            addressModeV: address,
-            addressModeW: address,
+            addressModeU: material_address(slot.address.u),
+            addressModeV: material_address(slot.address.v),
+            addressModeW: material_address(slot.address.w),
             maxAnisotropy: 1.0,
             maxLod: LOD_CLAMP_NONE,
             ..Default::default()
@@ -6737,7 +6771,6 @@ fn create_shadow_pipeline(
     result?;
     for slot in config.sampler_bindings {
         let filter = material_filter(slot.filter);
-        let address = material_address(slot.address);
         let mipmap_mode = match slot.filter {
             SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
             SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -6747,9 +6780,9 @@ fn create_shadow_pipeline(
             magFilter: filter,
             minFilter: filter,
             mipmapMode: mipmap_mode,
-            addressModeU: address,
-            addressModeV: address,
-            addressModeW: address,
+            addressModeU: material_address(slot.address.u),
+            addressModeV: material_address(slot.address.v),
+            addressModeW: material_address(slot.address.w),
             maxAnisotropy: 1.0,
             maxLod: LOD_CLAMP_NONE,
             ..Default::default()

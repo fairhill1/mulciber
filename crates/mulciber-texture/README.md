@@ -4,7 +4,8 @@
 filter its content needs, encodes every level as BC7 with Intel's ISPC encoder (`intel_tex_2`), and
 writes a KTX 2.0 file beside the sources that records the digest of what it was built from. At run
 time the same crate reads the bake while it is current and otherwise builds the identical chain from
-the sources in RGBA8. A texture edited since its bake still shows, and a release that ships only
+the sources in RGBA8, leaving the mips to the GPU where its box filter is the chain's (colour in
+linear light, linear data). A texture edited since its bake still shows, and a release that ships only
 bakes needs no sources. It is Isle of Rán's texture baker, made game-agnostic.
 
 ```console
@@ -28,7 +29,7 @@ let albedo = maps.albedo.prepare()?;           // the bake, or the PNG's chain w
 if let Origin::Sources(why) = &albedo.origin {
     eprintln!("{}: not baked ({why:?})", maps.albedo.output.display());
 }
-let texture = albedo.upload(&device)?;         // BC7 blocks, or RGBA8 mips
+let texture = albedo.upload(&device)?;         // BC7 blocks, or RGBA8 with GPU mips
 let bounce = albedo.stats.mean;                // linear mean colour, for a lightmap's bounce
 ```
 

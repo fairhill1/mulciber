@@ -186,6 +186,16 @@ impl Recipe {
     ///
     /// When a source cannot be read or decoded, or two sources differ in size, naming them.
     pub fn build(&self) -> Result<Levels, TextureError> {
+        let (width, height, base) = self.base()?;
+        Ok(self.chain.build(width, height, base))
+    }
+
+    /// Decodes the sources and packs them into the RGBA8 base level: its width, height and texels.
+    ///
+    /// # Errors
+    ///
+    /// As [`build`](Self::build).
+    pub fn base(&self) -> Result<(u32, u32, Vec<u8>), TextureError> {
         let mut images: BTreeMap<&Path, Image> = BTreeMap::new();
         for source in self.sources() {
             images.insert(source, decode(source)?);
@@ -217,7 +227,7 @@ impl Recipe {
                 out[index] = channel.pick(source.map_or([0; 4], |texels| texels[texel]));
             }
         }
-        Ok(self.chain.build(width, height, base))
+        Ok((width, height, base))
     }
 
     /// Whether the bake on disk was built from the sources as they are now, with this recipe.
@@ -263,13 +273,26 @@ impl Recipe {
                 missing.map_or_else(|| "a source".to_owned(), |p| p.display().to_string())
             )));
         }
+        let srgb = self.chain.is_srgb();
+        // A box filter is what the GPU's mip generation does (in linear light for sRGB), so those
+        // chains upload the base alone; the others need their own filter on the CPU.
+        if matches!(self.chain, Chain::Color | Chain::Linear) {
+            let (width, height, base) = self.base()?;
+            return Ok(Prepared {
+                width,
+                height,
+                stats: Stats::of(&base, srgb),
+                pixels: Pixels::Rgba8GeneratedMips { srgb, base },
+                origin: Origin::Sources(fallback),
+            });
+        }
         let levels = self.build()?;
-        let stats = Stats::of(&levels.levels[0], self.chain.is_srgb());
+        let stats = Stats::of(&levels.levels[0], srgb);
         Ok(Prepared {
             width: levels.width,
             height: levels.height,
             pixels: Pixels::Rgba8 {
-                srgb: self.chain.is_srgb(),
+                srgb,
                 levels: levels.levels,
             },
             stats,
@@ -400,7 +423,16 @@ pub enum Origin {
 pub enum Pixels {
     /// A bake: a KTX 2.0 file of BC7 levels, uploaded as stored.
     Ktx2(Vec<u8>),
-    /// RGBA8 levels built from the sources.
+    /// An RGBA8 base level built from the sources, its chain left to the GPU: [`Chain::Color`]
+    /// and [`Chain::Linear`], whose box filters the GPU's mip generation matches (for an extent
+    /// that is not a power of two, up to the GPU's sampling of the odd row or column).
+    Rgba8GeneratedMips {
+        /// Whether it is sRGB colour, averaged in linear light.
+        srgb: bool,
+        /// The base level.
+        base: Vec<u8>,
+    },
+    /// RGBA8 levels built from the sources on the CPU, for chains the GPU cannot filter.
     Rgba8 {
         /// Whether they are sRGB colour.
         srgb: bool,
@@ -425,8 +457,8 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Uploads the levels: a bake through [`Device::create_ktx2_texture`], RGBA8 as sRGB or UNORM
-    /// by the chain.
+    /// Uploads the texture: a bake through [`Device::create_ktx2_texture`], RGBA8 as sRGB or UNORM
+    /// by the chain, its mips generated on the GPU where the chain allows.
     ///
     /// # Errors
     ///
@@ -434,6 +466,12 @@ impl Prepared {
     pub fn upload(&self, device: &Device<'_>) -> Result<Texture, GraphicsError> {
         match &self.pixels {
             Pixels::Ktx2(bytes) => device.create_ktx2_texture(&Ktx2Texture::parse(bytes)?),
+            Pixels::Rgba8GeneratedMips { srgb: true, base } => {
+                device.create_rgba8_srgb_texture_with_generated_mips(self.width, self.height, base)
+            }
+            Pixels::Rgba8GeneratedMips { srgb: false, base } => {
+                device.create_rgba8_unorm_texture_with_generated_mips(self.width, self.height, base)
+            }
             Pixels::Rgba8 { srgb, levels } => {
                 let slices: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
                 if *srgb {

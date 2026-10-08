@@ -943,7 +943,12 @@ struct Surface {
         assert_eq!(&interface[9..13], b"main");
         assert_eq!(word(13), 0, "fragment inputs are not recorded");
         assert_eq!(word(17), 0, "main uses no binding");
-        assert_eq!(word(21), 2, "the module table records both shadow bindings");
+        assert_eq!(
+            word(21),
+            0,
+            "the shadow bindings are no buffers, so there are no layouts"
+        );
+        assert_eq!(word(25), 2, "the module table records both shadow bindings");
     }
 
     #[test]

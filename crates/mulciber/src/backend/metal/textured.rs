@@ -238,7 +238,11 @@ struct TextureResource {
     mip_levels: usize,
     /// Slices: one for a 2D texture, six for a cube.
     slices: usize,
-    /// The last queued replacement: every mip level, tightly packed, base level first.
+    /// Whether the texture was created to generate its own mips, so a replacement may supply
+    /// level 0 alone.
+    generates_mips: bool,
+    /// The last queued replacement, tightly packed, base level first: every mip level, or level 0
+    /// alone for the GPU to regenerate the rest.
     pending: Option<Vec<Vec<u8>>>,
 }
 
@@ -663,7 +667,18 @@ impl<'window> TexturedSession<'window> {
         levels: &[&[u8]],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(width, height, &[levels], format)
+        self.create_sampled_texture(width, height, &[levels], format, false)
+    }
+
+    /// Uploads level 0 of a 2D texture and fills the rest of its full mip chain on the GPU.
+    pub(crate) fn create_texture_with_generated_mips(
+        &mut self,
+        width: u32,
+        height: u32,
+        base: &[u8],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(width, height, &[&[base]], format, true)
     }
 
     /// Uploads six validated square faces, each with the same mip chain length, into one
@@ -674,11 +689,12 @@ impl<'window> TexturedSession<'window> {
         faces: &[&[&[u8]]; 6],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(size, size, faces, format)
+        self.create_sampled_texture(size, size, faces, format, false)
     }
 
     /// Uploads one sampled texture: a single 2D slice, or the six slices of a cube. Every
-    /// slice carries the same mip chain, already validated.
+    /// slice carries the same mip chain, already validated; with `generate_mips` each carries
+    /// level 0 alone and a blit encoder fills the rest of the full chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     fn create_sampled_texture(
         &mut self,
@@ -686,9 +702,14 @@ impl<'window> TexturedSession<'window> {
         height: u32,
         slices: &[&[&[u8]]],
         format: SampledTextureFormat,
+        generate_mips: bool,
     ) -> Result<ResourceId, GraphicsError> {
         let cube = slices.len() == 6;
-        let mip_levels = slices.first().map_or(0, |levels| levels.len());
+        let mip_levels = if generate_mips {
+            crate::graphics::full_mip_chain_len(width, height)
+        } else {
+            slices.first().map_or(0, |levels| levels.len())
+        };
         // Metal 3's format table guarantees RGBA16Float filtering and 16384-wide 2D textures.
         // Metal has no Vulkan-style per-format query. Keep this exact-format request explicit.
         if format == SampledTextureFormat::Float16
@@ -747,7 +768,16 @@ impl<'window> TexturedSession<'window> {
             }
             // CPU replacement writes shared storage before the texture becomes bindable.
             objc::void_usize(descriptor, c"setStorageMode:", 0);
-            objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_SHADER_READ);
+            // Mip generation may render into each level, so it asks for render-target usage.
+            objc::void_usize(
+                descriptor,
+                c"setUsage:",
+                if generate_mips {
+                    TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_RENDER_TARGET
+                } else {
+                    TEXTURE_USAGE_SHADER_READ
+                },
+            );
             let texture = required(
                 objc::object_object(
                     self.surface.device,
@@ -801,6 +831,14 @@ impl<'window> TexturedSession<'window> {
                     }
                 }
             }
+            if generate_mips && mip_levels > 1 {
+                // Frames are later command buffers on the same queue, so they sample the chain
+                // only after this one has filled it.
+                if let Err(failure) = self.generate_mips_now(texture) {
+                    objc::void(texture, c"release");
+                    return Err(failure);
+                }
+            }
             let sampler = match create_upload_sampler(self.surface.device) {
                 Ok(sampler) => sampler,
                 Err(failure) => {
@@ -815,6 +853,7 @@ impl<'window> TexturedSession<'window> {
                 format,
                 mip_levels,
                 slices: slices.len(),
+                generates_mips: generate_mips,
                 pending: None,
             }) {
                 Ok(id) => Ok(id),
@@ -3669,7 +3708,7 @@ fn create_material_pipeline(
                 SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
                 SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
             };
-            let address = match slot.address {
+            let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
                 SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
             };
@@ -3680,8 +3719,21 @@ fn create_material_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
-            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
-            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                address(slot.address.u),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                address(slot.address.v),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setRAddressMode:",
+                address(slot.address.w),
+            );
             let sampler = required(
                 objc::object_object(
                     device,
@@ -4006,7 +4058,7 @@ fn create_shadow_pipeline(
                 SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
                 SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
             };
-            let address = match slot.address {
+            let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
                 SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
             };
@@ -4017,8 +4069,21 @@ fn create_shadow_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
-            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
-            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                address(slot.address.u),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                address(slot.address.v),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setRAddressMode:",
+                address(slot.address.w),
+            );
             let sampler = required(
                 objc::object_object(
                     device,

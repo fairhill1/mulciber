@@ -2,11 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Unreleased
+## Fewer Vulkan buffer binds (graphics 0.13.35)
 
 - Vulkan material and shadow passes skip vertex binds that repeat the previous draw's, and bind
   each index buffer once from its start, picking each draw's indices with `firstIndex`; parts that
   share a mesh arena block share one index bind.
+
+With 0.13.34's changes, The Ship's viewer (cotopaxi, 3641 material records a frame) spends 0.92 ms
+instead of 1.54 ms in `render_and_present` on the CPU, median over 340 frames.
 
 ## Faster Vulkan frame recording (graphics 0.13.34)
 

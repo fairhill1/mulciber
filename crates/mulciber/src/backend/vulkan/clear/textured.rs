@@ -6403,7 +6403,6 @@ fn create_material_pipeline(
     overlay_result?;
     for slot in config.sampler_bindings {
         let filter = material_filter(slot.filter);
-        let address = material_address(slot.address);
         let mipmap_mode = match slot.filter {
             SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
             SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -6413,9 +6412,9 @@ fn create_material_pipeline(
             magFilter: filter,
             minFilter: filter,
             mipmapMode: mipmap_mode,
-            addressModeU: address,
-            addressModeV: address,
-            addressModeW: address,
+            addressModeU: material_address(slot.address.u),
+            addressModeV: material_address(slot.address.v),
+            addressModeW: material_address(slot.address.w),
             maxAnisotropy: 1.0,
             maxLod: LOD_CLAMP_NONE,
             ..Default::default()
@@ -6737,7 +6736,6 @@ fn create_shadow_pipeline(
     result?;
     for slot in config.sampler_bindings {
         let filter = material_filter(slot.filter);
-        let address = material_address(slot.address);
         let mipmap_mode = match slot.filter {
             SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
             SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
@@ -6747,9 +6745,9 @@ fn create_shadow_pipeline(
             magFilter: filter,
             minFilter: filter,
             mipmapMode: mipmap_mode,
-            addressModeU: address,
-            addressModeV: address,
-            addressModeW: address,
+            addressModeU: material_address(slot.address.u),
+            addressModeV: material_address(slot.address.v),
+            addressModeW: material_address(slot.address.w),
             maxAnisotropy: 1.0,
             maxLod: LOD_CLAMP_NONE,
             ..Default::default()

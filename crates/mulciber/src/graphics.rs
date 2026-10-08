@@ -3495,13 +3495,57 @@ pub enum SamplerFilter {
     Linear,
 }
 
-/// Texture-coordinate addressing for one material sampler slot, applied on both axes.
+/// Texture-coordinate addressing for one material sampler slot, applied on every axis by
+/// [`MaterialBinding::Sampler`] or on one axis of a [`SamplerAddressPerAxis`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SamplerAddress {
     /// Coordinates wrap, tiling the texture.
     Repeat,
     /// Coordinates clamp to the edge texel.
     ClampToEdge,
+}
+
+/// Texture-coordinate addressing chosen separately for each axis of one material sampler slot,
+/// declared through [`MaterialBinding::SamplerPerAxis`].
+///
+/// `u` and `v` address a 2D texture's horizontal and vertical coordinates; `w` is the third
+/// coordinate, which 2D textures never read. An equirectangular panorama, for instance, wraps
+/// round the horizon and clamps at the poles:
+///
+/// ```
+/// # use mulciber::{SamplerAddress, SamplerAddressPerAxis};
+/// let panorama = SamplerAddressPerAxis {
+///     v: SamplerAddress::ClampToEdge,
+///     ..SamplerAddressPerAxis::all(SamplerAddress::Repeat)
+/// };
+/// assert_eq!(panorama.u, SamplerAddress::Repeat);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SamplerAddressPerAxis {
+    /// Addressing of the first (horizontal) coordinate.
+    pub u: SamplerAddress,
+    /// Addressing of the second (vertical) coordinate.
+    pub v: SamplerAddress,
+    /// Addressing of the third coordinate.
+    pub w: SamplerAddress,
+}
+
+impl SamplerAddressPerAxis {
+    /// The same addressing on every axis, as [`MaterialBinding::Sampler`] applies it.
+    #[must_use]
+    pub const fn all(address: SamplerAddress) -> Self {
+        Self {
+            u: address,
+            v: address,
+            w: address,
+        }
+    }
+}
+
+impl From<SamplerAddress> for SamplerAddressPerAxis {
+    fn from(address: SamplerAddress) -> Self {
+        Self::all(address)
+    }
 }
 
 /// How a material pipeline's fragment output combines with the color target.
@@ -3565,7 +3609,7 @@ impl DepthMode {
 pub(crate) struct SamplerSlot {
     pub(crate) binding: u32,
     pub(crate) filter: SamplerFilter,
-    pub(crate) address: SamplerAddress,
+    pub(crate) address: SamplerAddressPerAxis,
 }
 
 /// One resource slot declared by a material pipeline, identified by its WGSL binding number in
@@ -3617,8 +3661,18 @@ pub enum MaterialBinding {
         binding: u32,
         /// Minification and magnification filtering.
         filter: SamplerFilter,
-        /// Texture-coordinate addressing on both axes.
+        /// Texture-coordinate addressing on every axis.
         address: SamplerAddress,
+    },
+    /// A pipeline-owned sampler like [`MaterialBinding::Sampler`] whose addressing is chosen
+    /// separately for each axis, such as repeating horizontally and clamping vertically.
+    SamplerPerAxis {
+        /// WGSL binding number.
+        binding: u32,
+        /// Minification and magnification filtering.
+        filter: SamplerFilter,
+        /// Texture-coordinate addressing per axis.
+        address: SamplerAddressPerAxis,
     },
     /// A depth snapshot of preceding world records, at the scene's sample count.
     ///
@@ -3674,6 +3728,7 @@ impl MaterialBinding {
             | Self::Texture { binding }
             | Self::CubeTexture { binding }
             | Self::Sampler { binding, .. }
+            | Self::SamplerPerAxis { binding, .. }
             | Self::SceneDepth { binding }
             | Self::DepthTexture { binding }
             | Self::DepthTextureArray { binding }
@@ -4881,6 +4936,18 @@ fn validate_bindings_against_interface(
                 declaration.sampler_bindings.push(SamplerSlot {
                     binding,
                     filter,
+                    address: SamplerAddressPerAxis::all(address),
+                });
+                (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
+            }
+            MaterialBinding::SamplerPerAxis {
+                binding,
+                filter,
+                address,
+            } => {
+                declaration.sampler_bindings.push(SamplerSlot {
+                    binding,
+                    filter,
                     address,
                 });
                 (binding, shader::INTERFACE_BINDING_SAMPLER, 0)
@@ -5376,8 +5443,8 @@ mod block_compressed_tests {
 mod slot_tests {
     use super::{
         MATERIAL_BUFFER_SLOT_LIMIT, MATERIAL_SLOT_LIMIT, MATERIAL_TEXTURE_COUNT_LIMIT,
-        MATERIAL_TEXTURE_SLOT_LIMIT, MaterialBinding, SamplerAddress, SamplerFilter,
-        validate_bindings_against_interface,
+        MATERIAL_TEXTURE_SLOT_LIMIT, MaterialBinding, SamplerAddress, SamplerAddressPerAxis,
+        SamplerFilter, validate_bindings_against_interface,
     };
     use std::{vec, vec::Vec};
 
@@ -5467,6 +5534,68 @@ mod slot_tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn samplers_carry_their_addressing_per_axis() {
+        let slots = interface(&[
+            (1, INTERFACE_BINDING_SAMPLER, 0),
+            (2, INTERFACE_BINDING_SAMPLER, 0),
+        ]);
+        let panorama = SamplerAddressPerAxis {
+            v: SamplerAddress::ClampToEdge,
+            ..SamplerAddress::Repeat.into()
+        };
+        let declaration = validate_bindings_against_interface(
+            &[
+                MaterialBinding::SamplerPerAxis {
+                    binding: 2,
+                    filter: SamplerFilter::Linear,
+                    address: panorama,
+                },
+                sampler(1),
+            ],
+            &slots,
+        )
+        .expect("a per-axis sampler fills a sampler slot");
+        let addresses: Vec<_> = declaration
+            .sampler_bindings
+            .iter()
+            .map(|slot| (slot.binding, slot.address))
+            .collect();
+        assert_eq!(
+            addresses,
+            [
+                (1, SamplerAddressPerAxis::all(SamplerAddress::Repeat)),
+                (2, panorama)
+            ]
+        );
+        // It is a sampler like any other: a texture slot refuses it, and a slot is declared once.
+        assert!(
+            validate_bindings_against_interface(
+                &[MaterialBinding::SamplerPerAxis {
+                    binding: 0,
+                    filter: SamplerFilter::Nearest,
+                    address: panorama,
+                }],
+                &interface(&[(0, INTERFACE_BINDING_SAMPLED_TEXTURE, 0)]),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_bindings_against_interface(
+                &[
+                    sampler(1),
+                    MaterialBinding::SamplerPerAxis {
+                        binding: 1,
+                        filter: SamplerFilter::Linear,
+                        address: panorama,
+                    }
+                ],
+                &interface(&[(1, INTERFACE_BINDING_SAMPLER, 0)]),
+            )
+            .is_err()
+        );
     }
 
     #[test]

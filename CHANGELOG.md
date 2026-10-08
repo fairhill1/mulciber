@@ -2,6 +2,16 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Per-axis sampler addressing (graphics, unreleased)
+
+`MaterialBinding::SamplerPerAxis { binding, filter, address: SamplerAddressPerAxis { u, v, w } }`
+declares a material sampler whose address mode differs per axis, such as an equirectangular sky
+that repeats in `u` and clamps in `v`. `MaterialBinding::Sampler` keeps one mode for every axis;
+`SamplerAddressPerAxis::all` and `From<SamplerAddress>` build the uniform case. Additive: existing
+declarations are unchanged. Vulkan fills `addressModeU/V/W` from the three fields; Metal now also
+sets the R address mode, which 2D sampling never reads. Checked by a binding-validation test and
+by Clippy on Linux and on the `aarch64-apple-darwin` target; neither backend has rendered it here.
+
 ## Audio mixer, HRTF and room reverb (audio 0.1.0)
 
 New `mulciber-audio` crate, the engine from Isle of Rán's audio module made game-agnostic: a

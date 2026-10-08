@@ -65,6 +65,12 @@ picks one — so mip behavior costs no new declaration axis, and single-level te
 as before. Mip content (downsampling filter, color-space handling) is application policy; native
 generation is not part of the vocabulary.
 
+`MaterialBinding::Sampler` applies one `SamplerAddress` to every axis.
+`MaterialBinding::SamplerPerAxis` takes a `SamplerAddressPerAxis { u, v, w }` instead, for textures
+whose axes differ: an equirectangular panorama repeats round the horizon (`u`) and clamps at the
+poles (`v`). `SamplerAddressPerAxis::all` and `From<SamplerAddress>` give the uniform case. Vulkan
+sets each `addressModeU/V/W`; Metal sets the descriptor's S, T and R address modes.
+
 A material pipeline may declare one read-only storage slot (`MaterialBinding::Storage`): a
 WGSL `var<storage, read>` whose creation-fixed byte size must match the recorded type exactly,
 capped at `MATERIAL_STORAGE_SIZE_LIMIT` (64 KiB). Each record supplies the bytes per frame

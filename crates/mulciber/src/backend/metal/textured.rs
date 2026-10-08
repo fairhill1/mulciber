@@ -3669,7 +3669,7 @@ fn create_material_pipeline(
                 SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
                 SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
             };
-            let address = match slot.address {
+            let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
                 SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
             };
@@ -3680,8 +3680,21 @@ fn create_material_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
-            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
-            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                address(slot.address.u),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                address(slot.address.v),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setRAddressMode:",
+                address(slot.address.w),
+            );
             let sampler = required(
                 objc::object_object(
                     device,
@@ -4006,7 +4019,7 @@ fn create_shadow_pipeline(
                 SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
                 SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
             };
-            let address = match slot.address {
+            let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
                 SamplerAddress::ClampToEdge => SAMPLER_ADDRESS_CLAMP_TO_EDGE,
             };
@@ -4017,8 +4030,21 @@ fn create_shadow_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
-            objc::void_usize(sampler_descriptor, c"setSAddressMode:", address);
-            objc::void_usize(sampler_descriptor, c"setTAddressMode:", address);
+            objc::void_usize(
+                sampler_descriptor,
+                c"setSAddressMode:",
+                address(slot.address.u),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setTAddressMode:",
+                address(slot.address.v),
+            );
+            objc::void_usize(
+                sampler_descriptor,
+                c"setRAddressMode:",
+                address(slot.address.w),
+            );
             let sampler = required(
                 objc::object_object(
                     device,

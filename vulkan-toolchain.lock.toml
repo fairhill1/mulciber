@@ -105,3 +105,13 @@ spirv_validator = "SPIRV-Tools v2026.4"
 wgsl_sha256 = "5e6232ddb2286146059cbecc7ada66074db9349fad3331f56a55ff8463e32e76"
 vulkan_artifact_sha256 = "0643fca15982dab8f1bbcf269b1c62a923fb18f9ea5390cf9d5ac268da3e8be2"
 # The Metal artifact is not generated yet; see docs/vertex-formats.md.
+
+[entry_bindings_skinning_shader]
+compiler = "naga 30.0.1"
+target_environment = "vulkan1.3"
+# Validated with the locally installed SPIRV-Tools v2026.4; regenerate under the pin when available.
+spirv_validator = "SPIRV-Tools v2026.4"
+container = "MULSHDR3"
+wgsl_sha256 = "752f699b40b05d8c7856ec018731805b1c4cd32e4c8bfa465330baaeb889b6e4"
+vulkan_artifact_sha256 = "6f54b19db7eeafded2098c9d99c2fd15130316a7a758aad055af0f8b72f6f318"
+# The Metal artifact is not generated yet; see docs/per-entry-point-bindings.md.

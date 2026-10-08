@@ -18,7 +18,7 @@ use naga::back::msl::{BindSamplerTarget, BindTarget, EntryPointResources};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, Type, TypeInner};
 
-const MAGIC: &[u8; 8] = b"MULSHDR2";
+const MAGIC: &[u8; 8] = b"MULSHDR3";
 const VULKAN_KIND: u32 = 1;
 const METAL_KIND: u32 = 2;
 
@@ -107,7 +107,7 @@ pub fn compile_wgsl(
         ));
     }
 
-    let interface = shader_interface(&module)?;
+    let interface = shader_interface(&module, &info)?;
     match target {
         ShaderTarget::Vulkan => compile_vulkan(&module, &info, artifact.as_ref(), &interface),
         ShaderTarget::Metal => compile_metal(&module, &info, artifact.as_ref(), &interface),
@@ -160,17 +160,25 @@ pub fn compile_host_field(
         .map_err(|error| fail(format!("write {}: {error}", generated.display())))
 }
 
-/// Encodes the module's pipeline-facing interface: per entry point its stage, name, and
-/// vertex-stage input locations with formats, then the module's resource bindings with their
-/// kinds and, for uniform and read-only storage data, the WGSL byte size. `mulciber` validates
-/// application pipeline
-/// declarations against this section, so an interface construct without a proven mapping is a
-/// compile error rather than a silently unnamed slot.
+/// Encodes the module's pipeline-facing interface: per entry point its stage, name,
+/// vertex-stage input locations with formats, and the ascending indices of the module bindings it
+/// uses, then the module's resource bindings sorted by group and binding with their kinds and, for
+/// uniform and read-only storage data, the WGSL byte size. `mulciber` validates application
+/// pipeline declarations against this section, so an interface construct without a proven
+/// mapping is a compile error rather than a silently unnamed slot.
+///
+/// An entry point uses a binding when Naga's analysis finds the global reachable from it,
+/// directly or through a called function. The SPIR-V and MSL writers emit an entry point's
+/// resources from the same analysis, so the recorded set is exactly what its native code binds.
 #[allow(clippy::too_many_lines)]
-fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> {
+fn shader_interface(
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+) -> Result<Vec<u8>, ShaderBuildError> {
+    let bindings = module_bindings(module)?;
     let mut bytes = Vec::new();
     push_count(&mut bytes, module.entry_points.len(), "entry points")?;
-    for entry in &module.entry_points {
+    for (index, entry) in module.entry_points.iter().enumerate() {
         let stage = match entry.stage {
             naga::ShaderStage::Vertex => STAGE_VERTEX,
             naga::ShaderStage::Fragment => STAGE_FRAGMENT,
@@ -203,10 +211,38 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
             bytes.extend_from_slice(&location.to_le_bytes());
             bytes.push(format);
         }
+        let usage = info.get_entry_point(index);
+        let used: Vec<u32> = (0_u32..)
+            .zip(&bindings)
+            .filter(|(_, (_, global))| !usage[*global].is_empty())
+            .map(|(position, _)| position)
+            .collect();
+        push_count(&mut bytes, used.len(), "entry-point bindings")?;
+        for position in used {
+            bytes.extend_from_slice(&position.to_le_bytes());
+        }
     }
 
+    push_count(&mut bytes, bindings.len(), "resource bindings")?;
+    for ((group, binding, kind, size), _) in bindings {
+        bytes.extend_from_slice(&group.to_le_bytes());
+        bytes.extend_from_slice(&binding.to_le_bytes());
+        bytes.push(kind);
+        bytes.extend_from_slice(&size.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+/// A recorded binding: group, binding, kind and byte size.
+type RecordedBinding = (u32, u32, u8, u32);
+
+/// Classifies every bound global, sorted by group and binding, keeping its handle so entry-point
+/// usage can be looked up.
+fn module_bindings(
+    module: &naga::Module,
+) -> Result<Vec<(RecordedBinding, Handle<naga::GlobalVariable>)>, ShaderBuildError> {
     let mut bindings = Vec::new();
-    for (_, variable) in module.global_variables.iter() {
+    for (handle, variable) in module.global_variables.iter() {
         let Some(binding) = &variable.binding else {
             continue;
         };
@@ -292,17 +328,10 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
                 )));
             }
         };
-        bindings.push((binding.group, binding.binding, kind, size));
+        bindings.push(((binding.group, binding.binding, kind, size), handle));
     }
-    bindings.sort_unstable();
-    push_count(&mut bytes, bindings.len(), "resource bindings")?;
-    for (group, binding, kind, size) in bindings {
-        bytes.extend_from_slice(&group.to_le_bytes());
-        bytes.extend_from_slice(&binding.to_le_bytes());
-        bytes.push(kind);
-        bytes.extend_from_slice(&size.to_le_bytes());
-    }
-    Ok(bytes)
+    bindings.sort_unstable_by_key(|&(recorded, _)| recorded);
+    Ok(bindings)
 }
 
 fn push_vertex_inputs(
@@ -423,29 +452,7 @@ fn compile_metal(
     artifact: &Path,
     interface: &[u8],
 ) -> Result<(), ShaderBuildError> {
-    let resources = metal_resources(module)?;
-    let entry_resources = EntryPointResources {
-        resources,
-        ..Default::default()
-    };
-    let options = naga::back::msl::Options {
-        lang_version: (3, 1),
-        per_entry_point_map: module
-            .entry_points
-            .iter()
-            .map(|entry| (entry.name.clone(), entry_resources.clone()))
-            .collect(),
-        fake_missing_bindings: false,
-        ..Default::default()
-    };
-    let (msl, _) = naga::back::msl::write_string(
-        module,
-        info,
-        &options,
-        &naga::back::msl::PipelineOptions::default(),
-    )
-    .map_err(|error| fail(format!("MSL generation: {error}")))?;
-
+    let msl = metal_source(module, info)?;
     let directory = artifact
         .parent()
         .ok_or_else(|| fail("shader artifact has no parent directory"))?;
@@ -479,6 +486,38 @@ fn compile_metal(
     let library =
         fs::read(&library_path).map_err(|error| fail(format!("read metallib: {error}")))?;
     write_artifact(artifact, METAL_KIND, &library, interface)
+}
+
+/// Generates the module's MSL. Every entry point gets the whole module's resource map, keyed by
+/// WGSL binding number; Naga emits arguments only for the globals each entry point uses, so an
+/// entry point's Metal slots are the WGSL binding numbers of exactly the bindings the interface
+/// records for it.
+fn metal_source(
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+) -> Result<String, ShaderBuildError> {
+    let entry_resources = EntryPointResources {
+        resources: metal_resources(module)?,
+        ..Default::default()
+    };
+    let options = naga::back::msl::Options {
+        lang_version: (3, 1),
+        per_entry_point_map: module
+            .entry_points
+            .iter()
+            .map(|entry| (entry.name.clone(), entry_resources.clone()))
+            .collect(),
+        fake_missing_bindings: false,
+        ..Default::default()
+    };
+    let (msl, _) = naga::back::msl::write_string(
+        module,
+        info,
+        &options,
+        &naga::back::msl::PipelineOptions::default(),
+    )
+    .map_err(|error| fail(format!("MSL generation: {error}")))?;
+    Ok(msl)
 }
 
 fn metal_resources(
@@ -572,6 +611,12 @@ mod tests {
 
     use super::{ShaderTarget, metal_resources, shader_interface};
 
+    fn validate(module: &naga::Module) -> naga::valid::ModuleInfo {
+        Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(module)
+            .expect("test WGSL validates")
+    }
+
     #[test]
     fn parses_target_names() {
         assert_eq!(ShaderTarget::parse("vulkan"), Some(ShaderTarget::Vulkan));
@@ -604,7 +649,7 @@ mod tests {
     fn cube_shader_interface_records_entries_and_bindings() {
         let source = include_str!("../../../examples/cube/src/cube.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
-        let interface = shader_interface(&module).expect("cube interface");
+        let interface = shader_interface(&module, &validate(&module)).expect("cube interface");
 
         let mut expected = Vec::new();
         expected.extend_from_slice(&2_u32.to_le_bytes());
@@ -617,11 +662,19 @@ mod tests {
             expected.extend_from_slice(&location.to_le_bytes());
             expected.push(format);
         }
-        // cube_fragment records no vertex-stage inputs.
+        // The vertex stage reads only the uniform: binding table index 0.
+        for word in [1_u32, 0] {
+            expected.extend_from_slice(&word.to_le_bytes());
+        }
+        // cube_fragment records no vertex-stage inputs and samples the texture and sampler,
+        // binding table indices 1 and 2.
         expected.push(1);
         expected.extend_from_slice(&13_u32.to_le_bytes());
         expected.extend_from_slice(b"cube_fragment");
         expected.extend_from_slice(&0_u32.to_le_bytes());
+        for word in [2_u32, 1, 2] {
+            expected.extend_from_slice(&word.to_le_bytes());
+        }
         // One 64-byte uniform, one sampled texture, one sampler in group 0.
         expected.extend_from_slice(&3_u32.to_le_bytes());
         for (binding, kind, size) in [(0_u32, 0_u8, 64_u32), (1, 1, 0), (2, 2, 0)] {
@@ -641,7 +694,7 @@ mod tests {
                 return vec4<f32>(textureLoad(depth, vec2<i32>(0), 0));
             }";
         let module = naga::front::wgsl::parse_str(source).unwrap();
-        let interface = shader_interface(&module).unwrap();
+        let interface = shader_interface(&module, &validate(&module)).unwrap();
         assert_eq!(
             interface[interface.len() - 5],
             super::BINDING_MULTISAMPLED_DEPTH
@@ -694,7 +747,7 @@ mod tests {
             }
         ";
         let module = naga::front::wgsl::parse_str(source).expect("array WGSL parses");
-        let interface = shader_interface(&module).expect("array interface");
+        let interface = shader_interface(&module, &validate(&module)).expect("array interface");
         // Two binding records trail the interface: the depth-texture array records kind 6 and
         // the comparison sampler records kind 5, each with a zero byte size.
         let records = &interface[interface.len() - 26..];
@@ -718,7 +771,7 @@ mod tests {
             }
         ";
         let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
-        let interface = shader_interface(&module).expect("cube interface");
+        let interface = shader_interface(&module, &validate(&module)).expect("cube interface");
         // Two binding records trail the interface: the cube texture records kind 8 and the
         // sampler kind 2, each with a zero byte size.
         let records = &interface[interface.len() - 26..];
@@ -762,9 +815,105 @@ mod tests {
                 }}"
             );
             let module = naga::front::wgsl::parse_str(&source).expect("WGSL parses");
-            let failure = shader_interface(&module).expect_err("no proven mapping");
+            // Cube arrays also need a capability the compiler never enables; validate with every
+            // capability so the interface refusal itself is what is tested.
+            let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+                .validate(&module)
+                .expect("WGSL validates");
+            let failure = shader_interface(&module, &info).expect_err("no proven mapping");
             assert!(failure.to_string().contains("no proven interface mapping"));
         }
+    }
+
+    /// Interface words after an entry point's name and vertex inputs: its used binding indices.
+    fn entry_usage(interface: &[u8], name: &str) -> Vec<u32> {
+        let word = |at: usize| u32::from_le_bytes(interface[at..at + 4].try_into().unwrap());
+        let mut at = 4;
+        for _ in 0..word(0) {
+            let length = word(at + 1) as usize;
+            let entry = &interface[at + 5..at + 5 + length];
+            at += 5 + length;
+            at += 4 + 5 * word(at) as usize;
+            let count = word(at) as usize;
+            let used = (0..count).map(|i| word(at + 4 + 4 * i)).collect();
+            at += 4 + 4 * count;
+            if entry == name.as_bytes() {
+                return used;
+            }
+        }
+        panic!("no entry point {name}");
+    }
+
+    const SHARED_MODULE: &str = "
+        struct Draw { clip_from_object: mat4x4<f32>, tint: vec4<f32> }
+        @group(0) @binding(0) var<uniform> draw: Draw;
+        @group(0) @binding(1) var albedo: texture_2d<f32>;
+        @group(0) @binding(2) var albedo_sampler: sampler;
+        @group(0) @binding(3) var<storage, read> bones: array<mat4x4<f32>, 4>;
+        @group(0) @binding(4) var environment: texture_cube<f32>;
+
+        struct Surface { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> }
+
+        fn skin(position: vec3<f32>, index: u32) -> vec4<f32> {
+            return bones[index] * vec4<f32>(position, 1.0);
+        }
+
+        @vertex fn prop_vertex(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> Surface {
+            return Surface(draw.clip_from_object * vec4<f32>(position, 1.0), uv);
+        }
+        @vertex fn skinned_vertex(
+            @location(0) position: vec3<f32>,
+            @location(1) uv: vec2<f32>,
+            @location(2) bone: vec4<u32>,
+        ) -> Surface {
+            return Surface(draw.clip_from_object * skin(position, bone.x), uv);
+        }
+        @fragment fn prop_fragment(surface: Surface) -> @location(0) vec4<f32> {
+            return textureSample(albedo, albedo_sampler, surface.uv) * draw.tint;
+        }
+        @fragment fn chrome_fragment(surface: Surface) -> @location(0) vec4<f32> {
+            return textureSample(environment, albedo_sampler, vec3<f32>(surface.uv, 1.0));
+        }
+    ";
+
+    #[test]
+    fn each_entry_point_records_the_bindings_it_reaches() {
+        let module = naga::front::wgsl::parse_str(SHARED_MODULE).expect("WGSL parses");
+        let info = validate(&module);
+        let interface = shader_interface(&module, &info).expect("interface");
+        // The binding table is sorted by slot, so indices equal binding numbers here.
+        assert_eq!(entry_usage(&interface, "prop_vertex"), [0]);
+        // The bone palette is reached through `skin`, a called function.
+        assert_eq!(entry_usage(&interface, "skinned_vertex"), [0, 3]);
+        assert_eq!(entry_usage(&interface, "prop_fragment"), [0, 1, 2]);
+        assert_eq!(entry_usage(&interface, "chrome_fragment"), [2, 4]);
+        // The module table still records all five bindings.
+        let tail = &interface[interface.len() - 5 * 13 - 4..];
+        assert_eq!(tail[..4], 5_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn metal_entry_points_take_only_the_resources_they_use() {
+        let module = naga::front::wgsl::parse_str(SHARED_MODULE).expect("WGSL parses");
+        let info = validate(&module);
+        let msl = super::metal_source(&module, &info).expect("MSL generation");
+        // Each entry point's signature runs from its name to the opening brace of its body.
+        let signature = |name: &str| {
+            let start = msl
+                .find(&std::format!(" {name}("))
+                .expect("entry point in MSL");
+            msl[start..start + msl[start..].find('{').expect("body")].to_owned()
+        };
+        let prop = signature("prop_vertex");
+        assert!(prop.contains("[[buffer(0)]]"));
+        assert!(!prop.contains("[[buffer(3)]]"));
+        let skinned = signature("skinned_vertex");
+        assert!(skinned.contains("[[buffer(0)]]") && skinned.contains("[[buffer(3)]]"));
+        let fragment = signature("prop_fragment");
+        assert!(fragment.contains("[[texture(1)]]") && fragment.contains("[[sampler(2)]]"));
+        assert!(!fragment.contains("[[texture(4)]]") && !fragment.contains("[[buffer(3)]]"));
+        let chrome = signature("chrome_fragment");
+        assert!(chrome.contains("[[texture(4)]]") && !chrome.contains("[[texture(1)]]"));
     }
 
     #[test]
@@ -776,7 +925,7 @@ mod tests {
             }
         ";
         let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
-        let interface = shader_interface(&module).expect("storage interface");
+        let interface = shader_interface(&module, &validate(&module)).expect("storage interface");
         // The binding record trails the interface: group, binding, kind 3, 8 * 64 bytes.
         let record = &interface[interface.len() - 13..];
         assert_eq!(record[8], 3);
@@ -792,7 +941,8 @@ mod tests {
             }
         ";
         let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
-        let failure = shader_interface(&module).expect_err("writable storage is rejected");
+        let failure = shader_interface(&module, &validate(&module))
+            .expect_err("writable storage is rejected");
         assert!(failure.to_string().contains("writable storage"));
     }
 
@@ -805,7 +955,8 @@ mod tests {
             }
         ";
         let module = naga::front::wgsl::parse_str(source).expect("storage WGSL parses");
-        let failure = shader_interface(&module).expect_err("runtime-sized storage is rejected");
+        let failure = shader_interface(&module, &validate(&module))
+            .expect_err("runtime-sized storage is rejected");
         assert!(failure.to_string().contains("runtime-sized storage"));
     }
 }

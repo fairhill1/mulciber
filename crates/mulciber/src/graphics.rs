@@ -1040,14 +1040,18 @@ impl Device<'_> {
             shader::INTERFACE_STAGE_VERTEX,
             "vertex",
         )?;
-        find_entry_point(
+        let fragment_entry = find_entry_point(
             &interface,
             descriptor.fragment_entry,
             shader::INTERFACE_STAGE_FRAGMENT,
             "fragment",
         )?;
         validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
-        let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
+        let declaration = validate_entry_point_bindings(
+            descriptor.bindings,
+            &interface,
+            &[vertex_entry, fragment_entry],
+        )?;
         if declaration.scene_depth.is_some()
             && (!hdr
                 || matches!(
@@ -1190,17 +1194,23 @@ impl Device<'_> {
             shader::INTERFACE_STAGE_VERTEX,
             "vertex",
         )?;
-        if let Some(fragment_entry) = descriptor.fragment_entry {
-            find_entry_point(
-                &interface,
-                fragment_entry,
-                shader::INTERFACE_STAGE_FRAGMENT,
-                "fragment",
-            )?;
-        }
+        let fragment_entry = descriptor
+            .fragment_entry
+            .map(|fragment_entry| {
+                find_entry_point(
+                    &interface,
+                    fragment_entry,
+                    shader::INTERFACE_STAGE_FRAGMENT,
+                    "fragment",
+                )
+            })
+            .transpose()?;
         let (consumed, consumed_instance) =
             validate_layouts_cover_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
-        let declaration = validate_bindings_against_interface(descriptor.bindings, &interface)?;
+        let entries: Vec<_> = core::iter::once(vertex_entry)
+            .chain(fragment_entry)
+            .collect();
+        let declaration = validate_entry_point_bindings(descriptor.bindings, &interface, &entries)?;
         if declaration.scene_depth.is_some()
             || declaration.depth_texture.is_some()
             || declaration.depth_texture_array.is_some()
@@ -3576,6 +3586,23 @@ pub enum MaterialBinding {
     },
 }
 
+impl MaterialBinding {
+    /// The WGSL `@binding` number this declaration names.
+    const fn slot(&self) -> u32 {
+        match *self {
+            Self::Uniform { binding, .. }
+            | Self::Storage { binding, .. }
+            | Self::Texture { binding }
+            | Self::CubeTexture { binding }
+            | Self::Sampler { binding, .. }
+            | Self::SceneDepth { binding }
+            | Self::DepthTexture { binding }
+            | Self::DepthTextureArray { binding }
+            | Self::ComparisonSampler { binding } => binding,
+        }
+    }
+}
+
 /// Everything needed to create one application-authored material pipeline.
 #[derive(Clone, Copy)]
 pub struct MaterialPipelineDescriptor<'inputs> {
@@ -4650,6 +4677,44 @@ impl SlotNamespace {
     }
 }
 
+/// Validates a pipeline's declared slots against the bindings its entry points use rather than
+/// the whole module, so one module can hold entry points with different resources and each
+/// pipeline declares only what its own pair binds. A declared slot the module records but these
+/// entry points never use is refused by name.
+fn validate_entry_point_bindings(
+    bindings: &[MaterialBinding],
+    interface: &shader::ShaderInterface,
+    entries: &[&shader::InterfaceEntryPoint],
+) -> Result<BindingDeclaration, GraphicsError> {
+    let used = shader::ShaderInterface {
+        entry_points: Vec::new(),
+        bindings: interface.bindings_used_by(entries),
+    };
+    for binding in bindings {
+        let slot = binding.slot();
+        if !used
+            .bindings
+            .iter()
+            .any(|recorded| recorded.binding == slot)
+            && interface
+                .bindings
+                .iter()
+                .any(|recorded| recorded.binding == slot)
+        {
+            let names: Vec<_> = entries
+                .iter()
+                .map(|entry| format!("`{}`", entry.name))
+                .collect();
+            return Err(GraphicsError::invalid_request(format!(
+                "material bindings declare slot {slot}, which the shader module records but \
+                 entry points {} do not use",
+                names.join(" and ")
+            )));
+        }
+    }
+    validate_bindings_against_interface(bindings, &used)
+}
+
 /// Requires the declared slots and the artifact's recorded bindings to match exactly, naming the
 /// first offending slot, and rejects interface constructs outside the material vocabulary.
 #[allow(clippy::too_many_lines)]
@@ -4867,8 +4932,8 @@ fn validate_bindings_against_interface(
             .any(|&(slot, _, _)| slot == recorded.binding)
         {
             return Err(GraphicsError::invalid_request(format!(
-                "the shader artifact records binding slot {} that the material bindings do not \
-                 declare",
+                "the shader artifact records binding slot {} for the pipeline's entry points, \
+                 but the material bindings do not declare it",
                 recorded.binding
             )));
         }
@@ -4929,9 +4994,10 @@ fn validate_fixed_pipeline_texture(texture: &Texture) -> Result<(), GraphicsErro
 }
 
 /// Validates the fixed postprocess entry points and binding recipe against the artifact's
-/// module-wide reflection. The current artifact format does not record per-entry-point binding
-/// reachability, so an absent postprocess uniform cannot reject a module-level binding 0 that is
-/// consumed only by a scene entry point in the same module.
+/// module-wide reflection. Artifacts now record per-entry-point binding use, but the fixed
+/// postprocess, composite, bloom and volume recipes still check the whole module (and `MULSHDR2`
+/// artifacts carry no per-entry record), so an absent postprocess uniform cannot reject a
+/// module-level binding 0 that is consumed only by a scene entry point in the same module.
 fn validate_postprocess_interface(
     shader: ShaderArtifact<'_>,
     uniform_size: Option<u32>,
@@ -5573,5 +5639,137 @@ mod packed_vertex_format_tests {
         ));
         let float3 = VertexFormat::Float32x3.interface_code();
         assert!(find_declared_attribute(&layout, None, input(5, float3), "skin").is_err());
+    }
+}
+
+#[cfg(test)]
+mod entry_point_binding_tests {
+    use super::{MaterialBinding, SamplerAddress, SamplerFilter, validate_entry_point_bindings};
+    use std::{string::ToString, vec, vec::Vec};
+
+    use crate::shader::{
+        INTERFACE_BINDING_SAMPLED_TEXTURE, INTERFACE_BINDING_SAMPLER, INTERFACE_BINDING_STORAGE,
+        INTERFACE_BINDING_UNIFORM, INTERFACE_STAGE_FRAGMENT, INTERFACE_STAGE_VERTEX,
+        InterfaceBinding, InterfaceEntryPoint, ShaderInterface,
+    };
+
+    /// One module: a uniform, a texture and sampler, and a bone palette only the skinned vertex
+    /// entry point reaches.
+    fn module() -> ShaderInterface {
+        let entry = |stage, name: &str, used: &[usize]| InterfaceEntryPoint {
+            stage,
+            name: name.to_string(),
+            inputs: vec![],
+            used: used.to_vec(),
+        };
+        let binding = |binding, kind, size| InterfaceBinding {
+            group: 0,
+            binding,
+            kind,
+            size,
+        };
+        ShaderInterface {
+            entry_points: vec![
+                entry(INTERFACE_STAGE_VERTEX, "prop_vertex", &[0]),
+                entry(INTERFACE_STAGE_VERTEX, "skinned_vertex", &[0, 3]),
+                entry(INTERFACE_STAGE_FRAGMENT, "prop_fragment", &[0, 1, 2]),
+            ],
+            bindings: vec![
+                binding(0, INTERFACE_BINDING_UNIFORM, 80),
+                binding(1, INTERFACE_BINDING_SAMPLED_TEXTURE, 0),
+                binding(2, INTERFACE_BINDING_SAMPLER, 0),
+                binding(3, INTERFACE_BINDING_STORAGE, 3072),
+            ],
+        }
+    }
+
+    fn declare(storage: bool) -> Vec<MaterialBinding> {
+        let mut bindings = vec![
+            MaterialBinding::Uniform {
+                binding: 0,
+                size: 80,
+            },
+            MaterialBinding::Texture { binding: 1 },
+            MaterialBinding::Sampler {
+                binding: 2,
+                filter: SamplerFilter::Linear,
+                address: SamplerAddress::Repeat,
+            },
+        ];
+        if storage {
+            bindings.push(MaterialBinding::Storage {
+                binding: 3,
+                size: 3072,
+            });
+        }
+        bindings
+    }
+
+    #[test]
+    fn each_pipeline_declares_the_union_of_its_own_entry_points() {
+        let interface = module();
+        let [prop, skinned, fragment] = [0, 1, 2].map(|index| &interface.entry_points[index]);
+        let plain = validate_entry_point_bindings(&declare(false), &interface, &[prop, fragment])
+            .expect("the plain pipeline declares no storage slot");
+        assert!(plain.storage.is_none());
+        assert_eq!(plain.texture_bindings, [1]);
+        let skinning =
+            validate_entry_point_bindings(&declare(true), &interface, &[skinned, fragment])
+                .expect("the skinned pipeline declares the bone palette");
+        assert_eq!(skinning.storage, Some((3, 3072)));
+        // A vertex-only pipeline of the plain entry point binds the uniform alone.
+        let uniform = [MaterialBinding::Uniform {
+            binding: 0,
+            size: 80,
+        }];
+        assert!(validate_entry_point_bindings(&uniform, &interface, &[prop]).is_ok());
+    }
+
+    #[test]
+    fn a_slot_outside_the_entry_points_or_a_missing_one_is_refused() {
+        let interface = module();
+        let [prop, skinned, fragment] = [0, 1, 2].map(|index| &interface.entry_points[index]);
+        let error = validate_entry_point_bindings(&declare(true), &interface, &[prop, fragment])
+            .err()
+            .expect("the plain pair never reads the bone palette");
+        assert!(error.message().contains(
+            "slot 3, which the shader module records but entry points `prop_vertex` and \
+             `prop_fragment` do not use"
+        ));
+        let error =
+            validate_entry_point_bindings(&declare(false), &interface, &[skinned, fragment])
+                .err()
+                .expect("the skinned pair reads the bone palette");
+        assert!(
+            error
+                .message()
+                .contains("records binding slot 3 for the pipeline's entry points")
+        );
+        // A slot the module never records keeps its own diagnostic.
+        let mut unknown = declare(false);
+        unknown.push(MaterialBinding::Texture { binding: 7 });
+        let error = validate_entry_point_bindings(&unknown, &interface, &[prop, fragment])
+            .err()
+            .expect("slot 7 is not in the module");
+        assert!(
+            error
+                .message()
+                .contains("slot 7 that the shader artifact does not record")
+        );
+    }
+
+    #[test]
+    fn a_module_wide_artifact_attributes_every_binding_to_every_entry_point() {
+        let mut interface = module();
+        for entry in &mut interface.entry_points {
+            entry.used = (0..interface.bindings.len()).collect();
+        }
+        let [prop, _, fragment] = [0, 1, 2].map(|index| &interface.entry_points[index]);
+        assert!(
+            validate_entry_point_bindings(&declare(false), &interface, &[prop, fragment]).is_err()
+        );
+        assert!(
+            validate_entry_point_bindings(&declare(true), &interface, &[prop, fragment]).is_ok()
+        );
     }
 }

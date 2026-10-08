@@ -22,6 +22,7 @@ members = [
     "probes/float-texture",
     "probes/cube-texture",
     "probes/vertex-formats",
+    "probes/entry-bindings",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

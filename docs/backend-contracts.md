@@ -280,6 +280,17 @@ The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source i
 byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
 stands and only its recorded compiler string moves.
 
+## Per-entry-point resource bindings (unreleased)
+
+**Vulkan native evidence, Metal MSL checked but unexercised:** `MULSHDR3` artifacts record the
+bindings each entry point uses, and material and shadow pipelines validate their declaration
+against the union of their own entry points' bindings. Neither backend changed: Vulkan set layouts
+hold the declared slots and unused module globals are outside the entry points' SPIR-V
+interfaces; Naga's MSL takes arguments only for the globals an entry point uses, at their WGSL
+binding numbers. On Linux / NVIDIA RTX 3060 Ti the `mulciber-entry-bindings` probe drew a plain
+and a skinned pipeline from one module under Vulkan validation. `MULSHDR2` artifacts keep
+module-wide validation. See the [contract](per-entry-point-bindings.md).
+
 ## Packed vertex formats (unreleased)
 
 **Vulkan native evidence, Metal unexercised:** `Uint8x4`, `Unorm8x4`, `Uint16x2`, `Uint16x4`,

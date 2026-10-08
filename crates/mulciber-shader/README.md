@@ -14,13 +14,17 @@ on macOS and requires Xcode's `metal` and `metallib` tools. The compiler deliber
 only Naga's validation-backed cross-backend feature intersection; unsupported advanced shaders
 fail instead of requesting a second user-authored source.
 
-Each artifact (`MULSHDR2` container) records the module's interface — per entry point its
-stage, name, and vertex-input locations with formats, plus every binding's kind: uniform,
+Each artifact (`MULSHDR3` container) records the module's interface — per entry point its
+stage, name, vertex-input locations with formats, and the bindings it uses (directly or through
+called functions), plus every binding's kind: uniform,
 texture, cube texture, sampler, depth texture, depth-texture array, comparison sampler, and
 read-only storage with its creation-fixed byte size. The paired `mulciber` crate validates pipeline
 declarations against that record. Writable and runtime-sized storage are rejected at compile
 time instead of being recorded without a proven mapping. The tool and the `mulciber` crate
-ship together; no artifact stability is promised across versions.
+ship together; no artifact stability is promised across versions. Pipelines validate against
+their own entry points' bindings, so one module can hold, say, a plain and a skinned vertex stage
+where only the skinned one reads a storage palette. `mulciber` still reads `MULSHDR2` artifacts,
+attributing every binding to every entry point; older `mulciber` releases reject `MULSHDR3`.
 
 ## Host-evaluable fields
 

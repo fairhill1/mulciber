@@ -190,6 +190,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-entry-bindings"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-float-texture"
 version = "0.0.0"
 dependencies = [

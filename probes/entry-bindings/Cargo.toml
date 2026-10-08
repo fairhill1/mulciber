@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-entry-bindings"
+description = "Native validation of per-entry-point resource bindings in one shader module"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

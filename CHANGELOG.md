@@ -2,6 +2,20 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: per-entry-point resource bindings
+
+`mulciber-shader` now records the bindings each entry point uses, directly or through called
+functions, in a `MULSHDR3` container, and material and shadow pipelines validate their declaration
+against the union of their own vertex and fragment entry points' bindings instead of the whole
+module. One WGSL module can hold a plain and a skinned vertex stage sharing a fragment stage, with
+the plain pipeline declaring no storage slot and the skinned one declaring its bone palette. A
+declared slot the module records but the pair never uses is refused by name. `MULSHDR2` artifacts
+stay readable with every binding attributed to every entry point, so they validate exactly as
+before; older `mulciber` releases reject `MULSHDR3` by header. Neither backend changed: Naga's MSL
+already takes arguments only for an entry point's own globals, which a unit test now checks. The new
+`mulciber-entry-bindings` probe drew both pipelines from one module on Linux/NVIDIA under Vulkan
+validation; Metal has not run. See [per-entry-point bindings](docs/per-entry-point-bindings.md).
+
 ## Unreleased: Vulkan per-frame regions sized for every frame in flight
 
 The Vulkan session created its record storage, transient geometry, instance transform and record

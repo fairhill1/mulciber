@@ -1024,6 +1024,14 @@ fragment samples, half quantization, small coefficients, spatial filtering and e
 Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
 visual or broader hardware evidence. See the [contract](float-texture-uploads.md).
 
+## Per-entry-point resource bindings (unreleased)
+
+Run `cargo run -p mulciber-entry-bindings` with the Vulkan validation layer; the plain and
+skinned draws from one module must read back within two half ULPs and both declaration refusals
+must fire without callbacks. On 2026-10-08, KDE Wayland / NVIDIA GeForce RTX 3060 Ti (driver
+615.71.09) with Khronos validation 1.4.363 passed. See the
+[contract](per-entry-point-bindings.md).
+
 ## Packed vertex formats (unreleased)
 
 Run `cargo run -p mulciber-vertex-formats` with the Vulkan validation layer; all six formats must

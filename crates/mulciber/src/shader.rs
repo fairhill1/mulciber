@@ -3,7 +3,11 @@ use std::vec::Vec;
 
 use crate::GraphicsError;
 
-const MAGIC: &[u8; 8] = b"MULSHDR2";
+/// The current container: each entry point records the module bindings it uses.
+const MAGIC: &[u8; 8] = b"MULSHDR3";
+/// The previous container, still accepted: its interface records bindings for the whole module,
+/// so every entry point is read as using all of them.
+const MODULE_WIDE_MAGIC: &[u8; 8] = b"MULSHDR2";
 #[cfg(any(test, target_os = "linux", target_os = "windows"))]
 const VULKAN_KIND: u32 = 1;
 #[cfg(any(test, target_os = "macos"))]
@@ -20,11 +24,13 @@ const BINDING_KIND_LIMIT: u8 = 8;
 /// The native bytes and their container format are deliberately opaque. Keeping this value borrowed
 /// lets applications embed build output with `include_bytes!` without a startup allocation. The
 /// container also carries the module's compiler-recorded interface — entry points, vertex inputs,
-/// and resource bindings — which pipeline creation validates application declarations against.
+/// resource bindings, and which bindings each entry point uses — which pipeline creation validates
+/// application declarations against.
 #[derive(Clone, Copy)]
 pub struct ShaderArtifact<'bytes> {
     payload: &'bytes [u8],
     interface: &'bytes [u8],
+    per_entry_bindings: bool,
 }
 
 impl<'bytes> ShaderArtifact<'bytes> {
@@ -33,14 +39,18 @@ impl<'bytes> ShaderArtifact<'bytes> {
     /// # Errors
     ///
     /// Returns an error for a corrupt container, an artifact produced for the other native backend
-    /// or by an older `mulciber-shader` container format, an empty payload, malformed SPIR-V byte
-    /// alignment and magic, or a malformed interface section.
+    /// or by a `mulciber-shader` container format older than `MULSHDR2`, an empty payload,
+    /// malformed SPIR-V byte alignment and magic, or a malformed interface section.
     pub fn new(bytes: &'bytes [u8]) -> Result<Self, GraphicsError> {
-        if bytes.len() < HEADER_LENGTH || &bytes[..8] != MAGIC {
-            return Err(GraphicsError::invalid_request(
-                "invalid Mulciber shader artifact header",
-            ));
-        }
+        let per_entry_bindings = match bytes.get(..8) {
+            Some(magic) if bytes.len() >= HEADER_LENGTH && magic == MAGIC => true,
+            Some(magic) if bytes.len() >= HEADER_LENGTH && magic == MODULE_WIDE_MAGIC => false,
+            _ => {
+                return Err(GraphicsError::invalid_request(
+                    "invalid Mulciber shader artifact header",
+                ));
+            }
+        };
         let kind = header_field(bytes, 8)?;
         let payload_length = usize::try_from(header_field(bytes, 12)?).map_err(|_| {
             GraphicsError::invalid_request("shader artifact length exceeds this target")
@@ -86,8 +96,12 @@ impl<'bytes> ShaderArtifact<'bytes> {
             ));
         }
 
-        validate_interface(interface)?;
-        Ok(Self { payload, interface })
+        validate_interface(interface, per_entry_bindings)?;
+        Ok(Self {
+            payload,
+            interface,
+            per_entry_bindings,
+        })
     }
 
     /// Returns the native payload size without exposing its backend-specific representation.
@@ -121,10 +135,19 @@ impl<'bytes> ShaderArtifact<'bytes> {
                 let format = cursor.take_u8().expect(validated);
                 inputs.push(InterfaceVertexInput { location, format });
             }
+            let used = if self.per_entry_bindings {
+                let count = cursor.take_u32().expect(validated);
+                (0..count)
+                    .map(|_| usize::try_from(cursor.take_u32().expect(validated)).expect(validated))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             entry_points.push(InterfaceEntryPoint {
                 stage,
                 name,
                 inputs,
+                used,
             });
         }
         let mut bindings = Vec::new();
@@ -139,6 +162,11 @@ impl<'bytes> ShaderArtifact<'bytes> {
                 kind,
                 size,
             });
+        }
+        if !self.per_entry_bindings {
+            for entry in &mut entry_points {
+                entry.used = (0..bindings.len()).collect();
+            }
         }
         ShaderInterface {
             entry_points,
@@ -163,7 +191,22 @@ pub(crate) const INTERFACE_BINDING_CUBE_TEXTURE: u8 = 8;
 /// The compiler-recorded interface of one shader module.
 pub(crate) struct ShaderInterface {
     pub(crate) entry_points: Vec<InterfaceEntryPoint>,
+    /// Every bound global in the module, sorted by group and binding.
     pub(crate) bindings: Vec<InterfaceBinding>,
+}
+
+impl ShaderInterface {
+    /// The bindings any of `entries` uses, in module order: what a pipeline built from those
+    /// entry points binds. A `MULSHDR2` artifact attributes every binding to every entry point.
+    pub(crate) fn bindings_used_by(
+        &self,
+        entries: &[&InterfaceEntryPoint],
+    ) -> Vec<InterfaceBinding> {
+        (0..self.bindings.len())
+            .filter(|index| entries.iter().any(|entry| entry.used.contains(index)))
+            .map(|index| self.bindings[index])
+            .collect()
+    }
 }
 
 pub(crate) struct InterfaceEntryPoint {
@@ -171,6 +214,9 @@ pub(crate) struct InterfaceEntryPoint {
     pub(crate) name: String,
     /// Vertex-stage input locations with format codes, sorted by location; empty for other stages.
     pub(crate) inputs: Vec<InterfaceVertexInput>,
+    /// Ascending indices into the module's `bindings` of the bindings this entry point uses,
+    /// directly or through called functions.
+    pub(crate) used: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -195,10 +241,14 @@ fn header_field(bytes: &[u8], offset: usize) -> Result<u32, GraphicsError> {
         .ok_or_else(|| GraphicsError::invalid_request("invalid Mulciber shader artifact header"))
 }
 
-/// Walks the interface grammar without allocating: entry points with stage, UTF-8 name, and
-/// location/format vertex inputs, then resource bindings with kind and uniform byte size.
-fn validate_interface(bytes: &[u8]) -> Result<(), GraphicsError> {
+/// Walks the interface grammar without allocating: entry points with stage, UTF-8 name,
+/// location/format vertex inputs and, in `MULSHDR3`, strictly ascending indices of the bindings
+/// they use, then resource bindings with kind and uniform byte size. Every used index must name a
+/// recorded binding.
+fn validate_interface(bytes: &[u8], per_entry_bindings: bool) -> Result<(), GraphicsError> {
     let mut cursor = InterfaceCursor { bytes };
+    // One past the largest binding index any entry point uses.
+    let mut used_bound = 0_u64;
     let entry_points = cursor.take_u32()?;
     for _ in 0..entry_points {
         if cursor.take_u8()? > STAGE_LIMIT {
@@ -216,8 +266,22 @@ fn validate_interface(bytes: &[u8]) -> Result<(), GraphicsError> {
                 return Err(interface_error());
             }
         }
+        if per_entry_bindings {
+            let mut next = 0_u64;
+            for _ in 0..cursor.take_u32()? {
+                let index = u64::from(cursor.take_u32()?);
+                if index < next {
+                    return Err(interface_error());
+                }
+                next = index + 1;
+            }
+            used_bound = used_bound.max(next);
+        }
     }
     let bindings = cursor.take_u32()?;
+    if used_bound > u64::from(bindings) {
+        return Err(interface_error());
+    }
     for _ in 0..bindings {
         cursor.take_u32()?;
         cursor.take_u32()?;
@@ -270,7 +334,7 @@ mod tests {
     use crate::GraphicsErrorKind;
 
     #[allow(unused_imports)]
-    use super::{HEADER_LENGTH, MAGIC, METAL_KIND, ShaderArtifact, VULKAN_KIND};
+    use super::{HEADER_LENGTH, MAGIC, METAL_KIND, MODULE_WIDE_MAGIC, ShaderArtifact, VULKAN_KIND};
 
     fn artifact(kind: u32, payload: &[u8], interface: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_LENGTH + payload.len() + interface.len());
@@ -367,6 +431,70 @@ mod tests {
         assert_eq!(bindings[0].kind, super::INTERFACE_BINDING_CUBE_TEXTURE);
         let unknown = artifact(VULKAN_KIND, &payload, &interface(9));
         assert!(ShaderArtifact::new(&unknown).is_err());
+    }
+
+    /// One vertex entry point named `v` using `used`, over `bindings` uniform slots.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn per_entry_interface(used: &[u32], bindings: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(super::INTERFACE_STAGE_VERTEX);
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.push(b'v');
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(used.len()).unwrap().to_le_bytes());
+        for index in used {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+        bytes.extend_from_slice(&bindings.to_le_bytes());
+        for binding in 0..bindings {
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&binding.to_le_bytes());
+            bytes.push(super::INTERFACE_BINDING_UNIFORM);
+            bytes.extend_from_slice(&16_u32.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn reads_per_entry_binding_use_and_rejects_bad_indices() {
+        let payload = 0x0723_0203_u32.to_le_bytes();
+        let bytes = artifact(VULKAN_KIND, &payload, &per_entry_interface(&[0, 2], 3));
+        let interface = ShaderArtifact::new(&bytes)
+            .expect("per-entry artifact")
+            .parse_interface();
+        assert_eq!(interface.entry_points[0].used, [0, 2]);
+        let used = interface.bindings_used_by(&[&interface.entry_points[0]]);
+        assert_eq!(
+            used.iter()
+                .map(|binding| binding.binding)
+                .collect::<Vec<_>>(),
+            [0, 2]
+        );
+        // An index past the table, a repeat, and a descending pair are all malformed.
+        for used in [&[3_u32][..], &[1, 1], &[2, 0]] {
+            let bytes = artifact(VULKAN_KIND, &payload, &per_entry_interface(used, 3));
+            assert!(ShaderArtifact::new(&bytes).is_err(), "{used:?}");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn module_wide_artifacts_attribute_every_binding_to_every_entry_point() {
+        let payload = 0x0723_0203_u32.to_le_bytes();
+        // The same entry point without its usage list is a MULSHDR2 interface.
+        let mut interface = per_entry_interface(&[], 2);
+        interface.drain(10..14);
+        let mut bytes = artifact(VULKAN_KIND, &payload, &interface);
+        bytes[..8].copy_from_slice(MODULE_WIDE_MAGIC);
+        let parsed = ShaderArtifact::new(&bytes)
+            .expect("MULSHDR2 artifacts stay readable")
+            .parse_interface();
+        assert_eq!(parsed.entry_points[0].used, [0, 1]);
+        // Read as MULSHDR3, the missing usage list makes the interface malformed.
+        bytes[..8].copy_from_slice(MAGIC);
+        assert!(ShaderArtifact::new(&bytes).is_err());
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]

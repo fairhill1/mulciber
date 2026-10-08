@@ -190,6 +190,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-ecs"
+version = "0.1.0"
+
+[[package]]
 name = "mulciber-entry-bindings"
 version = "0.0.0"
 dependencies = [

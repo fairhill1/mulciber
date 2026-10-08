@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Entity component store (ecs 0.1.0)
+
+New crate `mulciber-ecs`, independent of the graphics crates: generational entities and one sparse
+set per component type, with `query`, `query_mut`, `query2` and `query2_mut`. It is Isle of Ran's
+store, made a library: no systems, schedules or built-in components. Slots whose generation is
+spent retire instead of wrapping back to a generation old handles could carry, and component
+storages are found by passing the `TypeId`'s hash through rather than running SipHash on it.
+
 ## Fewer Vulkan buffer binds (graphics 0.13.35)
 
 - Vulkan material and shadow passes skip vertex binds that repeat the previous draw's, and bind

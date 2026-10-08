@@ -2,6 +2,26 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: WGSL module imports
+
+`mulciber-shader` composes shaders from importable WGSL modules with naga_oil 0.23.0, Bevy's
+composer, on the same naga 30. `ShaderModules` registers modules that name themselves with
+`#define_import_path`, from strings (`add_source`), files (`add_file`) or directory trees
+(`add_dir`, which skips top-level shaders), and prints `cargo::rerun-if-changed` for what it read
+(`rerun_if_changed`). `modules.shader(path)` gives a `WgslShader` that takes `#ifdef` shader defs
+(`define`) and writes the same validated `MULSHDR3` artifact as `compile_wgsl` (`compile_wgsl`), a
+host field (`compile_host_field`, which also accepts qualified module functions such as
+`game::lighting::falloff`), or a build-cache key (`cache_key`). `ShaderModules::compile_host_field`
+generates host evaluators straight from module functions, for CPU code that shares shader maths.
+Errors point at the file and line in the module where they occur, a missing module lists the
+registered ones, and import cycles are refused by name.
+
+Modules under the reserved `mulciber::` namespace ship inside the crate and are in every set; the
+first is `mulciber::color` (sRGB transfer functions and BT.709 luminance). `compile_wgsl` and
+`compile_host_field` are unchanged, and `ShaderBuildError`'s `Debug` now prints its message as
+written, so diagnostics stay readable through `expect`. Vulkan artifacts composed from two modules
+and the engine module passed `spirv-val` on Linux; Metal output is checked as generated MSL only.
+
 ## Audio mixer, HRTF and room reverb (audio 0.1.0)
 
 New `mulciber-audio` crate, the engine from Isle of Rán's audio module made game-agnostic: a

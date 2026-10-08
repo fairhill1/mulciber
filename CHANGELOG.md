@@ -11,15 +11,15 @@ Release notes moved from the README. This is a partial history of changes.
   on every frame's write.
 - Vulkan finds each record's cached descriptor set by hashing instead of scanning every set its
   pipeline has cached. Material and shadow pipelines key on the record's sampled tuple held inline
-  (at most `MATERIAL_TEXTURE_COUNT_LIMIT` identities, the cap every texture, shadow map and scene-
-  depth slot counts against), and a hit is probed with the record's own slice, so lookups no longer
-  compare against every cached tuple and a new tuple no longer allocates its key. Fixed textured and
-  postprocess pipelines key on resource and frame slot the same way. The maps use a small FxHash-
-  style hasher and are cleared at exactly the pool resets that cleared the lists. Metal binds
-  textures per draw and has no such cache. In the ignored test `sampled_lookup_timing` (release,
-  3000 lookups of four-identity tuples), a frame's lookups went from 0.13 to 0.024 ms over 100
-  tuples and from 0.50 to 0.028 ms over 500; at 16 tuples the scan's 0.056 ms becomes 0.025 ms. The
-  Ship's viewer renders cotopaxi pixel-identically with a held clock.
+  (at most `MATERIAL_TEXTURE_COUNT_LIMIT` identities, the cap every texture, shadow map and
+  scene-depth slot counts against), and a hit is probed with the record's own slice, so lookups no
+  longer compare against every cached tuple and a new tuple no longer allocates its key. Fixed
+  textured and postprocess pipelines key on resource and frame slot the same way. The maps use a
+  small FxHash-style hasher and are cleared at exactly the pool resets that cleared the lists. Metal
+  binds textures per draw and has no such cache. In the ignored test `sampled_lookup_timing`
+  (release, 3000 lookups of four-identity tuples), a frame's lookups went from 0.13 to 0.024 ms over
+  100 tuples and from 0.50 to 0.028 ms over 500; at 16 tuples the scan's 0.056 ms becomes 0.025 ms.
+  The Ship's viewer renders cotopaxi pixel-identically with a held clock.
 
 ## Faster float texture conversion (graphics 0.13.33)
 

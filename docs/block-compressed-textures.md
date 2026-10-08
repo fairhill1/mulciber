@@ -30,7 +30,7 @@ let normal = device.create_block_compressed_texture_with_mips(
 
 Every encoding stores a 4×4 texel block, in eight bytes for BC1 and sixteen for the rest. BC1,
 BC2 and BC3 are the DXT1, DXT3 and DXT5 encodings that older game data ships in, so it can be
-uploaded as it is stored (BC1, BC2 and BC3 added after 0.13.31):
+uploaded as it is stored (BC1, BC2 and BC3 added in 0.13.32):
 
 | `BlockCompression` | Channels | Sampled as | Vulkan | Metal |
 |---|---|---|---|---|
@@ -81,7 +81,7 @@ rather than texels. Native execution has not been run on either backend for this
 consuming game is the first user, and its startup is where a BC7 upload first meets a driver. No
 viability gate is advanced.
 
-BC1, BC2 and BC3 (added after 0.13.31): workspace checks and unit tests cover BC1's eight-byte
+BC1, BC2 and BC3 (added in 0.13.32): workspace checks and unit tests cover BC1's eight-byte
 block sizing at full, partial and tail extents and its mip validation. On 2026-10-08, Linux / KDE
 Wayland / NVIDIA RTX 3060 Ti, Vulkan with `vulkan-validation` enabled and no validation messages,
 a The Ship map viewer uploaded 151 textures from the game's own DXT1 and DXT5 data as `Bc1Srgb` and

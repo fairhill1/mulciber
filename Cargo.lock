@@ -125,7 +125,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mulciber"
-version = "0.13.31"
+version = "0.13.32"
 dependencies = [
  "mulciber-platform",
 ]
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-platform"
-version = "0.5.5"
+version = "0.5.6"
 
 [[package]]
 name = "mulciber-postprocess-cube"
@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-shader"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "naga",
 ]

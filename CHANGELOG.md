@@ -2,7 +2,7 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Unreleased: mipped float texture replacement
+## Mipped float texture replacement (graphics 0.13.32)
 
 `Device::update_rgba16_float_texture_with_mips(&texture, width, height, &levels)` replaces every
 level of a texture made by `create_rgba16_float_texture_with_mips`, with the same queuing as
@@ -16,7 +16,7 @@ probe now replaces its mipped texture's full chain every frame; it passed all 40
 Linux/NVIDIA under Vulkan validation and synchronization validation. Metal passes Clippy but has
 never run. See [mip chain replacement](docs/float-texture-uploads.md#mip-chain-replacement).
 
-## Unreleased: Rust 1.99 and current dependencies
+## Rust 1.99 and current dependencies (graphics 0.13.32, platform 0.5.6, shader 0.5.3)
 
 The pinned toolchain moves from 1.98.1 to 1.99.0 (the MSRV stays 1.97). Examples, probes and
 comparisons move to glam 0.34.1, the Vulkan triangle probe to naga 30.0.1, the wgpu comparisons to
@@ -24,7 +24,7 @@ wgpu 30.0.1 and pollster 1.0.1, the Metal comparison to bytemuck 1.25.2, and the
 to bindgen 0.73.2. Three tests use `assert_eq!` against an empty array for clippy 1.99's
 `assert_is_empty`.
 
-## Unreleased: modifier keys as physical keys
+## Modifier keys as physical keys (platform 0.5.6)
 
 `KeyCode` gains `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`,
 `SuperLeft`/`SuperRight` and `CapsLock`, and every backend now reports those keys' own press and
@@ -32,14 +32,14 @@ release as `InputEvent::Keyboard` in addition to `ModifiersChanged`, so games ca
 duck is Ctrl). They do not auto-repeat. AppKit decodes them from `flagsChanged` and its
 device-dependent bits; Win32 maps their scan codes; Wayland and X11 share the evdev table.
 
-## Unreleased: unaccelerated Wayland pointer deltas
+## Unaccelerated Wayland pointer deltas (platform 0.5.6)
 
 While the pointer is captured, Wayland's `PointerDelta` now carries the unaccelerated motion from
 `zwp_relative_pointer_v1` instead of the accelerated pair, matching the raw input Win32 already
 reports, so turning speed no longer depends on how fast the mouse moves. X11 (warp deltas) and
 AppKit (`NSEvent` deltas) still report accelerated motion.
 
-## Unreleased: frame capture
+## Frame capture (graphics 0.13.32)
 
 `Surface::request_frame_capture()` asks for the next acquired frame to be read back when it is
 presented, and `Surface::take_frame_capture()` returns it as a `FrameCapture`: the frame's
@@ -57,7 +57,7 @@ overlaid captures pixel by pixel on Linux/NVIDIA under Vulkan validation and syn
 validation, on Wayland (`R8G8B8A8_SRGB`) and XWayland (`B8G8R8A8_SRGB`); Metal is implemented but
 has never run. See [frame capture](docs/frame-capture.md).
 
-## Unreleased: per-entry-point resource bindings
+## Per-entry-point resource bindings (graphics 0.13.32, shader 0.5.3)
 
 `mulciber-shader` now records the bindings each entry point uses, directly or through called
 functions, in a `MULSHDR3` container, and material and shadow pipelines validate their declaration
@@ -71,7 +71,7 @@ already takes arguments only for an entry point's own globals, which a unit test
 `mulciber-entry-bindings` probe drew both pipelines from one module on Linux/NVIDIA under Vulkan
 validation; Metal has not run. See [per-entry-point bindings](docs/per-entry-point-bindings.md).
 
-## Unreleased: Vulkan per-frame regions sized for every frame in flight
+## Vulkan per-frame regions sized for every frame in flight (graphics 0.13.32)
 
 The Vulkan session created its record storage, transient geometry, instance transform and record
 instance buffers with room for one frame's initial region, while every frame writes and binds its
@@ -83,7 +83,7 @@ mapped allocation. The initial buffers now hold a region per frame in flight, as
 always did. Found by the `mulciber-entry-bindings` probe's 64-byte bone palette; Metal keeps
 separate per-frame buffers and was not affected.
 
-## Unreleased: packed vertex formats
+## Packed vertex formats (graphics 0.13.32)
 
 `VertexFormat` gains `Uint8x4`, `Unorm8x4`, `Uint16x2`, `Uint16x4`, `Unorm16x2` and `Unorm16x4`,
 fetched narrow and read by the shader as `vec4<u32>`, `vec4<f32>`, `vec2<u32>` or `vec2<f32>`, so
@@ -94,7 +94,7 @@ and attribute offsets, which Metal always needed. Vulkan queries vertex-buffer s
 back all six exactly on Linux/NVIDIA under Vulkan validation; Metal maps them but has not run. See
 [packed vertex formats](docs/vertex-formats.md).
 
-## Unreleased: cube textures
+## Cube textures (graphics 0.13.32)
 
 `Device` gains cube constructors beside every 2D sampled upload: RGBA8 sRGB and UNORM, any
 `BlockCompression`, and `RGBA16Float`, each with a single-level and a complete-mip-chain form taking
@@ -110,7 +110,7 @@ readback cases in RGBA8 UNORM, RGBA8 sRGB with mips, BC1 with mips and `RGBA16Fl
 Linux/NVIDIA under Vulkan validation; Metal is implemented but has never run. See
 [cube textures](docs/cube-textures.md).
 
-## Unreleased: BC1, BC2 and BC3 uploads
+## BC1, BC2 and BC3 uploads (graphics 0.13.32)
 
 `BlockCompression` gains `Bc1Srgb`/`Bc1Unorm`, `Bc2Srgb`/`Bc2Unorm` and `Bc3Srgb`/`Bc3Unorm`, the
 DXT1, DXT3 and DXT5 encodings older game data ships in, so it can be uploaded as stored instead of

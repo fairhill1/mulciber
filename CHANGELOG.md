@@ -2,6 +2,20 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Shader reflection and device-free pipeline checks (graphics and shader, unreleased)
+
+`mulciber-shader` now writes a `MULSHDR4` container whose interface adds, for every uniform and
+storage binding, its memory layout: the WGSL type name and, for a struct, each member's name, byte
+offset, size and type. `ShaderArtifact::reflect()` returns the recorded interface as a
+`ShaderReflection`: entry points (`ShaderStage`, name, `ShaderVertexInput` location and
+`VertexFormat`, used `(group, binding)` pairs) and `ShaderBinding`s (group, binding,
+`ShaderBindingKind`, byte size, optional `BufferLayout` of `BufferMember`s).
+`MaterialPipelineDescriptor::validate()` and `validate_hdr()` run the declaration checks of
+`create_material_pipeline` and `create_hdr_material_pipeline` without a device. Additive for
+`mulciber`: `MULSHDR3` and `MULSHDR2` artifacts stay readable and reflect without layouts. Older
+`mulciber` releases reject `MULSHDR4` by header, as with the previous container bumps. Checked by
+container round-trip tests in both crates.
+
 ## Per-axis sampler addressing (graphics, unreleased)
 
 `MaterialBinding::SamplerPerAxis { binding, filter, address: SamplerAddressPerAxis { u, v, w } }`

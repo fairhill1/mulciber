@@ -58,4 +58,7 @@ pub use graphics::{
     VertexFormat, VertexLayout, VolumetricShaders,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub use shader::ShaderArtifact;
+pub use shader::{
+    BufferLayout, BufferMember, ShaderArtifact, ShaderBinding, ShaderBindingKind, ShaderEntryPoint,
+    ShaderReflection, ShaderStage, ShaderVertexInput,
+};

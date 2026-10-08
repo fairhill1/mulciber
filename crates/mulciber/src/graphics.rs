@@ -1064,41 +1064,7 @@ impl Device<'_> {
         descriptor: MaterialPipelineDescriptor<'_>,
         hdr: bool,
     ) -> Result<MaterialPipeline, GraphicsError> {
-        let layout = validate_vertex_layout(descriptor.vertex_layout)?;
-        let instance_layout = descriptor
-            .instance_layout
-            .map(|instance| validate_instance_layout(&layout, instance))
-            .transpose()?;
-        let interface = descriptor.shader.parse_interface();
-        let vertex_entry = find_entry_point(
-            &interface,
-            descriptor.vertex_entry,
-            shader::INTERFACE_STAGE_VERTEX,
-            "vertex",
-        )?;
-        let fragment_entry = find_entry_point(
-            &interface,
-            descriptor.fragment_entry,
-            shader::INTERFACE_STAGE_FRAGMENT,
-            "fragment",
-        )?;
-        validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
-        let declaration = validate_entry_point_bindings(
-            descriptor.bindings,
-            &interface,
-            &[vertex_entry, fragment_entry],
-        )?;
-        if declaration.scene_depth.is_some()
-            && (!hdr
-                || matches!(
-                    descriptor.depth,
-                    DepthMode::TestWrite | DepthMode::TestWriteGreater
-                ))
-        {
-            return Err(GraphicsError::invalid_request(
-                "scene-depth materials require HDR and must not write depth",
-            ));
-        }
+        let (layout, instance_layout, declaration) = check_material_descriptor(descriptor, hdr)?;
         let config = MaterialPipelineConfig {
             hdr,
             vertex_entry: descriptor.vertex_entry,
@@ -3764,6 +3730,83 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub blend: BlendMode,
     /// How the pipeline interacts with the scene depth target.
     pub depth: DepthMode,
+}
+
+impl MaterialPipelineDescriptor<'_> {
+    /// Checks the declaration against the artifact's recorded interface exactly as
+    /// [`Device::create_material_pipeline`] does, without a device.
+    ///
+    /// A test can hold an application's vertex layouts, binding list and uniform and storage
+    /// sizes to the compiled shader this way. Passing does not promise native creation succeeds:
+    /// the device can still refuse the module or run out of memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_material_pipeline`] reports.
+    pub fn validate(&self) -> Result<(), GraphicsError> {
+        check_material_descriptor(*self, false).map(drop)
+    }
+
+    /// Checks the declaration as [`Device::create_hdr_material_pipeline`] does, without a
+    /// device; unlike [`Self::validate`] it accepts a [`MaterialBinding::SceneDepth`] slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_hdr_material_pipeline`] reports.
+    pub fn validate_hdr(&self) -> Result<(), GraphicsError> {
+        check_material_descriptor(*self, true).map(drop)
+    }
+}
+
+/// The device-independent half of material pipeline creation: the declaration checked against
+/// the artifact's recorded interface.
+fn check_material_descriptor(
+    descriptor: MaterialPipelineDescriptor<'_>,
+    hdr: bool,
+) -> Result<
+    (
+        OwnedVertexLayout,
+        Option<OwnedVertexLayout>,
+        BindingDeclaration,
+    ),
+    GraphicsError,
+> {
+    let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+    let instance_layout = descriptor
+        .instance_layout
+        .map(|instance| validate_instance_layout(&layout, instance))
+        .transpose()?;
+    let interface = descriptor.shader.parse_interface();
+    let vertex_entry = find_entry_point(
+        &interface,
+        descriptor.vertex_entry,
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    let fragment_entry = find_entry_point(
+        &interface,
+        descriptor.fragment_entry,
+        shader::INTERFACE_STAGE_FRAGMENT,
+        "fragment",
+    )?;
+    validate_layouts_against_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
+    let declaration = validate_entry_point_bindings(
+        descriptor.bindings,
+        &interface,
+        &[vertex_entry, fragment_entry],
+    )?;
+    if declaration.scene_depth.is_some()
+        && (!hdr
+            || matches!(
+                descriptor.depth,
+                DepthMode::TestWrite | DepthMode::TestWriteGreater
+            ))
+    {
+        return Err(GraphicsError::invalid_request(
+            "scene-depth materials require HDR and must not write depth",
+        ));
+    }
+    Ok((layout, instance_layout, declaration))
 }
 
 /// Application-authored material pipeline with declared blend and depth modes.

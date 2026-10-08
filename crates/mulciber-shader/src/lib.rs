@@ -6,8 +6,19 @@
 //! The same source can also answer host questions: [`compile_host_field`] generates a Rust
 //! evaluator for designated WGSL functions, so a simulation can ask what the shader draws without
 //! a second hand-written copy of the field.
+//!
+//! Shared WGSL lives in importable modules: a [`ShaderModules`] set registers them, and a
+//! [`WgslShader`] composes a top-level shader with the modules it `#import`s, optionally with
+//! shader defs, into the same artifact or host field. Mulciber's own modules are in every set:
+//! `mulciber::colorspace`, `mulciber::photometry` (light units, falloff, exposure), `mulciber::pbr`
+//! (the BRDF and split-sum environment specular) and `mulciber::tonemap`. [`bake_dfg_table`] bakes
+//! the DFG lookup table `mulciber::pbr` samples.
 
+mod dfg;
 mod host_field;
+#[cfg(test)]
+mod library_tests;
+mod modules;
 
 use std::fmt;
 use std::fs;
@@ -17,6 +28,9 @@ use std::process::Command;
 use naga::back::msl::{BindSamplerTarget, BindTarget, EntryPointResources};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, Type, TypeInner};
+
+pub use dfg::{DFG_SAMPLE_COUNT, DFG_TABLE_SIZE, DfgTable, bake_dfg_table, dfg_value};
+pub use modules::{ShaderDef, ShaderModules, WgslShader};
 
 const MAGIC: &[u8; 8] = b"MULSHDR4";
 const VULKAN_KIND: u32 = 1;
@@ -58,8 +72,15 @@ impl ShaderTarget {
 }
 
 /// A WGSL parse, validation, native-code generation, or host-tool failure.
-#[derive(Debug)]
 pub struct ShaderBuildError(String);
+
+/// Shows the message as written, so the multi-line source diagnostics stay readable through
+/// `expect` in a `build.rs` and the CLI's error exit.
+impl fmt::Debug for ShaderBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 impl fmt::Display for ShaderBuildError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -97,6 +118,17 @@ pub fn compile_wgsl(
                 error.emit_to_string(&source)
             ))
         })?;
+    compile_validated(&module, &info, artifact.as_ref(), target)
+}
+
+/// Writes the artifact for a module that has already parsed and validated, from one WGSL file or
+/// composed from imported modules.
+fn compile_validated(
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+    artifact: &Path,
+    target: ShaderTarget,
+) -> Result<(), ShaderBuildError> {
     if module
         .global_variables
         .iter()
@@ -107,10 +139,10 @@ pub fn compile_wgsl(
         ));
     }
 
-    let interface = shader_interface(&module, &info)?;
+    let interface = shader_interface(module, info)?;
     match target {
-        ShaderTarget::Vulkan => compile_vulkan(&module, &info, artifact.as_ref(), &interface),
-        ShaderTarget::Metal => compile_metal(&module, &info, artifact.as_ref(), &interface),
+        ShaderTarget::Vulkan => compile_vulkan(module, info, artifact, &interface),
+        ShaderTarget::Metal => compile_metal(module, info, artifact, &interface),
     }
 }
 
@@ -151,7 +183,10 @@ pub fn compile_host_field(
         |name| name.to_string_lossy().into_owned(),
     );
     let rust = host_field::generate(&module, &info, &label, functions)?;
-    let generated = generated.as_ref();
+    write_generated(generated.as_ref(), &rust)
+}
+
+fn write_generated(generated: &Path, rust: &str) -> Result<(), ShaderBuildError> {
     if let Some(parent) = generated.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| fail(format!("create host-field output: {error}")))?;

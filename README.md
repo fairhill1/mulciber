@@ -24,8 +24,10 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
   spatialization, and a room reverb sized by probing the game's world.
 - **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
-  Designated WGSL functions can also generate callable Rust evaluators for simulation code.
-  No shader compiler ships in the game process.
+  Shaders `#import` shared WGSL modules, with `#ifdef` shader defs, including Mulciber's own
+  `mulciber::` lighting library: photometric units, a Filament BRDF with a CPU-baked DFG table,
+  and tone mapping. Designated WGSL functions can also generate callable Rust evaluators for
+  simulation code. No shader compiler ships in the game process.
 
 The graphics baseline is Vulkan 1.3 on Windows and Linux and Metal 3 on Apple silicon.
 Vulkan 1.4 is requested when exposed by the loader; Metal 4 paths are SDK- and capability-gated.
@@ -69,6 +71,10 @@ start from the example nearest your workload. A few conventions to know:
   generated for the host with `mulciber_shader::compile_host_field` from a `build.rs`, then pulled
   in with `include!` inside a module of its own. The host answer is an ordinary synchronous Rust
   call, available in the tick that asks for it.
+- Shared WGSL goes in modules that name themselves with `#define_import_path` and are
+  `#import`ed, rather than being copied between shader files. A `build.rs` registers them with
+  `mulciber_shader::ShaderModules` and compiles each shader through it; see
+  [WGSL modules and imports](crates/mulciber-shader/README.md#wgsl-modules-and-imports).
 - Shaders are offline artifacts. No shader compiler ships in the game process and there is no
   runtime-WGSL path; each example embeds a checked-in `.shaderbin` selected by its `build.rs`.
   Reuse a checked-in artifact when your pipeline shape matches (several examples and probes share

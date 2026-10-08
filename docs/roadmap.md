@@ -220,6 +220,15 @@ fallback, and acquired-frame abandonment/recovery controls.
   probe now measures the generated evaluator against the same field dispatched on the GPU and
   reports 0.000402 m across a 348.6 m surface range on the Nvidia RTX 3060 Ti tier
   ([Linux runbook](linux-validation.md)). Metal-side agreement is unmeasured.
+- [x] Share WGSL between shaders through imports instead of copies. `mulciber-shader`'s
+  `ShaderModules` composes a shader with the `#define_import_path` modules it `#import`s, with
+  `#ifdef` shader defs, into the same artifact or host field, and ships Mulciber's own modules
+  under the reserved `mulciber::` namespace: `mulciber::colorspace`, and the lighting library
+  `mulciber::photometry`, `mulciber::pbr` and `mulciber::tonemap` with a CPU-baked DFG table, tested
+  through host evaluators generated from the same WGSL. Isle of Rán, which keeps
+  several copies of its shadow and light helpers and a hand-written concatenation recipe, is the
+  forcing consumer; it has not been ported yet. See
+  [WGSL modules and imports](../crates/mulciber-shader/README.md#wgsl-modules-and-imports).
 - [x] Build an intermediate same-source clear-only checkpoint through target-selected Metal and
   Vulkan, with scoped acquisition, reconfiguration, explicit abandonment, and fallible shutdown;
   keep device/queue/command topology private until the representative slice forces it.

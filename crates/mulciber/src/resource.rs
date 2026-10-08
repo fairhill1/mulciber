@@ -1,4 +1,5 @@
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::ops::{Index, IndexMut};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -12,6 +13,22 @@ use crate::GraphicsError;
 pub(crate) struct ResourceId {
     slot: u32,
     generation: u32,
+}
+
+/// Hashes as one word rather than two, halving the mixing rounds of a descriptor-cache key.
+impl Hash for ResourceId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(u64::from(self.slot) | u64::from(self.generation) << 32);
+    }
+}
+
+impl ResourceId {
+    /// An identity no arena hands out, since generations start at one; it pads fixed-size keys.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    pub(crate) const UNUSED: Self = Self {
+        slot: 0,
+        generation: 0,
+    };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

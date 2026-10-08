@@ -1,11 +1,13 @@
 mod bloom;
 mod capture;
+mod descriptor_cache;
 mod descriptor_pools;
 mod mesh;
 mod sampled_texture;
 #[cfg(feature = "native-validation")]
 mod validation;
 
+use descriptor_cache::{KeyedSets, SampledKey, SampledSets};
 use descriptor_pools::DescriptorPools;
 use mesh::MeshBufferArena;
 mod scene_depth;
@@ -221,7 +223,7 @@ struct PipelineResource {
     /// into the postprocess uniform and so differ per slot. Scene sets bind a
     /// dynamic uniform whose offset is supplied at draw time, so they are the
     /// same set for every slot and always key on zero.
-    bindings: Vec<((ResourceId, usize), vk::VkDescriptorSet)>,
+    bindings: KeyedSets,
 }
 
 struct MaterialPipelineResource {
@@ -251,7 +253,7 @@ struct MaterialPipelineResource {
     comparison_sampler: Option<(u32, vk::VkSampler)>,
     /// Descriptor sets cached per sampled-identity tuple (textures, then the shadow map or
     /// array).
-    bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
+    bindings: SampledSets,
     /// Declared per-instance stride in bytes; zero when no instance layout is declared.
     instance_stride: u32,
 }
@@ -295,7 +297,7 @@ struct ShadowPipelineResource {
     instance_stride: u32,
     /// Descriptor sets cached per sampled-texture tuple until a pool reset; the buffer-only
     /// form caches under the empty tuple.
-    bindings: Vec<(Vec<ResourceId>, vk::VkDescriptorSet)>,
+    bindings: SampledSets,
 }
 
 struct TargetResource {
@@ -1954,13 +1956,14 @@ impl<'window> TexturedSession<'window> {
         sampled_ids: &[ResourceId],
         texture_indices: &[usize],
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
-        if let Some((_, set)) = self.shadow_pipelines[pipeline_index]
+        if let Some(&set) = self.shadow_pipelines[pipeline_index]
             .bindings
-            .iter()
-            .find(|(ids, _)| ids.as_slice() == sampled_ids)
+            .get(sampled_ids)
         {
-            return Ok(*set);
+            return Ok(set);
         }
+        let key = SampledKey::new(sampled_ids)
+            .ok_or_else(|| error("Vulkan shadow record samples more textures than any pipeline"))?;
         let pipeline = &mut self.shadow_pipelines[pipeline_index];
         let (set_layout, pipeline_uniform, pipeline_storage) =
             (pipeline.set_layout, pipeline.uniform, pipeline.storage);
@@ -2056,7 +2059,7 @@ impl<'window> TexturedSession<'window> {
         }
         self.shadow_pipelines[pipeline_index]
             .bindings
-            .push((sampled_ids.to_vec(), set));
+            .insert(key, set);
         Ok(set)
     }
 
@@ -2584,12 +2587,8 @@ impl<'window> TexturedSession<'window> {
         } else {
             &mut self.pipelines
         };
-        if let Some((_, set)) = pipelines[pipeline_index]
-            .bindings
-            .iter()
-            .find(|(key, _)| *key == (texture_id, 0))
-        {
-            return Ok(*set);
+        if let Some(&set) = pipelines[pipeline_index].bindings.get(&(texture_id, 0)) {
+            return Ok(set);
         }
         let pipeline = &mut pipelines[pipeline_index];
         let set = pipeline.descriptor_pools.allocate(
@@ -2644,7 +2643,7 @@ impl<'window> TexturedSession<'window> {
                 ptr::null(),
             );
         };
-        pipeline.bindings.push(((texture_id, 0), set));
+        pipeline.bindings.insert((texture_id, 0), set);
         Ok(set)
     }
 
@@ -2657,13 +2656,15 @@ impl<'window> TexturedSession<'window> {
         shadow_view: Option<ShadowView>,
         snapshot_view: Option<vk::VkImageView>,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
-        if let Some((_, set)) = self.material_pipelines[pipeline_index]
+        if let Some(&set) = self.material_pipelines[pipeline_index]
             .bindings
-            .iter()
-            .find(|(ids, _)| ids.as_slice() == sampled_ids)
+            .get(sampled_ids)
         {
-            return Ok(*set);
+            return Ok(set);
         }
+        let key = SampledKey::new(sampled_ids).ok_or_else(|| {
+            error("Vulkan material record samples more resources than any pipeline")
+        })?;
         let pipeline = &mut self.material_pipelines[pipeline_index];
         let set_layout = pipeline.set_layout;
         let pipeline_uniform = pipeline.uniform;
@@ -2809,7 +2810,7 @@ impl<'window> TexturedSession<'window> {
         };
         self.material_pipelines[pipeline_index]
             .bindings
-            .push((sampled_ids.to_vec(), set));
+            .insert(key, set);
         Ok(set)
     }
 
@@ -2821,12 +2822,11 @@ impl<'window> TexturedSession<'window> {
         target_id: ResourceId,
     ) -> Result<vk::VkDescriptorSet, GraphicsError> {
         let slot = self.surface.frame_slot_index();
-        if let Some((_, set)) = self.postprocess_pipelines[pipeline_index]
+        if let Some(&set) = self.postprocess_pipelines[pipeline_index]
             .bindings
-            .iter()
-            .find(|(key, _)| *key == (target_id, slot))
+            .get(&(target_id, slot))
         {
-            return Ok(*set);
+            return Ok(set);
         }
         let postprocess_base = self.postprocess_uniform_base();
         let scene_color = self.postprocess_targets[target_index]
@@ -2915,7 +2915,7 @@ impl<'window> TexturedSession<'window> {
                 ptr::null(),
             );
         }
-        pipeline.bindings.push(((target_id, slot), set));
+        pipeline.bindings.insert((target_id, slot), set);
         Ok(set)
     }
 
@@ -4498,7 +4498,7 @@ fn destroy_material_pipeline_device(device: &super::Device, pipeline: MaterialPi
             descriptor_pools: pipeline.descriptor_pools,
             sampler: ptr::null_mut(),
             uniform_size: 0,
-            bindings: Vec::new(),
+            bindings: KeyedSets::default(),
         },
     );
 }
@@ -4562,7 +4562,7 @@ fn destroy_shadow_pipeline_device(device: &super::Device, pipeline: ShadowPipeli
             descriptor_pools: pipeline.descriptor_pools,
             sampler: ptr::null_mut(),
             uniform_size: 0,
-            bindings: Vec::new(),
+            bindings: KeyedSets::default(),
         },
     );
 }
@@ -5720,7 +5720,7 @@ fn create_pipeline(
         descriptor_pools: DescriptorPools::new(create_descriptor_pool),
         sampler: ptr::null_mut(),
         uniform_size: 0,
-        bindings: Vec::new(),
+        bindings: KeyedSets::default(),
     };
     check(
         unsafe {
@@ -6105,7 +6105,7 @@ fn create_material_pipeline(
         depth_texture_binding: config.depth_texture_binding,
         depth_texture_array_binding: config.depth_texture_array_binding,
         comparison_sampler: None,
-        bindings: Vec::new(),
+        bindings: SampledSets::default(),
         instance_stride: config.instance_stride,
     };
     check(
@@ -6502,7 +6502,7 @@ fn create_shadow_pipeline(
         texture_bindings: config.texture_bindings.to_vec(),
         samplers: Vec::with_capacity(config.sampler_bindings.len()),
         instance_stride: config.instance_stride,
-        bindings: Vec::new(),
+        bindings: SampledSets::default(),
     };
     check(
         unsafe {
@@ -6885,7 +6885,7 @@ fn create_postprocess_pipeline_base(
         descriptor_pools: DescriptorPools::new(create_postprocess_descriptor_pool),
         sampler: ptr::null_mut(),
         uniform_size: config.uniform_size,
-        bindings: Vec::new(),
+        bindings: KeyedSets::default(),
     };
     let result = (|| {
         check(

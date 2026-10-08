@@ -2,6 +2,16 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Audio mixer, HRTF and room reverb (audio 0.1.0)
+
+New `mulciber-audio` crate, the engine from Isle of Rán's audio module made game-agnostic: a
+callback-thread mixer with pitchable voices, effects/music/ambience buses, music and bed fades,
+moving emitters, HRTF spatialization with a stereo-pan fallback, and a Freeverb room bus.
+`Mixer::render` mixes offline into any buffer; `AudioEngine` runs it on the default cpal device.
+`probe_room` sizes the reverb from a game-supplied ray cast and `RoomTracker` eases it, as Rust
+Voxel's cave probe did. HRTF directions now reach the sphere with its front on -Z; the ported
+code had front and back swapped.
+
 ## Entity component store (ecs 0.1.0)
 
 New crate `mulciber-ecs`, independent of the graphics crates: generational entities and one sparse

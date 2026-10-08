@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/mulciber",
+    "crates/mulciber-audio",
     "crates/mulciber-ecs",
     "crates/mulciber-platform",
     "crates/mulciber-runtime",

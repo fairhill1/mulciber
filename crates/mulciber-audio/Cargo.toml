@@ -1,0 +1,33 @@
+[package]
+name = "mulciber-audio"
+description = "Game audio mixer with HRTF spatialization, emitters, music fades and room reverb for Mulciber"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "audio", "hrtf", "reverb", "mixer"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+version = "0.1.0"
+categories = ["game-development", "multimedia::audio"]
+publish = ["crates-io"]
+
+[features]
+default = ["output", "hrtf", "wav", "ogg"]
+# Opens the default output device through cpal and runs the mixer on its callback.
+output = ["dep:cpal"]
+# Binaural spatialization from an HRIR sphere file; spatial voices pan in stereo without it.
+hrtf = ["dep:hrtf"]
+# WAV decoding for `Sound::load`.
+wav = ["dep:hound"]
+# Ogg Vorbis decoding for `Sound::load`.
+ogg = ["dep:lewton"]
+
+[dependencies]
+cpal = { version = "0.18.1", optional = true }
+hound = { version = "3.5.1", optional = true }
+hrtf = { version = "0.8.1", optional = true }
+lewton = { version = "0.10.2", optional = true }
+
+[lints]
+workspace = true

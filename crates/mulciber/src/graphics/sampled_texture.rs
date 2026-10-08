@@ -54,18 +54,9 @@ pub(super) fn pack_float_levels(
             )));
         }
         total = checked_staging_size([total, size])?;
-        if texels
-            .iter()
-            .flatten()
-            .any(|v| !v.is_finite() || v.abs() > 65504.0)
-        {
-            return Err(GraphicsError::invalid_request(format!(
-                "float texture mip level {level} requires finite components in -65504..=65504"
-            )));
-        }
     }
     let mut packed = Vec::with_capacity(levels.len());
-    for texels in levels {
+    for (level, texels) in (0_u32..).zip(levels) {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(texels.len() * 8).map_err(|_| {
             GraphicsError::with_kind(
@@ -73,37 +64,112 @@ pub(super) fn pack_float_levels(
                 "float texture conversion allocation failed",
             )
         })?;
-        for value in texels.iter().flatten() {
-            bytes.extend_from_slice(&finite_f32_to_f16(*value).to_ne_bytes());
+        bytes.resize(texels.len() * 8, 0);
+        // One pass converts and checks the range together.
+        if !f32_to_f16(texels.as_flattened(), &mut bytes) {
+            return Err(GraphicsError::invalid_request(format!(
+                "float texture mip level {level} requires finite components in -65504..=65504"
+            )));
         }
         packed.push(bytes);
     }
     Ok(packed)
 }
 
-/// Precondition: finite input in -65504..=65504. Integer rounding avoids host FP-mode dependence.
-fn finite_f32_to_f16(value: f32) -> u16 {
-    let bits = value.to_bits();
-    let sign = u16::try_from((bits >> 16) & 0x8000).expect("sign fits");
-    let magnitude = bits & 0x7fff_ffff;
-    // Below the midpoint of zero and the least binary16 subnormal, including f32 subnormals.
-    if magnitude <= 0x3300_0000 {
-        return sign;
+/// The largest finite binary16 magnitude, 65504, as `f32` bits. A larger magnitude, infinity or
+/// NaN has larger bits once the sign is cleared.
+const HALF_MAX_BITS: u32 = 0x477f_e000;
+
+/// Converts `values` to binary16 in `out` (native-endian, two bytes each), rounding to nearest,
+/// ties to even, and returns whether every value was finite and in -65504..=65504. `out` holds
+/// garbage for a false return. Both paths give bit-identical output: an exhaustive comparison
+/// over every `f32` bit pattern is the ignored test `fast_paths_match_reference_exhaustively`.
+fn f32_to_f16(values: &[f32], out: &mut [u8]) -> bool {
+    debug_assert_eq!(out.len(), values.len() * 2);
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("f16c") {
+        // SAFETY: the CPU supports F16C, and therefore AVX, as just detected.
+        return unsafe { f32_to_f16_f16c(values, out) };
     }
-    let exponent = (magnitude >> 23) & 0xff;
-    let (base, remainder, halfway) = if exponent < 113 {
-        let shift = 126 - exponent;
-        let significand = (magnitude & 0x7f_ffff) | 0x80_0000;
-        (
-            significand >> shift,
-            significand & ((1 << shift) - 1),
-            1 << (shift - 1),
-        )
-    } else {
-        ((magnitude - 0x3800_0000) >> 13, magnitude & 0x1fff, 0x1000)
+    f32_to_f16_portable(values, out)
+}
+
+/// Branch-free, so it vectorizes; no early exit, for the same reason.
+fn f32_to_f16_portable(values: &[f32], out: &mut [u8]) -> bool {
+    let mut valid = true;
+    for (half, value) in out.as_chunks_mut::<2>().0.iter_mut().zip(values) {
+        valid &= value.to_bits() & 0x7fff_ffff <= HALF_MAX_BITS;
+        *half = finite_f32_to_f16(*value).to_ne_bytes();
+    }
+    valid
+}
+
+/// F16C converts eight values per instruction with the rounding mode given in the instruction,
+/// independent of MXCSR.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx,f16c")]
+fn f32_to_f16_f16c(values: &[f32], out: &mut [u8]) -> bool {
+    use std::arch::x86_64::{
+        _CMP_LE_OQ, _MM_FROUND_TO_NEAREST_INT, _mm_storeu_si128, _mm256_and_ps,
+        _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cvtps_ph, _mm256_loadu_ps, _mm256_movemask_ps,
+        _mm256_set1_epi32, _mm256_set1_ps,
     };
-    let rounded = base + u32::from(remainder > halfway || (remainder == halfway && base & 1 != 0));
-    sign | u16::try_from(rounded).expect("validated finite half range")
+    let (groups, rest) = values.as_chunks::<8>();
+    let (halves, rest_out) = out.as_chunks_mut::<16>();
+    let magnitude = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fff_ffff));
+    let limit = _mm256_set1_ps(65504.0);
+    let mut in_range = _mm256_castsi256_ps(_mm256_set1_epi32(-1));
+    for (group, half) in groups.iter().zip(halves) {
+        // SAFETY: `group` is eight readable f32s and `half` sixteen writable bytes; both
+        // intrinsics take unaligned addresses.
+        unsafe {
+            let v = _mm256_loadu_ps(group.as_ptr());
+            // Ordered compare: NaN fails it.
+            in_range = _mm256_and_ps(
+                in_range,
+                _mm256_cmp_ps::<_CMP_LE_OQ>(_mm256_and_ps(v, magnitude), limit),
+            );
+            _mm_storeu_si128(
+                half.as_mut_ptr().cast(),
+                _mm256_cvtps_ph::<_MM_FROUND_TO_NEAREST_INT>(v),
+            );
+        }
+    }
+    let valid = _mm256_movemask_ps(in_range) == 0xff;
+    f32_to_f16_portable(rest, rest_out) && valid
+}
+
+/// One value, for finite input in -65504..=65504 (other input gives an unspecified result).
+/// Round to nearest even through integer arithmetic, plus one `f32` add for subnormal halves
+/// (Fabian Giesen's `float_to_half_fast3_rtne`), so it doesn't branch.
+fn finite_f32_to_f16(value: f32) -> u16 {
+    // 2^-1 above the half subnormal step: adding it puts the 10 subnormal bits at the bottom of
+    // the significand, the add itself rounding to nearest even.
+    const SUBNORMAL_MAGIC: u32 = ((127 - 15) + (23 - 10) + 1) << 23;
+    let bits = value.to_bits();
+    let sign = (bits >> 16) & 0x8000;
+    let magnitude = bits & 0x7fff_ffff;
+    let subnormal = (f32::from_bits(magnitude) + f32::from_bits(SUBNORMAL_MAGIC))
+        .to_bits()
+        .wrapping_sub(SUBNORMAL_MAGIC);
+    // Rebias the exponent and round: add just under half an ulp, plus one if the kept bits are
+    // odd, then drop the low 13 bits.
+    let odd = (magnitude >> 13) & 1;
+    let normal = magnitude
+        .wrapping_sub((127 - 15) << 23)
+        .wrapping_add(0xfff + odd)
+        >> 13;
+    let half = if magnitude < (113 << 23) {
+        subnormal
+    } else {
+        normal
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a finite half fits 16 bits"
+    )]
+    let half = (half | sign) as u16;
+    half
 }
 
 #[cfg(test)]
@@ -199,6 +265,100 @@ mod tests {
             .flat_map(|v| v.to_ne_bytes())
             .collect();
         assert_eq!(packed[0], expected);
+    }
+
+    /// The converter Mulciber used before the branch-free one: integer rounding, one value at a
+    /// time. The fast paths must match it bit for bit.
+    fn reference(value: f32) -> u16 {
+        let bits = value.to_bits();
+        let sign = u16::try_from((bits >> 16) & 0x8000).expect("sign fits");
+        let magnitude = bits & 0x7fff_ffff;
+        if magnitude <= 0x3300_0000 {
+            return sign;
+        }
+        let exponent = (magnitude >> 23) & 0xff;
+        let (base, remainder, halfway) = if exponent < 113 {
+            let shift = 126 - exponent;
+            let significand = (magnitude & 0x7f_ffff) | 0x80_0000;
+            (
+                significand >> shift,
+                significand & ((1 << shift) - 1),
+                1 << (shift - 1),
+            )
+        } else {
+            ((magnitude - 0x3800_0000) >> 13, magnitude & 0x1fff, 0x1000)
+        };
+        let rounded =
+            base + u32::from(remainder > halfway || (remainder == halfway && base & 1 != 0));
+        sign | u16::try_from(rounded).expect("validated finite half range")
+    }
+
+    fn in_range(value: f32) -> bool {
+        value.is_finite() && value.abs() <= 65504.0
+    }
+
+    /// Both paths over `values`: the range verdict, and for a whole valid slice every half.
+    fn check_paths(values: &[f32]) {
+        let expected_valid = values.iter().all(|v| in_range(*v));
+        let mut portable = std::vec![0_u8; values.len() * 2];
+        assert_eq!(f32_to_f16_portable(values, &mut portable), expected_valid);
+        let mut dispatched = std::vec![0_u8; values.len() * 2];
+        assert_eq!(f32_to_f16(values, &mut dispatched), expected_valid);
+        if expected_valid {
+            let expected: Vec<u8> = values
+                .iter()
+                .flat_map(|v| reference(*v).to_ne_bytes())
+                .collect();
+            assert_eq!(portable, expected);
+            assert_eq!(dispatched, expected);
+        }
+    }
+
+    /// Every 4099th bit pattern, in runs of 8 so the F16C path sees whole groups, plus odd-length
+    /// tails and the boundaries.
+    #[test]
+    fn fast_paths_match_reference() {
+        let mut run = Vec::with_capacity(8);
+        for start in (0..=u32::MAX - 8).step_by(4099 * 8) {
+            run.clear();
+            run.extend((start..start + 8).map(f32::from_bits));
+            check_paths(&run);
+            check_paths(&run[..5]);
+            for &v in &run {
+                check_paths(&[v]);
+            }
+        }
+        for v in [
+            65504.0,
+            65504.001,
+            65519.99,
+            65520.0,
+            f32::INFINITY,
+            f32::NAN,
+            -0.0,
+            f32::from_bits(1),
+        ] {
+            check_paths(&[v]);
+            check_paths(&[v, -v, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        }
+    }
+
+    /// Every `f32` bit pattern through both paths (about half a minute in release:
+    /// `cargo test --release -p mulciber -- --ignored fast_paths`).
+    #[test]
+    #[ignore = "exhaustive; run by hand in release"]
+    fn fast_paths_match_reference_exhaustively() {
+        let mut run = Vec::with_capacity(1024);
+        let mut start = 0_u64;
+        while u32::try_from(start).is_ok() {
+            let end = (start + 1024).min(1 << 32);
+            run.clear();
+            run.extend((start..end).map(|b| f32::from_bits(u32::try_from(b).unwrap())));
+            for group in run.chunks(8) {
+                check_paths(group);
+            }
+            start = end;
+        }
     }
 
     #[test]

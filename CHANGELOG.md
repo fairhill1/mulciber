@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Faster float texture conversion (graphics 0.13.33)
+
+`RGBA16Float` creation and replacement convert to binary16 about 15 times faster: F16C, eight values
+per instruction, on x86-64 CPUs that have it, and otherwise a branch-free form of the same
+round-to-nearest-even that compilers vectorize. The range check moved into the same pass. Output is
+bit-identical to the previous converter for every `f32`: the ignored test
+`fast_paths_match_reference_exhaustively` checks all 2^32 bit patterns through both paths (passed
+on x86-64 with F16C), and a sampled version runs with the normal tests. In The Ship's viewer, six
+128x128 ocean tiles with mip chains per frame went from 2.0 to 0.9 ms, the conversion alone from
+1.16 to 0.07 ms.
+
 ## Mipped float texture replacement (graphics 0.13.32)
 
 `Device::update_rgba16_float_texture_with_mips(&texture, width, height, &levels)` replaces every

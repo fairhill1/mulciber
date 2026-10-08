@@ -7,8 +7,9 @@ use crate::KeyCode;
 
 /// The evdev codes of the aggregate-modifier keys.
 ///
-/// Modifier keys are reported through [`crate::InputEvent::ModifiersChanged`] rather than as
-/// physical key transitions, matching the `AppKit` and Win32 backends.
+/// Modifier keys report both ways: as physical key transitions, so games can bind them (Source
+/// ducks on Ctrl), and through [`crate::InputEvent::ModifiersChanged`] for the aggregate state.
+/// They don't auto-repeat.
 pub(super) const fn is_modifier_key(evdev_code: u32) -> bool {
     matches!(
         evdev_code,
@@ -127,6 +128,15 @@ pub(super) const fn evdev_key_code(evdev_code: u32) -> KeyCode {
         188 => KeyCode::F18,
         189 => KeyCode::F19,
         190 => KeyCode::F20,
+        29 => KeyCode::ControlLeft,
+        42 => KeyCode::ShiftLeft,
+        54 => KeyCode::ShiftRight,
+        56 => KeyCode::AltLeft,
+        58 => KeyCode::CapsLock,
+        97 => KeyCode::ControlRight,
+        100 => KeyCode::AltRight,
+        125 => KeyCode::SuperLeft,
+        126 => KeyCode::SuperRight,
         other => KeyCode::Unidentified(other),
     }
 }
@@ -148,10 +158,14 @@ mod tests {
     }
 
     #[test]
-    fn modifier_keys_are_excluded_from_physical_transitions() {
+    fn modifier_keys_have_physical_identities() {
         for code in [29, 42, 54, 56, 58, 97, 100, 125, 126] {
             assert!(is_modifier_key(code));
+            assert!(!matches!(evdev_key_code(code), KeyCode::Unidentified(_)));
         }
+        assert_eq!(evdev_key_code(29), KeyCode::ControlLeft);
+        assert_eq!(evdev_key_code(97), KeyCode::ControlRight);
+        assert_eq!(evdev_key_code(54), KeyCode::ShiftRight);
         assert!(!is_modifier_key(30));
         assert!(!is_modifier_key(57));
     }

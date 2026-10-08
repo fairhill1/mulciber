@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: modifier keys as physical keys
+
+`KeyCode` gains `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`,
+`SuperLeft`/`SuperRight` and `CapsLock`, and every backend now reports those keys' own press and
+release as `InputEvent::Keyboard` in addition to `ModifiersChanged`, so games can bind them (Source's
+duck is Ctrl). They do not auto-repeat. AppKit decodes them from `flagsChanged` and its
+device-dependent bits; Win32 maps their scan codes; Wayland and X11 share the evdev table.
+
 ## Unreleased: unaccelerated Wayland pointer deltas
 
 While the pointer is captured, Wayland's `PointerDelta` now carries the unaccelerated motion from

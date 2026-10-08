@@ -1299,10 +1299,10 @@ unsafe fn dispatch_keyboard_event(
 ) {
     // SAFETY: Keyboard messages are being handled on their owning window thread.
     let modifiers = unsafe { win32_modifiers() };
+    // Modifier keys report the aggregate state as well as their own transition.
     if is_modifier_key(virtual_key) {
         // SAFETY: The caller guarantees callback registration remains live for this dispatch.
         unsafe { dispatch_modifiers_if_changed(state, modifiers) };
-        return;
     }
     let parameter_bits = l_param.cast_unsigned();
     let scan_code =
@@ -1429,6 +1429,15 @@ fn win32_key_code(scan_code: u8, extended: bool) -> KeyCode {
         (0x69, _) => KeyCode::F18,
         (0x6a, _) => KeyCode::F19,
         (0x6b, _) => KeyCode::F20,
+        (0x1d, false) => KeyCode::ControlLeft,
+        (0x1d, true) => KeyCode::ControlRight,
+        (0x2a, _) => KeyCode::ShiftLeft,
+        (0x36, _) => KeyCode::ShiftRight,
+        (0x38, false) => KeyCode::AltLeft,
+        (0x38, true) => KeyCode::AltRight,
+        (0x5b, true) => KeyCode::SuperLeft,
+        (0x5c, true) => KeyCode::SuperRight,
+        (0x3a, _) => KeyCode::CapsLock,
         _ => KeyCode::Unidentified(u32::from(scan_code) | u32::from(extended) << 8),
     }
 }
@@ -1842,6 +1851,9 @@ mod tests {
         assert_eq!(win32_key_code(0x1c, true), KeyCode::NumpadEnter);
         assert_eq!(win32_key_code(0x6b, false), KeyCode::F20);
         assert_eq!(win32_key_code(0x7f, true), KeyCode::Unidentified(0x17f));
+        assert_eq!(win32_key_code(0x1d, false), KeyCode::ControlLeft);
+        assert_eq!(win32_key_code(0x1d, true), KeyCode::ControlRight);
+        assert_eq!(win32_key_code(0x36, false), KeyCode::ShiftRight);
     }
 
     #[test]

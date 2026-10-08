@@ -12,6 +12,10 @@ The first slice delivers gameplay-oriented transitions through the existing fall
 - physical keyboard key press, release, and repeat;
 - aggregate Shift, Control, Alt/Option, Command/Super, and Caps Lock modifiers, plus the physical
   Fn/globe key where the window system reports it (macOS only);
+- the modifier keys' own physical transitions, left and right apart (`ShiftLeft`, `ControlRight`,
+  ...), because games bind them as ordinary keys: Source ducks on Ctrl and sprints on Shift. They
+  arrive alongside the aggregate `ModifiersChanged` and never auto-repeat. On macOS they are decoded
+  from `flagsChanged` and its device-dependent flag bits, and Caps Lock reads as held while locked;
 - pointer motion in top-left-origin logical client coordinates;
 - primary, secondary, middle, and numbered extra pointer buttons;
 - precise trackpad and coarse wheel scroll deltas without collapsing their units; and

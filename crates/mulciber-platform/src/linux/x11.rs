@@ -785,12 +785,12 @@ impl Window {
 
     fn handle_key_event(&self, event: &XKeyEvent) {
         let evdev_code = event.keycode.saturating_sub(X_KEYCODE_EVDEV_OFFSET);
-        if keymap::is_modifier_key(evdev_code) {
+        let modifiers = if keymap::is_modifier_key(evdev_code) {
             // The event's state mask predates its own transition; the live query reflects it.
-            self.sync_modifiers(self.query_modifiers());
-            return;
-        }
-        let modifiers = modifiers_from_x_state(event.state);
+            self.query_modifiers()
+        } else {
+            modifiers_from_x_state(event.state)
+        };
         self.sync_modifiers(modifiers);
         let pressed = event.kind == KEY_PRESS;
         let repeat = pressed && self.state.key_is_pressed(evdev_code);

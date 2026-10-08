@@ -336,6 +336,16 @@ pub enum KeyCode {
     NumpadEnter,
     NumpadEqual,
     NumpadClear,
+    ShiftLeft,
+    ShiftRight,
+    ControlLeft,
+    ControlRight,
+    AltLeft,
+    AltRight,
+    /// The Windows, Command or Meta key.
+    SuperLeft,
+    SuperRight,
+    CapsLock,
     /// A physical key whose current backend mapping is not yet represented portably.
     Unidentified(u32),
 }

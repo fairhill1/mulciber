@@ -2097,10 +2097,9 @@ unsafe extern "C" fn keyboard_key(
     }
     // SAFETY: Listener data points to the boxed WindowState for the keyboard proxy lifetime.
     let state = unsafe { &*data.cast::<WindowState>() };
-    // Modifier keys surface through the aggregate modifiers event that follows them.
-    if keymap::is_modifier_key(key) {
-        return;
-    }
+    // Modifier keys also surface through the aggregate modifiers event that follows them, and
+    // don't auto-repeat.
+    let modifier = keymap::is_modifier_key(key);
     let code = keymap::evdev_key_code(key);
     let pressed = key_state == WL_KEYBOARD_KEY_STATE_PRESSED;
     state.push_input(InputEvent::Keyboard {
@@ -2113,6 +2112,9 @@ unsafe extern "C" fn keyboard_key(
         repeat: false,
         modifiers: state.modifiers.get(),
     });
+    if modifier {
+        return;
+    }
     if pressed {
         let delay = u64::try_from(state.repeat_delay_ms.get().max(0)).unwrap_or(0);
         state.repeat_key.set(Some((key, code)));

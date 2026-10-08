@@ -248,6 +248,7 @@ impl Application {
                 capture_applied: Cell::new(false),
                 pending_warp_delta: Cell::new((0.0, 0.0)),
                 function_key_held: Cell::new(false),
+                pending_modifier_key: Cell::new(None),
                 fullscreen_requested: Cell::new(false),
                 fullscreen_confirmed: Cell::new(false),
                 delegate,
@@ -322,6 +323,9 @@ impl Application {
                 if let Some(input) = input {
                     handler(WindowEvent::Input(input));
                 }
+                if let Some(key) = window.pending_modifier_key.take() {
+                    handler(WindowEvent::Input(key));
+                }
             }
             void(self.raw.as_ptr(), c"updateWindows");
         }
@@ -374,6 +378,9 @@ pub struct Window {
     // physical Fn/globe key, so the key's own transitions are tracked here instead of read back
     // off each event. See `function_key_transition`.
     function_key_held: Cell<bool>,
+    // A modifier key's own transition, decoded from the `flagsChanged` event that also reports the
+    // aggregate modifiers; delivered right after them.
+    pending_modifier_key: Cell<Option<InputEvent>>,
     fullscreen_requested: Cell<bool>,
     fullscreen_confirmed: Cell<bool>,
     delegate: NonNull<c_void>,
@@ -609,6 +616,29 @@ impl Window {
         }
     }
 
+    /// Holds a `flagsChanged` event's own key transition for delivery after the modifiers.
+    ///
+    /// # Safety
+    ///
+    /// `event` must be a live `flagsChanged` `NSEvent`.
+    unsafe fn queue_modifier_key(&self, event: Object, modifiers: Modifiers) {
+        // SAFETY: The caller guarantees a live modifier event, for which both selectors are defined.
+        let (key, flags) = unsafe {
+            (
+                u16_value(event, c"keyCode"),
+                usize_value(event, c"modifierFlags"),
+            )
+        };
+        let transition =
+            modifier_key_transition(key, flags).map(|(key, state)| InputEvent::Keyboard {
+                key,
+                state,
+                repeat: false,
+                modifiers,
+            });
+        self.pending_modifier_key.set(transition);
+    }
+
     fn translate_input_event(&self, event: Object) -> Option<InputEvent> {
         // SAFETY: The event remains alive in the current AppKit autorelease pool. Every selector is
         // valid for NSEvent, and returned scalar/aggregate values are copied immediately.
@@ -631,7 +661,10 @@ impl Window {
                     repeat: false,
                     modifiers,
                 }),
-                EVENT_FLAGS_CHANGED => Some(InputEvent::ModifiersChanged(modifiers)),
+                EVENT_FLAGS_CHANGED => {
+                    self.queue_modifier_key(event, modifiers);
+                    Some(InputEvent::ModifiersChanged(modifiers))
+                }
                 EVENT_MOUSE_MOVED
                 | EVENT_LEFT_MOUSE_DRAGGED
                 | EVENT_RIGHT_MOUSE_DRAGGED
@@ -1323,6 +1356,40 @@ const fn function_key_transition(key_code: u16, flags: usize) -> Option<bool> {
     }
 }
 
+/// `NX_DEVICE*KEYMASK`: the device-dependent low bits of `modifierFlags`, one per physical
+/// modifier key, so left and right report separately.
+const DEVICE_LEFT_CONTROL: usize = 0x1;
+const DEVICE_LEFT_SHIFT: usize = 0x2;
+const DEVICE_RIGHT_SHIFT: usize = 0x4;
+const DEVICE_LEFT_COMMAND: usize = 0x8;
+const DEVICE_RIGHT_COMMAND: usize = 0x10;
+const DEVICE_LEFT_OPTION: usize = 0x20;
+const DEVICE_RIGHT_OPTION: usize = 0x40;
+const DEVICE_RIGHT_CONTROL: usize = 0x2000;
+
+/// The physical modifier key a `flagsChanged` event is about, and whether it is now down. Caps
+/// Lock reports its lock state, so it reads as pressed while locked.
+fn modifier_key_transition(key_code: u16, flags: usize) -> Option<(KeyCode, ButtonState)> {
+    let (key, mask) = match key_code {
+        56 => (KeyCode::ShiftLeft, DEVICE_LEFT_SHIFT),
+        60 => (KeyCode::ShiftRight, DEVICE_RIGHT_SHIFT),
+        59 => (KeyCode::ControlLeft, DEVICE_LEFT_CONTROL),
+        62 => (KeyCode::ControlRight, DEVICE_RIGHT_CONTROL),
+        58 => (KeyCode::AltLeft, DEVICE_LEFT_OPTION),
+        61 => (KeyCode::AltRight, DEVICE_RIGHT_OPTION),
+        55 => (KeyCode::SuperLeft, DEVICE_LEFT_COMMAND),
+        54 => (KeyCode::SuperRight, DEVICE_RIGHT_COMMAND),
+        57 => (KeyCode::CapsLock, MODIFIER_CAPS_LOCK),
+        _ => return None,
+    };
+    let state = if flags & mask != 0 {
+        ButtonState::Pressed
+    } else {
+        ButtonState::Released
+    };
+    Some((key, state))
+}
+
 /// Translates `AppKit`'s modifier flags, taking the function modifier from the separately tracked
 /// physical key state rather than from the overloaded flag bit.
 fn appkit_modifiers(flags: usize, function_key_held: bool) -> Modifiers {
@@ -1494,16 +1561,17 @@ mod tests {
     use std::rc::Rc;
 
     use crate::{
-        KeyCode, PhysicalExtent, PointerButton, ScrollDelta, WindowEvent, WindowMetrics,
-        WindowRevision,
+        ButtonState, KeyCode, PhysicalExtent, PointerButton, ScrollDelta, WindowEvent,
+        WindowMetrics, WindowRevision,
     };
 
     use super::{
-        KEY_CODE_FUNCTION, MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_FUNCTION, MODIFIER_OPTION,
-        MODIFIER_SHIFT, Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
+        DEVICE_LEFT_CONTROL, DEVICE_RIGHT_CONTROL, DEVICE_RIGHT_SHIFT, KEY_CODE_FUNCTION,
+        MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_FUNCTION, MODIFIER_OPTION, MODIFIER_SHIFT,
+        Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
         appkit_pointer_button, bool_object, bool_value, create_content_view,
-        create_window_delegate, function_key_transition, metrics_transition, physical_dimension,
-        scroll_delta, void, void_object,
+        create_window_delegate, function_key_transition, metrics_transition,
+        modifier_key_transition, physical_dimension, scroll_delta, void, void_object,
     };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
@@ -1642,6 +1710,24 @@ mod tests {
         assert!(!appkit_modifiers(MODIFIER_FUNCTION, false).function());
         assert!(appkit_modifiers(MODIFIER_FUNCTION, true).function());
         assert!(appkit_modifiers(0, true).function());
+    }
+
+    #[test]
+    fn modifier_keys_report_their_own_side() {
+        assert_eq!(
+            modifier_key_transition(59, MODIFIER_CONTROL | DEVICE_LEFT_CONTROL),
+            Some((KeyCode::ControlLeft, ButtonState::Pressed))
+        );
+        // Releasing left Control while right Control is held keeps the aggregate flag set.
+        assert_eq!(
+            modifier_key_transition(59, MODIFIER_CONTROL | DEVICE_RIGHT_CONTROL),
+            Some((KeyCode::ControlLeft, ButtonState::Released))
+        );
+        assert_eq!(
+            modifier_key_transition(60, MODIFIER_SHIFT | DEVICE_RIGHT_SHIFT),
+            Some((KeyCode::ShiftRight, ButtonState::Pressed))
+        );
+        assert_eq!(modifier_key_transition(0, MODIFIER_SHIFT), None);
     }
 
     #[test]

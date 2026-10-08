@@ -200,6 +200,16 @@ The clear checkpoint now has validation-enabled finite and physical smoke eviden
 automated Vulkan evidence above. The next implementation step is the representative textured
 depth-tested slice.
 
+## Frame capture
+
+`Surface::request_frame_capture()` marks the next acquired frame; whichever `Queue` verb presents
+it copies the presentable image after its last pass, blocks until the GPU finishes that frame, and
+leaves a `FrameCapture` for `Surface::take_frame_capture()`: the frame's index, width, height and
+tightly packed, top-down RGBA8 pixels in the sRGB encoding the display receives, alpha 255 on an
+opaque-composited surface. Abandoned or failed frames leave the request pending. A Vulkan surface
+without transfer-source swapchain usage answers `Unsupported`. See the
+[full contract](frame-capture.md).
+
 ## Block-compressed sampled uploads
 
 `Device::create_block_compressed_texture(BlockCompression, width, height, &[u8])` and its

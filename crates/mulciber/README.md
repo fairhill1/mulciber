@@ -51,6 +51,15 @@ The API is experimental and may change without compatibility guarantees. Design 
 decision records, runnable examples, and recorded validation evidence live in the
 [Mulciber repository](https://github.com/fairhill1/mulciber).
 
+## Frame capture
+
+`Surface::request_frame_capture()` before acquiring a frame makes whichever `Queue` verb presents
+it read back its final color, blocking until the GPU finishes that frame;
+`Surface::take_frame_capture()` then returns a `FrameCapture` with tightly packed, top-down RGBA8
+pixels in the sRGB encoding the display receives. It is a screenshot path: frames without a
+request pay nothing. Metal's path has not run yet. See the
+[contract](https://github.com/fairhill1/mulciber/blob/main/docs/frame-capture.md).
+
 ## Vulkan validation
 
 Validation is off by default, including in debug builds. Ordinary applications need a Vulkan

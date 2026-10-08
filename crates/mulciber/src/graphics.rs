@@ -1,9 +1,12 @@
+mod capture;
 mod cube_texture;
 mod hdr;
 mod sampled_texture;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use sampled_texture::checked_staging_size;
 mod scene_depth;
+pub use capture::FrameCapture;
+pub(crate) use capture::{CaptureByteOrder, capture_byte_len, frame_capture_from_native};
 pub(crate) use hdr::bloom_extents;
 use hdr::{validate_bloom_filter_interface, validate_hdr_pair};
 use scene_depth::validate_scene_depth_order;
@@ -2446,6 +2449,46 @@ impl<'window> Surface<'window> {
     /// Returns an error after session shutdown.
     pub fn take_present_feedback(&mut self) -> Result<PresentFeedback, GraphicsError> {
         Ok(session_mut(&self.shared)?.take_present_feedback())
+    }
+
+    /// Asks for the next frame this surface acquires to be read back when it is presented.
+    ///
+    /// Request before [`Self::acquire`]: a frame already acquired is not captured. Whichever
+    /// [`Queue`] verb presents the frame (direct, postprocessed, HDR, bloom, volumetric or with
+    /// an overlay) copies the presentable image after its last pass, presents it, then **blocks
+    /// until the GPU finishes that frame** and converts the copy into a [`FrameCapture`] for
+    /// [`Self::take_frame_capture`]. That wait makes the captured frame's timing
+    /// unrepresentative, so this is a screenshot path, not a per-frame readback. A frame that
+    /// is abandoned, refused before native work, or whose submission or presentation fails is
+    /// not captured, and the request stays pending for the next one. Repeating a pending request
+    /// changes nothing. The clear-only [`crate::ClearSurface`] does not capture.
+    ///
+    /// Vulkan creates its swapchain images with transfer-source usage wherever the surface
+    /// supports it, so a pending request needs no swapchain change. Metal makes the drawables it
+    /// vends readable (`framebufferOnly` off) only while a capture is pending, because readable
+    /// drawables give up display optimizations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` without recording the request when the presentable images cannot be
+    /// read back: a Vulkan surface whose swapchain images do not support
+    /// `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`, or a presentable format other than four 8-bit channels.
+    /// Returns an error after session shutdown.
+    pub fn request_frame_capture(&mut self) -> Result<(), GraphicsError> {
+        session_mut(&self.shared)?.request_frame_capture()
+    }
+
+    /// Takes the most recent completed frame capture, or `None` when no requested frame has been
+    /// presented since the last take.
+    ///
+    /// A capture completes inside the presenting [`Queue`] call, so it is available as soon as
+    /// that call returns. A later capture replaces one that was never taken.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after session shutdown.
+    pub fn take_frame_capture(&mut self) -> Result<Option<FrameCapture>, GraphicsError> {
+        Ok(session_mut(&self.shared)?.take_frame_capture())
     }
 }
 

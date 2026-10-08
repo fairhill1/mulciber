@@ -1024,6 +1024,19 @@ fragment samples, half quantization, small coefficients, spatial filtering and e
 Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
 visual or broader hardware evidence. See the [contract](float-texture-uploads.md).
 
+## Frame capture (unreleased)
+
+Run `cargo run -p mulciber-frame-capture`, again with `-- --force-one-sample`, and both again with
+`WAYLAND_DISPLAY=` unset to use X11 through XWayland, with the Vulkan validation layer; every
+capture must match pixel by pixel, the three uncaptured frames must report nothing, and shutdown
+must see no callbacks. On 2026-10-08, KDE Wayland / NVIDIA GeForce RTX 3060 Ti (driver 615.71.09)
+with Khronos validation 1.4.363 passed all four runs (five captures over nine presented frames
+each), also with `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true` and
+`VK_KHRONOS_VALIDATION_SYNCVAL_FULL_VALIDATION=true`. The Wayland swapchain was `R8G8B8A8_SRGB` and
+the XWayland one `B8G8R8A8_SRGB`, so both byte orders were exercised; both composite opaque. This
+is readback evidence from one GPU, not visual, lifecycle or broader hardware evidence. See the
+[contract](frame-capture.md).
+
 ## Per-entry-point resource bindings (unreleased)
 
 Run `cargo run -p mulciber-entry-bindings` with the Vulkan validation layer; the plain and

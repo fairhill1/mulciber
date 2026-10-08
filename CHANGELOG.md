@@ -2,6 +2,24 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: frame capture
+
+`Surface::request_frame_capture()` asks for the next acquired frame to be read back when it is
+presented, and `Surface::take_frame_capture()` returns it as a `FrameCapture`: the frame's
+presented index, width, height and tightly packed, top-down RGBA8 pixels in the sRGB encoding the
+display receives, whatever the swapchain's channel order, with alpha 255 on an opaque-composited
+surface. Every `Queue` presenting verb captures, so direct, postprocessed, HDR, bloom, volumetric
+and overlaid frames all read back their final color; the presenting call blocks until the GPU
+finishes that frame, and frames without a request pay nothing. Abandoned or failed frames leave the
+request pending. Vulkan swapchain images now carry `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` wherever the
+surface allows it, and a surface that does not answers the request with `Unsupported`; the copy
+runs in the frame's own command buffer before the presentation transition. Metal turns
+`framebufferOnly` off only while a capture is pending and blits the drawable before presenting.
+The new `mulciber-frame-capture` probe matched direct (4x resolved and 1x), HDR-composited and
+overlaid captures pixel by pixel on Linux/NVIDIA under Vulkan validation and synchronization
+validation, on Wayland (`R8G8B8A8_SRGB`) and XWayland (`B8G8R8A8_SRGB`); Metal is implemented but
+has never run. See [frame capture](docs/frame-capture.md).
+
 ## Unreleased: per-entry-point resource bindings
 
 `mulciber-shader` now records the bindings each entry point uses, directly or through called

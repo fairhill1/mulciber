@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-frame-capture"
+description = "Native validation of presented-frame capture through the public surface API"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

@@ -574,6 +574,11 @@ impl<'window> ClearSurface<'window> {
         };
         let composite_alpha = choose_composite_alpha(capabilities.supportedCompositeAlpha)
             .ok_or_else(|| unsupported("surface exposes no supported composite-alpha mode"))?;
+        // Transfer-source usage lets a requested frame capture copy the presented image. It is
+        // added wherever the surface allows it, so a capture never has to rebuild the swapchain.
+        let capturable = capabilities.supportedUsageFlags
+            & vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT.cast_unsigned()
+            != 0;
         let create_info = vk::VkSwapchainCreateInfoKHR {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             pNext: if switching {
@@ -593,7 +598,12 @@ impl<'window> ClearSurface<'window> {
             imageColorSpace: format.colorSpace,
             imageExtent: extent,
             imageArrayLayers: 1,
-            imageUsage: vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
+            imageUsage: vk::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32
+                | if capturable {
+                    vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT.cast_unsigned()
+                } else {
+                    0
+                },
             imageSharingMode: vk::VK_SHARING_MODE_EXCLUSIVE,
             preTransform: capabilities.currentTransform,
             compositeAlpha: composite_alpha,
@@ -620,6 +630,8 @@ impl<'window> ClearSurface<'window> {
             format: format.format,
             extent,
             switching,
+            capturable,
+            opaque: composite_alpha == vk::VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
             ..Default::default()
         };
         if let Err(error) = populate_swapchain(device, &mut next) {
@@ -1065,6 +1077,10 @@ struct Swapchain {
     /// Created in FIFO with immediate beside it, each present choosing between them:
     /// the adaptive policy on a driver with no relaxed FIFO.
     switching: bool,
+    /// Images carry `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`, so a frame capture can copy them.
+    capturable: bool,
+    /// Composited with `VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR`: the display ignores stored alpha.
+    opaque: bool,
 }
 
 struct Entry {
@@ -1528,7 +1544,6 @@ struct DeviceFns {
     cmd_copy_image2: vk::PFN_vkCmdCopyImage2,
     cmd_copy_buffer2: vk::PFN_vkCmdCopyBuffer2,
     cmd_copy_buffer_to_image2: vk::PFN_vkCmdCopyBufferToImage2,
-    #[cfg(feature = "native-validation")]
     cmd_copy_image_to_buffer2: vk::PFN_vkCmdCopyImageToBuffer2,
     cmd_set_viewport: vk::PFN_vkCmdSetViewport,
     cmd_set_scissor: vk::PFN_vkCmdSetScissor,
@@ -1629,7 +1644,6 @@ impl DeviceFns {
             cmd_copy_image2: load!(c"vkCmdCopyImage2"),
             cmd_copy_buffer2: load!(c"vkCmdCopyBuffer2"),
             cmd_copy_buffer_to_image2: load!(c"vkCmdCopyBufferToImage2"),
-            #[cfg(feature = "native-validation")]
             cmd_copy_image_to_buffer2: load!(c"vkCmdCopyImageToBuffer2"),
             cmd_set_viewport: load!(c"vkCmdSetViewport"),
             cmd_set_scissor: load!(c"vkCmdSetScissor"),

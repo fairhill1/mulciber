@@ -1,4 +1,5 @@
 mod bloom;
+mod capture;
 mod scene_depth;
 mod streaming;
 #[cfg(feature = "native-validation")]
@@ -365,7 +366,8 @@ enum PreparedScene<'resources> {
     Materials(&'resources [MaterialRecord<'resources>], Option<usize>),
 }
 
-pub(crate) struct TexturedFrameToken(MetalFrameToken);
+/// The acquired drawable, and whether it was acquired under a pending frame-capture request.
+pub(crate) struct TexturedFrameToken(MetalFrameToken, bool);
 
 impl TexturedFrameToken {
     pub(crate) const fn info(&self) -> SurfaceInfo {
@@ -492,6 +494,7 @@ pub(crate) struct TexturedSession<'window> {
     // queue order their uses. Retained commands also keep replaced targets alive.
     targets: Arena<TargetResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
+    capture: capture::CaptureState,
 }
 
 impl<'window> TexturedSession<'window> {
@@ -530,6 +533,7 @@ impl<'window> TexturedSession<'window> {
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
                 targets: Arena::new("render targets"),
                 postprocess_targets: Arena::new("postprocess targets"),
+                capture: capture::CaptureState::default(),
             },
             SampleCount::from_samples(u32::try_from(sample_count).expect("sample count"))
                 .expect("sample count was taken from a SampleCount"),
@@ -585,7 +589,8 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameAcquire<TexturedFrameToken>, GraphicsError> {
         let acquisition = self.surface.acquire_drawable(metrics)?;
         self.reclaim_stale_targets();
-        Ok(acquisition.map_ready(TexturedFrameToken))
+        let capture = self.capture_next_acquired();
+        Ok(acquisition.map_ready(|token| TexturedFrameToken(token, capture)))
     }
 
     pub(crate) fn set_presentation_mode(
@@ -2265,8 +2270,12 @@ impl<'window> TexturedSession<'window> {
             )?;
             self.encode_prepared_scene(encoder, scene)?;
             objc::void(encoder, c"endEncoding");
+            let capture = self.encode_capture(token.1, command, drawable_texture)?;
             self.surface.present_commit(command, drawable);
             token.0.drawable = ptr::null_mut();
+            if let Some(capture) = capture {
+                self.finish_capture(command, capture)?;
+            }
         }
         Ok(FrameDisposition::Presented(token.info().generation()))
     }
@@ -2572,8 +2581,12 @@ impl<'window> TexturedSession<'window> {
                 )?;
             }
             objc::void(post_encoder, c"endEncoding");
+            let capture = self.encode_capture(token.1, command, drawable_texture)?;
             self.surface.present_commit(command, drawable);
             token.0.drawable = ptr::null_mut();
+            if let Some(capture) = capture {
+                self.finish_capture(command, capture)?;
+            }
         }
         Ok(FrameDisposition::Presented(token.info().generation()))
     }

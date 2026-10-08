@@ -14,8 +14,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
 ## What it provides
 
 - **Graphics** (`mulciber`): device, queue, and surface ownership; textures, meshes, instancing,
-  and materials; shadow, HDR, bloom, volumetric, and postprocessing passes; native presentation
-  and GPU timing feedback.
+  and materials; shadow, HDR, bloom, volumetric, and postprocessing passes; native presentation,
+  presented-frame capture, and GPU timing feedback.
 - **Windows and input** (`mulciber-platform`): native Win32, AppKit, Wayland, and X11
   implementations with window lifecycle, keyboard and pointer events, cursor capture, and fullscreen.
 - **Game loop** (`mulciber-runtime`): input snapshots, fixed-step simulation, bounded catch-up,
@@ -98,8 +98,9 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
   [block-compressed textures](docs/block-compressed-textures.md), and
   [cube textures](docs/cube-textures.md)
-- [Packed vertex formats](docs/vertex-formats.md) and
-  [per-entry-point resource bindings](docs/per-entry-point-bindings.md)
+- [Packed vertex formats](docs/vertex-formats.md),
+  [per-entry-point resource bindings](docs/per-entry-point-bindings.md), and
+  [frame capture](docs/frame-capture.md)
 - [Architecture](docs/architecture.md) and [backend contracts](docs/backend-contracts.md)
 - [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
   [API extraction plan](docs/api-extraction-plan.md)

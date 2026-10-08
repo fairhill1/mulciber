@@ -1,4 +1,5 @@
 mod bloom;
+mod capture;
 mod descriptor_pools;
 mod mesh;
 mod sampled_texture;
@@ -437,12 +438,15 @@ pub(crate) struct TexturedSession<'window> {
     postprocess_pipelines: Arena<PipelineResource>,
     postprocess_targets: Arena<PostprocessTargetResource>,
     deferred_token: Option<TexturedFrameToken>,
+    capture: capture::CaptureState,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct TexturedFrameToken {
     image_index: u32,
     info: SurfaceInfo,
+    /// Acquired under a pending frame-capture request from a capturable swapchain.
+    capture: bool,
 }
 
 impl TexturedFrameToken {
@@ -582,6 +586,7 @@ impl<'window> TexturedSession<'window> {
                 postprocess_pipelines: Arena::new("postprocess pipeline"),
                 postprocess_targets: Arena::new("postprocess targets"),
                 deferred_token: None,
+                capture: capture::CaptureState::default(),
             },
             SampleCount::from_samples(sample_count.cast_unsigned())
                 .expect("sample count was taken from a SampleCount"),
@@ -642,7 +647,12 @@ impl<'window> TexturedSession<'window> {
         if matches!(acquisition, FrameAcquire::Ready(_)) {
             self.surface.strict.begin_frame(std::time::Instant::now());
         }
-        Ok(acquisition.map_ready(|image_index| TexturedFrameToken { image_index, info }))
+        let capture = self.capture_next_acquired();
+        Ok(acquisition.map_ready(|image_index| TexturedFrameToken {
+            image_index,
+            info,
+            capture,
+        }))
     }
 
     pub(crate) fn set_presentation_mode(
@@ -1309,6 +1319,7 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_scene(draws)?;
+        self.begin_capture(&token)?;
         self.record_draw(
             token.image_index,
             target_index,
@@ -1347,6 +1358,7 @@ impl<'window> TexturedSession<'window> {
         self.prepare_scene(draws)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
+        self.begin_capture(&token)?;
         self.record_postprocessed_draw(
             token.image_index,
             postprocess_pipeline_index,
@@ -1375,6 +1387,7 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_instanced_scene(batches)?;
+        self.begin_capture(&token)?;
         self.record_draw(
             token.image_index,
             target_index,
@@ -1413,6 +1426,7 @@ impl<'window> TexturedSession<'window> {
         self.prepare_instanced_scene(batches)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
+        self.begin_capture(&token)?;
         self.record_postprocessed_draw(
             token.image_index,
             postprocess_pipeline_index,
@@ -1486,6 +1500,7 @@ impl<'window> TexturedSession<'window> {
             ));
         }
         self.prepare_material_scene(records, &[], shadow, None)?;
+        self.begin_capture(&token)?;
         self.record_draw(
             token.image_index,
             target_index,
@@ -1569,6 +1584,7 @@ impl<'window> TexturedSession<'window> {
                 base,
             )?;
         }
+        self.begin_capture(&token)?;
         self.record_postprocessed_draw(
             token.image_index,
             postprocess_pipeline_index,
@@ -3144,11 +3160,19 @@ impl<'window> TexturedSession<'window> {
     ) -> Result<FrameDisposition, GraphicsError> {
         let frame_index = self.surface.presented_count;
         let slot = self.surface.frame_slot_index();
+        let capture = self.take_pending_capture();
         let disposition = self.surface.submit_recorded(image_index);
         // Submission can succeed before presentation fails. The copies then belong to
         // that in-flight slot even when the caller receives a presentation error.
-        if self.surface.frames[slot].pending {
+        let submitted = self.surface.frames[slot].pending;
+        if submitted {
             self.mesh_buffers.uploads_submitted();
+        }
+        if let Some(capture) = capture {
+            let captured = self.finish_capture(capture, slot, submitted, frame_index, &disposition);
+            if disposition.is_ok() {
+                captured?;
+            }
         }
         let disposition = disposition?;
         if self.gpu_timing.enabled && !self.gpu_timing.query_pool.is_null() {
@@ -3590,17 +3614,7 @@ impl<'window> TexturedSession<'window> {
         }
         self.end_gpu_region(SCENE_QUERY_START + 1);
         self.write_empty_gpu_region(POSTPROCESS_QUERY_START);
-        let present = image_barrier(
-            image,
-            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk::VK_PIPELINE_STAGE_2_NONE,
-            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            vk::VK_ACCESS_2_NONE,
-            color_subresource_range(),
-        );
-        pipeline_barrier(&self.surface, self.surface.frame_command_buffer(), &present);
+        self.record_present_transition(image);
         self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
@@ -4090,17 +4104,7 @@ impl<'window> TexturedSession<'window> {
             );
         }
         self.end_gpu_region(POSTPROCESS_QUERY_START + 1);
-        let present = image_barrier(
-            image,
-            vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            vk::VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            vk::VK_PIPELINE_STAGE_2_NONE,
-            vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            vk::VK_ACCESS_2_NONE,
-            color_subresource_range(),
-        );
-        pipeline_barrier(&self.surface, self.surface.frame_command_buffer(), &present);
+        self.record_present_transition(image);
         self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
             unsafe {
@@ -4341,6 +4345,7 @@ impl<'window> TexturedSession<'window> {
     }
 
     fn destroy_resources(&mut self) {
+        self.destroy_capture();
         let device = self.surface.device();
         if !self.gpu_timing.query_pool.is_null() {
             unsafe {

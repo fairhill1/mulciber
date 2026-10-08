@@ -206,6 +206,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-frame-capture"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-game-slice"
 version = "0.0.0"
 dependencies = [

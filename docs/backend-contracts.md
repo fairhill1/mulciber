@@ -280,6 +280,21 @@ The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source i
 byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
 stands and only its recorded compiler string moves.
 
+## Frame capture (unreleased)
+
+**Vulkan native evidence, Metal unexercised:** a pending `Surface::request_frame_capture` makes
+the next acquired frame's presenting call copy the presentable image after its last pass and wait
+for that frame. Vulkan creates swapchain images with `VK_IMAGE_USAGE_TRANSFER_SRC_BIT` wherever the
+surface allows it and otherwise refuses the request as `Unsupported`; the frame's command buffer
+transitions the image to `TRANSFER_SRC_OPTIMAL`, copies it into a host-coherent buffer, then
+transitions it to `PRESENT_SRC_KHR` with a host-read barrier, and the call waits on the frame
+slot's fence after presenting. Metal turns `framebufferOnly` off only while a request is pending
+and blits the drawable texture into a shared buffer before `presentDrawable:`, then waits for the
+command buffer. On Linux / NVIDIA RTX 3060 Ti the `mulciber-frame-capture` probe matched direct
+(4x resolved and 1x), HDR-composited and overlaid captures pixel by pixel on Wayland
+(`R8G8B8A8_SRGB`) and XWayland (`B8G8R8A8_SRGB`) under Vulkan validation, including
+synchronization validation. Metal has not run. See the [contract](frame-capture.md).
+
 ## Per-entry-point resource bindings (unreleased)
 
 **Vulkan native evidence, Metal MSL checked but unexercised:** `MULSHDR3` artifacts record the

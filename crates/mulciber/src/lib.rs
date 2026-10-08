@@ -50,12 +50,15 @@ pub use graphics::{
     OpenedGraphics, POSTPROCESS_UNIFORM_SIZE_LIMIT, PostprocessPipeline,
     PostprocessPipelineDescriptor, PostprocessTargets, PostprocessedDraw, PostprocessedScene,
     PresentFeedback, PresentedFrame, Queue, RenderScale, RenderTargets, SHADOW_MAP_LAYER_LIMIT,
-    SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
-    SceneSubmission, ShadowMap, ShadowMapArray, ShadowPass, ShadowPipeline,
-    ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, Surface,
+    SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress, SamplerAddressPerAxis, SamplerFilter,
+    SceneContent, SceneOutput, SceneSubmission, ShadowMap, ShadowMapArray, ShadowPass,
+    ShadowPipeline, ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, Surface,
     TRANSIENT_GEOMETRY_SIZE_LIMIT, Texture, TextureDimension, TexturedDraw, TexturedInstanceBatch,
     TexturedPipeline, TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute,
     VertexFormat, VertexLayout, VolumetricShaders,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub use shader::ShaderArtifact;
+pub use shader::{
+    BufferLayout, BufferMember, ShaderArtifact, ShaderBinding, ShaderBindingKind, ShaderEntryPoint,
+    ShaderReflection, ShaderStage, ShaderVertexInput,
+};

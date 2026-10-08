@@ -197,3 +197,35 @@ validation enabled and again with synchronization validation
 (`VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true`, `VK_KHRONOS_VALIDATION_SYNCVAL_FULL_VALIDATION=true`),
 with no validation messages. The Metal path passes Clippy for `aarch64-apple-darwin` but has never
 run; physical Metal validation remains outstanding.
+
+## Binary16 bit uploads and GPU-generated mips (unreleased)
+
+Data already in half precision skips the conversion pass. Every `RGBA16Float` creation and update
+function has a `_from_bits` form taking `[u16; 4]` texels of IEEE binary16 bit patterns, as the
+`half` crate's `f16::to_bits` produces them (Mulciber itself does not depend on `half`). The bits
+upload unchanged; an all-ones exponent (infinity or NaN) is `InvalidRequest`, matching the `f32`
+contract.
+
+```rust
+let sky = device.create_rgba16_float_texture_with_generated_mips_from_bits(width, height, &bits)?;
+// bits: Vec<[u16; 4]>, e.g. f16::from_f32(value).to_bits() per component.
+device.update_rgba16_float_texture_with_generated_mips(&waves, size, size, &level_zero)?;
+```
+
+`create_rgba16_float_texture_with_generated_mips` (and `_from_bits`),
+`create_rgba8_srgb_texture_with_generated_mips` and `create_rgba8_unorm_texture_with_generated_mips`
+upload level 0 and fill the full chain on the GPU, each level a linear-filtered half-size copy of
+the one above (a 2×2 box for even extents). sRGB levels are averaged in linear space.
+`update_rgba16_float_texture_with_generated_mips` (and `_from_bits`) queues a level 0 replacement
+that the next scene submission copies and then regenerates the chain from, in the frame's command
+buffer before any draw, with the coalescing and cancellation of the other updates. It requires a
+texture created with generated mips; `update_rgba16_float_texture_with_mips` still replaces such a
+texture's whole chain with authored levels.
+
+Vulkan records a `vkCmdBlitImage2` chain with per-level barriers and requires the format's
+`BLIT_SRC`, `BLIT_DST` and linear-filter features (otherwise `Unsupported`); the image also gains
+`TRANSFER_SRC` usage. Metal encodes `generateMipmapsForTexture:` on a blit encoder, at creation in a
+command buffer of its own ahead of every frame on the queue. An ignored native test,
+`generated_mips_average_each_level_under_validation`, uploads a 4×2 `RGBA16Float` level, generates
+its chain and reads back exact box averages with Vulkan validation and no messages (Linux/NVIDIA).
+Metal compiles under Clippy for `aarch64-apple-darwin` but has not run.

@@ -18,7 +18,7 @@ use naga::back::msl::{BindSamplerTarget, BindTarget, EntryPointResources};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, Type, TypeInner};
 
-const MAGIC: &[u8; 8] = b"MULSHDR3";
+const MAGIC: &[u8; 8] = b"MULSHDR4";
 const VULKAN_KIND: u32 = 1;
 const METAL_KIND: u32 = 2;
 
@@ -162,8 +162,10 @@ pub fn compile_host_field(
 
 /// Encodes the module's pipeline-facing interface: per entry point its stage, name,
 /// vertex-stage input locations with formats, and the ascending indices of the module bindings it
-/// uses, then the module's resource bindings sorted by group and binding with their kinds and, for
-/// uniform and read-only storage data, the WGSL byte size. `mulciber` validates application
+/// uses; then the memory layout of each uniform and read-only storage binding (its WGSL type and,
+/// for a struct, every member's name, byte offset, byte size and type); then the module's resource
+/// bindings sorted by group and binding with their kinds and, for uniform and read-only storage
+/// data, the WGSL byte size. `mulciber` validates application
 /// pipeline declarations against this section, so an interface construct without a proven
 /// mapping is a compile error rather than a silently unnamed slot.
 ///
@@ -221,6 +223,17 @@ fn shader_interface(
         for position in used {
             bytes.extend_from_slice(&position.to_le_bytes());
         }
+    }
+
+    let buffers: Vec<(u32, Handle<naga::GlobalVariable>)> = (0_u32..)
+        .zip(&bindings)
+        .filter(|(_, ((_, _, kind, _), _))| *kind == BINDING_UNIFORM || *kind == BINDING_STORAGE)
+        .map(|(position, (_, global))| (position, *global))
+        .collect();
+    push_count(&mut bytes, buffers.len(), "buffer layouts")?;
+    for (position, global) in buffers {
+        bytes.extend_from_slice(&position.to_le_bytes());
+        push_buffer_layout(&mut bytes, module, module.global_variables[global].ty)?;
     }
 
     push_count(&mut bytes, bindings.len(), "resource bindings")?;
@@ -396,6 +409,84 @@ fn vertex_input_format(inner: &TypeInner) -> Option<u8> {
         }
         _ => None,
     }
+}
+
+/// One buffer binding's layout: its WGSL type, then for a struct each member's name, offset, size
+/// and type, in declaration order; any other type records no members.
+fn push_buffer_layout(
+    bytes: &mut Vec<u8>,
+    module: &naga::Module,
+    ty: Handle<Type>,
+) -> Result<(), ShaderBuildError> {
+    push_text(bytes, &wgsl_type_name(module, ty), "buffer type name")?;
+    let TypeInner::Struct { members, .. } = &module.types[ty].inner else {
+        return push_count(bytes, 0, "buffer members");
+    };
+    push_count(bytes, members.len(), "buffer members")?;
+    for member in members {
+        push_text(
+            bytes,
+            member.name.as_deref().unwrap_or_default(),
+            "member name",
+        )?;
+        bytes.extend_from_slice(&member.offset.to_le_bytes());
+        bytes.extend_from_slice(
+            &module.types[member.ty]
+                .inner
+                .size(module.to_ctx())
+                .to_le_bytes(),
+        );
+        push_text(
+            bytes,
+            &wgsl_type_name(module, member.ty),
+            "member type name",
+        )?;
+    }
+    Ok(())
+}
+
+/// The WGSL spelling of a buffer-layout type: scalars, vectors, matrices and atomics in full,
+/// fixed and runtime-sized arrays with their element, and structs by name.
+fn wgsl_type_name(module: &naga::Module, ty: Handle<Type>) -> String {
+    fn scalar(scalar: Scalar) -> String {
+        let prefix = match scalar.kind {
+            ScalarKind::Float | ScalarKind::AbstractFloat => "f",
+            ScalarKind::Sint | ScalarKind::AbstractInt => "i",
+            ScalarKind::Uint => "u",
+            ScalarKind::Bool => return "bool".into(),
+        };
+        format!("{prefix}{}", u32::from(scalar.width) * 8)
+    }
+    let declared = &module.types[ty];
+    match &declared.inner {
+        TypeInner::Scalar(value) => scalar(*value),
+        TypeInner::Vector {
+            size,
+            scalar: value,
+        } => {
+            format!("vec{}<{}>", *size as u8, scalar(*value))
+        }
+        TypeInner::Matrix {
+            columns,
+            rows,
+            scalar: value,
+        } => format!("mat{}x{}<{}>", *columns as u8, *rows as u8, scalar(*value)),
+        TypeInner::Atomic(value) => format!("atomic<{}>", scalar(*value)),
+        TypeInner::Array { base, size, .. } => match size {
+            naga::ArraySize::Constant(count) => {
+                format!("array<{}, {count}>", wgsl_type_name(module, *base))
+            }
+            _ => format!("array<{}>", wgsl_type_name(module, *base)),
+        },
+        TypeInner::Struct { .. } => declared.name.clone().unwrap_or_else(|| "struct".into()),
+        other => format!("{other:?}"),
+    }
+}
+
+fn push_text(bytes: &mut Vec<u8>, text: &str, what: &str) -> Result<(), ShaderBuildError> {
+    push_count(bytes, text.len(), what)?;
+    bytes.extend_from_slice(text.as_bytes());
+    Ok(())
 }
 
 fn push_count(bytes: &mut Vec<u8>, count: usize, what: &str) -> Result<(), ShaderBuildError> {
@@ -675,6 +766,20 @@ mod tests {
         for word in [2_u32, 1, 2] {
             expected.extend_from_slice(&word.to_le_bytes());
         }
+        // One buffer layout: binding table index 0, `DrawConstants`, whose one member is the
+        // 64-byte matrix at offset 0.
+        let text = |expected: &mut Vec<u8>, text: &str| {
+            expected.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+            expected.extend_from_slice(text.as_bytes());
+        };
+        expected.extend_from_slice(&1_u32.to_le_bytes());
+        expected.extend_from_slice(&0_u32.to_le_bytes());
+        text(&mut expected, "DrawConstants");
+        expected.extend_from_slice(&1_u32.to_le_bytes());
+        text(&mut expected, "model_view_projection");
+        expected.extend_from_slice(&0_u32.to_le_bytes());
+        expected.extend_from_slice(&64_u32.to_le_bytes());
+        text(&mut expected, "mat4x4<f32>");
         // One 64-byte uniform, one sampled texture, one sampler in group 0.
         expected.extend_from_slice(&3_u32.to_le_bytes());
         for (binding, kind, size) in [(0_u32, 0_u8, 64_u32), (1, 1, 0), (2, 2, 0)] {
@@ -930,6 +1035,90 @@ mod tests {
         let record = &interface[interface.len() - 13..];
         assert_eq!(record[8], 3);
         assert_eq!(record[9..], 512_u32.to_le_bytes());
+    }
+
+    /// Reads the buffer-layout section that follows the entry points: (binding index, type,
+    /// members as (name, offset, size, type)).
+    #[allow(clippy::type_complexity)]
+    fn buffer_layouts(interface: &[u8]) -> Vec<(u32, String, Vec<(String, u32, u32, String)>)> {
+        let word = |at: usize| u32::from_le_bytes(interface[at..at + 4].try_into().unwrap());
+        let mut at = 4;
+        for _ in 0..word(0) {
+            at += 5 + word(at + 1) as usize;
+            at += 4 + 5 * word(at) as usize;
+            at += 4 + 4 * word(at) as usize;
+        }
+        let text = |at: &mut usize| {
+            let length = word(*at) as usize;
+            let text = std::str::from_utf8(&interface[*at + 4..*at + 4 + length]).unwrap();
+            *at += 4 + length;
+            text.to_owned()
+        };
+        let mut layouts = Vec::new();
+        let count = word(at);
+        at += 4;
+        for _ in 0..count {
+            let index = word(at);
+            at += 4;
+            let name = text(&mut at);
+            let mut members = Vec::new();
+            let count = word(at);
+            at += 4;
+            for _ in 0..count {
+                let member = text(&mut at);
+                let (offset, size) = (word(at), word(at + 4));
+                at += 8;
+                members.push((member, offset, size, text(&mut at)));
+            }
+            layouts.push((index, name, members));
+        }
+        layouts
+    }
+
+    #[test]
+    fn buffer_bindings_record_their_layouts() {
+        let source = "
+            struct Light { position: vec3<f32>, range: f32, color: vec4<f32> }
+            struct Params {
+                view_projection: mat4x4<f32>,
+                eye: vec3<f32>,
+                time: f32,
+                sizes: array<vec4<f32>, 2>,
+                count: u32,
+                flags: vec2<i32>,
+            }
+            @group(0) @binding(0) var<uniform> params: Params;
+            @group(0) @binding(1) var tint: texture_2d<f32>;
+            @group(0) @binding(2) var<storage, read> lights: array<Light, 8>;
+            @vertex fn main_vertex() -> @builtin(position) vec4<f32> {
+                let light = lights[params.count];
+                return params.view_projection * vec4<f32>(params.eye + light.position, params.time)
+                    + textureLoad(tint, params.flags, 0) + params.sizes[0];
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("layout WGSL parses");
+        let interface = shader_interface(&module, &validate(&module)).expect("interface");
+        let member =
+            |name: &str, offset, size, ty: &str| (name.to_owned(), offset, size, ty.to_owned());
+        assert_eq!(
+            buffer_layouts(&interface),
+            [
+                (
+                    0,
+                    "Params".to_owned(),
+                    std::vec![
+                        member("view_projection", 0, 64, "mat4x4<f32>"),
+                        member("eye", 64, 12, "vec3<f32>"),
+                        member("time", 76, 4, "f32"),
+                        member("sizes", 80, 32, "array<vec4<f32>, 2>"),
+                        member("count", 112, 4, "u32"),
+                        member("flags", 120, 8, "vec2<i32>"),
+                    ]
+                ),
+                // A storage array records its type and no members; the texture records nothing.
+                (2, "array<Light, 8>".to_owned(), std::vec![]),
+            ]
+        );
     }
 
     #[test]

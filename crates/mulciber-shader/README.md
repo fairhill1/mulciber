@@ -14,17 +14,21 @@ on macOS and requires Xcode's `metal` and `metallib` tools. The compiler deliber
 only Naga's validation-backed cross-backend feature intersection; unsupported advanced shaders
 fail instead of requesting a second user-authored source.
 
-Each artifact (`MULSHDR3` container) records the module's interface — per entry point its
+Each artifact (`MULSHDR4` container) records the module's interface — per entry point its
 stage, name, vertex-input locations with formats, and the bindings it uses (directly or through
 called functions), plus every binding's kind: uniform,
 texture, cube texture, sampler, depth texture, depth-texture array, comparison sampler, and
-read-only storage with its creation-fixed byte size. The paired `mulciber` crate validates pipeline
+read-only storage with its creation-fixed byte size. Every uniform and storage binding also
+records its memory layout: the WGSL type name and, for a struct, each member's name, byte offset,
+size and type. The paired `mulciber` crate validates pipeline
 declarations against that record. Writable and runtime-sized storage are rejected at compile
 time instead of being recorded without a proven mapping. The tool and the `mulciber` crate
 ship together; no artifact stability is promised across versions. Pipelines validate against
 their own entry points' bindings, so one module can hold, say, a plain and a skinned vertex stage
-where only the skinned one reads a storage palette. `mulciber` still reads `MULSHDR2` artifacts,
-attributing every binding to every entry point; older `mulciber` releases reject `MULSHDR3`.
+where only the skinned one reads a storage palette. `mulciber` still reads `MULSHDR3` artifacts
+(without layouts) and `MULSHDR2` artifacts (attributing every binding to every entry point); older
+`mulciber` releases reject `MULSHDR4`. `ShaderArtifact::reflect` exposes the whole record, and
+`MaterialPipelineDescriptor::validate` checks a declaration against it, both without a device.
 
 ## Host-evaluable fields
 

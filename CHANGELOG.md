@@ -2,6 +2,43 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Binary16 uploads and GPU-generated mips (graphics, unreleased)
+
+Every `RGBA16Float` creation and update function gains a `_from_bits` form taking binary16 bit
+patterns (`[u16; 4]` texels) that upload without conversion; infinity and NaN are still rejected.
+`create_rgba16_float_texture_with_generated_mips`, `create_rgba8_srgb_texture_with_generated_mips`
+and `create_rgba8_unorm_texture_with_generated_mips` upload level 0 and generate the full chain on
+the GPU, and `update_rgba16_float_texture_with_generated_mips` replaces level 0 of such a texture
+and regenerates the chain in the next scene submission, so per-frame float textures need no CPU
+downsampling. Vulkan blits level by level (`vkCmdBlitImage2`, loaded and its `BLIT` stage bit added
+to the generated bindings); Metal uses `generateMipmapsForTexture:`. Additive. An ignored native
+Vulkan test reads back exact box averages under validation; Metal has not run. See
+[float texture uploads](docs/float-texture-uploads.md).
+
+## Shader reflection and device-free pipeline checks (graphics and shader, unreleased)
+
+`mulciber-shader` now writes a `MULSHDR4` container whose interface adds, for every uniform and
+storage binding, its memory layout: the WGSL type name and, for a struct, each member's name, byte
+offset, size and type. `ShaderArtifact::reflect()` returns the recorded interface as a
+`ShaderReflection`: entry points (`ShaderStage`, name, `ShaderVertexInput` location and
+`VertexFormat`, used `(group, binding)` pairs) and `ShaderBinding`s (group, binding,
+`ShaderBindingKind`, byte size, optional `BufferLayout` of `BufferMember`s).
+`MaterialPipelineDescriptor::validate()` and `validate_hdr()` run the declaration checks of
+`create_material_pipeline` and `create_hdr_material_pipeline` without a device. Additive for
+`mulciber`: `MULSHDR3` and `MULSHDR2` artifacts stay readable and reflect without layouts. Older
+`mulciber` releases reject `MULSHDR4` by header, as with the previous container bumps. Checked by
+container round-trip tests in both crates.
+
+## Per-axis sampler addressing (graphics, unreleased)
+
+`MaterialBinding::SamplerPerAxis { binding, filter, address: SamplerAddressPerAxis { u, v, w } }`
+declares a material sampler whose address mode differs per axis, such as an equirectangular sky
+that repeats in `u` and clamps in `v`. `MaterialBinding::Sampler` keeps one mode for every axis;
+`SamplerAddressPerAxis::all` and `From<SamplerAddress>` build the uniform case. Additive: existing
+declarations are unchanged. Vulkan fills `addressModeU/V/W` from the three fields; Metal now also
+sets the R address mode, which 2D sampling never reads. Checked by a binding-validation test and
+by Clippy on Linux and on the `aarch64-apple-darwin` target; neither backend has rendered it here.
+
 ## Audio mixer, HRTF and room reverb (audio 0.1.0)
 
 New `mulciber-audio` crate, the engine from Isle of Rán's audio module made game-agnostic: a

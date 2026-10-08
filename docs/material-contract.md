@@ -24,8 +24,12 @@ Vulkan's guaranteed sampled images per stage.
 `mulciber-shader` records the module's interface — per entry point its stage, name,
 vertex-input locations with formats and the bindings it uses, plus the module's bindings with
 kinds and, for uniform and read-only storage data, WGSL byte sizes — in the artifact container
-(`MULSHDR3`; `MULSHDR2` artifacts stay readable with every binding attributed to every entry
-point). A pipeline declares the bindings its own vertex and fragment entry points use, so one
+(`MULSHDR4`, which adds each uniform and storage binding's memory layout; `MULSHDR3` artifacts
+stay readable without layouts, and `MULSHDR2` ones with every binding attributed to every entry
+point). `ShaderArtifact::reflect` returns that record as a public `ShaderReflection`, and
+`MaterialPipelineDescriptor::validate` (or `validate_hdr`) runs pipeline creation's declaration
+checks without a device, so an application's tests can hold its uniform packing, vertex layouts
+and binding lists to the compiled shader. A pipeline declares the bindings its own vertex and fragment entry points use, so one
 module can serve pipelines with different resources; see [per-entry-point
 bindings](per-entry-point-bindings.md).
 `texture_depth_2d` and `sampler_comparison` bindings record as their own kinds inside the same
@@ -64,6 +68,12 @@ slots follow their declared filter across levels — `Linear` interpolates betwe
 picks one — so mip behavior costs no new declaration axis, and single-level textures sample exactly
 as before. Mip content (downsampling filter, color-space handling) is application policy; native
 generation is not part of the vocabulary.
+
+`MaterialBinding::Sampler` applies one `SamplerAddress` to every axis.
+`MaterialBinding::SamplerPerAxis` takes a `SamplerAddressPerAxis { u, v, w }` instead, for textures
+whose axes differ: an equirectangular panorama repeats round the horizon (`u`) and clamps at the
+poles (`v`). `SamplerAddressPerAxis::all` and `From<SamplerAddress>` give the uniform case. Vulkan
+sets each `addressModeU/V/W`; Metal sets the descriptor's S, T and R address modes.
 
 A material pipeline may declare one read-only storage slot (`MaterialBinding::Storage`): a
 WGSL `var<storage, read>` whose creation-fixed byte size must match the recorded type exactly,

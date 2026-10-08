@@ -43,7 +43,7 @@ pub use graphics::{
     BlendMode, BlockCompression, BloomShaders, CascadedShadowPass, DepthMode, Device,
     DeviceRequest, DeviceSelection, Frame, FrameCapture, GeometrySource, GpuFrameTiming,
     GpuRenderStageTiming, GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport,
-    INSTANCE_SUPPLY_SIZE_LIMIT, InstancedTexturedPipeline, MATERIAL_BUFFER_SLOT_LIMIT,
+    INSTANCE_SUPPLY_SIZE_LIMIT, InstancedTexturedPipeline, Ktx2Texture, MATERIAL_BUFFER_SLOT_LIMIT,
     MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT, MATERIAL_TEXTURE_COUNT_LIMIT,
     MATERIAL_TEXTURE_SLOT_LIMIT, MATERIAL_UNIFORM_SIZE_LIMIT, MaterialBinding, MaterialPipeline,
     MaterialPipelineDescriptor, MaterialRecord, Mesh, MeshIndices, MeshPart, MeshSource,
@@ -55,7 +55,7 @@ pub use graphics::{
     ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, Surface,
     TRANSIENT_GEOMETRY_SIZE_LIMIT, Texture, TextureDimension, TexturedDraw, TexturedInstanceBatch,
     TexturedPipeline, TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute,
-    VertexFormat, VertexLayout, VolumetricShaders,
+    VertexFormat, VertexLayout, VolumetricShaders, ktx2_vk_format,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

@@ -2,6 +2,32 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: KTX 2.0 uploads and the texture baker
+
+`Ktx2Texture::parse` reads a KTX 2.0 file in place, through the `ktx2` crate (0.5.0), and accepts
+only what the GPU samples directly: one 2D image, not supercompressed, in a `BlockCompression`
+encoding, holding its base level alone or the complete chain to 1×1, each level exactly its extent
+in blocks. Anything else is refused by name: `InvalidRequest` for a malformed file, `Unsupported`
+for another format, a cube, array or 3D texture, or supercompression.
+`Device::create_ktx2_texture` uploads it through the block-compressed uploads, and
+`ktx2_vk_format` gives each encoding's `VkFormat`.
+
+New `mulciber-texture` crate, Isle of Rán's texture baker made game-agnostic. A `Recipe` packs four
+channels from images or constants, builds the mip chain with the filter its content needs (`Color`
+in linear light, `ColorFlatDistant`, `Cutout` keeping alpha coverage, `Normal` as renormalised
+vectors with a scalar in alpha, `Linear`), encodes every level as BC7 with Intel's ISPC encoder
+(slow settings) and writes KTX 2.0 with the digest of its sources, the base level's mean and its
+smallest alpha. Any size bakes, not only square powers of two. `Recipe::prepare` reads the bake while
+it is current (or when its sources are not shipped) and otherwise builds the same chain from the
+sources in RGBA8, saying why; `Prepared::upload` uploads either. `MaterialMaps` is a physically based
+material as three textures found beside its albedo by suffix: albedo (sRGB, alpha = opacity), normal
++ perceptual roughness (Isle's packing) from `_normal` and `_rough`, and metallic + occlusion from
+`_metal` and `_ao`, with `MaterialDefaults` (roughness 0.8, not metal, unoccluded) for maps that are
+not there. The `mulciber-texture` CLI bakes (`bake <dir>... [--force]`) and checks (`check <dir>...`)
+whole directories, and `run` lets a game's own bake binary forward to it. The encoder is behind the
+default `encode` feature, so a game's runtime builds without it. Tests cover the chains, packing,
+digests, the bake and fallback cycle and BC7 quality, decoded with `bcdec_rs`.
+
 ## Unreleased: shared lighting library
 
 `mulciber-shader` ships Mulciber's shading model as WGSL modules every game can import, so lighting

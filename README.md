@@ -23,6 +23,10 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   [Presentation controls](docs/frame-pacing-controls.md) also support explicit caps independent of refresh.
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
   spatialization, and a room reverb sized by probing the game's world.
+- **Texture baking** (`mulciber-texture`): mip chains filtered for colour, cutouts, normals and
+  data, packed into physically based materials, encoded as BC7 and written as KTX 2.0 beside their
+  sources, with the same chains built from the sources at run time when a bake is stale. `mulciber`
+  uploads KTX 2.0 files directly.
 - **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
   Shaders `#import` shared WGSL modules, with `#ifdef` shader defs, including Mulciber's own
   `mulciber::` lighting library: photometric units, a Filament BRDF with a CPU-baked DFG table,
@@ -100,11 +104,11 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Project vision](docs/vision.md) and [support contract](docs/support-contract.md)
 - [Graphics](docs/api-graphics-contract.md), [platform](docs/api-platform-contract.md), and
   [runtime](docs/runtime-contract.md) contracts
-- [Shader toolchain](crates/mulciber-shader/README.md)
+- [Shader toolchain](crates/mulciber-shader/README.md) and [texture baker](crates/mulciber-texture/README.md)
 - [Materials](docs/material-contract.md), [HDR and bloom](docs/hdr-bloom-contract.md),
   [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
-  [block-compressed textures](docs/block-compressed-textures.md), and
+  [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md), and
   [cube textures](docs/cube-textures.md)
 - [Packed vertex formats](docs/vertex-formats.md),
   [per-entry-point resource bindings](docs/per-entry-point-bindings.md), and

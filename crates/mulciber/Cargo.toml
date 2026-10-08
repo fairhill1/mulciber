@@ -22,4 +22,5 @@ native-validation = ["vulkan-validation"]
 workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+ktx2 = "0.5.0"
 mulciber-platform = { version = "0.5.6", path = "../mulciber-platform" }

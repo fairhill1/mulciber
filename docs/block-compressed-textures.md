@@ -26,6 +26,26 @@ let normal = device.create_block_compressed_texture_with_mips(
 )?;
 ```
 
+## KTX 2.0 files
+
+`Ktx2Texture::parse(&bytes)` reads a KTX 2.0 file in place and `Device::create_ktx2_texture`
+uploads it through the two methods above: its base level alone, or the complete chain it stores. The
+[`ktx2`](https://crates.io/crates/ktx2) crate (0.5.0) parses the container and checks its section
+bounds and data format descriptor. Mulciber then accepts only what the GPU samples directly and
+refuses the rest by name:
+
+- `InvalidRequest`: not KTX 2.0, truncated, a level whose byte count is not its extent in blocks, a
+  level count that is neither one nor the complete chain to 1×1 (0, "generate mips", included), or
+  a level whose uncompressed length differs from its stored one.
+- `Unsupported`: a `VkFormat` outside `BlockCompression`'s nine, 1D, 3D, array and cube textures,
+  and any supercompression (Basis, Zstandard, zlib).
+
+`width()`, `height()`, `compression()`, `level_count()`, `level(n)` and `levels()` describe what was
+parsed; `value(key)` and `key_values()` read the key/value data, values without their trailing NUL.
+`ktx2_vk_format(compression)` gives the `VkFormat` a writer records for each encoding.
+[`mulciber-texture`](../crates/mulciber-texture/README.md) writes such files: it bakes textures to BC7
+KTX 2.0 and reads them back through this parser.
+
 ## Input contract
 
 Every encoding stores a 4×4 texel block, in eight bytes for BC1 and sixteen for the rest. BC1,
@@ -89,3 +109,9 @@ a The Ship map viewer uploaded 151 textures from the game's own DXT1 and DXT5 da
 them in a material pipeline; the rendered frame was inspected and matched the same data decoded
 through another renderer. BC2 was not exercised (that game ships no DXT3), the UNORM variants were
 not exercised, and Metal was not run.
+
+KTX 2.0 (unreleased): unit tests parse files written byte by byte from the specification, every
+`BlockCompression` encoding's `VkFormat`, a base-level-only file and a complete non-square chain,
+and refuse truncated, short-level, partial-chain, foreign-format, cube, array, 3D and
+supercompressed files with the expected kind. `mulciber-texture`'s tests round-trip its writer
+through the parser. No native upload is claimed here yet.

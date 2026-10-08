@@ -1,6 +1,7 @@
 mod capture;
 mod cube_texture;
 mod hdr;
+mod ktx2;
 mod sampled_texture;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(crate) use sampled_texture::checked_staging_size;
@@ -9,6 +10,7 @@ pub use capture::FrameCapture;
 pub(crate) use capture::{CaptureByteOrder, capture_byte_len, frame_capture_from_native};
 pub(crate) use hdr::bloom_extents;
 use hdr::{validate_bloom_filter_interface, validate_hdr_pair};
+pub use ktx2::{Ktx2Texture, ktx2_vk_format};
 use scene_depth::validate_scene_depth_order;
 
 use core::cell::RefCell;
@@ -455,6 +457,36 @@ impl Device<'_> {
         levels: &[&[u8]],
     ) -> Result<Texture, GraphicsError> {
         self.create_rgba8_texture_with_mips(width, height, levels, compression.sampled())
+    }
+
+    /// Uploads a block-compressed texture from a parsed KTX 2.0 file: its base level alone, or the
+    /// complete chain it stores, as [`create_block_compressed_texture`] and
+    /// [`create_block_compressed_texture_with_mips`] would. The blocks go to the GPU as they are
+    /// stored; nothing is decoded or transcoded.
+    ///
+    /// [`create_block_compressed_texture`]: Self::create_block_compressed_texture
+    /// [`create_block_compressed_texture_with_mips`]: Self::create_block_compressed_texture_with_mips
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the adapter cannot sample the file's encoding, and the errors of
+    /// the block-compressed uploads otherwise.
+    pub fn create_ktx2_texture(&self, texture: &Ktx2Texture<'_>) -> Result<Texture, GraphicsError> {
+        let levels = texture.levels();
+        if let [base] = levels {
+            return self.create_block_compressed_texture(
+                texture.compression(),
+                texture.width(),
+                texture.height(),
+                base,
+            );
+        }
+        self.create_block_compressed_texture_with_mips(
+            texture.compression(),
+            texture.width(),
+            texture.height(),
+            levels,
+        )
     }
 
     /// Uploads linear `RGBA16Float` data from row-major RGBA f32 texels (eight GPU bytes/texel).

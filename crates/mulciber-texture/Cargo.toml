@@ -1,0 +1,36 @@
+[package]
+name = "mulciber-texture"
+version = "0.1.0"
+description = "Texture baking for Mulciber games: mip chains, channel packing, BC7 and KTX2, with a source fallback"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "textures", "bc7", "ktx2", "mipmaps"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+categories = ["command-line-utilities", "game-development", "graphics"]
+publish = ["crates-io"]
+
+[features]
+default = ["encode"]
+# Intel's ISPC BC7 encoder, the `bake` functions and the `mulciber-texture` CLI. A game's runtime
+# only reads bakes and builds fallbacks, and leaves this off.
+encode = ["dep:intel_tex_2"]
+
+[[bin]]
+name = "mulciber-texture"
+path = "src/main.rs"
+required-features = ["encode"]
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+intel_tex_2 = { version = "0.5.0", optional = true }
+ktx2 = "0.5.0"
+mulciber = { version = "0.13.35", path = "../mulciber" }
+
+[dev-dependencies]
+bcdec_rs = "0.2.0"
+
+[lints]
+workspace = true

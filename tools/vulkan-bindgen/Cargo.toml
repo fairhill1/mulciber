@@ -8,7 +8,7 @@ rust-version = "1.97"
 version = "0.0.0"
 
 [dependencies]
-bindgen = "0.72.1"
+bindgen = "0.73.2"
 
 # Keep build-tool dependencies out of Mulciber's runtime workspace and lock file.
 [workspace]

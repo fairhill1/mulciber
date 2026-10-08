@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
-glam = "=0.33.2"
-pollster = "0.4"
-wgpu = "=30.0.0"
+glam = "=0.34.1"
+pollster = "1.0.1"
+wgpu = "=30.0.1"
 winit = "=0.30.13"

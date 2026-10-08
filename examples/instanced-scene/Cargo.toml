@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-glam = { version = "0.33.0", features = ["std"], default-features = false }
+glam = { version = "0.34.1", features = ["std"], default-features = false }
 mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
 mulciber-platform = { path = "../../crates/mulciber-platform" }
 

@@ -123,7 +123,7 @@ mod scene_depth_tests {
             .expect("scene depth and shadows occupy separate slots");
             assert_eq!(declaration.scene_depth, Some((2, msaa)));
             assert_eq!(declaration.depth_texture_array, Some(3));
-            assert!(declaration.texture_bindings.is_empty());
+            assert_eq!(declaration.texture_bindings, [] as [u32; 0]);
             assert!(
                 validate_bindings_against_interface(
                     &[

@@ -9,7 +9,7 @@ const SURFACE_EXTENSION: &CStr = c"VK_KHR_xlib_surface";
 #[test]
 fn ordinary_instance_requirements_exclude_sdk_dependencies() {
     let requirements = InstanceRequirements::new(SURFACE_EXTENSION, false);
-    assert!(requirements.layers.is_empty());
+    assert_eq!(requirements.layers, [] as [&core::ffi::CStr; 0]);
     assert_eq!(
         requirements.extensions,
         [c"VK_KHR_surface", SURFACE_EXTENSION]

@@ -304,7 +304,10 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
         assert_eq!(pending[0].kind, ResourceKind::Mesh);
-        assert!(drops.take_bounded(usize::MAX).is_empty());
+        assert_eq!(
+            drops.take_bounded(usize::MAX),
+            [] as [super::DestroyRequest; 0]
+        );
     }
 
     #[test]

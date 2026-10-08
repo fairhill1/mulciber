@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: Rust 1.99 and current dependencies
+
+The pinned toolchain moves from 1.98.1 to 1.99.0 (the MSRV stays 1.97). Examples, probes and
+comparisons move to glam 0.34.1, the Vulkan triangle probe to naga 30.0.1, the wgpu comparisons to
+wgpu 30.0.1 and pollster 1.0.1, the Metal comparison to bytemuck 1.25.2, and the binding generator
+to bindgen 0.73.2. Three tests use `assert_eq!` against an empty array for clippy 1.99's
+`assert_is_empty`.
+
 ## Unreleased: modifier keys as physical keys
 
 `KeyCode` gains `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`,

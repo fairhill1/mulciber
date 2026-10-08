@@ -12,7 +12,7 @@ const HEADER_LENGTH: usize = 20;
 
 const STAGE_LIMIT: u8 = 2;
 const VERTEX_FORMAT_LIMIT: u8 = 11;
-const BINDING_KIND_LIMIT: u8 = 7;
+const BINDING_KIND_LIMIT: u8 = 8;
 
 /// Target-selected native shader code produced from one WGSL module by
 /// `mulciber-shader`.
@@ -158,6 +158,7 @@ pub(crate) const INTERFACE_BINDING_DEPTH_TEXTURE: u8 = 4;
 pub(crate) const INTERFACE_BINDING_COMPARISON_SAMPLER: u8 = 5;
 pub(crate) const INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 pub(crate) const INTERFACE_BINDING_MULTISAMPLED_DEPTH: u8 = 7;
+pub(crate) const INTERFACE_BINDING_CUBE_TEXTURE: u8 = 8;
 
 /// The compiler-recorded interface of one shader module.
 pub(crate) struct ShaderInterface {
@@ -339,6 +340,33 @@ mod tests {
         let interface = parsed.parse_interface();
         assert!(interface.entry_points.is_empty());
         assert!(interface.bindings.is_empty());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn reads_cube_texture_bindings_and_rejects_unknown_kinds() {
+        let payload = 0x0723_0203_u32.to_le_bytes();
+        let interface = |kind: u8| {
+            let mut bytes = 0_u32.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.extend_from_slice(&5_u32.to_le_bytes());
+            bytes.push(kind);
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes
+        };
+        let cube = artifact(
+            VULKAN_KIND,
+            &payload,
+            &interface(super::INTERFACE_BINDING_CUBE_TEXTURE),
+        );
+        let parsed = ShaderArtifact::new(&cube).expect("cube binding kind is known");
+        let bindings = parsed.parse_interface().bindings;
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].binding, 5);
+        assert_eq!(bindings[0].kind, super::INTERFACE_BINDING_CUBE_TEXTURE);
+        let unknown = artifact(VULKAN_KIND, &payload, &interface(9));
+        assert!(ShaderArtifact::new(&unknown).is_err());
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]

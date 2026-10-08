@@ -16,8 +16,8 @@ fail instead of requesting a second user-authored source.
 
 Each artifact (`MULSHDR2` container) records the module's interface — per entry point its
 stage, name, and vertex-input locations with formats, plus every binding's kind: uniform,
-texture, sampler, depth texture, depth-texture array, comparison sampler, and read-only
-storage with its creation-fixed byte size. The paired `mulciber` crate validates pipeline
+texture, cube texture, sampler, depth texture, depth-texture array, comparison sampler, and
+read-only storage with its creation-fixed byte size. The paired `mulciber` crate validates pipeline
 declarations against that record. Writable and runtime-sized storage are rejected at compile
 time instead of being recorded without a proven mapping. The tool and the `mulciber` crate
 ship together; no artifact stability is promised across versions.
@@ -61,3 +61,7 @@ against a real device — see the [Linux runbook](../../docs/linux-validation.md
 The reflected interface also distinguishes single-sample and multisampled 2D depth textures.
 `texture_depth_multisampled_2d` artifacts require Mulciber 0.13.6 or newer; older runtimes
 reject this binding kind rather than treating it as a single-sample texture.
+
+`texture_cube<f32>` records its own binding kind, which `MaterialBinding::CubeTexture` declares.
+Mulciber releases before cube textures reject artifacts that contain it rather than treating it as a
+2D texture. Arrayed cubes, depth cubes and integer cubes have no proven mapping and fail to compile.

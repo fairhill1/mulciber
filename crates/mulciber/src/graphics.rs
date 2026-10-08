@@ -1,3 +1,4 @@
+mod cube_texture;
 mod hdr;
 mod sampled_texture;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -492,6 +493,210 @@ impl Device<'_> {
         self.upload_rgba16_float(width, height, levels, true)
     }
 
+    /// Uploads a tightly packed RGBA8 sRGB cube texture of six `size`×`size` faces.
+    ///
+    /// `faces` is in the standard cube layer order +X, -X, +Y, -Y, +Z, -Z, each face's texels
+    /// row-major as for [`Self::create_rgba8_srgb_texture`]. The texture has only level zero
+    /// and binds through [`MaterialBinding::CubeTexture`] and WGSL `texture_cube<f32>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, a face whose byte count does not match it (naming
+    /// the face), overflow, or native upload failure.
+    pub fn create_rgba8_srgb_cube_texture(
+        &self,
+        size: u32,
+        faces: [&[u8]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(
+            size,
+            single_level_faces(&faces),
+            SampledTextureFormat::Srgb,
+            false,
+        )
+    }
+
+    /// Uploads an RGBA8 sRGB cube texture with an application-supplied mip chain per face.
+    ///
+    /// Each of the six faces (+X, -X, +Y, -Y, +Z, -Z) supplies the complete chain from its
+    /// `size`×`size` base to 1×1, halving each level as
+    /// [`Self::create_rgba8_srgb_texture_with_mips`] does. The application owns mip content,
+    /// including any filtering across face edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, a face whose chain does not run from the base level
+    /// to 1×1, a level whose byte count does not match its extent (naming the face and level),
+    /// overflow, or native upload failure.
+    pub fn create_rgba8_srgb_cube_texture_with_mips(
+        &self,
+        size: u32,
+        faces: [&[&[u8]]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(size, faces, SampledTextureFormat::Srgb, true)
+    }
+
+    /// Uploads a tightly packed RGBA8 UNORM cube texture of six `size`×`size` faces, sampled
+    /// without sRGB transfer-function decoding.
+    ///
+    /// Face order and binding follow [`Self::create_rgba8_srgb_cube_texture`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, a face whose byte count does not match it (naming
+    /// the face), overflow, or native upload failure.
+    pub fn create_rgba8_unorm_cube_texture(
+        &self,
+        size: u32,
+        faces: [&[u8]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(
+            size,
+            single_level_faces(&faces),
+            SampledTextureFormat::Unorm,
+            false,
+        )
+    }
+
+    /// Uploads an RGBA8 UNORM cube texture with an application-supplied mip chain per face.
+    ///
+    /// Face order and chain rules follow [`Self::create_rgba8_srgb_cube_texture_with_mips`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, a face whose chain does not run from the base level
+    /// to 1×1, a level whose byte count does not match its extent (naming the face and level),
+    /// overflow, or native upload failure.
+    pub fn create_rgba8_unorm_cube_texture_with_mips(
+        &self,
+        size: u32,
+        faces: [&[&[u8]]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(size, faces, SampledTextureFormat::Unorm, true)
+    }
+
+    /// Uploads one level of an already block-compressed cube texture.
+    ///
+    /// Each of the six faces (+X, -X, +Y, -Y, +Z, -Z) holds its `size`×`size` level as
+    /// [`Self::create_block_compressed_texture`] takes a 2D level: whole 4×4 blocks, row-major
+    /// and tightly packed, never encoded or decoded by Mulciber.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
+    /// for a zero extent, a face whose byte count is not its block count times the block size
+    /// (naming the face), or overflow.
+    pub fn create_block_compressed_cube_texture(
+        &self,
+        compression: BlockCompression,
+        size: u32,
+        faces: [&[u8]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(
+            size,
+            single_level_faces(&faces),
+            compression.sampled(),
+            false,
+        )
+    }
+
+    /// Uploads a block-compressed cube texture with an application-supplied mip chain per face.
+    ///
+    /// Each face supplies the complete chain to 1×1 as
+    /// [`Self::create_block_compressed_texture_with_mips`] takes a 2D chain, so every face's
+    /// 2×2 and 1×1 tail levels are each one block.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
+    /// for a zero extent, a face whose chain does not run from the base level to 1×1, a level
+    /// whose byte count does not match its block count (naming the face and level), or
+    /// overflow.
+    pub fn create_block_compressed_cube_texture_with_mips(
+        &self,
+        compression: BlockCompression,
+        size: u32,
+        faces: [&[&[u8]]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_cube_texture(size, faces, compression.sampled(), true)
+    }
+
+    /// Uploads a linear `RGBA16Float` cube texture of six `size`×`size` faces from row-major
+    /// RGBA f32 texels.
+    ///
+    /// Face order follows [`Self::create_rgba8_srgb_cube_texture`]; component conversion and
+    /// limits follow [`Self::create_rgba16_float_texture`]. The texture has only level zero and
+    /// cannot be replaced with [`Self::update_rgba16_float_texture`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, a face whose texel count does not match it, invalid
+    /// components (each naming the face), size overflow, allocation/upload failure, or
+    /// unsupported linearly filterable native storage.
+    pub fn create_rgba16_float_cube_texture(
+        &self,
+        size: u32,
+        faces: [&[[f32; 4]]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.upload_rgba16_float_cube(size, single_level_faces(&faces), false)
+    }
+
+    /// Uploads a linear `RGBA16Float` cube texture with an application-authored mip chain per
+    /// face.
+    ///
+    /// Each face (+X, -X, +Y, -Y, +Z, -Z) supplies the complete chain from `size`×`size` to
+    /// 1×1, as [`Self::create_rgba16_float_texture_with_mips`] takes a 2D chain.
+    ///
+    /// # Errors
+    ///
+    /// Also rejects incomplete/extra mip levels and mismatched per-level texel counts, naming
+    /// the face.
+    pub fn create_rgba16_float_cube_texture_with_mips(
+        &self,
+        size: u32,
+        faces: [&[&[[f32; 4]]]; 6],
+    ) -> Result<Texture, GraphicsError> {
+        self.upload_rgba16_float_cube(size, faces, true)
+    }
+
+    fn upload_rgba16_float_cube(
+        &self,
+        size: u32,
+        faces: [&[&[[f32; 4]]]; 6],
+        complete: bool,
+    ) -> Result<Texture, GraphicsError> {
+        let mut packed: [Vec<Vec<u8>>; 6] = Default::default();
+        for ((name, levels), packed) in cube_texture::FACE_NAMES.iter().zip(faces).zip(&mut packed)
+        {
+            *packed = sampled_texture::pack_float_levels(size, size, levels, complete)
+                .map_err(|error| cube_texture::name_face(name, &error))?;
+        }
+        let slices: [Vec<&[u8]>; 6] = packed
+            .each_ref()
+            .map(|levels| levels.iter().map(Vec::as_slice).collect());
+        self.create_cube_texture(
+            size,
+            slices.each_ref().map(Vec::as_slice),
+            SampledTextureFormat::Float16,
+            complete,
+        )
+    }
+
+    fn create_cube_texture(
+        &self,
+        size: u32,
+        faces: [&[&[u8]]; 6],
+        format: SampledTextureFormat,
+        complete: bool,
+    ) -> Result<Texture, GraphicsError> {
+        cube_texture::validate_faces(format, size, &faces, complete)?;
+        let id = session_mut(&self.shared)?.create_cube_texture(size, &faces, format)?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::Cube,
+        })
+    }
+
     /// Queues a full replacement of a single-level `RGBA16Float` texture.
     ///
     /// The texture must belong to this device and retain its original dimensions.
@@ -515,6 +720,11 @@ impl Device<'_> {
         if texture.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "texture belongs to another graphics session",
+            ));
+        }
+        if texture.dimension != TextureDimension::D2 {
+            return Err(GraphicsError::invalid_request(
+                "float texture updates replace 2D textures only, not cube textures",
             ));
         }
         let mut packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
@@ -543,6 +753,7 @@ impl Device<'_> {
         )?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::D2,
         })
     }
 
@@ -557,6 +768,7 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::D2,
         })
     }
 
@@ -586,6 +798,7 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?.create_texture(width, height, levels, format)?;
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::D2,
         })
     }
 
@@ -878,7 +1091,7 @@ impl Device<'_> {
             storage_size: declaration.storage.map_or(0, |(_, size)| size),
             instance_stride: instance_layout.map_or(0, |instance| instance.stride),
             scene_depth: declaration.scene_depth.is_some(),
-            texture_count: declaration.texture_bindings.len(),
+            texture_dimensions: declaration.texture_dimensions,
             shadow_slot: if declaration.depth_texture.is_some() {
                 Some(ShadowSlotKind::Map)
             } else if declaration.depth_texture_array.is_some() {
@@ -996,6 +1209,15 @@ impl Device<'_> {
             return Err(GraphicsError::with_kind(
                 GraphicsErrorKind::Unsupported,
                 "shadow pipelines do not sample depth resources",
+            ));
+        }
+        if declaration
+            .texture_dimensions
+            .contains(&TextureDimension::Cube)
+        {
+            return Err(GraphicsError::with_kind(
+                GraphicsErrorKind::Unsupported,
+                "shadow pipelines sample 2D textures only, not cube textures",
             ));
         }
         if descriptor.fragment_entry.is_none()
@@ -1736,6 +1958,16 @@ impl Queue<'_> {
                     record.pipeline.texture_count
                 )));
             }
+            if record
+                .textures
+                .iter()
+                .any(|texture| texture.dimension != TextureDimension::D2)
+            {
+                return Err(GraphicsError::invalid_request(
+                    "shadow record supplies a cube texture but shadow pipelines sample 2D \
+                     textures only",
+                ));
+            }
             validate_instance_supply(
                 "shadow record",
                 record.instances,
@@ -1854,14 +2086,7 @@ impl Queue<'_> {
                     },
                 ));
             }
-            if record.textures.len() != record.pipeline.texture_count {
-                return Err(GraphicsError::invalid_request(format!(
-                    "material record supplies {} textures but its pipeline declares {} texture \
-                     slots",
-                    record.textures.len(),
-                    record.pipeline.texture_count
-                )));
-            }
+            validate_record_textures(record.textures, &record.pipeline.texture_dimensions)?;
             let expected =
                 usize::try_from(record.pipeline.uniform_size).expect("u32 size fits usize");
             if record.uniform.len() != expected {
@@ -2014,6 +2239,7 @@ impl Queue<'_> {
                 draw.texture.lease.session,
                 draw.pipeline.lease.session,
             )?;
+            validate_fixed_pipeline_texture(draw.texture)?;
             if !draw
                 .model_view_projection
                 .iter()
@@ -2055,6 +2281,7 @@ impl Queue<'_> {
                 batch.texture.lease.session,
                 batch.pipeline.lease.session,
             )?;
+            validate_fixed_pipeline_texture(batch.texture)?;
             if !batch
                 .model_view_projections
                 .iter()
@@ -2812,11 +3039,36 @@ impl<'resources> MeshSource<'resources> {
     }
 }
 
-/// Uploaded sampled 2D texture: RGBA8 sRGB, RGBA8 UNORM, or linear `RGBA16Float`,
-/// according to its creation API.
+/// Uploaded sampled texture: RGBA8 sRGB, RGBA8 UNORM, block-compressed, or linear
+/// `RGBA16Float`, according to its creation API, and either one 2D image or a cube of six
+/// square faces ([`Texture::dimension`]).
 #[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
     lease: ResourceLease,
+    dimension: TextureDimension,
+}
+
+/// The shape of an uploaded [`Texture`], which decides the material slot it can feed.
+///
+/// A 2D texture feeds a [`MaterialBinding::Texture`] slot (WGSL `texture_2d<f32>`) and the
+/// fixed textured pipelines; a cube texture feeds a [`MaterialBinding::CubeTexture`] slot (WGSL
+/// `texture_cube<f32>`) and nothing else.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum TextureDimension {
+    /// One 2D image with its mip chain.
+    D2,
+    /// Six square faces of one extent, each with its mip chain, in the layer order +X, -X, +Y,
+    /// -Y, +Z, -Z.
+    Cube,
+}
+
+impl TextureDimension {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::D2 => "2D texture",
+            Self::Cube => "cube texture",
+        }
+    }
 }
 
 /// A block-compressed texture encoding the GPU samples directly.
@@ -2942,6 +3194,12 @@ impl SampledTextureFormat {
 impl Texture {
     pub(crate) const fn id(&self) -> ResourceId {
         self.lease.id
+    }
+
+    /// Whether this is a 2D texture or a cube texture, fixed by its creation API.
+    #[must_use]
+    pub const fn dimension(&self) -> TextureDimension {
+        self.dimension
     }
 }
 
@@ -3194,6 +3452,18 @@ pub enum MaterialBinding {
         /// WGSL binding number.
         binding: u32,
     },
+    /// One sampled cube texture (WGSL `texture_cube<f32>`) supplied with each draw record from a
+    /// [`Texture`] whose [`Texture::dimension`] is [`TextureDimension::Cube`].
+    ///
+    /// It shares the texture slots and [`MATERIAL_TEXTURE_COUNT_LIMIT`] with
+    /// [`MaterialBinding::Texture`], and the record supplies it in the same `textures` list in
+    /// ascending binding order. A 2D texture in a cube slot, or a cube texture in a 2D slot, is
+    /// rejected at submission. Sample it through an ordinary [`MaterialBinding::Sampler`]; the
+    /// direction need not be normalized. Shadow pipelines do not accept cube slots.
+    CubeTexture {
+        /// WGSL binding number.
+        binding: u32,
+    },
     /// A pipeline-owned sampler with the declared filter and address modes.
     Sampler {
         /// WGSL binding number.
@@ -3290,7 +3560,8 @@ pub struct MaterialPipeline {
     storage_size: u32,
     /// Zero when no instance layout is declared.
     instance_stride: u32,
-    texture_count: usize,
+    /// The shape each declared texture slot samples, in ascending binding order.
+    texture_dimensions: Vec<TextureDimension>,
     /// The kind of depth-texture slot the pipeline declares, fed per record.
     shadow_slot: Option<ShadowSlotKind>,
     /// Declared depth mode, retained so a scene submission can derive its depth-clear value
@@ -3959,6 +4230,11 @@ fn full_mip_chain_len(width: u32, height: u32) -> usize {
     usize::try_from(32 - largest.leading_zeros()).expect("level count fits usize")
 }
 
+/// Presents six single-level faces as six one-level chains, borrowing each face in place.
+fn single_level_faces<T>(faces: &[T; 6]) -> [&[T]; 6] {
+    faces.each_ref().map(core::slice::from_ref)
+}
+
 /// Extent of one mip level along one axis, flooring at one texel.
 pub(crate) const fn mip_extent(base: u32, level: u32) -> u32 {
     let scaled = base >> level;
@@ -4236,7 +4512,10 @@ fn validate_layouts_cover_entry(
 
 struct BindingDeclaration {
     uniform: Option<(u32, u32)>,
+    /// 2D and cube texture slots together, in ascending binding order.
     texture_bindings: Vec<u32>,
+    /// The shape each slot in `texture_bindings` samples, index for index.
+    texture_dimensions: Vec<TextureDimension>,
     sampler_bindings: Vec<SamplerSlot>,
     scene_depth: Option<(u32, bool)>,
     depth_texture: Option<u32>,
@@ -4256,6 +4535,7 @@ const fn interface_binding_label(kind: u8) -> &'static str {
         shader::INTERFACE_BINDING_MULTISAMPLED_DEPTH => "a multisampled depth texture",
         shader::INTERFACE_BINDING_COMPARISON_SAMPLER => "a comparison sampler",
         shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY => "a depth texture array",
+        shader::INTERFACE_BINDING_CUBE_TEXTURE => "a cube texture",
         _ => "an unsupported resource",
     }
 }
@@ -4319,6 +4599,7 @@ fn validate_bindings_against_interface(
     let mut declaration = BindingDeclaration {
         uniform: None,
         texture_bindings: Vec::new(),
+        texture_dimensions: Vec::new(),
         sampler_bindings: Vec::new(),
         scene_depth: None,
         depth_texture: None,
@@ -4370,6 +4651,10 @@ fn validate_bindings_against_interface(
             MaterialBinding::Texture { binding } => {
                 declaration.texture_bindings.push(binding);
                 (binding, shader::INTERFACE_BINDING_SAMPLED_TEXTURE, 0)
+            }
+            MaterialBinding::CubeTexture { binding } => {
+                declaration.texture_bindings.push(binding);
+                (binding, shader::INTERFACE_BINDING_CUBE_TEXTURE, 0)
             }
             MaterialBinding::Sampler {
                 binding,
@@ -4516,10 +4801,58 @@ fn validate_bindings_against_interface(
         }
     }
     declaration.texture_bindings.sort_unstable();
+    declaration.texture_dimensions = declaration
+        .texture_bindings
+        .iter()
+        .map(|&slot| {
+            if declared.iter().any(|&(declared, kind, _)| {
+                declared == slot && kind == shader::INTERFACE_BINDING_CUBE_TEXTURE
+            }) {
+                TextureDimension::Cube
+            } else {
+                TextureDimension::D2
+            }
+        })
+        .collect();
     declaration
         .sampler_bindings
         .sort_unstable_by_key(|slot| slot.binding);
     Ok(declaration)
+}
+
+/// Requires a material record to supply one texture per declared slot, in ascending binding
+/// order, each of the shape its slot samples.
+fn validate_record_textures(
+    textures: &[&Texture],
+    slots: &[TextureDimension],
+) -> Result<(), GraphicsError> {
+    if textures.len() != slots.len() {
+        return Err(GraphicsError::invalid_request(format!(
+            "material record supplies {} textures but its pipeline declares {} texture slots",
+            textures.len(),
+            slots.len()
+        )));
+    }
+    for (index, (texture, &slot)) in textures.iter().zip(slots).enumerate() {
+        if texture.dimension != slot {
+            return Err(GraphicsError::invalid_request(format!(
+                "material record supplies a {} for texture {index}, but that slot samples a {}",
+                texture.dimension.label(),
+                slot.label()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The fixed textured pipelines sample `texture_2d<f32>` only.
+fn validate_fixed_pipeline_texture(texture: &Texture) -> Result<(), GraphicsError> {
+    if texture.dimension == TextureDimension::D2 {
+        return Ok(());
+    }
+    Err(GraphicsError::invalid_request(
+        "textured draws sample a 2D texture; cube textures bind through material pipelines only",
+    ))
 }
 
 /// Validates the fixed postprocess entry points and binding recipe against the artifact's
@@ -4938,5 +5271,140 @@ mod slot_tests {
             validate_bindings_against_interface(&declare(most + 1), &interface(&slots(most + 1)))
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod cube_texture_slot_tests {
+    use std::rc::Rc;
+    use std::vec;
+
+    use super::{
+        MATERIAL_TEXTURE_COUNT_LIMIT, MaterialBinding, Texture, TextureDimension,
+        validate_bindings_against_interface, validate_fixed_pipeline_texture,
+        validate_record_textures,
+    };
+    use crate::resource::{Arena, DropQueue, ResourceKind, ResourceLease};
+    use crate::shader::{
+        INTERFACE_BINDING_CUBE_TEXTURE, INTERFACE_BINDING_SAMPLED_TEXTURE,
+        INTERFACE_BINDING_SAMPLER, InterfaceBinding, ShaderInterface,
+    };
+
+    fn interface(bindings: &[(u32, u8)]) -> ShaderInterface {
+        ShaderInterface {
+            entry_points: vec![],
+            bindings: bindings
+                .iter()
+                .map(|&(binding, kind)| InterfaceBinding {
+                    group: 0,
+                    binding,
+                    kind,
+                    size: 0,
+                })
+                .collect(),
+        }
+    }
+
+    fn texture(arena: &mut Arena<()>, dimension: TextureDimension) -> Texture {
+        let mut lease = ResourceLease::new(
+            1,
+            arena.insert(()).expect("test identity"),
+            ResourceKind::Texture,
+            Rc::new(DropQueue::default()),
+        );
+        lease.disarm();
+        Texture { lease, dimension }
+    }
+
+    #[test]
+    fn a_cube_slot_matches_only_a_recorded_cube_texture() {
+        let declaration = validate_bindings_against_interface(
+            &[
+                MaterialBinding::CubeTexture { binding: 3 },
+                MaterialBinding::Texture { binding: 1 },
+            ],
+            &interface(&[
+                (1, INTERFACE_BINDING_SAMPLED_TEXTURE),
+                (3, INTERFACE_BINDING_CUBE_TEXTURE),
+            ]),
+        )
+        .expect("2D and cube slots declared as recorded");
+        // Both kinds share the ascending texture list the record supplies.
+        assert_eq!(declaration.texture_bindings, [1, 3]);
+        assert_eq!(
+            declaration.texture_dimensions,
+            [TextureDimension::D2, TextureDimension::Cube]
+        );
+
+        let error = validate_bindings_against_interface(
+            &[MaterialBinding::Texture { binding: 0 }],
+            &interface(&[(0, INTERFACE_BINDING_CUBE_TEXTURE)]),
+        )
+        .err()
+        .expect("a 2D declaration of a recorded cube is rejected");
+        assert!(error.message().contains("records a cube texture"));
+        let error = validate_bindings_against_interface(
+            &[MaterialBinding::CubeTexture { binding: 0 }],
+            &interface(&[(0, INTERFACE_BINDING_SAMPLED_TEXTURE)]),
+        )
+        .err()
+        .expect("a cube declaration of a recorded 2D texture is rejected");
+        assert!(error.message().contains("as a cube texture"));
+        assert!(
+            validate_bindings_against_interface(
+                &[MaterialBinding::CubeTexture { binding: 0 }],
+                &interface(&[(0, INTERFACE_BINDING_SAMPLER)]),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cube_slots_count_against_the_texture_limit() {
+        let most = MATERIAL_TEXTURE_COUNT_LIMIT;
+        let declare = |count: u32| {
+            (0..count)
+                .map(|binding| MaterialBinding::CubeTexture { binding })
+                .collect::<vec::Vec<_>>()
+        };
+        let record = |count: u32| {
+            interface(
+                &(0..count)
+                    .map(|binding| (binding, INTERFACE_BINDING_CUBE_TEXTURE))
+                    .collect::<vec::Vec<_>>(),
+            )
+        };
+        assert!(validate_bindings_against_interface(&declare(most), &record(most)).is_ok());
+        assert!(
+            validate_bindings_against_interface(&declare(most + 1), &record(most + 1)).is_err()
+        );
+    }
+
+    #[test]
+    fn records_supply_each_slot_its_own_shape() {
+        let mut arena = Arena::new("texture");
+        let flat = texture(&mut arena, TextureDimension::D2);
+        let cube = texture(&mut arena, TextureDimension::Cube);
+        let slots = [TextureDimension::D2, TextureDimension::Cube];
+        assert!(validate_record_textures(&[&flat, &cube], &slots).is_ok());
+        let error = validate_record_textures(&[&cube, &flat], &slots)
+            .expect_err("a cube in a 2D slot is rejected");
+        assert!(
+            error
+                .message()
+                .contains("supplies a cube texture for texture 0, but that slot samples a 2D")
+        );
+        let error = validate_record_textures(&[&flat, &flat], &slots)
+            .expect_err("a 2D texture in a cube slot is rejected");
+        assert!(
+            error
+                .message()
+                .contains("supplies a 2D texture for texture 1, but that slot samples a cube")
+        );
+        assert!(validate_record_textures(&[&flat], &slots).is_err());
+        // The fixed textured pipelines sample 2D textures only.
+        assert!(validate_fixed_pipeline_texture(&flat).is_ok());
+        assert!(validate_fixed_pipeline_texture(&cube).is_err());
+        assert_eq!(cube.dimension(), TextureDimension::Cube);
     }
 }

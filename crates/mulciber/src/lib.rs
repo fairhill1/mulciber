@@ -53,9 +53,9 @@ pub use graphics::{
     SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput,
     SceneSubmission, ShadowMap, ShadowMapArray, ShadowPass, ShadowPipeline,
     ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, Surface,
-    TRANSIENT_GEOMETRY_SIZE_LIMIT, Texture, TexturedDraw, TexturedInstanceBatch, TexturedPipeline,
-    TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat,
-    VertexLayout, VolumetricShaders,
+    TRANSIENT_GEOMETRY_SIZE_LIMIT, Texture, TextureDimension, TexturedDraw, TexturedInstanceBatch,
+    TexturedPipeline, TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute,
+    VertexFormat, VertexLayout, VolumetricShaders,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::ShaderArtifact;

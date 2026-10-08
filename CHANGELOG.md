@@ -2,6 +2,22 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: cube textures
+
+`Device` gains cube constructors beside every 2D sampled upload: RGBA8 sRGB and UNORM, any
+`BlockCompression`, and `RGBA16Float`, each with a single-level and a complete-mip-chain form taking
+six square faces in +X, -X, +Y, -Y, +Z, -Z order. They return the existing `Texture`, whose new
+`dimension()` reports `TextureDimension::Cube`. Material pipelines sample one through
+`MaterialBinding::CubeTexture` and WGSL `texture_cube<f32>`, which `mulciber-shader` records as its
+own binding kind; pipeline creation refuses a declaration that disagrees with the artifact, and
+submission refuses a 2D texture in a cube slot or a cube in a 2D slot. Vulkan creates a
+cube-compatible six-layer image behind a cube view (regenerated bindings add
+`VkImageCreateFlagBits`); Metal creates `MTLTextureTypeCube` and replaces each face and level by
+slice. The new `mulciber-cube-texture` probe passed 72 face-order, orientation and per-face mip
+readback cases in RGBA8 UNORM, RGBA8 sRGB with mips, BC1 with mips and `RGBA16Float` on
+Linux/NVIDIA under Vulkan validation; Metal is implemented but has never run. See
+[cube textures](docs/cube-textures.md).
+
 ## Unreleased: BC1, BC2 and BC3 uploads
 
 `BlockCompression` gains `Bc1Srgb`/`Bc1Unorm`, `Bc2Srgb`/`Bc2Unorm` and `Bc3Srgb`/`Bc3Unorm`, the

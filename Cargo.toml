@@ -20,6 +20,7 @@ members = [
     "probes/api-clear",
     "probes/api-conformance",
     "probes/float-texture",
+    "probes/cube-texture",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

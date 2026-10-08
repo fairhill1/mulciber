@@ -209,6 +209,16 @@ sixteen-byte blocks, tightly packed; sub-block tail levels are one block. Mulcib
 decodes, or generates mips. Adapters without BC sampling return `Unsupported` for these calls only.
 See the [full contract](block-compressed-textures.md).
 
+## Cube textures
+
+Each 2D sampled upload has a cube peer taking six square `size`×`size` faces in +X, -X, +Y, -Y, +Z,
+-Z order, single-level or with a complete chain per face:
+`create_rgba8_{srgb,unorm}_cube_texture(_with_mips)`,
+`create_block_compressed_cube_texture(_with_mips)` and `create_rgba16_float_cube_texture(_with_mips)`.
+They return the existing `Texture` with `dimension() == TextureDimension::Cube`, which binds only
+through `MaterialBinding::CubeTexture` and WGSL `texture_cube<f32>`. See the
+[full contract](cube-textures.md).
+
 ## Linear floating-point sampled uploads
 
 `Device::create_rgba16_float_texture(width, height, &[[f32; 4]])` and its

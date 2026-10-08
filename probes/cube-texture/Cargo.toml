@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-cube-texture"
+description = "Native validation of sampled cube texture uploads and face selection"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

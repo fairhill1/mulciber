@@ -18,6 +18,7 @@ impl TexturedSession<'_> {
         if texture.extent != [width, height]
             || texture.format != SampledTextureFormat::Float16
             || texture.mip_levels != 1
+            || texture.slices != 1
         {
             return Err(GraphicsError::invalid_request(
                 "float texture update requires matching dimensions and one RGBA16Float level",

@@ -177,6 +177,8 @@ struct TextureResource {
     extent: [u32; 2],
     format: SampledTextureFormat,
     mip_levels: u32,
+    /// Array layers: one for a 2D texture, six for a cube.
+    layers: u32,
     pending: Option<Vec<u8>>,
     uploads: [Buffer; ClearSurface::frames_in_flight()],
     upload_ready: bool,
@@ -730,7 +732,6 @@ impl<'window> TexturedSession<'window> {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     pub(crate) fn create_texture(
         &mut self,
         width: u32,
@@ -738,6 +739,33 @@ impl<'window> TexturedSession<'window> {
         levels: &[&[u8]],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(width, height, &[levels], format, ImageShape::Single)
+    }
+
+    /// Uploads six validated square faces, each with the same mip chain length, into one
+    /// cube-compatible image with six array layers and a cube view.
+    pub(crate) fn create_cube_texture(
+        &mut self,
+        size: u32,
+        faces: &[&[&[u8]]; 6],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(size, size, faces, format, ImageShape::Cube)
+    }
+
+    /// Uploads one sampled image: a single 2D layer, or six cube faces in +X, -X, +Y, -Y, +Z,
+    /// -Z layer order. Every layer carries the same mip chain, already validated.
+    #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
+    fn create_sampled_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        layers: &[&[&[u8]]],
+        format: SampledTextureFormat,
+        shape: ImageShape,
+    ) -> Result<ResourceId, GraphicsError> {
+        debug_assert_eq!(layers.len(), shape.layers() as usize);
+        let levels = layers.first().copied().unwrap_or_default();
         let mip_levels =
             u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
         let _base_row = format
@@ -763,8 +791,17 @@ impl<'window> TexturedSession<'window> {
             SampledTextureFormat::Bc3Srgb => vk::VK_FORMAT_BC3_SRGB_BLOCK,
             SampledTextureFormat::Bc3Unorm => vk::VK_FORMAT_BC3_UNORM_BLOCK,
         };
-        sampled_texture::validate_format(&self.surface, native_format, width, height, mip_levels)?;
-        let size = crate::graphics::checked_staging_size(levels.iter().map(|texels| texels.len()))?;
+        sampled_texture::validate_format(
+            &self.surface,
+            native_format,
+            width,
+            height,
+            mip_levels,
+            shape,
+        )?;
+        let size = crate::graphics::checked_staging_size(
+            layers.iter().copied().flatten().map(|texels| texels.len()),
+        )?;
         let mut packed = Vec::new();
         packed.try_reserve_exact(size).map_err(|_| {
             GraphicsError::with_kind(
@@ -772,7 +809,8 @@ impl<'window> TexturedSession<'window> {
                 "texture staging allocation failed",
             )
         })?;
-        for texels in levels {
+        // Layer-major staging: every level of +X, then every level of -X, and so on.
+        for texels in layers.iter().copied().flatten() {
             packed.extend_from_slice(texels);
         }
         let staging = create_buffer(
@@ -781,7 +819,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_BUFFER_USAGE_TRANSFER_SRC_BIT as u32,
             &packed,
         )?;
-        let image = match create_image(
+        let image = match create_shaped_image(
             &self.surface,
             width,
             height,
@@ -790,6 +828,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
             vk::VK_SAMPLE_COUNT_1_BIT,
             mip_levels,
+            shape,
         ) {
             Ok(image) => image,
             Err(failure) => {
@@ -797,7 +836,7 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let upload = self.upload_texture(&staging, &image, width, height, levels);
+        let upload = self.upload_texture(&staging, &image, width, height, layers);
         destroy_buffer(&self.surface, staging);
         if let Err(failure) = upload {
             destroy_image(&self.surface, image);
@@ -834,19 +873,20 @@ impl<'window> TexturedSession<'window> {
             destroy_image(&self.surface, image);
             return Err(failure);
         }
-        match self.textures.insert(TextureResource::new(
-            image,
-            sampler,
-            [width, height],
-            format,
-            mip_levels,
-        )) {
+        let resource = || {
+            TextureResource::new(
+                image,
+                sampler,
+                [width, height],
+                format,
+                mip_levels,
+                shape.layers(),
+            )
+        };
+        match self.textures.insert(resource()) {
             Ok(id) => Ok(id),
             Err(failure) => {
-                destroy_texture_device(
-                    self.surface.device(),
-                    TextureResource::new(image, sampler, [width, height], format, mip_levels),
-                );
+                destroy_texture_device(self.surface.device(), resource());
                 Err(failure)
             }
         }
@@ -2334,19 +2374,29 @@ impl<'window> TexturedSession<'window> {
         result.and(surface.shutdown())
     }
 
+    /// Copies layer-major staged levels into every layer and level with one copy command, a
+    /// region per (layer, level) pair, then makes the whole image shader-readable.
     fn upload_texture(
         &mut self,
         staging: &Buffer,
         image: &Image,
         width: u32,
         height: u32,
-        levels: &[&[u8]],
+        layers: &[&[&[u8]]],
     ) -> Result<(), GraphicsError> {
+        let levels = layers.first().copied().unwrap_or_default();
         let mip_levels =
             u32::try_from(levels.len()).map_err(|_| error("mip chain length exceeds u32"))?;
-        let mut regions = Vec::with_capacity(levels.len());
+        let layer_count =
+            u32::try_from(layers.len()).map_err(|_| error("texture layer count exceeds u32"))?;
+        let mut regions = Vec::with_capacity(layers.len() * levels.len());
         let mut buffer_offset = 0_u64;
-        for (level, texels) in levels.iter().enumerate() {
+        for (layer, (level, texels)) in (0_u32..).zip(layers.iter()).flat_map(|(layer, levels)| {
+            levels
+                .iter()
+                .enumerate()
+                .map(move |level_texels| (layer, level_texels))
+        }) {
             let level = u32::try_from(level).map_err(|_| error("mip chain length exceeds u32"))?;
             regions.push(vk::VkBufferImageCopy2 {
                 sType: vk::VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
@@ -2354,8 +2404,8 @@ impl<'window> TexturedSession<'window> {
                 imageSubresource: vk::VkImageSubresourceLayers {
                     aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
                     mipLevel: level,
+                    baseArrayLayer: layer,
                     layerCount: 1,
-                    ..Default::default()
                 },
                 imageExtent: vk::VkExtent3D {
                     width: mip_extent(width, level),
@@ -2380,7 +2430,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_PIPELINE_STAGE_2_COPY_BIT,
             vk::VK_ACCESS_2_NONE,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            color_subresource_levels(mip_levels),
+            color_subresource_layers(mip_levels, layer_count),
         );
         pipeline_barrier(
             &self.surface,
@@ -2392,7 +2442,7 @@ impl<'window> TexturedSession<'window> {
             srcBuffer: staging.handle,
             dstImage: image.handle,
             dstImageLayout: vk::VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            regionCount: u32::try_from(regions.len()).expect("mip chain length fits u32"),
+            regionCount: u32::try_from(regions.len()).expect("layer and mip regions fit u32"),
             pRegions: regions.as_ptr(),
             ..Default::default()
         };
@@ -2413,7 +2463,7 @@ impl<'window> TexturedSession<'window> {
             vk::VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
             vk::VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            color_subresource_levels(mip_levels),
+            color_subresource_layers(mip_levels, layer_count),
         );
         pipeline_barrier(
             &self.surface,
@@ -5354,6 +5404,38 @@ fn write_postprocess_uniform(
     Ok(())
 }
 
+/// The layer arrangement of one sampled or rendered image and the view that samples it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ImageShape {
+    /// One layer behind a 2D view.
+    Single,
+    /// Six square layers in +X, -X, +Y, -Y, +Z, -Z order behind a cube view.
+    Cube,
+}
+
+impl ImageShape {
+    pub(super) const fn layers(self) -> u32 {
+        match self {
+            Self::Single => 1,
+            Self::Cube => 6,
+        }
+    }
+
+    pub(super) const fn create_flags(self) -> vk::VkImageCreateFlags {
+        match self {
+            Self::Single => 0,
+            Self::Cube => vk::VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.cast_unsigned(),
+        }
+    }
+
+    const fn view_type(self) -> vk::VkImageViewType {
+        match self {
+            Self::Single => vk::VK_IMAGE_VIEW_TYPE_2D,
+            Self::Cube => vk::VK_IMAGE_VIEW_TYPE_CUBE,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_image(
     surface: &ClearSurface<'_>,
@@ -5365,8 +5447,34 @@ fn create_image(
     samples: vk::VkSampleCountFlagBits,
     mip_levels: u32,
 ) -> Result<Image, GraphicsError> {
+    create_shaped_image(
+        surface,
+        width,
+        height,
+        format,
+        usage,
+        aspect,
+        samples,
+        mip_levels,
+        ImageShape::Single,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_shaped_image(
+    surface: &ClearSurface<'_>,
+    width: u32,
+    height: u32,
+    format: vk::VkFormat,
+    usage: u32,
+    aspect: u32,
+    samples: vk::VkSampleCountFlagBits,
+    mip_levels: u32,
+    shape: ImageShape,
+) -> Result<Image, GraphicsError> {
     let info = vk::VkImageCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        flags: shape.create_flags(),
         imageType: vk::VK_IMAGE_TYPE_2D,
         format,
         extent: vk::VkExtent3D {
@@ -5375,7 +5483,7 @@ fn create_image(
             depth: 1,
         },
         mipLevels: mip_levels,
-        arrayLayers: 1,
+        arrayLayers: shape.layers(),
         samples,
         tiling: vk::VK_IMAGE_TILING_OPTIMAL,
         usage,
@@ -5396,7 +5504,9 @@ fn create_image(
         },
         "vkCreateImage for textured slice",
     )?;
-    if let Err(failure) = complete_image_storage(device, &mut image, format, aspect, mip_levels) {
+    if let Err(failure) =
+        complete_image_storage(device, &mut image, format, aspect, mip_levels, shape)
+    {
         // SAFETY: The device is live and the destroy helper skips null child handles left by
         // partial construction.
         unsafe { destroy_image_device(device, image) };
@@ -5411,6 +5521,7 @@ fn complete_image_storage(
     format: vk::VkFormat,
     aspect: u32,
     mip_levels: u32,
+    shape: ImageShape,
 ) -> Result<(), GraphicsError> {
     let mut requirements = vk::VkMemoryRequirements::default();
     unsafe {
@@ -5456,12 +5567,12 @@ fn complete_image_storage(
     let view_info = vk::VkImageViewCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         image: image.handle,
-        viewType: vk::VK_IMAGE_VIEW_TYPE_2D,
+        viewType: shape.view_type(),
         format,
         subresourceRange: vk::VkImageSubresourceRange {
             aspectMask: aspect,
             levelCount: mip_levels,
-            layerCount: 1,
+            layerCount: shape.layers(),
             ..Default::default()
         },
         ..Default::default()
@@ -7136,12 +7247,15 @@ const fn depth_subresource_layers(layers: u32) -> vk::VkImageSubresourceRange {
     }
 }
 const fn color_subresource_levels(levels: u32) -> vk::VkImageSubresourceRange {
+    color_subresource_layers(levels, 1)
+}
+const fn color_subresource_layers(levels: u32, layers: u32) -> vk::VkImageSubresourceRange {
     vk::VkImageSubresourceRange {
         aspectMask: vk::VK_IMAGE_ASPECT_COLOR_BIT as u32,
         baseMipLevel: 0,
         levelCount: levels,
         baseArrayLayer: 0,
-        layerCount: 1,
+        layerCount: layers,
     }
 }
 #[allow(clippy::too_many_arguments)]

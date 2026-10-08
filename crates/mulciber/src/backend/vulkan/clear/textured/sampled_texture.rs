@@ -1,5 +1,5 @@
 //! Capability checks for immutable, linearly filterable sampled uploads.
-use super::{ClearSurface, GraphicsError, check, vk};
+use super::{ClearSurface, GraphicsError, ImageShape, check, vk};
 
 pub(super) fn validate_format(
     surface: &ClearSurface<'_>,
@@ -7,6 +7,7 @@ pub(super) fn validate_format(
     width: u32,
     height: u32,
     levels: u32,
+    shape: ImageShape,
 ) -> Result<(), GraphicsError> {
     let unsupported = || {
         GraphicsError::with_kind(
@@ -42,7 +43,8 @@ pub(super) fn validate_format(
             vk::VK_IMAGE_TYPE_2D,
             vk::VK_IMAGE_TILING_OPTIMAL,
             (vk::VK_IMAGE_USAGE_SAMPLED_BIT | vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT).cast_unsigned(),
-            0,
+            // Cube compatibility narrows the extent to the device's cube-dimension limit.
+            shape.create_flags(),
             &raw mut image,
         )
     };
@@ -53,6 +55,7 @@ pub(super) fn validate_format(
     if width > image.maxExtent.width
         || height > image.maxExtent.height
         || levels > image.maxMipLevels
+        || shape.layers() > image.maxArrayLayers
         || image.sampleCounts & vk::VK_SAMPLE_COUNT_1_BIT.cast_unsigned() == 0
     {
         return Err(unsupported());

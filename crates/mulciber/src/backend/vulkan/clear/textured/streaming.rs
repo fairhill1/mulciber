@@ -12,6 +12,7 @@ impl TextureResource {
         extent: [u32; 2],
         format: SampledTextureFormat,
         mip_levels: u32,
+        layers: u32,
     ) -> Self {
         Self {
             image,
@@ -19,6 +20,7 @@ impl TextureResource {
             extent,
             format,
             mip_levels,
+            layers,
             pending: None,
             uploads: [Buffer::default(); ClearSurface::frames_in_flight()],
             upload_ready: false,
@@ -38,6 +40,7 @@ impl TexturedSession<'_> {
         if texture.extent != [width, height]
             || texture.format != SampledTextureFormat::Float16
             || texture.mip_levels != 1
+            || texture.layers != 1
         {
             return Err(GraphicsError::invalid_request(
                 "float texture update requires matching dimensions and one RGBA16Float level",

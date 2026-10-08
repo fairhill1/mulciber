@@ -74,6 +74,7 @@ const STORAGE_MODE_PRIVATE: usize = 2;
 const STORAGE_MODE_MEMORYLESS: usize = 3;
 const TEXTURE_TYPE_2D_ARRAY: usize = 3;
 const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
+const TEXTURE_TYPE_CUBE: usize = 5;
 const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
@@ -228,6 +229,8 @@ struct TextureResource {
     extent: [u32; 2],
     format: SampledTextureFormat,
     mip_levels: usize,
+    /// Slices: one for a 2D texture, six for a cube.
+    slices: usize,
     pending: Option<Vec<u8>>,
 }
 
@@ -648,6 +651,32 @@ impl<'window> TexturedSession<'window> {
         levels: &[&[u8]],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(width, height, &[levels], format)
+    }
+
+    /// Uploads six validated square faces, each with the same mip chain length, into one
+    /// `MTLTextureTypeCube` texture, a slice per face in +X, -X, +Y, -Y, +Z, -Z order.
+    pub(crate) fn create_cube_texture(
+        &mut self,
+        size: u32,
+        faces: &[&[&[u8]]; 6],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.create_sampled_texture(size, size, faces, format)
+    }
+
+    /// Uploads one sampled texture: a single 2D slice, or the six slices of a cube. Every
+    /// slice carries the same mip chain, already validated.
+    #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
+    fn create_sampled_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        slices: &[&[&[u8]]],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        let cube = slices.len() == 6;
+        let mip_levels = slices.first().map_or(0, |levels| levels.len());
         // Metal 3's format table guarantees RGBA16Float filtering and 16384-wide 2D textures.
         // Metal has no Vulkan-style per-format query. Keep this exact-format request explicit.
         if format == SampledTextureFormat::Float16
@@ -695,10 +724,15 @@ impl<'window> TexturedSession<'window> {
                     pixel_format,
                     usize::try_from(width).expect("validated texture width fits usize"),
                     usize::try_from(height).expect("validated texture height fits usize"),
-                    levels.len() > 1,
+                    mip_levels > 1,
                 ),
-                "Metal cube texture descriptor",
+                "Metal sampled texture descriptor",
             )?;
+            if cube {
+                // A square 2D descriptor already counts the full chain; the cube type keeps
+                // `arrayLength` at one and gives the texture six slices.
+                objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_CUBE);
+            }
             // CPU replacement writes shared storage before the texture becomes bindable.
             objc::void_usize(descriptor, c"setStorageMode:", 0);
             objc::void_usize(descriptor, c"setUsage:", TEXTURE_USAGE_SHADER_READ);
@@ -708,33 +742,52 @@ impl<'window> TexturedSession<'window> {
                     c"newTextureWithDescriptor:",
                     descriptor,
                 ),
-                "Metal cube texture",
+                "Metal sampled texture",
             )?;
-            for (level, texels) in levels.iter().enumerate() {
-                let level_index = u32::try_from(level).expect("validated mip chain fits u32");
-                let level_width = usize::try_from(mip_extent(width, level_index))
-                    .expect("validated texture width fits usize");
-                let level_height = usize::try_from(mip_extent(height, level_index))
-                    .expect("validated texture height fits usize");
-                objc::void_region_usize_bytes_usize(
-                    texture,
-                    c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
-                    Region3 {
+            for (slice, levels) in slices.iter().enumerate() {
+                for (level, texels) in levels.iter().enumerate() {
+                    let level_index = u32::try_from(level).expect("validated mip chain fits u32");
+                    let level_width = usize::try_from(mip_extent(width, level_index))
+                        .expect("validated texture width fits usize");
+                    let level_height = usize::try_from(mip_extent(height, level_index))
+                        .expect("validated texture height fits usize");
+                    let region = Region3 {
                         origin: Origin3 { x: 0, y: 0, z: 0 },
                         size: Size3 {
                             width: level_width,
                             height: level_height,
                             depth: 1,
                         },
-                    },
-                    level,
-                    texels.as_ptr().cast(),
+                    };
                     // A compressed row is a row of blocks; a level narrower than a block
                     // still carries one whole block per row.
-                    format
+                    let bytes_per_row = format
                         .row_bytes(mip_extent(width, level_index))
-                        .expect("validated texture row fits usize"),
-                );
+                        .expect("validated texture row fits usize");
+                    if cube {
+                        // A cube face is one slice; its image is the whole tightly packed
+                        // level, which is what `bytesPerImage` measures.
+                        objc::void_region_two_usizes_bytes_two_usizes(
+                            texture,
+                            c"replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:",
+                            region,
+                            level,
+                            slice,
+                            texels.as_ptr().cast(),
+                            bytes_per_row,
+                            texels.len(),
+                        );
+                    } else {
+                        objc::void_region_usize_bytes_usize(
+                            texture,
+                            c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
+                            region,
+                            level,
+                            texels.as_ptr().cast(),
+                            bytes_per_row,
+                        );
+                    }
+                }
             }
             let sampler = match create_upload_sampler(self.surface.device) {
                 Ok(sampler) => sampler,
@@ -748,7 +801,8 @@ impl<'window> TexturedSession<'window> {
                 sampler,
                 extent: [width, height],
                 format,
-                mip_levels: levels.len(),
+                mip_levels,
+                slices: slices.len(),
                 pending: None,
             }) {
                 Ok(id) => Ok(id),

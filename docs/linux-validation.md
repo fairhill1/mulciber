@@ -1024,6 +1024,16 @@ fragment samples, half quantization, small coefficients, spatial filtering and e
 Run the platform's ordinary conformance/preflight too. It does not establish physical lifecycle,
 visual or broader hardware evidence. See the [contract](float-texture-uploads.md).
 
+## Cube textures (unreleased)
+
+Run `cargo run -p mulciber-cube-texture` with the ordinary required Vulkan validation layer; all
+72 readback cases must pass and every refusal must fire without warning/error callbacks. On
+2026-10-08, KDE Wayland / NVIDIA GeForce RTX 3060 Ti (driver 615.71.09) with Khronos validation
+1.4.363 passed: face order and in-face orientation from a 2×2 RGBA8 UNORM cube, per-face mips of a
+4×4 RGBA8 sRGB and an 8×8 BC1 UNORM cube, and signed RGBA16Float faces. This is readback evidence
+from one GPU; it is not visual, lifecycle or broader hardware evidence. See the
+[contract](cube-textures.md).
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 Workspace format/check/Clippy/tests pass on this platform. The growth path was reached by

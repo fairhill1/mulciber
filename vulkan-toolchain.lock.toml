@@ -87,3 +87,12 @@ spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "82ea4d53fe06a7b689b7c281667c38a874e97c490208212d9d529411dbb78f2b"
 vulkan_artifact_sha256 = "04ba769bce6383c9bac94c11187b78a2d318a2fa3b9e65ce26428f95925a164c"
 metal_artifact_sha256 = "7f660582d0d81577aa4a37914c97c9e9c9181cc0289360c5b9ea9870cc2d637a"
+
+[cube_texture_sample_shader]
+compiler = "naga 30.0.1"
+target_environment = "vulkan1.3"
+# Validated with the locally installed SPIRV-Tools v2026.4; regenerate under the pin when available.
+spirv_validator = "SPIRV-Tools v2026.4"
+wgsl_sha256 = "4ebc04abde61eca1bf15c4577efd091d8247751bd416c0f878c4a3c6019a2809"
+vulkan_artifact_sha256 = "816a702ae6d3fd04b04d72dd3f06cb5e07426fc022afc2a909c13862522d8a8f"
+# The Metal artifact is not generated yet; see docs/cube-textures.md.

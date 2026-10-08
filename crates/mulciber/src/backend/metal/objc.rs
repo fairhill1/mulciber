@@ -306,6 +306,41 @@ pub unsafe fn void_region_usize_bytes_usize(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn void_region_two_usizes_bytes_two_usizes(
+    receiver: Object,
+    name: &CStr,
+    region: Region3,
+    level: usize,
+    slice: usize,
+    bytes: *const c_void,
+    bytes_per_row: usize,
+    bytes_per_image: usize,
+) {
+    let function: unsafe extern "C" fn(
+        Object,
+        Selector,
+        Region3,
+        usize,
+        usize,
+        *const c_void,
+        usize,
+        usize,
+    ) = unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe {
+        function(
+            receiver,
+            selector(name),
+            region,
+            level,
+            slice,
+            bytes,
+            bytes_per_row,
+            bytes_per_image,
+        );
+    }
+}
+
 pub unsafe fn void_object_two_usizes(
     receiver: Object,
     name: &CStr,

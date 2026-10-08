@@ -406,6 +406,7 @@ VkFormatProperties
 VkGraphicsPipelineCreateInfo
 VkImage
 VkImageBlit2
+VkImageCreateFlagBits
 VkImageCreateInfo
 VkImageAspectFlagBits
 VkImageLayout

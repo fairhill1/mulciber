@@ -34,6 +34,7 @@ const BINDING_DEPTH_TEXTURE: u8 = 4;
 const BINDING_COMPARISON_SAMPLER: u8 = 5;
 const BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 const BINDING_MULTISAMPLED_DEPTH: u8 = 7;
+const BINDING_CUBE_TEXTURE: u8 = 8;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,6 +242,18 @@ fn shader_interface(module: &naga::Module) -> Result<Vec<u8>, ShaderBuildError> 
                         },
                 },
             ) => (BINDING_SAMPLED_TEXTURE, 0),
+            (
+                AddressSpace::Handle,
+                TypeInner::Image {
+                    dim: naga::ImageDimension::Cube,
+                    arrayed: false,
+                    class:
+                        naga::ImageClass::Sampled {
+                            kind: ScalarKind::Float,
+                            multi: false,
+                        },
+                },
+            ) => (BINDING_CUBE_TEXTURE, 0),
             (
                 AddressSpace::Handle,
                 TypeInner::Image {
@@ -688,6 +701,70 @@ mod tests {
         assert_eq!(records[8], 6);
         assert_eq!(records[21], 5);
         assert_eq!(metal_resources(&module).expect("Metal mapping").len(), 2);
+    }
+
+    #[test]
+    fn cube_texture_records_its_own_kind_and_metal_texture_slot() {
+        let source = "
+            @group(0) @binding(3) var environment: texture_cube<f32>;
+            @group(0) @binding(4) var environment_sampler: sampler;
+            @fragment fn reflect_fragment() -> @location(0) vec4<f32> {
+                return textureSampleLevel(
+                    environment,
+                    environment_sampler,
+                    vec3<f32>(1.0, 0.0, 0.0),
+                    0.0,
+                );
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
+        let interface = shader_interface(&module).expect("cube interface");
+        // Two binding records trail the interface: the cube texture records kind 8 and the
+        // sampler kind 2, each with a zero byte size.
+        let records = &interface[interface.len() - 26..];
+        assert_eq!(records[4..8], 3_u32.to_le_bytes());
+        assert_eq!(records[8], super::BINDING_CUBE_TEXTURE);
+        assert_eq!(records[21], super::BINDING_SAMPLER);
+        let resources = metal_resources(&module).expect("Metal mapping");
+        assert_eq!(resources.len(), 2);
+        assert!(
+            resources
+                .values()
+                .any(|target| target.texture == Some(3) && target.sampler.is_none())
+        );
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module)
+            .expect("cube WGSL validates");
+        let words = naga::back::spv::write_vec(
+            &module,
+            &info,
+            &naga::back::spv::Options {
+                lang_version: (1, 4),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("cube sampling emits SPIR-V");
+        assert_eq!(words.first().copied(), Some(0x0723_0203));
+    }
+
+    #[test]
+    fn arrayed_and_depth_cube_textures_are_rejected() {
+        for declaration in [
+            "@group(0) @binding(0) var map: texture_cube_array<f32>;",
+            "@group(0) @binding(0) var map: texture_depth_cube;",
+            "@group(0) @binding(0) var map: texture_cube<u32>;",
+        ] {
+            let source = std::format!(
+                "{declaration}
+                @fragment fn main_fragment() -> @location(0) vec4<f32> {{
+                    return vec4<f32>(f32(textureNumLevels(map)));
+                }}"
+            );
+            let module = naga::front::wgsl::parse_str(&source).expect("WGSL parses");
+            let failure = shader_interface(&module).expect_err("no proven mapping");
+            assert!(failure.to_string().contains("no proven interface mapping"));
+        }
     }
 
     #[test]

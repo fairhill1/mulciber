@@ -280,6 +280,18 @@ The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source i
 byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
 stands and only its recorded compiler string moves.
 
+## Cube textures (unreleased)
+
+**Vulkan native evidence, Metal unexercised:** cube uploads in every 2D sampled format reach the
+existing `Texture` with `TextureDimension::Cube` and bind through `MaterialBinding::CubeTexture`.
+Vulkan uses a `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` image with six layers behind a
+`VK_IMAGE_VIEW_TYPE_CUBE` view and one staged copy with a region per face and level; Metal uses
+`MTLTextureTypeCube` with a per-slice, per-level `replaceRegion`. On Linux / NVIDIA RTX 3060 Ti the
+`mulciber-cube-texture` probe passed 72 readback cases (face order, in-face orientation, RGBA8 sRGB
+and BC1 per-face mips, RGBA16Float) under Vulkan validation. Metal compiles for macOS but has not
+run, and the probe's Metal shader artifact is not generated yet. No viability gate is advanced. See
+the [contract](cube-textures.md).
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 **Vulkan-only correctness fix:** every textured, instanced, material, shadow and postprocess

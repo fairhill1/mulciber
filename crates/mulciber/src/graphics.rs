@@ -496,6 +496,141 @@ impl Device<'_> {
         self.upload_rgba16_float(width, height, levels, true)
     }
 
+    /// Uploads linear `RGBA16Float` data from IEEE binary16 bit patterns, four per texel in
+    /// RGBA order, as the `half` crate's `f16::to_bits` gives them.
+    ///
+    /// The bits upload unchanged, with no conversion pass, so data already in half precision
+    /// (an HDR image decoded to `f16`, say) costs one copy. Infinity and NaN (an all-ones
+    /// exponent) are rejected, as [`Self::create_rgba16_float_texture`] rejects them. Otherwise
+    /// it behaves as that function.
+    ///
+    /// # Errors
+    /// Returns an error for zero dimensions, mismatched texel counts, size overflow, a non-finite
+    /// component, allocation/upload failure, or unsupported linearly filterable native storage.
+    pub fn create_rgba16_float_texture_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Uploads a complete application-authored `RGBA16Float` mip chain of binary16 bit patterns,
+    /// laid out as [`Self::create_rgba16_float_texture_with_mips`] takes it.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], plus incomplete or
+    /// extra mip levels and mismatched per-level texel counts.
+    pub fn create_rgba16_float_texture_with_mips_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        levels: &[&[[u16; 4]]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Uploads level 0 of an `RGBA16Float` texture and generates the rest of its full mip chain
+    /// on the GPU.
+    ///
+    /// Each level is a linear-filtered half-size copy of the one above (a 2×2 box filter for
+    /// even extents, as Vulkan blits and Metal's `generateMipmapsForTexture:` compute it),
+    /// through 1×1. Values and errors follow [`Self::create_rgba16_float_texture`]; the texture
+    /// can be replaced with [`Self::update_rgba16_float_texture_with_generated_mips`] or
+    /// [`Self::update_rgba16_float_texture_with_mips`]. Sample it with a material sampler whose
+    /// filter interpolates between mips.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture`], and `Unsupported` when the
+    /// adapter cannot blit the format with linear filtering.
+    pub fn create_rgba16_float_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, true)
+    }
+
+    /// [`Self::create_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], and `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering.
+    pub fn create_rgba16_float_texture_with_generated_mips_from_bits(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<Texture, GraphicsError> {
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        self.upload_packed_float(width, height, &packed, true)
+    }
+
+    /// Uploads a tightly packed RGBA8 sRGB base level and generates the rest of its full mip
+    /// chain on the GPU.
+    ///
+    /// Filtering happens on linear values: the GPU decodes sRGB before averaging and encodes the
+    /// result, as an sRGB blit or Metal mip generation does.
+    ///
+    /// # Errors
+    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
+    pub fn create_rgba8_srgb_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_generated_mips(
+            width,
+            height,
+            texels,
+            SampledTextureFormat::Srgb,
+        )
+    }
+
+    /// Uploads a tightly packed RGBA8 UNORM base level and generates the rest of its full mip
+    /// chain on the GPU, averaging the stored values directly.
+    ///
+    /// # Errors
+    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
+    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
+    pub fn create_rgba8_unorm_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+    ) -> Result<Texture, GraphicsError> {
+        self.create_rgba8_texture_with_generated_mips(
+            width,
+            height,
+            texels,
+            SampledTextureFormat::Unorm,
+        )
+    }
+
+    fn create_rgba8_texture_with_generated_mips(
+        &self,
+        width: u32,
+        height: u32,
+        texels: &[u8],
+        format: SampledTextureFormat,
+    ) -> Result<Texture, GraphicsError> {
+        validate_mip_level(format, width, height, 0, texels)?;
+        let id = session_mut(&self.shared)?
+            .create_texture_with_generated_mips(width, height, texels, format)?;
+        Ok(Texture {
+            lease: self.lease(id, ResourceKind::Texture),
+            dimension: TextureDimension::D2,
+        })
+    }
+
     /// Uploads a tightly packed RGBA8 sRGB cube texture of six `size`×`size` faces.
     ///
     /// `faces` is in the standard cube layer order +X, -X, +Y, -Y, +Z, -Z, each face's texels
@@ -750,14 +885,109 @@ impl Device<'_> {
         self.update_rgba16_float(texture, width, height, levels, true)
     }
 
-    fn update_rgba16_float(
+    /// [`Self::update_rgba16_float_texture`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture`], with non-finite bits as the
+    /// invalid texels.
+    pub fn update_rgba16_float_texture_from_bits(
         &self,
         texture: &Texture,
         width: u32,
         height: u32,
-        levels: &[&[[f32; 4]]],
-        complete: bool,
+        texels: &[[u16; 4]],
     ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
+    }
+
+    /// [`Self::update_rgba16_float_texture_with_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_with_mips_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture_with_mips`], with non-finite
+    /// bits as the invalid texels.
+    pub fn update_rgba16_float_texture_with_mips_from_bits(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[u16; 4]]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
+    }
+
+    /// Queues a replacement of level 0 of a texture created by
+    /// [`Self::create_rgba16_float_texture_with_generated_mips`] (or its `_from_bits` form),
+    /// and regenerates every other level from it on the GPU.
+    ///
+    /// The next textured/material scene submission copies level 0 and blits the chain before
+    /// any draw, in its own command buffer, so a texture rewritten every frame (an animated
+    /// height field, say) needs no CPU downsampling. Values, queuing, coalescing and
+    /// cancellation follow [`Self::update_rgba16_float_texture`].
+    ///
+    /// # Errors
+    /// Returns an error for a foreign or stale texture, a texture not created with generated
+    /// mips, incompatible format or dimensions, invalid texels, or an unavailable session.
+    pub fn update_rgba16_float_texture_with_generated_mips(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        texels: &[[f32; 4]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            true,
+        )
+    }
+
+    /// [`Self::update_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
+    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
+    ///
+    /// # Errors
+    /// Reports the errors of [`Self::update_rgba16_float_texture_with_generated_mips`], with
+    /// non-finite bits as the invalid texels.
+    pub fn update_rgba16_float_texture_with_generated_mips_from_bits(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        texels: &[[u16; 4]],
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
+        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            true,
+        )
+    }
+
+    fn check_float_update(&self, texture: &Texture) -> Result<(), GraphicsError> {
         if texture.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "texture belongs to another graphics session",
@@ -768,8 +998,26 @@ impl Device<'_> {
                 "float texture updates replace 2D textures only, not cube textures",
             ));
         }
+        Ok(())
+    }
+
+    fn update_rgba16_float(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+        complete: bool,
+    ) -> Result<(), GraphicsError> {
+        self.check_float_update(texture)?;
         let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
-        session_mut(&self.shared)?.update_float_texture(texture.lease.id, width, height, packed)
+        session_mut(&self.shared)?.update_float_texture(
+            texture.lease.id,
+            width,
+            height,
+            packed,
+            false,
+        )
     }
 
     fn upload_rgba16_float(
@@ -780,13 +1028,31 @@ impl Device<'_> {
         complete: bool,
     ) -> Result<Texture, GraphicsError> {
         let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
-        let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
-        let id = session_mut(&self.shared)?.create_texture(
-            width,
-            height,
-            &slices,
-            SampledTextureFormat::Float16,
-        )?;
+        self.upload_packed_float(width, height, &packed, false)
+    }
+
+    /// Creates an `RGBA16Float` texture from packed levels; with `generate_mips`, `packed`
+    /// holds level 0 alone and the GPU fills the rest of the full chain.
+    fn upload_packed_float(
+        &self,
+        width: u32,
+        height: u32,
+        packed: &[Vec<u8>],
+        generate_mips: bool,
+    ) -> Result<Texture, GraphicsError> {
+        let mut session = session_mut(&self.shared)?;
+        let id = if generate_mips {
+            session.create_texture_with_generated_mips(
+                width,
+                height,
+                &packed[0],
+                SampledTextureFormat::Float16,
+            )?
+        } else {
+            let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
+            session.create_texture(width, height, &slices, SampledTextureFormat::Float16)?
+        };
+        drop(session);
         Ok(Texture {
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
@@ -4487,7 +4753,7 @@ impl Drop for Frame<'_> {
 }
 
 /// Number of levels in a full mip chain from the base extent down to its 1x1 level.
-fn full_mip_chain_len(width: u32, height: u32) -> usize {
+pub(crate) fn full_mip_chain_len(width: u32, height: u32) -> usize {
     let largest = width.max(height);
     usize::try_from(32 - largest.leading_zeros()).expect("level count fits usize")
 }

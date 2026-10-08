@@ -32,6 +32,56 @@ pub(super) fn pack_float_levels(
     levels: &[&[[f32; 4]]],
     complete: bool,
 ) -> Result<Vec<Vec<u8>>, GraphicsError> {
+    pack_levels(width, height, levels, complete, |texels, bytes, level| {
+        // One pass converts and checks the range together.
+        if f32_to_f16(texels.as_flattened(), bytes) {
+            Ok(())
+        } else {
+            Err(GraphicsError::invalid_request(format!(
+                "float texture mip level {level} requires finite components in -65504..=65504"
+            )))
+        }
+    })
+}
+
+/// Packs IEEE binary16 bit patterns as they are, rejecting infinity and NaN (an all-ones
+/// exponent) so they meet the same contract as converted `f32` data.
+pub(super) fn pack_half_levels(
+    width: u32,
+    height: u32,
+    levels: &[&[[u16; 4]]],
+    complete: bool,
+) -> Result<Vec<Vec<u8>>, GraphicsError> {
+    pack_levels(width, height, levels, complete, |texels, bytes, level| {
+        let mut finite = true;
+        for (out, half) in bytes
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(texels.as_flattened())
+        {
+            finite &= half & 0x7c00 != 0x7c00;
+            *out = half.to_ne_bytes();
+        }
+        if finite {
+            Ok(())
+        } else {
+            Err(GraphicsError::invalid_request(format!(
+                "float texture mip level {level} requires finite binary16 components"
+            )))
+        }
+    })
+}
+
+/// Checks a chain's level count and per-level texel counts, then packs each level into eight
+/// bytes per texel with `pack`.
+fn pack_levels<T>(
+    width: u32,
+    height: u32,
+    levels: &[&[[T; 4]]],
+    complete: bool,
+    pack: impl Fn(&[[T; 4]], &mut [u8], u32) -> Result<(), GraphicsError>,
+) -> Result<Vec<Vec<u8>>, GraphicsError> {
     // Validate both the input address range and native byte sizes before reading/allocating.
     byte_size(width, height, 16)?;
     let expected_levels = if complete {
@@ -65,12 +115,7 @@ pub(super) fn pack_float_levels(
             )
         })?;
         bytes.resize(texels.len() * 8, 0);
-        // One pass converts and checks the range together.
-        if !f32_to_f16(texels.as_flattened(), &mut bytes) {
-            return Err(GraphicsError::invalid_request(format!(
-                "float texture mip level {level} requires finite components in -65504..=65504"
-            )));
-        }
+        pack(texels, &mut bytes, level)?;
         packed.push(bytes);
     }
     Ok(packed)
@@ -220,6 +265,28 @@ mod tests {
         let packed = pack_float_levels(5, 3, &[&a, &b, &c], true).unwrap();
         let sizes: Vec<usize> = packed.iter().map(Vec::len).collect();
         assert_eq!(sizes, [15 * 8, 2 * 8, 8]);
+    }
+
+    #[test]
+    fn half_bits_upload_unchanged_and_reject_non_finite() {
+        // 1.0, -2.0, the largest finite half, and the smallest subnormal.
+        let texel = [0x3c00, 0xc000, 0x7bff, 0x0001];
+        let packed = pack_half_levels(1, 1, &[&[texel]], false).unwrap();
+        let converted = pack_float_levels(
+            1,
+            1,
+            &[&[[1.0, -2.0, 65504.0, f32::from_bits(0x3380_0000)]]],
+            false,
+        )
+        .unwrap();
+        assert_eq!(packed, converted);
+        // Infinity and two NaNs, in a later mip level too.
+        for bits in [0x7c00, 0xfc00, 0x7e00, 0x7c01] {
+            assert!(pack_half_levels(1, 1, &[&[[bits; 4]]], false).is_err());
+            assert!(pack_half_levels(2, 1, &[&[[0; 4]; 2], &[[0, 0, 0, bits]]], true).is_err());
+        }
+        assert!(pack_half_levels(2, 1, &[&[[0; 4]; 2]], true).is_err());
+        assert!(pack_half_levels(2, 1, &[&[[0; 4]; 3]], false).is_err());
     }
 
     #[test]

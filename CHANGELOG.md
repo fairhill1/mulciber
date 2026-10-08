@@ -2,6 +2,19 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Binary16 uploads and GPU-generated mips (graphics, unreleased)
+
+Every `RGBA16Float` creation and update function gains a `_from_bits` form taking binary16 bit
+patterns (`[u16; 4]` texels) that upload without conversion; infinity and NaN are still rejected.
+`create_rgba16_float_texture_with_generated_mips`, `create_rgba8_srgb_texture_with_generated_mips`
+and `create_rgba8_unorm_texture_with_generated_mips` upload level 0 and generate the full chain on
+the GPU, and `update_rgba16_float_texture_with_generated_mips` replaces level 0 of such a texture
+and regenerates the chain in the next scene submission, so per-frame float textures need no CPU
+downsampling. Vulkan blits level by level (`vkCmdBlitImage2`, loaded and its `BLIT` stage bit added
+to the generated bindings); Metal uses `generateMipmapsForTexture:`. Additive. An ignored native
+Vulkan test reads back exact box averages under validation; Metal has not run. See
+[float texture uploads](docs/float-texture-uploads.md).
+
 ## Shader reflection and device-free pipeline checks (graphics and shader, unreleased)
 
 `mulciber-shader` now writes a `MULSHDR4` container whose interface adds, for every uniform and

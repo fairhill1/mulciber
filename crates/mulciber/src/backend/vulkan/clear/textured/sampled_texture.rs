@@ -1,6 +1,16 @@
 //! Capability checks for immutable, linearly filterable sampled uploads.
 use super::{ClearSurface, GraphicsError, ImageShape, check, vk};
 
+/// A sampled upload's image usage; generating mips also reads the image as a blit source.
+pub(super) const fn usage(generate_mips: bool) -> u32 {
+    let usage = vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk::VK_IMAGE_USAGE_SAMPLED_BIT;
+    if generate_mips {
+        (usage | vk::VK_IMAGE_USAGE_TRANSFER_SRC_BIT).cast_unsigned()
+    } else {
+        usage.cast_unsigned()
+    }
+}
+
 pub(super) fn validate_format(
     surface: &ClearSurface<'_>,
     format: vk::VkFormat,
@@ -8,11 +18,16 @@ pub(super) fn validate_format(
     height: u32,
     levels: u32,
     shape: ImageShape,
+    generate_mips: bool,
 ) -> Result<(), GraphicsError> {
     let unsupported = || {
         GraphicsError::with_kind(
             crate::GraphicsErrorKind::Unsupported,
-            "sampled texture format/extent requires transfer destination and linear filtering (RGBA16Float for float uploads)",
+            if generate_mips {
+                "generated mips require the format to be a linear-filtered blit source and destination"
+            } else {
+                "sampled texture format/extent requires transfer destination and linear filtering (RGBA16Float for float uploads)"
+            },
         )
     };
     let mut properties = vk::VkFormatProperties::default();
@@ -26,9 +41,15 @@ pub(super) fn validate_format(
             &raw mut properties,
         );
     }
+    let blit = if generate_mips {
+        vk::VK_FORMAT_FEATURE_BLIT_SRC_BIT | vk::VK_FORMAT_FEATURE_BLIT_DST_BIT
+    } else {
+        0
+    };
     let required = (vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT
         | vk::VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
-        | vk::VK_FORMAT_FEATURE_TRANSFER_DST_BIT)
+        | vk::VK_FORMAT_FEATURE_TRANSFER_DST_BIT
+        | blit)
         .cast_unsigned();
     if properties.optimalTilingFeatures & required != required {
         return Err(unsupported());
@@ -42,7 +63,7 @@ pub(super) fn validate_format(
             format,
             vk::VK_IMAGE_TYPE_2D,
             vk::VK_IMAGE_TILING_OPTIMAL,
-            (vk::VK_IMAGE_USAGE_SAMPLED_BIT | vk::VK_IMAGE_USAGE_TRANSFER_DST_BIT).cast_unsigned(),
+            usage(generate_mips),
             // Cube compatibility narrows the extent to the device's cube-dimension limit.
             shape.create_flags(),
             &raw mut image,

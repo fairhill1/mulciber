@@ -18,13 +18,34 @@ struct LevelCopy {
 }
 
 impl TexturedSession<'_> {
-    /// Queues the texture's whole chain, one tightly packed byte vector per level.
+    /// Fills every level of `texture` below level 0 in a command buffer of its own, committed
+    /// now; later command buffers on the queue see the result.
+    pub(super) fn generate_mips_now(&self, texture: Object) -> Result<(), GraphicsError> {
+        unsafe {
+            let command = required(
+                objc::object(self.surface.queue, c"commandBuffer"),
+                "mip generation command buffer",
+            )?;
+            let encoder = required(
+                objc::object(command, c"blitCommandEncoder"),
+                "mip generation blit encoder",
+            )?;
+            objc::void_object(encoder, c"generateMipmapsForTexture:", texture);
+            objc::void(encoder, c"endEncoding");
+            objc::void(command, c"commit");
+        }
+        Ok(())
+    }
+
+    /// Queues the texture's whole chain, one tightly packed byte vector per level, or with
+    /// `generate_mips` level 0 alone for the GPU to regenerate the rest.
     pub(crate) fn update_float_texture(
         &mut self,
         id: ResourceId,
         width: u32,
         height: u32,
         levels: Vec<Vec<u8>>,
+        generate_mips: bool,
     ) -> Result<(), GraphicsError> {
         let index = self.textures.index_of(id)?;
         let texture = &mut self.textures[index];
@@ -36,7 +57,14 @@ impl TexturedSession<'_> {
                 "float texture update requires a 2D RGBA16Float texture of matching dimensions",
             ));
         }
-        if levels.len() != texture.mip_levels {
+        if generate_mips && !texture.generates_mips {
+            return Err(GraphicsError::invalid_request(
+                "generated-mip updates require a texture created with generated mips",
+            ));
+        }
+        if generate_mips {
+            debug_assert_eq!(levels.len(), 1, "generated-mip updates supply level 0");
+        } else if levels.len() != texture.mip_levels {
             return Err(GraphicsError::invalid_request(format!(
                 "float texture update supplies {} mip levels but the texture has {}",
                 levels.len(),
@@ -114,6 +142,10 @@ impl TexturedSession<'_> {
                         buffer, copy.offset, copy.stride, copy.stride * copy.height,
                         Size3 { width: copy.width, height: copy.height, depth: 1 },
                         texture.texture, 0, level, Origin3 { x: 0, y: 0, z: 0 });
+                }
+                if levels.len() < texture.mip_levels {
+                    // The encoder orders this after the level 0 copy.
+                    objc::void_object(encoder, c"generateMipmapsForTexture:", texture.texture);
                 }
                 objc::void(encoder, c"endEncoding");
                 // Ordinary command buffers retain encoded resources until completion.

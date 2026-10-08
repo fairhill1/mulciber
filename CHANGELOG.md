@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: BC1, BC2 and BC3 uploads
+
+`BlockCompression` gains `Bc1Srgb`/`Bc1Unorm`, `Bc2Srgb`/`Bc2Unorm` and `Bc3Srgb`/`Bc3Unorm`, the
+DXT1, DXT3 and DXT5 encodings older game data ships in, so it can be uploaded as stored instead of
+being re-encoded to BC7. BC1 blocks are eight bytes; block sizing and mip validation follow the
+format. Vulkan BC1 and BC3 sRGB chains ran under validation on Linux/NVIDIA; BC2, the UNORM
+variants and Metal are unexercised. See [block-compressed textures](docs/block-compressed-textures.md).
+
 ## Metal culls back faces as Vulkan does (0.13.31)
 
 Vulkan's fixed, material and shadow pipelines have always culled back faces with counter-clockwise

@@ -1,7 +1,7 @@
 # Block-compressed sampled uploads (0.13.15)
 
 `Device::create_block_compressed_texture(compression, width, height, &blocks)` uploads one
-level of an already encoded BC7 or BC5 image and returns the existing owning `Texture`.
+level of an already encoded BC1, BC2, BC3, BC5 or BC7 image and returns the existing owning `Texture`.
 `create_block_compressed_texture_with_mips` uploads a complete application-encoded chain. Both
 bind through the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in either
 stage, exactly as an RGBA8 upload does; nothing in a shader changes when a texture moves from RGBA8
@@ -28,20 +28,28 @@ let normal = device.create_block_compressed_texture_with_mips(
 
 ## Input contract
 
-Every encoding stores a 4×4 texel block in sixteen bytes:
+Every encoding stores a 4×4 texel block, in eight bytes for BC1 and sixteen for the rest. BC1,
+BC2 and BC3 are the DXT1, DXT3 and DXT5 encodings that older game data ships in, so it can be
+uploaded as it is stored (BC1, BC2 and BC3 added after 0.13.31):
 
 | `BlockCompression` | Channels | Sampled as | Vulkan | Metal |
 |---|---|---|---|---|
 | `Bc7Srgb` | RGBA | sRGB transfer function decoded | `VK_FORMAT_BC7_SRGB_BLOCK` | `MTLPixelFormatBC7_RGBAUnorm_sRGB` |
 | `Bc7Unorm` | RGBA | as stored | `VK_FORMAT_BC7_UNORM_BLOCK` | `MTLPixelFormatBC7_RGBAUnorm` |
 | `Bc5Unorm` | RG | as stored; `.ba` undefined | `VK_FORMAT_BC5_UNORM_BLOCK` | `MTLPixelFormatBC5_RGUnorm` |
+| `Bc1Srgb` | RGBA, one-bit alpha | sRGB transfer function decoded | `VK_FORMAT_BC1_RGBA_SRGB_BLOCK` | `MTLPixelFormatBC1_RGBA_sRGB` |
+| `Bc1Unorm` | RGBA, one-bit alpha | as stored | `VK_FORMAT_BC1_RGBA_UNORM_BLOCK` | `MTLPixelFormatBC1_RGBA` |
+| `Bc2Srgb` | RGBA, explicit alpha | sRGB transfer function decoded | `VK_FORMAT_BC2_SRGB_BLOCK` | `MTLPixelFormatBC2_RGBA_sRGB` |
+| `Bc2Unorm` | RGBA, explicit alpha | as stored | `VK_FORMAT_BC2_UNORM_BLOCK` | `MTLPixelFormatBC2_RGBA` |
+| `Bc3Srgb` | RGBA, interpolated alpha | sRGB transfer function decoded | `VK_FORMAT_BC3_SRGB_BLOCK` | `MTLPixelFormatBC3_RGBA_sRGB` |
+| `Bc3Unorm` | RGBA, interpolated alpha | as stored | `VK_FORMAT_BC3_UNORM_BLOCK` | `MTLPixelFormatBC3_RGBA` |
 
 A level `w`×`h` texels in extent carries `ceil(w / 4) × ceil(h / 4)` blocks, row-major and tightly
 packed, so a level narrower or shorter than a block (the 2×2 and 1×1 tail of every chain) is one
-sixteen-byte block. Dimensions must be nonzero and need not be multiples of four. The mip method
+block. Dimensions must be nonzero and need not be multiples of four. The mip method
 requires the complete chain from the base level to 1×1, halving each axis and flooring at one,
 the same rule the RGBA8 mip methods apply. A level whose byte count is not its block count times
-sixteen is `InvalidRequest`, naming the level and both numbers. Input byte ranges and summed
+the block size is `InvalidRequest`, naming the level and both numbers. Input byte ranges and summed
 staging capacity are checked before native upload.
 
 ## Capability
@@ -72,3 +80,12 @@ partial and sub-block levels, and the mip validation that measures a compressed 
 rather than texels. Native execution has not been run on either backend for this release: the
 consuming game is the first user, and its startup is where a BC7 upload first meets a driver. No
 viability gate is advanced.
+
+BC1, BC2 and BC3 (added after 0.13.31): workspace checks and unit tests cover BC1's eight-byte
+block sizing at full, partial and tail extents and its mip validation. On 2026-10-08, Linux / KDE
+Wayland / NVIDIA RTX 3060 Ti, Vulkan with `vulkan-validation` enabled and no validation messages,
+a The Ship map viewer uploaded 151 textures from the game's own DXT1 and DXT5 data as `Bc1Srgb` and
+`Bc3Srgb` mip chains (full chains through `create_block_compressed_texture_with_mips`) and sampled
+them in a material pipeline; the rendered frame was inspected and matched the same data decoded
+through another renderer. BC2 was not exercised (that game ships no DXT3), the UNORM variants were
+not exercised, and Metal was not run.

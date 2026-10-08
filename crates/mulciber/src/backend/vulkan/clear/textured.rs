@@ -756,6 +756,12 @@ impl<'window> TexturedSession<'window> {
             SampledTextureFormat::Bc7Srgb => vk::VK_FORMAT_BC7_SRGB_BLOCK,
             SampledTextureFormat::Bc7Unorm => vk::VK_FORMAT_BC7_UNORM_BLOCK,
             SampledTextureFormat::Bc5Unorm => vk::VK_FORMAT_BC5_UNORM_BLOCK,
+            SampledTextureFormat::Bc1Srgb => vk::VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
+            SampledTextureFormat::Bc1Unorm => vk::VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+            SampledTextureFormat::Bc2Srgb => vk::VK_FORMAT_BC2_SRGB_BLOCK,
+            SampledTextureFormat::Bc2Unorm => vk::VK_FORMAT_BC2_UNORM_BLOCK,
+            SampledTextureFormat::Bc3Srgb => vk::VK_FORMAT_BC3_SRGB_BLOCK,
+            SampledTextureFormat::Bc3Unorm => vk::VK_FORMAT_BC3_UNORM_BLOCK,
         };
         sampled_texture::validate_format(&self.surface, native_format, width, height, mip_levels)?;
         let size = crate::graphics::checked_staging_size(levels.iter().map(|texels| texels.len()))?;

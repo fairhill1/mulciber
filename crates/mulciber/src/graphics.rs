@@ -2821,10 +2821,12 @@ pub struct Texture {
 
 /// A block-compressed texture encoding the GPU samples directly.
 ///
-/// Every encoding here packs a 4×4 texel block into sixteen bytes, one byte per texel, so
-/// a compressed upload is a quarter of its RGBA8 equivalent. BC7 carries four channels and
-/// suits colour, with or without the sRGB transfer function; BC5 carries two and suits a
-/// tangent-space normal whose Z is reconstructed in the shader. The encoder is the
+/// Every encoding here packs a 4×4 texel block: BC1 into eight bytes (an eighth of its RGBA8
+/// equivalent), the others into sixteen (a quarter). BC7 carries four channels and suits
+/// colour, with or without the sRGB transfer function; BC5 carries two and suits a
+/// tangent-space normal whose Z is reconstructed in the shader. BC1, BC2 and BC3 are the
+/// older DXT1, DXT3 and DXT5 encodings that existing game data ships in: BC1 has one-bit
+/// alpha, BC2 explicit four-bit alpha, BC3 interpolated alpha. The encoder is the
 /// application's: Mulciber uploads blocks and never decodes or produces them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum BlockCompression {
@@ -2834,6 +2836,18 @@ pub enum BlockCompression {
     Bc7Unorm,
     /// BC5 two-channel UNORM; the shader reads `.rg` and a sample's `.ba` are undefined.
     Bc5Unorm,
+    /// BC1 (DXT1) RGBA with one-bit alpha, decoded through the sRGB transfer function.
+    Bc1Srgb,
+    /// BC1 (DXT1) RGBA with one-bit alpha, sampled as stored.
+    Bc1Unorm,
+    /// BC2 (DXT3) RGBA with explicit alpha, decoded through the sRGB transfer function.
+    Bc2Srgb,
+    /// BC2 (DXT3) RGBA with explicit alpha, sampled as stored.
+    Bc2Unorm,
+    /// BC3 (DXT5) RGBA with interpolated alpha, decoded through the sRGB transfer function.
+    Bc3Srgb,
+    /// BC3 (DXT5) RGBA with interpolated alpha, sampled as stored.
+    Bc3Unorm,
 }
 
 impl BlockCompression {
@@ -2842,6 +2856,12 @@ impl BlockCompression {
             Self::Bc7Srgb => SampledTextureFormat::Bc7Srgb,
             Self::Bc7Unorm => SampledTextureFormat::Bc7Unorm,
             Self::Bc5Unorm => SampledTextureFormat::Bc5Unorm,
+            Self::Bc1Srgb => SampledTextureFormat::Bc1Srgb,
+            Self::Bc1Unorm => SampledTextureFormat::Bc1Unorm,
+            Self::Bc2Srgb => SampledTextureFormat::Bc2Srgb,
+            Self::Bc2Unorm => SampledTextureFormat::Bc2Unorm,
+            Self::Bc3Srgb => SampledTextureFormat::Bc3Srgb,
+            Self::Bc3Unorm => SampledTextureFormat::Bc3Unorm,
         }
     }
 }
@@ -2854,6 +2874,12 @@ pub(crate) enum SampledTextureFormat {
     Bc7Srgb,
     Bc7Unorm,
     Bc5Unorm,
+    Bc1Srgb,
+    Bc1Unorm,
+    Bc2Srgb,
+    Bc2Unorm,
+    Bc3Srgb,
+    Bc3Unorm,
 }
 
 impl SampledTextureFormat {
@@ -2862,7 +2888,15 @@ impl SampledTextureFormat {
     pub(crate) const fn block_extent(self) -> u32 {
         match self {
             Self::Srgb | Self::Unorm | Self::Float16 => 1,
-            Self::Bc7Srgb | Self::Bc7Unorm | Self::Bc5Unorm => 4,
+            Self::Bc7Srgb
+            | Self::Bc7Unorm
+            | Self::Bc5Unorm
+            | Self::Bc1Srgb
+            | Self::Bc1Unorm
+            | Self::Bc2Srgb
+            | Self::Bc2Unorm
+            | Self::Bc3Srgb
+            | Self::Bc3Unorm => 4,
         }
     }
 
@@ -2870,8 +2904,14 @@ impl SampledTextureFormat {
     pub(crate) const fn block_bytes(self) -> usize {
         match self {
             Self::Srgb | Self::Unorm => 4,
-            Self::Float16 => 8,
-            Self::Bc7Srgb | Self::Bc7Unorm | Self::Bc5Unorm => 16,
+            Self::Float16 | Self::Bc1Srgb | Self::Bc1Unorm => 8,
+            Self::Bc7Srgb
+            | Self::Bc7Unorm
+            | Self::Bc5Unorm
+            | Self::Bc2Srgb
+            | Self::Bc2Unorm
+            | Self::Bc3Srgb
+            | Self::Bc3Unorm => 16,
         }
     }
 
@@ -4742,6 +4782,19 @@ mod block_compressed_tests {
             BlockCompression::Bc5Unorm.sampled().level_bytes(4, 4),
             Some(16)
         );
+        // BC1 packs a block into eight bytes; BC2 and BC3 into sixteen like BC7.
+        let bc1 = BlockCompression::Bc1Srgb.sampled();
+        assert_eq!(bc1.level_bytes(8, 8), Some(32));
+        assert_eq!(bc1.level_bytes(5, 3), Some(16));
+        assert_eq!(bc1.level_bytes(1, 1), Some(8));
+        assert_eq!(
+            BlockCompression::Bc3Unorm.sampled().level_bytes(8, 4),
+            Some(32)
+        );
+        assert_eq!(
+            BlockCompression::Bc2Srgb.sampled().level_bytes(2, 2),
+            Some(16)
+        );
         // The uncompressed formats keep their texel sizes through the same helper.
         assert_eq!(SampledTextureFormat::Srgb.level_bytes(3, 3), Some(36));
         assert_eq!(SampledTextureFormat::Float16.level_bytes(2, 1), Some(16));
@@ -4760,6 +4813,11 @@ mod block_compressed_tests {
         assert!(validate_mip_level(bc7, 8, 8, 3, &[0; 4]).is_err());
         assert!(validate_mip_level(bc7, 0, 8, 0, &[]).is_err());
         assert!(validate_mip_level(SampledTextureFormat::Unorm, 8, 8, 0, &[0; 256]).is_ok());
+        // A BC1 chain's tail levels are each one eight-byte block, not sixteen.
+        let bc1 = BlockCompression::Bc1Unorm.sampled();
+        assert!(validate_mip_level(bc1, 8, 8, 0, &blocks[..32]).is_ok());
+        assert!(validate_mip_level(bc1, 8, 8, 3, &blocks[..8]).is_ok());
+        assert!(validate_mip_level(bc1, 8, 8, 3, &blocks[..16]).is_err());
     }
 }
 

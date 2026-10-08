@@ -29,6 +29,12 @@ use crate::{
 use objc::{Object, Origin3, Region3, Size3};
 
 const PIXEL_FORMAT_RGBA16_FLOAT: usize = 115;
+const PIXEL_FORMAT_BC1_RGBA: usize = 130;
+const PIXEL_FORMAT_BC1_RGBA_SRGB: usize = 131;
+const PIXEL_FORMAT_BC2_RGBA: usize = 132;
+const PIXEL_FORMAT_BC2_RGBA_SRGB: usize = 133;
+const PIXEL_FORMAT_BC3_RGBA: usize = 134;
+const PIXEL_FORMAT_BC3_RGBA_SRGB: usize = 135;
 const PIXEL_FORMAT_BC5_RG_UNORM: usize = 144;
 const PIXEL_FORMAT_BC7_RGBA_UNORM: usize = 152;
 const PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB: usize = 153;
@@ -675,6 +681,12 @@ impl<'window> TexturedSession<'window> {
                 SampledTextureFormat::Bc7Srgb => PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB,
                 SampledTextureFormat::Bc7Unorm => PIXEL_FORMAT_BC7_RGBA_UNORM,
                 SampledTextureFormat::Bc5Unorm => PIXEL_FORMAT_BC5_RG_UNORM,
+                SampledTextureFormat::Bc1Srgb => PIXEL_FORMAT_BC1_RGBA_SRGB,
+                SampledTextureFormat::Bc1Unorm => PIXEL_FORMAT_BC1_RGBA,
+                SampledTextureFormat::Bc2Srgb => PIXEL_FORMAT_BC2_RGBA_SRGB,
+                SampledTextureFormat::Bc2Unorm => PIXEL_FORMAT_BC2_RGBA,
+                SampledTextureFormat::Bc3Srgb => PIXEL_FORMAT_BC3_RGBA_SRGB,
+                SampledTextureFormat::Bc3Unorm => PIXEL_FORMAT_BC3_RGBA,
             };
             let descriptor = required(
                 objc::object_three_usizes_bool(

@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.13.35"
+version = "0.13.36"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-shader"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "naga",
  "naga_oil",

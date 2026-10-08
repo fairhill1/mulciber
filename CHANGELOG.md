@@ -2,7 +2,7 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Unreleased: KTX 2.0 uploads and the texture baker
+## KTX 2.0 uploads and the texture baker (graphics 0.13.36, texture 0.1.0)
 
 `Ktx2Texture::parse` reads a KTX 2.0 file in place, through the `ktx2` crate (0.5.0), and accepts
 only what the GPU samples directly: one 2D image, not supercompressed, in a `BlockCompression`
@@ -30,7 +30,7 @@ whole directories, and `run` lets a game's own bake binary forward to it. The en
 default `encode` feature, so a game's runtime builds without it. Tests cover the chains, packing,
 digests, the bake and fallback cycle and BC7 quality, decoded with `bcdec_rs`.
 
-## Binary16 uploads and GPU-generated mips (graphics, unreleased)
+## Binary16 uploads and GPU-generated mips (graphics 0.13.36)
 
 Every `RGBA16Float` creation and update function gains a `_from_bits` form taking binary16 bit
 patterns (`[u16; 4]` texels) that upload without conversion; infinity and NaN are still rejected.
@@ -43,7 +43,7 @@ to the generated bindings); Metal uses `generateMipmapsForTexture:`. Additive. A
 Vulkan test reads back exact box averages under validation; Metal has not run. See
 [float texture uploads](docs/float-texture-uploads.md).
 
-## Shader reflection and device-free pipeline checks (graphics and shader, unreleased)
+## Shader reflection and device-free pipeline checks (graphics 0.13.36, shader 0.5.4)
 
 `mulciber-shader` now writes a `MULSHDR4` container whose interface adds, for every uniform and
 storage binding, its memory layout: the WGSL type name and, for a struct, each member's name, byte
@@ -57,7 +57,7 @@ offset, size and type. `ShaderArtifact::reflect()` returns the recorded interfac
 `mulciber` releases reject `MULSHDR4` by header, as with the previous container bumps. Checked by
 container round-trip tests in both crates.
 
-## Per-axis sampler addressing (graphics, unreleased)
+## Per-axis sampler addressing (graphics 0.13.36)
 
 `MaterialBinding::SamplerPerAxis { binding, filter, address: SamplerAddressPerAxis { u, v, w } }`
 declares a material sampler whose address mode differs per axis, such as an equirectangular sky
@@ -67,7 +67,7 @@ declarations are unchanged. Vulkan fills `addressModeU/V/W` from the three field
 sets the R address mode, which 2D sampling never reads. Checked by a binding-validation test and
 by Clippy on Linux and on the `aarch64-apple-darwin` target; neither backend has rendered it here.
 
-## Unreleased: shared lighting library
+## Shared lighting library (shader 0.5.4)
 
 `mulciber-shader` ships Mulciber's shading model as WGSL modules every game can import, so lighting
 code is no longer copied between games:
@@ -92,7 +92,7 @@ and hue. A lit shader importing all three passed `spirv-val`; Metal is checked a
 only. `mulciber::color` is renamed `mulciber::colorspace`, because importing a module reserves its
 last path segment and `color` is a common local name.
 
-## Unreleased: WGSL module imports
+## WGSL module imports (shader 0.5.4)
 
 `mulciber-shader` composes shaders from importable WGSL modules with naga_oil 0.23.0, Bevy's
 composer, on the same naga 30. `ShaderModules` registers modules that name themselves with

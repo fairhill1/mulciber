@@ -27,7 +27,7 @@ required-features = ["encode"]
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 intel_tex_2 = { version = "0.5.0", optional = true }
 ktx2 = "0.5.0"
-mulciber = { version = "0.13.35", path = "../mulciber" }
+mulciber = { version = "0.13.36", path = "../mulciber" }
 
 [dev-dependencies]
 bcdec_rs = "0.2.0"

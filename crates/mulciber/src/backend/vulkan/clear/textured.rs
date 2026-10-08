@@ -180,7 +180,9 @@ struct TextureResource {
     mip_levels: u32,
     /// Array layers: one for a 2D texture, six for a cube.
     layers: u32,
-    pending: Option<Vec<u8>>,
+    /// The last queued replacement: every mip level, tightly packed, base level first.
+    pending: Option<Vec<Vec<u8>>>,
+    /// Per-frame-slot staging, sized to the whole chain on first use.
     uploads: [Buffer; ClearSurface::frames_in_flight()],
     upload_ready: bool,
 }
@@ -4894,17 +4896,24 @@ fn complete_buffer_storage(
         "vkBindBufferMemory",
     )?;
     if !bytes.is_empty() {
-        write_buffer(surface, buffer, bytes)?;
+        write_buffer(surface, buffer, &[bytes])?;
     }
     Ok(())
 }
 
+/// Writes `parts` back to back from the start of `buffer`.
 fn write_buffer(
     surface: &ClearSurface<'_>,
     buffer: &Buffer,
-    bytes: &[u8],
+    parts: &[&[u8]],
 ) -> Result<(), GraphicsError> {
-    if u64::try_from(bytes.len()).map_err(|_| error("buffer write exceeds u64"))? > buffer.size {
+    let size = parts
+        .iter()
+        .try_fold(0_u64, |size, part| {
+            size.checked_add(u64::try_from(part.len()).ok()?)
+        })
+        .ok_or_else(|| error("buffer write exceeds u64"))?;
+    if size > buffer.size {
         return Err(error("buffer write exceeds allocation"));
     }
     let device = surface.device();
@@ -4923,7 +4932,12 @@ fn write_buffer(
         "vkMapMemory",
     )?;
     unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.cast(), bytes.len());
+        let mut destination = mapped.cast::<u8>();
+        for part in parts {
+            ptr::copy_nonoverlapping(part.as_ptr(), destination, part.len());
+            // Stays within the mapping: the parts' sum was checked against its size.
+            destination = destination.add(part.len());
+        }
         device.functions.unmap_memory.expect("loaded function")(device.handle, buffer.memory);
     }
     Ok(())

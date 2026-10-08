@@ -15,6 +15,9 @@ const BASE: [[f32; 4]; 4] = [
     [2.0, -4.0, -1e-5, 0.0],
 ];
 const MIP: [[f32; 4]; 1] = [[10.0, -12.0, 7e-5, 7e-4]];
+// Each channel shares the sign of the base level's mean, so trilinear blends never cancel
+// toward zero, where the half result's ULP would be far finer than the filter's precision.
+const MIP_ALT: [[f32; 4]; 1] = [[-6.0, 20.0, 9e-5, 3e-4]];
 const QUERIES: [[f32; 3]; 10] = [
     [0.25, 0.25, 0.0],
     [0.75, 0.25, 0.0],
@@ -73,7 +76,7 @@ fn reference_half(value: f32) -> u16 {
     }
     best | if value.is_sign_negative() { 0x8000 } else { 0 }
 }
-fn expected(query: [f32; 3], mips: bool, input: [[f32; 4]; 4]) -> [u16; 4] {
+fn expected(query: [f32; 3], mips: bool, input: [[f32; 4]; 4], mip: [[f32; 4]; 1]) -> [u16; 4] {
     let x = (query[0] * 2.0 - 0.5).clamp(0.0, 1.0);
     let y = (query[1] * 2.0 - 0.5).clamp(0.0, 1.0);
     let lod = if mips { query[2].clamp(0.0, 1.0) } else { 0.0 };
@@ -82,7 +85,7 @@ fn expected(query: [f32; 3], mips: bool, input: [[f32; 4]; 4]) -> [u16; 4] {
         let top = base[0] * (1.0 - x) + base[1] * x;
         let bottom = base[2] * (1.0 - x) + base[3] * x;
         let interpolated = (top * (1.0 - y) + bottom * y) * (1.0 - lod)
-            + decode(reference_half(MIP[0][channel])) * lod;
+            + decode(reference_half(mip[0][channel])) * lod;
         reference_half(interpolated * if channel >= 2 { 1024.0 } else { 1.0 })
     })
 }
@@ -163,10 +166,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             let fragment = !(completed / QUERIES.len()).is_multiple_of(2);
             let query = QUERIES[completed % QUERIES.len()];
             let mut updated = BASE;
+            let odd = (completed + queued_frames) % 2 == 1;
+            if odd { updated.reverse(); }
+            // The level-one texel alternates too, so a chain replacement that skipped a level
+            // fails every LOD > 0 query.
+            let mip = if odd { MIP_ALT } else { MIP };
             if mips {
-                assert!(graphics.device.update_rgba16_float_texture(&textures[1], 2, 2, &updated).is_err());
+                let device = &graphics.device;
+                assert!(device.update_rgba16_float_texture(&textures[1], 2, 2, &updated).is_err());
+                device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&[[1.0;4];4], &[[1.0;4]]])?;
+                device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated, &mip])?;
+                // Incomplete, extra and wrongly sized chains, and a chain for a single-level
+                // texture, are refused without disturbing the pending replacement.
+                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated]).is_err());
+                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated, &mip, &mip]).is_err());
+                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 1, 4, &[&updated, &mip, &mip]).is_err());
+                assert!(device.update_rgba16_float_texture_with_mips(&textures[0], 2, 2, &[&updated, &mip]).is_err());
             } else {
-                if (completed + queued_frames) % 2 == 1 { updated.reverse(); }
                 graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &[[1.0;4];4])?;
                 graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &updated)?;
                 assert!(graphics.device.update_rgba16_float_texture(&textures[0], 1, 4, &updated).is_err());
@@ -185,7 +201,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             if queued_frames < 8 { queued_frames += 1; return Ok(()); }
             queued_frames = 0;
             let actual = mulciber::integration::read_hdr_validation_pixel(&graphics.queue, target)?;
-            let reference = expected(query, mips, updated);
+            let reference = expected(query, mips, updated, mip);
             for channel in 0..4 {
                 // Permit two half ULPs for native filtering and final half render-target rounding.
                 // Small channels were amplified exactly, so a flushed coefficient cannot pass.

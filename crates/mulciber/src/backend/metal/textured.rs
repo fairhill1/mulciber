@@ -238,7 +238,8 @@ struct TextureResource {
     mip_levels: usize,
     /// Slices: one for a 2D texture, six for a cube.
     slices: usize,
-    pending: Option<Vec<u8>>,
+    /// The last queued replacement: every mip level, tightly packed, base level first.
+    pending: Option<Vec<Vec<u8>>>,
 }
 
 struct PipelineResource {

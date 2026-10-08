@@ -587,9 +587,11 @@ See [behavior, reproduction and limits](frame-pacing-controls.md#adaptive-and-st
 ### Streaming float texture replacement
 
 `Device::update_rgba16_float_texture` queues same-sized, single-level updates
-without recreating bindings or waiting for device idle. See the
+without recreating bindings or waiting for device idle, and
+`Device::update_rgba16_float_texture_with_mips` does the same for a texture's complete mip chain.
+See the
 [replacement contract and validation evidence](float-texture-uploads.md#queue-ordered-replacement).
-Linux native numerical validation passed; physical Metal validation remains open.
+Linux native numerical validation passed for both; physical Metal validation remains open.
 
 
 ### Strict pacing correction (graphics 0.13.24)

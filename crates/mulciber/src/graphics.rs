@@ -700,7 +700,7 @@ impl Device<'_> {
         })
     }
 
-    /// Queues a full replacement of a single-level `RGBA16Float` texture.
+    /// Queues a full replacement of a single-level `RGBA16Float` 2D texture.
     ///
     /// The texture must belong to this device and retain its original dimensions.
     /// Values follow `create_rgba16_float_texture`. The bytes are copied now;
@@ -712,13 +712,51 @@ impl Device<'_> {
     ///
     /// # Errors
     /// Returns an error for a foreign or stale texture, incompatible format or
-    /// dimensions, invalid texels, or an unavailable graphics session.
+    /// dimensions, a texture with a mip chain (use
+    /// [`Self::update_rgba16_float_texture_with_mips`]), invalid texels, or an
+    /// unavailable graphics session.
     pub fn update_rgba16_float_texture(
         &self,
         texture: &Texture,
         width: u32,
         height: u32,
         texels: &[[f32; 4]],
+    ) -> Result<(), GraphicsError> {
+        self.update_rgba16_float(texture, width, height, &[texels], false)
+    }
+
+    /// Queues a full replacement of every level of an `RGBA16Float` texture created by
+    /// [`Self::create_rgba16_float_texture_with_mips`].
+    ///
+    /// `levels` is the complete chain from `width`×`height` to 1×1, laid out as
+    /// [`Self::create_rgba16_float_texture_with_mips`] takes it, and must match the texture's
+    /// dimensions and mip count. No level is generated or kept from the previous contents.
+    /// Values, queuing, coalescing and cancellation follow
+    /// [`Self::update_rgba16_float_texture`]: every level of the last write is uploaded before
+    /// any draw of the next textured/material scene submission, and earlier submitted frames
+    /// keep their original contents.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign or stale texture, incompatible format, dimensions or mip
+    /// count (including a single-level texture larger than 1×1), an incomplete/extra chain or
+    /// mismatched per-level texel count, invalid texels, or an unavailable graphics session.
+    pub fn update_rgba16_float_texture_with_mips(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+    ) -> Result<(), GraphicsError> {
+        self.update_rgba16_float(texture, width, height, levels, true)
+    }
+
+    fn update_rgba16_float(
+        &self,
+        texture: &Texture,
+        width: u32,
+        height: u32,
+        levels: &[&[[f32; 4]]],
+        complete: bool,
     ) -> Result<(), GraphicsError> {
         if texture.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
@@ -730,13 +768,8 @@ impl Device<'_> {
                 "float texture updates replace 2D textures only, not cube textures",
             ));
         }
-        let mut packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
-        session_mut(&self.shared)?.update_float_texture(
-            texture.lease.id,
-            width,
-            height,
-            packed.remove(0),
-        )
+        let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
+        session_mut(&self.shared)?.update_float_texture(texture.lease.id, width, height, packed)
     }
 
     fn upload_rgba16_float(

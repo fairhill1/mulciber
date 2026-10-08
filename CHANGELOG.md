@@ -2,6 +2,20 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: mipped float texture replacement
+
+`Device::update_rgba16_float_texture_with_mips(&texture, width, height, &levels)` replaces every
+level of a texture made by `create_rgba16_float_texture_with_mips`, with the same queuing as
+`update_rgba16_float_texture`: input is converted and copied now, the whole chain is uploaded before
+draws of the next textured/material submission, pending writes coalesce, earlier frames keep their
+contents and nothing waits for device idle. The chain must be complete and match the texture's
+dimensions and mip count. Both calls share one path, a single level being a chain of one. Vulkan
+sizes each frame slot's staging to the whole chain and copies a region per level, with barriers
+over every level; Metal blits each level from its own 256-byte-aligned rows. The float-texture
+probe now replaces its mipped texture's full chain every frame; it passed all 40 cases on
+Linux/NVIDIA under Vulkan validation and synchronization validation. Metal passes Clippy but has
+never run. See [mip chain replacement](docs/float-texture-uploads.md#mip-chain-replacement).
+
 ## Unreleased: Rust 1.99 and current dependencies
 
 The pinned toolchain moves from 1.98.1 to 1.99.0 (the MSRV stays 1.97). Examples, probes and

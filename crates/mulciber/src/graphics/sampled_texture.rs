@@ -147,6 +147,16 @@ mod tests {
     }
 
     #[test]
+    fn packed_chain_levels_are_tight_whole_texels() {
+        // Chain replacement stages levels back to back; Vulkan copy offsets rely on each level
+        // being exactly its texels, eight bytes apiece.
+        let (a, b, c) = ([[0.5; 4]; 15], [[1.0; 4]; 2], [[2.0; 4]; 1]);
+        let packed = pack_float_levels(5, 3, &[&a, &b, &c], true).unwrap();
+        let sizes: Vec<usize> = packed.iter().map(Vec::len).collect();
+        assert_eq!(sizes, [15 * 8, 2 * 8, 8]);
+    }
+
+    #[test]
     fn invalid_components_are_rejected_including_later_mips() {
         for value in [
             f32::NAN,

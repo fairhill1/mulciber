@@ -71,8 +71,8 @@ depth cubes and integer cubes have no proven mapping and fail to compile.
 
 A cube texture feeds material pipelines only. The fixed textured pipelines (`TexturedDraw`,
 `TexturedSceneDraw`, `TexturedInstanceBatch`, `PostprocessedDraw`) refuse it, shadow pipelines
-refuse a cube slot and shadow records a cube texture, and `update_rgba16_float_texture` replaces
-2D textures only.
+refuse a cube slot and shadow records a cube texture, and `update_rgba16_float_texture` and
+`update_rgba16_float_texture_with_mips` replace 2D textures only.
 
 ## Input contract
 

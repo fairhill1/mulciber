@@ -145,8 +145,9 @@ Release version: **0.13.13**. The native Vulkan validation boundary above also a
 `Device::update_rgba16_float_texture(&texture, width, height, &texels)` replaces a
 single-level float texture without changing its handle or material bindings. It
 uses the same checked binary16 conversion as creation. Foreign/stale handles,
-changed dimensions, other formats, and mip chains are rejected before replacing
-any pending write. The caller may release its input immediately.
+changed dimensions, other formats, and mipped textures are rejected before replacing
+any pending write; [mip chain replacement](#mip-chain-replacement) covers the last. The caller may
+release its input immediately.
 
 Writes are consumed before draws in the next textured/material submission;
 multiple pending writes coalesce to the last one. Earlier submitted frames see
@@ -156,7 +157,7 @@ buffer per acquired frame slot, guarded by that slot's fence, and barriers from
 vertex/fragment sampling to transfer and back. Staging storage follows the
 texture's existing GPU retirement. Metal encodes an ordered buffer-to-texture
 blit with 256-byte row alignment; the command buffer retains staging through
-completion. Resizing and mip replacement are deliberately outside this API.
+completion. Resizing is deliberately outside this API.
 
 The float-texture probe now alternates replacements on an existing texture,
 submits nine frames between readbacks to exercise staging reuse,
@@ -165,3 +166,34 @@ the valid contents. On 2026-09-21, Linux/Vulkan (RTX 3060 Ti) passed all 40
 vertex/fragment sampling cases with validation enabled, within two half ULPs.
 Metal compiled and passed Clippy for `aarch64-apple-darwin`; physical Metal
 replacement/lifetime validation remains outstanding.
+
+### Mip chain replacement
+
+`Device::update_rgba16_float_texture_with_mips(&texture, width, height, &levels)` replaces every
+level of a texture made by `create_rgba16_float_texture_with_mips`. `levels` is the complete chain
+from `width`×`height` to 1×1, in the creation call's layout, checked by the same conversion and
+per-level validation; nothing is generated or kept from the old contents. The texture's
+dimensions and mip count must match, so the single-level call refuses a mipped texture and the
+chain call refuses a single-level texture larger than 1×1. Queuing, coalescing, cancellation and
+frame isolation are those above: the whole chain is one pending write, consumed before draws in
+the next textured/material submission. Both calls share this path; a single-level texture is a
+chain of one.
+
+Vulkan sizes each frame slot's staging buffer to the whole chain on first use and packs the levels
+back to back. One `vkCmdCopyBufferToImage2` records a region per level at its packed offset; every
+level is a whole number of eight-byte texels, so each offset stays aligned to the texel block. The
+barriers into and out of transfer cover every level. Metal builds one staging buffer in which each
+level has its own 256-byte-aligned row stride and starts on a 256-byte boundary, then encodes one
+blit copy per level in a single blit encoder.
+
+The float-texture probe's mipped half now replaces the full chain every frame (a discarded write
+first, then the real one), alternating both the base level and the 1×1 level, so a replacement
+that skipped a level fails every LOD > 0 query. It also checks that the single-level call is
+refused for the mipped texture and that incomplete, extra and wrongly sized chains and a chain for
+the single-level texture are refused. The alternate 1×1 values share each channel's sign with the
+base mean so trilinear blends do not cancel below the filter's precision. On 2026-10-08,
+Linux/Vulkan (RTX 3060 Ti, driver 615.71.09, Khronos validation 1.4.363) passed all 40 cases with
+validation enabled and again with synchronization validation
+(`VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true`, `VK_KHRONOS_VALIDATION_SYNCVAL_FULL_VALIDATION=true`),
+with no validation messages. The Metal path passes Clippy for `aarch64-apple-darwin` but has never
+run; physical Metal validation remains outstanding.

@@ -21,7 +21,8 @@ commonly absorb
 application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
 normal maps, with either one level or a complete application-authored mip chain.
 Sampled `RGBA16Float` textures support creation with or without authored mips.
-`Device::update_rgba16_float_texture` queues same-sized, single-level replacements
+`Device::update_rgba16_float_texture` queues same-sized, single-level replacements, and
+`Device::update_rgba16_float_texture_with_mips` complete-chain replacements of mipped textures,
 before the next scene submission without recreating bindings or waiting for device
 idle. Input is copied immediately; pending writes coalesce and submitted frames
 retain their prior contents.

@@ -2648,8 +2648,16 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
-/// Data format of one vertex attribute: 32-bit float, unsigned, and signed families as scalars
-/// through four components, matching what `mulciber-shader` records for vertex-stage inputs.
+/// Data format of one vertex attribute in the buffer, and through it the WGSL type the shader
+/// reads.
+///
+/// The 32-bit float, unsigned, and signed families as scalars through four components are read
+/// as the WGSL type of the same shape. The packed formats are fetched narrower and widened by the
+/// GPU: the unsigned-integer ones (`Uint8x4`, `Uint16x2`, `Uint16x4`) are read as `vec2<u32>` or
+/// `vec4<u32>`, and the normalized ones (`Unorm8x4`, `Unorm16x2`, `Unorm16x4`) as `vec2<f32>` or
+/// `vec4<f32>` in 0..1, which suits skinning indices and weights. Pipeline creation compares that
+/// WGSL type with what `mulciber-shader` recorded for the input. Every attribute's offset must be
+/// a multiple of four bytes, as Metal requires.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum VertexFormat {
@@ -2677,35 +2685,62 @@ pub enum VertexFormat {
     Sint32x3,
     /// Four signed 32-bit integers (`vec4<i32>`).
     Sint32x4,
+    /// Four unsigned 8-bit integers, read as `vec4<u32>` (four bytes; bone indices).
+    Uint8x4,
+    /// Four unsigned 8-bit values normalized to 0..1, read as `vec4<f32>` (four bytes; bone
+    /// weights, packed colours).
+    Unorm8x4,
+    /// Two unsigned 16-bit integers, read as `vec2<u32>` (four bytes).
+    Uint16x2,
+    /// Four unsigned 16-bit integers, read as `vec4<u32>` (eight bytes).
+    Uint16x4,
+    /// Two unsigned 16-bit values normalized to 0..1, read as `vec2<f32>` (four bytes).
+    Unorm16x2,
+    /// Four unsigned 16-bit values normalized to 0..1, read as `vec4<f32>` (eight bytes).
+    Unorm16x4,
 }
 
 impl VertexFormat {
     /// Tightly packed byte size of one attribute value.
     #[must_use]
     pub const fn byte_len(self) -> u32 {
-        4 * (self.components() as u32)
+        match self {
+            Self::Uint8x4 | Self::Unorm8x4 | Self::Uint16x2 | Self::Unorm16x2 => 4,
+            Self::Uint16x4 | Self::Unorm16x4 => 8,
+            _ => 4 * (self.components() as u32),
+        }
     }
 
     const fn components(self) -> u8 {
         match self {
             Self::Float32 | Self::Uint32 | Self::Sint32 => 1,
-            Self::Float32x2 | Self::Uint32x2 | Self::Sint32x2 => 2,
+            Self::Float32x2
+            | Self::Uint32x2
+            | Self::Sint32x2
+            | Self::Uint16x2
+            | Self::Unorm16x2 => 2,
             Self::Float32x3 | Self::Uint32x3 | Self::Sint32x3 => 3,
-            Self::Float32x4 | Self::Uint32x4 | Self::Sint32x4 => 4,
+            Self::Float32x4
+            | Self::Uint32x4
+            | Self::Sint32x4
+            | Self::Uint8x4
+            | Self::Unorm8x4
+            | Self::Uint16x4
+            | Self::Unorm16x4 => 4,
         }
     }
 
-    /// The `mulciber-shader` interface format code this format satisfies.
+    /// The `mulciber-shader` interface format code of the WGSL type this format is read as.
     pub(crate) const fn interface_code(self) -> u8 {
         match self {
             Self::Float32 => 0,
-            Self::Float32x2 => 1,
+            Self::Float32x2 | Self::Unorm16x2 => 1,
             Self::Float32x3 => 2,
-            Self::Float32x4 => 3,
+            Self::Float32x4 | Self::Unorm8x4 | Self::Unorm16x4 => 3,
             Self::Uint32 => 4,
-            Self::Uint32x2 => 5,
+            Self::Uint32x2 | Self::Uint16x2 => 5,
             Self::Uint32x3 => 6,
-            Self::Uint32x4 => 7,
+            Self::Uint32x4 | Self::Uint8x4 | Self::Uint16x4 => 7,
             Self::Sint32 => 8,
             Self::Sint32x2 => 9,
             Self::Sint32x3 => 10,
@@ -2713,21 +2748,44 @@ impl VertexFormat {
         }
     }
 
-    /// WGSL spelling used in diagnostics.
+    /// Whether the buffer holds the value at the width the shader reads it, rather than packed.
+    const fn is_packed(self) -> bool {
+        matches!(
+            self,
+            Self::Uint8x4
+                | Self::Unorm8x4
+                | Self::Uint16x2
+                | Self::Uint16x4
+                | Self::Unorm16x2
+                | Self::Unorm16x4
+        )
+    }
+
+    /// The format's spelling in diagnostics, with the WGSL type a packed format is read as.
+    pub(crate) fn describe(self) -> std::string::String {
+        let wgsl = self.wgsl_name();
+        if self.is_packed() {
+            format!("{self:?} (read as {wgsl})")
+        } else {
+            std::string::String::from(wgsl)
+        }
+    }
+
+    /// WGSL spelling used in diagnostics; a packed format names the type it is read as.
     pub(crate) const fn wgsl_name(self) -> &'static str {
-        match self {
-            Self::Float32 => "f32",
-            Self::Float32x2 => "vec2<f32>",
-            Self::Float32x3 => "vec3<f32>",
-            Self::Float32x4 => "vec4<f32>",
-            Self::Uint32 => "u32",
-            Self::Uint32x2 => "vec2<u32>",
-            Self::Uint32x3 => "vec3<u32>",
-            Self::Uint32x4 => "vec4<u32>",
-            Self::Sint32 => "i32",
-            Self::Sint32x2 => "vec2<i32>",
-            Self::Sint32x3 => "vec3<i32>",
-            Self::Sint32x4 => "vec4<i32>",
+        match self.interface_code() {
+            0 => "f32",
+            1 => "vec2<f32>",
+            2 => "vec3<f32>",
+            3 => "vec4<f32>",
+            4 => "u32",
+            5 => "vec2<u32>",
+            6 => "vec3<u32>",
+            7 => "vec4<u32>",
+            8 => "i32",
+            9 => "vec2<i32>",
+            10 => "vec3<i32>",
+            _ => "vec4<i32>",
         }
     }
 
@@ -4341,6 +4399,14 @@ fn validate_vertex_layout(layout: VertexLayout<'_>) -> Result<OwnedVertexLayout,
             "vertex layout stride must be non-zero",
         ));
     }
+    // Metal requires four-byte strides and attribute offsets; holding Vulkan to the same rule
+    // keeps one layout valid on both backends.
+    if !layout.stride.is_multiple_of(4) {
+        return Err(GraphicsError::invalid_request(format!(
+            "vertex layout stride {} is not a multiple of four bytes",
+            layout.stride
+        )));
+    }
     let owned = layout.to_owned_layout();
     for window in owned.attributes.windows(2) {
         if window[0].location == window[1].location {
@@ -4363,6 +4429,13 @@ fn validate_vertex_layout(layout: VertexLayout<'_>) -> Result<OwnedVertexLayout,
         }
     }
     for attribute in &owned.attributes {
+        if !attribute.offset.is_multiple_of(4) {
+            return Err(GraphicsError::invalid_request(format!(
+                "vertex layout attribute at location {} has offset {}, which is not a multiple \
+                 of four bytes",
+                attribute.location, attribute.offset
+            )));
+        }
         let end = attribute
             .offset
             .checked_add(attribute.format.byte_len())
@@ -4451,7 +4524,7 @@ fn find_declared_attribute<'layouts>(
         return Err(GraphicsError::invalid_request(format!(
             "declared layouts supply location {} as {} but the shader artifact records {}",
             attribute.location,
-            attribute.format.wgsl_name(),
+            attribute.format.describe(),
             recorded
         )));
     }
@@ -5406,5 +5479,99 @@ mod cube_texture_slot_tests {
         assert!(validate_fixed_pipeline_texture(&flat).is_ok());
         assert!(validate_fixed_pipeline_texture(&cube).is_err());
         assert_eq!(cube.dimension(), TextureDimension::Cube);
+    }
+}
+
+#[cfg(test)]
+mod packed_vertex_format_tests {
+    use super::{
+        VertexAttribute, VertexFormat, VertexLayout, find_declared_attribute,
+        validate_vertex_layout,
+    };
+    use crate::shader::InterfaceVertexInput;
+
+    #[test]
+    fn packed_formats_are_narrow_in_the_buffer_and_wide_in_the_shader() {
+        for (format, bytes, wgsl) in [
+            (VertexFormat::Uint8x4, 4, "vec4<u32>"),
+            (VertexFormat::Unorm8x4, 4, "vec4<f32>"),
+            (VertexFormat::Uint16x2, 4, "vec2<u32>"),
+            (VertexFormat::Uint16x4, 8, "vec4<u32>"),
+            (VertexFormat::Unorm16x2, 4, "vec2<f32>"),
+            (VertexFormat::Unorm16x4, 8, "vec4<f32>"),
+            (VertexFormat::Float32x3, 12, "vec3<f32>"),
+            (VertexFormat::Sint32x4, 16, "vec4<i32>"),
+        ] {
+            assert_eq!(format.byte_len(), bytes, "{format:?}");
+            assert_eq!(format.wgsl_name(), wgsl, "{format:?}");
+            assert_eq!(
+                VertexFormat::from_interface_code(format.interface_code())
+                    .map(VertexFormat::wgsl_name),
+                Some(wgsl)
+            );
+        }
+        assert_eq!(
+            VertexFormat::Uint8x4.describe(),
+            "Uint8x4 (read as vec4<u32>)"
+        );
+        assert_eq!(VertexFormat::Float32x2.describe(), "vec2<f32>");
+    }
+
+    #[test]
+    fn layouts_keep_four_byte_strides_and_offsets() {
+        let attribute = |location, offset, format| VertexAttribute {
+            location,
+            format,
+            offset,
+        };
+        let skinned = [
+            attribute(0, 0, VertexFormat::Float32x3),
+            attribute(1, 12, VertexFormat::Uint8x4),
+            attribute(2, 16, VertexFormat::Unorm8x4),
+            attribute(3, 20, VertexFormat::Unorm16x2),
+        ];
+        let layout = |stride, attributes| VertexLayout { stride, attributes };
+        assert!(validate_vertex_layout(layout(24, &skinned)).is_ok());
+        // The packed attributes still have to fit inside the stride.
+        assert!(validate_vertex_layout(layout(22, &skinned)).is_err());
+        // A stride or an offset that is not a multiple of four is refused.
+        assert!(validate_vertex_layout(layout(26, &skinned)).is_err());
+        let unaligned = [attribute(0, 2, VertexFormat::Uint8x4)];
+        let error = validate_vertex_layout(layout(8, &unaligned)).expect_err("offset 2");
+        assert!(error.message().contains("not a multiple of four bytes"));
+    }
+
+    #[test]
+    fn a_packed_attribute_satisfies_its_wide_wgsl_type_only() {
+        let attributes = [
+            VertexAttribute {
+                location: 4,
+                format: VertexFormat::Uint8x4,
+                offset: 0,
+            },
+            VertexAttribute {
+                location: 5,
+                format: VertexFormat::Unorm8x4,
+                offset: 4,
+            },
+        ];
+        let layout = validate_vertex_layout(VertexLayout {
+            stride: 8,
+            attributes: &attributes,
+        })
+        .expect("valid layout");
+        let input = |location, format| InterfaceVertexInput { location, format };
+        let uint4 = VertexFormat::Uint32x4.interface_code();
+        let float4 = VertexFormat::Float32x4.interface_code();
+        assert!(find_declared_attribute(&layout, None, input(4, uint4), "skin").is_ok());
+        assert!(find_declared_attribute(&layout, None, input(5, float4), "skin").is_ok());
+        let error = find_declared_attribute(&layout, None, input(4, float4), "skin")
+            .expect_err("bone indices read as floats");
+        assert!(error.message().contains(
+            "supply location 4 as Uint8x4 (read as vec4<u32>) but the shader artifact records \
+             vec4<f32>"
+        ));
+        let float3 = VertexFormat::Float32x3.interface_code();
+        assert!(find_declared_attribute(&layout, None, input(5, float3), "skin").is_err());
     }
 }

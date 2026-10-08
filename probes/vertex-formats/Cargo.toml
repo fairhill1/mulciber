@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-vertex-formats"
+description = "Native validation of packed 8- and 16-bit vertex attribute formats"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

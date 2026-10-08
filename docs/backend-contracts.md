@@ -280,6 +280,15 @@ The same release moves `mulciber-shader` to 0.5.2 on naga 30.0.1, whose source i
 byte-identical to the checked-in one, so every artifact hash in `vulkan-toolchain.lock.toml`
 stands and only its recorded compiler string moves.
 
+## Packed vertex formats (unreleased)
+
+**Vulkan native evidence, Metal unexercised:** `Uint8x4`, `Unorm8x4`, `Uint16x2`, `Uint16x4`,
+`Unorm16x2` and `Unorm16x4` map to the matching `R8G8B8A8`/`R16G16`/`R16G16B16A16` UINT and UNORM
+Vulkan formats and the `UChar4`/`UShort2`/`UShort4` (normalized) Metal formats. Vulkan checks
+vertex-buffer support per format at pipeline creation. On Linux / NVIDIA RTX 3060 Ti the
+`mulciber-vertex-formats` probe read back all six under Vulkan validation; Metal has not run. See
+the [contract](vertex-formats.md).
+
 ## Cube textures (unreleased)
 
 **Vulkan native evidence, Metal unexercised:** cube uploads in every 2D sampled format reach the

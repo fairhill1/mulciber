@@ -10,7 +10,8 @@ postprocessed output). The three fixed pipeline recipes and their recorded count
 
 `Device::create_material_pipeline` consumes a `MaterialPipelineDescriptor`: a `ShaderArtifact`,
 named vertex and fragment entry points, a `VertexLayout` (stride plus located, formatted,
-offset `VertexAttribute`s), and a `MaterialBinding` declaration — at most one uniform slot with
+offset `VertexAttribute`s, four-byte aligned, including the [packed 8- and 16-bit
+formats](vertex-formats.md)), and a `MaterialBinding` declaration — at most one uniform slot with
 an explicit byte size (capped at `MATERIAL_UNIFORM_SIZE_LIMIT`, 512), sampled-texture slots,
 and sampler slots, all identified by their WGSL group-0 binding numbers. A binding number is
 the native index in its own kind's table, so each kind has its own ceiling inside what both

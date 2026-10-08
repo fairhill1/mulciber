@@ -959,6 +959,10 @@ impl<'window> TexturedSession<'window> {
         if config.hdr {
             bloom::validate_format(&self.surface, self.sample_count, 1, 1)?;
         }
+        validate_vertex_formats(
+            &self.surface,
+            config.attributes.iter().chain(config.instance_attributes),
+        )?;
         let mut resource =
             create_material_pipeline(&self.surface, shader.payload(), config, self.sample_count)?;
         resource.sample_count = self.sample_count;
@@ -1040,6 +1044,10 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &ShadowPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
+        validate_vertex_formats(
+            &self.surface,
+            config.attributes.iter().chain(config.instance_attributes),
+        )?;
         let resource = create_shadow_pipeline(&self.surface, shader.payload(), config)?;
         self.shadow_pipelines.insert(resource)
     }
@@ -6047,7 +6055,46 @@ const fn material_vertex_format(format: VertexFormat) -> vk::VkFormat {
         VertexFormat::Sint32x2 => vk::VK_FORMAT_R32G32_SINT,
         VertexFormat::Sint32x3 => vk::VK_FORMAT_R32G32B32_SINT,
         VertexFormat::Sint32x4 => vk::VK_FORMAT_R32G32B32A32_SINT,
+        VertexFormat::Uint8x4 => vk::VK_FORMAT_R8G8B8A8_UINT,
+        VertexFormat::Unorm8x4 => vk::VK_FORMAT_R8G8B8A8_UNORM,
+        VertexFormat::Uint16x2 => vk::VK_FORMAT_R16G16_UINT,
+        VertexFormat::Uint16x4 => vk::VK_FORMAT_R16G16B16A16_UINT,
+        VertexFormat::Unorm16x2 => vk::VK_FORMAT_R16G16_UNORM,
+        VertexFormat::Unorm16x4 => vk::VK_FORMAT_R16G16B16A16_UNORM,
     }
+}
+
+/// Requires every declared attribute format to be fetchable from a vertex buffer on this
+/// adapter. The 32-bit formats and the 8-bit four-component ones are mandatory in Vulkan; the
+/// 16-bit ones are queried rather than assumed.
+fn validate_vertex_formats<'a>(
+    surface: &ClearSurface<'_>,
+    attributes: impl IntoIterator<Item = &'a crate::graphics::VertexAttribute>,
+) -> Result<(), GraphicsError> {
+    let functions = &surface.device().instance.functions;
+    for attribute in attributes {
+        let mut properties = vk::VkFormatProperties::default();
+        unsafe {
+            functions
+                .get_physical_device_format_properties
+                .expect("loaded function")(
+                surface.device().adapter.handle,
+                material_vertex_format(attribute.format),
+                &raw mut properties,
+            );
+        }
+        if properties.bufferFeatures & vk::VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT.cast_unsigned() == 0
+        {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                format!(
+                    "the adapter cannot fetch vertex attribute location {} as {:?}",
+                    attribute.location, attribute.format
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

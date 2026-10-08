@@ -98,6 +98,7 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
   [block-compressed textures](docs/block-compressed-textures.md), and
   [cube textures](docs/cube-textures.md)
+- [Packed vertex formats](docs/vertex-formats.md)
 - [Architecture](docs/architecture.md) and [backend contracts](docs/backend-contracts.md)
 - [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
   [API extraction plan](docs/api-extraction-plan.md)

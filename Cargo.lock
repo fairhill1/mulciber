@@ -292,6 +292,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-vertex-formats"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-vulkan-info"
 version = "0.0.0"
 dependencies = [

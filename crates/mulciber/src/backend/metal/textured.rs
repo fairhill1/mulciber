@@ -43,6 +43,12 @@ const PIXEL_FORMAT_RGBA8_UNORM: usize = 70;
 const PIXEL_FORMAT_RGBA8_UNORM_SRGB: usize = 71;
 const PIXEL_FORMAT_DEPTH32_FLOAT: usize = 252;
 const PIXEL_FORMAT_INVALID: usize = 0;
+const VERTEX_FORMAT_UCHAR4: usize = 3;
+const VERTEX_FORMAT_UCHAR4_NORMALIZED: usize = 9;
+const VERTEX_FORMAT_USHORT2: usize = 13;
+const VERTEX_FORMAT_USHORT4: usize = 15;
+const VERTEX_FORMAT_USHORT2_NORMALIZED: usize = 19;
+const VERTEX_FORMAT_USHORT4_NORMALIZED: usize = 21;
 const VERTEX_FORMAT_FLOAT: usize = 28;
 const VERTEX_FORMAT_FLOAT2: usize = 29;
 const VERTEX_FORMAT_FLOAT3: usize = 30;
@@ -3372,6 +3378,12 @@ const fn material_vertex_format(format: VertexFormat) -> usize {
         VertexFormat::Sint32x2 => VERTEX_FORMAT_INT2,
         VertexFormat::Sint32x3 => VERTEX_FORMAT_INT3,
         VertexFormat::Sint32x4 => VERTEX_FORMAT_INT4,
+        VertexFormat::Uint8x4 => VERTEX_FORMAT_UCHAR4,
+        VertexFormat::Unorm8x4 => VERTEX_FORMAT_UCHAR4_NORMALIZED,
+        VertexFormat::Uint16x2 => VERTEX_FORMAT_USHORT2,
+        VertexFormat::Uint16x4 => VERTEX_FORMAT_USHORT4,
+        VertexFormat::Unorm16x2 => VERTEX_FORMAT_USHORT2_NORMALIZED,
+        VertexFormat::Unorm16x4 => VERTEX_FORMAT_USHORT4_NORMALIZED,
     }
 }
 

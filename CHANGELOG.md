@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: packed vertex formats
+
+`VertexFormat` gains `Uint8x4`, `Unorm8x4`, `Uint16x2`, `Uint16x4`, `Unorm16x2` and `Unorm16x4`,
+fetched narrow and read by the shader as `vec4<u32>`, `vec4<f32>`, `vec2<u32>` or `vec2<f32>`, so
+skinned meshes can carry bone indices and weights in eight bytes. Pipeline creation matches the
+WGSL type each format is read as against the artifact. Vertex layouts now require four-byte strides
+and attribute offsets, which Metal always needed. Vulkan queries vertex-buffer support for the
+16-bit formats and answers `Unsupported` without it. The new `mulciber-vertex-formats` probe read
+back all six exactly on Linux/NVIDIA under Vulkan validation; Metal maps them but has not run. See
+[packed vertex formats](docs/vertex-formats.md).
+
 ## Unreleased: cube textures
 
 `Device` gains cube constructors beside every 2D sampled upload: RGBA8 sRGB and UNORM, any

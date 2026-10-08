@@ -2,6 +2,13 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: unaccelerated Wayland pointer deltas
+
+While the pointer is captured, Wayland's `PointerDelta` now carries the unaccelerated motion from
+`zwp_relative_pointer_v1` instead of the accelerated pair, matching the raw input Win32 already
+reports, so turning speed no longer depends on how fast the mouse moves. X11 (warp deltas) and
+AppKit (`NSEvent` deltas) still report accelerated motion.
+
 ## Unreleased: frame capture
 
 `Surface::request_frame_capture()` asks for the next acquired frame to be read back when it is

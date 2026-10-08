@@ -2328,10 +2328,10 @@ unsafe extern "C" fn relative_pointer_motion(
     _relative_pointer: *mut c_void,
     _utime_hi: u32,
     _utime_lo: u32,
-    dx: i32,
-    dy: i32,
-    _dx_unaccel: i32,
-    _dy_unaccel: i32,
+    _dx: i32,
+    _dy: i32,
+    raw_x: i32,
+    raw_y: i32,
 ) {
     if data.is_null() {
         return;
@@ -2339,11 +2339,13 @@ unsafe extern "C" fn relative_pointer_motion(
     // SAFETY: Listener data points to the boxed WindowState for the relative-pointer lifetime.
     let state = unsafe { &*data.cast::<WindowState>() };
     // The relative pointer also reports while the lock is inactive; those intervals already
-    // deliver absolute motion, so deltas surface only while capture holds.
+    // deliver absolute motion, so deltas surface only while capture holds. The unaccelerated
+    // pair is the device's own motion, which is what mouse look wants: the compositor's pointer
+    // acceleration would make turning depend on how fast the mouse moved.
     if state.capture_active.get() {
         state.push_input(InputEvent::PointerDelta {
-            delta_x: wl_fixed_to_f64(dx),
-            delta_y: wl_fixed_to_f64(dy),
+            delta_x: wl_fixed_to_f64(raw_x),
+            delta_y: wl_fixed_to_f64(raw_y),
             modifiers: state.modifiers.get(),
         });
     }

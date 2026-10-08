@@ -67,7 +67,8 @@ detaching cursor movement with `CGAssociateMouseAndMouseCursorPosition`, and hid
 `NSCursor`, reporting `NSEvent` deltas during capture. The Wayland implementation locks the pointer
 through `zwp_pointer_constraints_v1` with the persistent lifetime (the compositor itself suspends
 and re-establishes the lock across focus changes), reads deltas from
-`zwp_relative_pointer_manager_v1`, hides the cursor with a null `wl_pointer.set_cursor`, and
+`zwp_relative_pointer_manager_v1` (its unaccelerated pair, so the compositor's pointer acceleration
+does not reach mouse look), hides the cursor with a null `wl_pointer.set_cursor`, and
 restores it through `wp_cursor_shape_manager_v1`; when the compositor lacks any of the three
 protocols, the capture request reports `Unsupported` naming the missing global. The X11
 implementation grabs the pointer confined to the window with a fully transparent pixmap cursor and

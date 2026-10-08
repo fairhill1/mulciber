@@ -2,7 +2,7 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Unreleased
+## Faster Vulkan frame recording (graphics 0.13.34)
 
 - Index range checks for meshes and transient geometry take the largest index, which vectorizes,
   instead of stopping at the first bad one.

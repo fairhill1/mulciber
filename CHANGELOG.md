@@ -2,6 +2,18 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: Vulkan per-frame regions sized for every frame in flight
+
+The Vulkan session created its record storage, transient geometry, instance transform and record
+instance buffers with room for one frame's initial region, while every frame writes and binds its
+region at its frame slot's base. Until a frame needed more than the initial capacity and the
+buffer grew (growth already allocated a region per frame in flight), a frame in the second slot
+wrote and bound past the end of the buffer: a skinned record with a palette of 256 bytes or less,
+drawn in the first frames, failed the debug-build capacity assertion and in release wrote past the
+mapped allocation. The initial buffers now hold a region per frame in flight, as the uniform buffer
+always did. Found by the `mulciber-entry-bindings` probe's 64-byte bone palette; Metal keeps
+separate per-frame buffers and was not affected.
+
 ## Unreleased: packed vertex formats
 
 `VertexFormat` gains `Uint8x4`, `Unorm8x4`, `Uint16x2`, `Uint16x4`, `Unorm16x2` and `Unorm16x4`,

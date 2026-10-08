@@ -479,9 +479,11 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
+        // Each per-frame region starts at its frame slot's base, so even the initial one-region
+        // capacity is allocated once per frame in flight, as the uniform buffer above is.
         let storage = match create_buffer(
             &surface,
-            STORAGE_OFFSET_ALIGNMENT,
+            STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_STORAGE_BUFFER_BIT as u32,
             &[],
         ) {
@@ -494,7 +496,7 @@ impl<'window> TexturedSession<'window> {
         };
         let transient_geometry = match create_buffer(
             &surface,
-            STORAGE_OFFSET_ALIGNMENT,
+            STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT) as u32,
             &[],
         ) {
@@ -508,7 +510,7 @@ impl<'window> TexturedSession<'window> {
         };
         let instance_transforms = match create_buffer(
             &surface,
-            INSTANCE_TRANSFORM_SIZE,
+            INSTANCE_TRANSFORM_SIZE * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
             &[],
         ) {
@@ -523,7 +525,7 @@ impl<'window> TexturedSession<'window> {
         };
         let record_instances = match create_buffer(
             &surface,
-            STORAGE_OFFSET_ALIGNMENT,
+            STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
             vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
             &[],
         ) {

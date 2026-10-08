@@ -113,7 +113,19 @@ fn main() {
   covers every registered module.
 
 The plain `compile_wgsl` and `compile_host_field` functions are unchanged. They do not run the
-composer, so a source with `#import` must go through `ShaderModules`.
+composer, so a source with `#import` must go through `ShaderModules`. The CLI composes when it is
+given `--modules <dir|file>` or `--define NAME[=VALUE]`, or when the source has any `#` directive
+line:
+
+```console
+mulciber-shader build shaders/terrain.wgsl --modules shaders/lib --define DEBUG_LUMINANCE \
+    --target vulkan --output artifacts/terrain-luminance.vulkan.shaderbin
+mulciber-shader host-field shaders/terrain.wgsl --modules shaders/lib \
+    --function game::lighting::falloff --output src/lighting_host.rs
+```
+
+`--define NAME` sets `true`; `NAME=false`, `NAME=-3` and `NAME=3u` give a boolean, signed and
+unsigned value.
 
 ### Engine modules
 

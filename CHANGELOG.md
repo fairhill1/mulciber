@@ -17,10 +17,11 @@ Errors point at the file and line in the module where they occur, a missing modu
 registered ones, and import cycles are refused by name.
 
 Modules under the reserved `mulciber::` namespace ship inside the crate and are in every set; the
-first is `mulciber::color` (sRGB transfer functions and BT.709 luminance). `compile_wgsl` and
-`compile_host_field` are unchanged, and `ShaderBuildError`'s `Debug` now prints its message as
-written, so diagnostics stay readable through `expect`. Vulkan artifacts composed from two modules
-and the engine module passed `spirv-val` on Linux; Metal output is checked as generated MSL only.
+first is `mulciber::color` (sRGB transfer functions and BT.709 luminance). The CLI takes
+`--modules <dir|file>` and `--define NAME[=VALUE]`. `compile_wgsl` and `compile_host_field` are
+unchanged, and `ShaderBuildError`'s `Debug` now prints its message as written, so diagnostics stay
+readable through `expect`. Vulkan artifacts composed from two modules and the engine module passed
+`spirv-val` on Linux; Metal output is checked as generated MSL only.
 
 ## Audio mixer, HRTF and room reverb (audio 0.1.0)
 

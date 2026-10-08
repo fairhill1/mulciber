@@ -25,10 +25,24 @@ const ENGINE_NAMESPACE: &str = "mulciber";
 
 /// Mulciber's WGSL library: (label used in diagnostics, source). Each declares its own
 /// `#define_import_path` under `mulciber::`.
-const ENGINE_MODULES: &[(&str, &str)] = &[(
-    "mulciber-shader/wgsl/mulciber/color.wgsl",
-    include_str!("../wgsl/mulciber/color.wgsl"),
-)];
+pub(crate) const ENGINE_MODULES: &[(&str, &str)] = &[
+    (
+        "mulciber-shader/wgsl/mulciber/colorspace.wgsl",
+        include_str!("../wgsl/mulciber/colorspace.wgsl"),
+    ),
+    (
+        "mulciber-shader/wgsl/mulciber/photometry.wgsl",
+        include_str!("../wgsl/mulciber/photometry.wgsl"),
+    ),
+    (
+        "mulciber-shader/wgsl/mulciber/pbr.wgsl",
+        include_str!("../wgsl/mulciber/pbr.wgsl"),
+    ),
+    (
+        "mulciber-shader/wgsl/mulciber/tonemap.wgsl",
+        include_str!("../wgsl/mulciber/tonemap.wgsl"),
+    ),
+];
 
 /// A value for a shader def, tested by `#ifdef`, `#if` and `#else` and substituted for
 /// `#NAME` or `#{NAME}` in the source.
@@ -250,7 +264,7 @@ impl ShaderModules {
         if let Some(plain) = functions.iter().find(|name| !name.contains("::")) {
             return Err(fail(format!(
                 "{plain}: a module host field names its function by module path, such as \
-                 mulciber::color::luminance"
+                 mulciber::colorspace::luminance"
             )));
         }
         let mut paths: Vec<&str> = functions
@@ -429,10 +443,10 @@ impl WgslShader<'_> {
     /// [`crate::compile_host_field`].
     ///
     /// A plain name requests a function of the top-level shader. A qualified name such as
-    /// `mulciber::color::luminance` requests a function of a registered module directly, whether
+    /// `mulciber::colorspace::luminance` requests a function of a registered module directly, whether
     /// or not the shader imports it; its generated `pub fn` takes the plain item name
     /// (`luminance`). Private helpers from imported modules are named after their module
-    /// (`mulciber_color_srgb_to_linear_channel`).
+    /// (`mulciber_colorspace_srgb_to_linear_channel`).
     ///
     /// # Errors
     ///
@@ -512,7 +526,7 @@ impl WgslShader<'_> {
     /// Composes the shader with the modules it imports, plus the `extra` (module, item) pairs.
     /// The composer copies only the items a shader uses, so a host field's requested module
     /// functions are imported by name.
-    fn compose(
+    pub(crate) fn compose(
         &self,
         extra: &[(&str, &str)],
     ) -> Result<(naga::Module, naga::valid::ModuleInfo), ShaderBuildError> {
@@ -696,12 +710,6 @@ mod tests {
     use super::{ShaderModules, WgslShader};
     use crate::{metal_source, shader_interface};
 
-    /// The host evaluators generated from `mulciber::color`, checked in so review sees them and
-    /// so the engine module's arithmetic can be checked on the host.
-    mod color {
-        include!("color_host_fixture.rs");
-    }
-
     const SHADOW: &str = "#define_import_path game::shadow
 
 @group(0) @binding(4) var shadow_map: texture_depth_2d;
@@ -853,7 +861,7 @@ struct Surface {
         assert!(error.contains("'game::lights' not found"), "{error}");
         assert!(error.contains("shaders/scene.wgsl:4:22"), "{error}");
         assert!(
-            error.contains("registered: game::light, game::shadow, mulciber::color"),
+            error.contains("registered: game::light, game::shadow, mulciber::colorspace"),
             "{error}"
         );
 
@@ -877,30 +885,43 @@ struct Surface {
 
     #[test]
     fn a_local_named_like_an_imported_module_is_explained() {
-        let modules = ShaderModules::new();
+        let modules = game_modules();
         let error = compose_error(&modules.shader_source(
-            "grade.wgsl",
-            "#import mulciber::color
-@fragment fn grade(@location(0) tint: vec3<f32>) -> @location(0) vec4<f32> {
-    let color = tint * 2.0;
-    return vec4<f32>(color, mulciber::color::luminance(color));
+            "lit.wgsl",
+            "#import game::shadow
+@fragment fn lit(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let shadow = game::shadow::shadow_factor(uv, 0.5);
+    return vec4<f32>(shadow);
 }
 ",
         ));
-        assert!(error.contains("grade.wgsl:3:9"), "{error}");
+        assert!(error.contains("lit.wgsl:3:9"), "{error}");
         assert!(
-            error.contains("also makes `color` name that module"),
+            error.contains("also makes `shadow` name that module"),
             "{error}"
         );
-        // Importing the items instead leaves `color` free.
-        compose(&modules.shader_source(
-            "grade.wgsl",
-            "#import mulciber::color::{luminance}
-@fragment fn grade(@location(0) color: vec3<f32>) -> @location(0) vec4<f32> {
-    return vec4<f32>(color, luminance(color));
-}
-",
-        ));
+        // Importing the items, or the module under another name, leaves `shadow` free.
+        for import in [
+            "#import game::shadow::{shadow_factor}",
+            "#import game::shadow as shadowing",
+        ] {
+            let call = if import.contains("as shadowing") {
+                "shadowing::shadow_factor"
+            } else {
+                "shadow_factor"
+            };
+            compose(&modules.shader_source(
+                "lit.wgsl",
+                format!(
+                    "{import}
+@fragment fn lit(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{
+    let shadow = {call}(uv, 0.5);
+    return vec4<f32>(shadow);
+}}
+"
+                ),
+            ));
+        }
     }
 
     #[test]
@@ -1010,14 +1031,14 @@ fn depth_at(p: vec2<i32>) -> f32 { return textureLoad(scene_depth, p, 0); }
     #[test]
     fn engine_modules_are_importable_without_registering() {
         let modules = ShaderModules::new();
-        assert!(modules.contains("mulciber::color"));
+        assert!(modules.contains("mulciber::colorspace"));
         let (module, info) = compose(&modules.shader_source(
             "grade.wgsl",
-            "#import mulciber::color
-#import mulciber::color::{luminance}
+            "#import mulciber::colorspace
+#import mulciber::colorspace::{luminance}
 @fragment fn grade(@location(0) encoded: vec3<f32>) -> @location(0) vec4<f32> {
-    let linear = mulciber::color::srgb_to_linear(encoded);
-    return vec4<f32>(mulciber::color::linear_to_srgb(linear * 0.5), luminance(linear));
+    let linear = mulciber::colorspace::srgb_to_linear(encoded);
+    return vec4<f32>(mulciber::colorspace::linear_to_srgb(linear * 0.5), luminance(linear));
 }
 ",
         ));
@@ -1028,7 +1049,7 @@ fn depth_at(p: vec2<i32>) -> f32 { return textureLoad(scene_depth, p, 0); }
         let error = modules
             .add_source(
                 "shaders/color.wgsl",
-                "#define_import_path mulciber::color\nfn luminance(c: vec3<f32>) -> f32 { return \
+                "#define_import_path mulciber::colorspace\nfn luminance(c: vec3<f32>) -> f32 { return \
                  c.y; }\n",
             )
             .expect_err("the mulciber namespace is reserved");
@@ -1132,10 +1153,10 @@ fn depth_at(p: vec2<i32>) -> f32 { return textureLoad(scene_depth, p, 0); }
         let shader = modules.shader_source(
             "shaders/bake.wgsl",
             "#import game::light
-#import mulciber::color
+#import mulciber::colorspace
 
 fn baked(distance: f32, albedo: vec3<f32>) -> f32 {
-    return mulciber::color::luminance(albedo) * game::light::falloff(distance);
+    return mulciber::colorspace::luminance(albedo) * game::light::falloff(distance);
 }
 ",
         );
@@ -1147,7 +1168,7 @@ fn baked(distance: f32, albedo: vec3<f32>) -> f32 {
         assert!(rust.starts_with("// Generated by mulciber-shader from bake.wgsl."));
         assert!(rust.contains("pub fn baked(distance: f32, albedo: [f32; 3]) -> f32"));
         assert!(rust.contains("pub fn falloff(distance: f32) -> f32"));
-        assert!(rust.contains("fn mulciber_color_luminance(linear: [f32; 3]) -> f32"));
+        assert!(rust.contains("fn mulciber_colorspace_luminance(linear: [f32; 3]) -> f32"));
         assert!(!rust.contains("naga_oil"), "{rust}");
 
         // A function that touches a binding is still refused, through the import.
@@ -1190,48 +1211,5 @@ fn falloff(distance: f32) -> f32 { return game::light::falloff(distance) * 2.0; 
                 .contains("would both generate the Rust function falloff"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn color_module_generation_matches_the_checked_in_evaluator() {
-        let directory = scratch("color");
-        let output = directory.join("color_host.rs");
-        ShaderModules::new()
-            .compile_host_field(
-                &output,
-                &[
-                    "mulciber::color::srgb_to_linear",
-                    "mulciber::color::linear_to_srgb",
-                    "mulciber::color::luminance",
-                ],
-            )
-            .expect("the color module generates");
-        let generated = std::fs::read_to_string(&output).unwrap();
-        std::fs::remove_dir_all(&directory).unwrap();
-        let expected = include_str!("color_host_fixture.rs");
-        assert!(
-            generated == expected,
-            "regenerate crates/mulciber-shader/src/color_host_fixture.rs:\n{generated}"
-        );
-    }
-
-    #[test]
-    fn color_module_converts_and_weighs_as_specified() {
-        // IEC 61966-2-1 reference points and the BT.709 luminance weights.
-        let linear = color::srgb_to_linear([0.0, 0.5, 1.0]);
-        assert!(linear[0].abs() < 1e-7);
-        assert!((linear[1] - 0.214_041_14).abs() < 1e-6, "{linear:?}");
-        assert!((linear[2] - 1.0).abs() < 1e-6, "{linear:?}");
-        assert!((color::srgb_to_linear([0.04, 0.0, 0.0])[0] - 0.04 / 12.92).abs() < 1e-9);
-        assert!((color::srgb_to_linear([-0.5, 0.0, 0.0])[0] + 0.5 / 12.92).abs() < 1e-7);
-        for value in [0.001_f32, 0.003_130_8, 0.02, 0.18, 0.5, 0.9, 1.0, 4.0] {
-            let round_trip = color::srgb_to_linear(color::linear_to_srgb([value, value, value]))[0];
-            assert!(
-                (round_trip - value).abs() <= value * 1e-5,
-                "{value} -> {round_trip}"
-            );
-        }
-        assert!((color::luminance([1.0, 1.0, 1.0]) - 1.0).abs() < 1e-6);
-        assert!((color::luminance([0.0, 1.0, 0.0]) - 0.7152).abs() < 1e-7);
     }
 }

@@ -1,7 +1,7 @@
-#define_import_path mulciber::color
+#define_import_path mulciber::colorspace
 
-// Colour-space helpers shipped with mulciber-shader. Import with `#import mulciber::color` and
-// call `mulciber::color::luminance(...)`, or `#import mulciber::color::{luminance}`.
+// Colour-space helpers shipped with mulciber-shader. Import with `#import mulciber::colorspace` and
+// call `mulciber::colorspace::luminance(...)`, or `#import mulciber::colorspace::{luminance}`.
 //
 // The sRGB transfer function is the piecewise IEC 61966-2-1 curve, not a 2.2 gamma. Values at or
 // below the linear segment's threshold, including negative values, stay on the linear segment, so

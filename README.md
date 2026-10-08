@@ -24,8 +24,9 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
   spatialization, and a room reverb sized by probing the game's world.
 - **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
-  Shaders `#import` shared WGSL modules, including Mulciber's own `mulciber::` library, with
-  `#ifdef` shader defs. Designated WGSL functions can also generate callable Rust evaluators for
+  Shaders `#import` shared WGSL modules, with `#ifdef` shader defs, including Mulciber's own
+  `mulciber::` lighting library: photometric units, a Filament BRDF with a CPU-baked DFG table,
+  and tone mapping. Designated WGSL functions can also generate callable Rust evaluators for
   simulation code. No shader compiler ships in the game process.
 
 The graphics baseline is Vulkan 1.3 on Windows and Linux and Metal 3 on Apple silicon.

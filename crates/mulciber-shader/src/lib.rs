@@ -9,10 +9,15 @@
 //!
 //! Shared WGSL lives in importable modules: a [`ShaderModules`] set registers them, and a
 //! [`WgslShader`] composes a top-level shader with the modules it `#import`s, optionally with
-//! shader defs, into the same artifact or host field. Mulciber's own modules, such as
-//! `mulciber::color`, are in every set.
+//! shader defs, into the same artifact or host field. Mulciber's own modules are in every set:
+//! `mulciber::colorspace`, `mulciber::photometry` (light units, falloff, exposure), `mulciber::pbr`
+//! (the BRDF and split-sum environment specular) and `mulciber::tonemap`. [`bake_dfg_table`] bakes
+//! the DFG lookup table `mulciber::pbr` samples.
 
+mod dfg;
 mod host_field;
+#[cfg(test)]
+mod library_tests;
 mod modules;
 
 use std::fmt;
@@ -24,6 +29,7 @@ use naga::back::msl::{BindSamplerTarget, BindTarget, EntryPointResources};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, Type, TypeInner};
 
+pub use dfg::{DFG_SAMPLE_COUNT, DFG_TABLE_SIZE, DfgTable, bake_dfg_table, dfg_value};
 pub use modules::{ShaderDef, ShaderModules, WgslShader};
 
 const MAGIC: &[u8; 8] = b"MULSHDR3";

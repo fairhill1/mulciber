@@ -2,6 +2,31 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased: shared lighting library
+
+`mulciber-shader` ships Mulciber's shading model as WGSL modules every game can import, so lighting
+code is no longer copied between games:
+
+- `mulciber::photometry`: SI photometric units (lumens, candelas, lux, nits), lumens to candela for
+  point lights (Φ/4π), spots (Φ/π, Filament's unfocused spot) and focused spots, Filament's
+  windowed inverse-square falloff `I / max(d², 0.01²) · saturate(1 − (d/r)⁴)²`, its spot cone
+  falloff, EV100 from camera settings or metered luminance, `exposure_from_ev100` (`1 / (1.2 ·
+  2^EV100)`) and pre-exposure.
+- `mulciber::pbr`: Lambert, GGX, exact height-correlated Smith visibility, Schlick with f90,
+  metallic-workflow F0, perceptual roughness clamped at 0.089 and squared, and `punctual_light`,
+  which returns diffuse and specular luminance separately. The split sum reads Filament's
+  multiple-scattering DFG table, with its energy compensation and a roughness-to-LOD mapping.
+- `mulciber::tonemap`: Isle of Rán's hue-preserving shoulder, identity below 0.6, unchanged in
+  tuning.
+
+`bake_dfg_table` bakes the 128 × 128 DFG table on the CPU (Filament's layout, Hammersley importance
+sampling, deterministic) for a `build.rs`. The tests run on host evaluators generated from the
+modules: GGX normalisation, reciprocity, a white furnace that stays below 1 and matches the baked
+table, the table's smooth limit, falloff, exposure, and the tone mapper's identity, monotonicity
+and hue. A lit shader importing all three passed `spirv-val`; Metal is checked as generated MSL
+only. `mulciber::color` is renamed `mulciber::colorspace`, because importing a module reserves its
+last path segment and `color` is a common local name.
+
 ## Unreleased: WGSL module imports
 
 `mulciber-shader` composes shaders from importable WGSL modules with naga_oil 0.23.0, Bevy's
@@ -17,7 +42,7 @@ Errors point at the file and line in the module where they occur, a missing modu
 registered ones, and import cycles are refused by name.
 
 Modules under the reserved `mulciber::` namespace ship inside the crate and are in every set; the
-first is `mulciber::color` (sRGB transfer functions and BT.709 luminance). The CLI takes
+first is `mulciber::colorspace` (sRGB transfer functions and BT.709 luminance). The CLI takes
 `--modules <dir|file>` and `--define NAME[=VALUE]`. `compile_wgsl` and `compile_host_field` are
 unchanged, and `ShaderBuildError`'s `Debug` now prints its message as written, so diagnostics stay
 readable through `expect`. Vulkan artifacts composed from two modules and the engine module passed

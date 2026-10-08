@@ -45,7 +45,7 @@ fn falloff(distance: f32) -> f32 {
 ```wgsl
 // shaders/terrain.wgsl
 #import game::lighting
-#import mulciber::color::{luminance}
+#import mulciber::colorspace::{luminance}
 
 @fragment fn terrain_fragment(surface: Surface) -> @location(0) vec4<f32> {
     let lit = surface.albedo * game::lighting::falloff(surface.distance);
@@ -74,7 +74,7 @@ fn main() {
         _ => ShaderTarget::Vulkan,
     };
 
-    let mut modules = ShaderModules::new(); // already holds mulciber::color
+    let mut modules = ShaderModules::new(); // already holds mulciber::colorspace
     modules.add_dir("shaders/lib").expect("register WGSL modules");
     modules.rerun_if_changed(); // cargo::rerun-if-changed=shaders/lib
     println!("cargo::rerun-if-changed=shaders/terrain.wgsl");
@@ -136,7 +136,175 @@ starts with `mulciber::` is an error, so a game cannot shadow one.
 
 | Module | Items |
 | --- | --- |
-| `mulciber::color` | `srgb_to_linear`, `linear_to_srgb` (vec3, piecewise IEC 61966-2-1 curve) and their `_channel` scalar forms; `luminance` (BT.709 weights over linear Rec. 709 colour) |
+| `mulciber::colorspace` | `srgb_to_linear`, `linear_to_srgb` (vec3, piecewise IEC 61966-2-1 curve) and their `_channel` scalar forms; `luminance` (BT.709 weights over linear Rec. 709 colour) |
+| `mulciber::photometry` | light units, falloff and exposure; see [the lighting library](#the-lighting-library) |
+| `mulciber::pbr` | the BRDF, punctual lights and split-sum environment specular |
+| `mulciber::tonemap` | `hue_preserving_shoulder` |
+
+The module names end in segments that are unlikely local variable names, because of the alias rule
+under [composition rules](#composition-rules-and-limits).
+
+### The lighting library
+
+`mulciber::photometry`, `mulciber::pbr` and `mulciber::tonemap` are one shading model shared by
+every game: Filament's units and BRDF, and Isle of Rán's tone-mapping shoulder.
+
+**Units** are SI and photometric, and distances are in metres:
+
+| Quantity | Unit | Authored for |
+| --- | --- | --- |
+| luminous flux Φ | lumen (lm) | lamps (a 60 W incandescent bulb is about 800 lm) |
+| luminous intensity I | candela (cd = lm/sr) | point and spot lights as shaded; spots may be authored in it |
+| illuminance E | lux (lx = lm/m²) | the sun and other directional lights |
+| luminance L | nit (cd/m²) | skies, emissive surfaces, calibrated HDRIs, and every shaded value |
+
+Colours are linear and scale these per channel. A BRDF in 1/sr times illuminance in lux is
+luminance in nits.
+
+`mulciber::photometry`:
+
+- `point_light_intensity(lumens)` is Φ/4π. `spot_light_intensity(lumens)` is Φ/π whatever the
+  cone, Filament's default spot: narrowing the cone darkens the lit area rather than concentrating
+  the light, so artists can change the angle without changing brightness.
+  `focused_spot_light_intensity(lumens, cos_outer)` is Φ/(2π(1 − cos θ_outer)), the physically
+  correct spot whose light concentrates as the cone narrows.
+- `punctual_illuminance(intensity, distance_squared, range)` is Filament's falloff,
+  `E = I / max(d², 0.01²) · saturate(1 − (d/r)⁴)²`: inverse square, with a window that reaches zero
+  with zero slope at the range r. `distance_attenuation` and `range_window` are its parts, and
+  `spot_angle_attenuation(cos_angle, cos_inner, cos_outer)` is Filament's squared cone falloff.
+  Generate them into the CPU lightmap baker with `compile_host_field` so baked and dynamic lights
+  cannot drift apart.
+- `exposure_from_ev100(ev100)` is `1 / (1.2 · 2^EV100)`. `ev100_from_camera(aperture,
+  shutter_seconds, iso)` and `ev100_from_luminance(average_luminance)` (meter constant K = 12.5)
+  give EV100. `pre_expose` and `pre_expose_intensity` multiply by the exposure: apply it to light
+  intensities and environment luminance before shading, as Filament does, so values stay small in
+  16-bit targets.
+
+`mulciber::pbr` keeps the π in the BRDF and works in the metallic workflow, with perceptual
+roughness as authored:
+
+- `lambert(diffuse_color)` is albedo/π. `d_ggx(n_dot_h, alpha)` is GGX.
+  `v_smith_ggx_correlated(n_dot_v, n_dot_l, alpha)` is the exact height-correlated Smith visibility
+  (G / 4 n·v n·l). `f_schlick(f0, f90, v_dot_h)` is Schlick's Fresnel. `specular_brdf` is
+  D · V · F with f90 = 1.
+- `f0_from_metallic` is `mix(0.04, base_color, metallic)`, and `diffuse_color_from_metallic` is
+  `base_color · (1 − metallic)`. `alpha_from_perceptual_roughness` squares the perceptual roughness
+  after `clamp_perceptual_roughness` holds it in [0.089, 1], so α² stays above fp16's smallest
+  normal. `clamped_n_dot_v` keeps n·v above 1e-4.
+- `punctual_light(n, v, l, illuminance, base_color, metallic, perceptual_roughness)` returns a
+  `PunctualLighting { diffuse, specular }`: the luminance BRDF · E · n·l, with the two kept apart
+  so a caller can occlude, weight or compensate them separately. `illuminance` is the light's
+  colour times its (pre-exposed) illuminance in lux. `punctual_diffuse` and `punctual_specular`
+  are the halves.
+- Environment specular uses the split sum. `sample_dfg(table, sampler, n_dot_v,
+  perceptual_roughness)` reads the DFG table; `specular_dfg(f0, dfg)` is `mix(dfg.r, dfg.g, F0)`;
+  `energy_compensation(f0, dfg)` is Filament's `1 + F0 (1/dfg.g − 1)`; `environment_specular(
+  prefiltered, f0, dfg)` multiplies all three. `lod_from_roughness(perceptual_roughness, max_lod)`
+  is `max_lod · perceptual_roughness`, for a cubemap whose level k was prefiltered for roughness
+  k / max_lod.
+
+`mulciber::tonemap::hue_preserving_shoulder(luminance)` takes exposed luminance to display-linear
+values below 1. A colour whose brightest channel is at most 0.6 passes through unchanged. Above
+that the brightest channel p maps to `0.6 + 0.4 (p − 0.6) / (p − 0.2)` and the whole colour scales
+with it, so hue and saturation are kept: 1 becomes 0.8, 2 becomes 0.911, 10 becomes 0.984.
+
+A typical lit fragment shader:
+
+```wgsl
+#import mulciber::photometry
+#import mulciber::pbr
+#import mulciber::tonemap
+
+struct Frame {
+    camera_position: vec3<f32>,
+    // photometry::exposure_from_ev100(ev100), computed on the CPU.
+    exposure: f32,
+    light_position: vec3<f32>,
+    // Candelas: photometry::point_light_intensity(lumens), computed on the CPU.
+    light_intensity: f32,
+    light_color: vec3<f32>,
+    light_range: f32,
+    environment_max_lod: f32,
+}
+
+@group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var albedo_map: texture_2d<f32>;
+@group(0) @binding(2) var material_sampler: sampler;
+@group(0) @binding(3) var dfg_table: texture_2d<f32>;
+@group(0) @binding(4) var dfg_sampler: sampler;
+@group(0) @binding(5) var environment: texture_cube<f32>;
+
+struct Surface {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+}
+
+@fragment fn lit_fragment(surface: Surface) -> @location(0) vec4<f32> {
+    let base_color = textureSample(albedo_map, material_sampler, surface.uv).rgb;
+    let metallic = 0.0;
+    let roughness = mulciber::pbr::clamp_perceptual_roughness(0.5);
+
+    let n = normalize(surface.normal);
+    let v = normalize(frame.camera_position - surface.world_position);
+    let to_light = frame.light_position - surface.world_position;
+    let l = normalize(to_light);
+
+    // Lux at the surface, pre-exposed so values stay small in a 16-bit target.
+    let illuminance = frame.light_color * mulciber::photometry::punctual_illuminance(
+        frame.light_intensity * frame.exposure,
+        dot(to_light, to_light),
+        frame.light_range,
+    );
+
+    let n_dot_v = mulciber::pbr::clamped_n_dot_v(n, v);
+    let dfg = mulciber::pbr::sample_dfg(dfg_table, dfg_sampler, n_dot_v, roughness);
+    let f0 = mulciber::pbr::f0_from_metallic(base_color, metallic);
+    let lit = mulciber::pbr::punctual_light(n, v, l, illuminance, base_color, metallic, roughness);
+    var luminance = lit.diffuse + lit.specular * mulciber::pbr::energy_compensation(f0, dfg);
+
+    // The environment is stored in nits; expose it like the light.
+    let lod = mulciber::pbr::lod_from_roughness(roughness, frame.environment_max_lod);
+    let prefiltered = textureSampleLevel(environment, material_sampler, reflect(-v, n), lod).rgb;
+    luminance += mulciber::pbr::environment_specular(prefiltered * frame.exposure, f0, dfg);
+
+    return vec4<f32>(mulciber::tonemap::hue_preserving_shoulder(luminance), 1.0);
+}
+```
+
+**The DFG table.** `bake_dfg_table(size, samples)` bakes Filament's multiple-scattering table on
+the CPU: texel (i, j) holds, at n·v = (i + ½)/size and perceptual roughness (j + ½)/size, R = ∫ Fc ·
+D · V · n·l and G = ∫ D · V · n·l (Fc = (1 − v·h)⁵), from GGX importance sampling over a Hammersley
+set, so the bake is deterministic. Filament uses `DFG_TABLE_SIZE` (128) and `DFG_SAMPLE_COUNT`
+(1024); the bake took 0.7 s unoptimised. Bake it in `build.rs` and upload it as RGBA16Float:
+
+```rust
+// build.rs
+let table = mulciber_shader::bake_dfg_table(
+    mulciber_shader::DFG_TABLE_SIZE,
+    mulciber_shader::DFG_SAMPLE_COUNT,
+);
+std::fs::write(out.join("dfg.bin"), table.to_le_bytes()).unwrap();
+
+// The game: R, G as little-endian f32 pairs, row-major.
+let texels: Vec<[f32; 4]> = include_bytes!(concat!(env!("OUT_DIR"), "/dfg.bin"))
+    .chunks_exact(8)
+    .map(|pair| {
+        let r = f32::from_le_bytes(pair[..4].try_into().unwrap());
+        let g = f32::from_le_bytes(pair[4..].try_into().unwrap());
+        [r, g, 0.0, 1.0]
+    })
+    .collect();
+let dfg = device.create_rgba16_float_texture(128, 128, &texels)?;
+```
+
+Sample it with a linear, clamp-to-edge sampler. `DfgTable::rgba()` gives the same texels directly
+where the table is baked in the same process.
+
+The library's tests run on host evaluators generated from these modules, so they measure the WGSL
+that shaders import: GGX normalisation, reciprocity, a white furnace whose quadrature matches the
+baked DFG table, the table's smooth-surface limit, falloff, exposure and the tone mapper's shape.
 
 ### Composition rules and limits
 
@@ -147,9 +315,10 @@ starts with `mulciber::` is an error, so a game cannot shadow one.
 - The composer copies only the module items a shader uses. An `#import` whose module is never used
   is ignored, even when that module is not registered.
 - `#import a::b` also makes `b` alone name the module in that file, so a variable, parameter or
-  function called `b` is read as the module. With `#import mulciber::color`, a local `color` fails
-  with "required import 'mulciber' not found" and a hint naming the clash. Import the items
-  (`#import mulciber::color::{luminance}`) or use `as` instead.
+  function called `b` is read as the module. With `#import game::shadow`, a local `shadow` fails
+  with "required import 'game' not found" and a hint naming the clash. Import the items
+  (`#import game::shadow::{shadow_factor}`) or use `as` instead, and give modules last segments
+  that are unlikely local names: Mulciber's are `colorspace`, `photometry`, `pbr` and `tonemap`.
 - Entry points come from the top-level shader only; entry points inside imported modules become
   ordinary functions. The shader's own names, entry points included, are kept, so pipelines name
   entry points as before. Items from imported modules are renamed with an encoded module path
@@ -168,7 +337,7 @@ fails validation.
 qualified names (`game::lighting::falloff`) for functions of any registered module, imported by the
 shader or not. A requested module function's `pub fn` takes its plain item name (`falloff`). The
 functions it calls are generated privately, named after their module
-(`mulciber_color_srgb_to_linear_channel`). Two functions that would get the same Rust name are
+(`mulciber_colorspace_srgb_to_linear_channel`). Two functions that would get the same Rust name are
 refused. `ShaderModules::compile_host_field` does the same without a top-level shader and takes
 qualified names only. The accepted subset is the one described below.
 

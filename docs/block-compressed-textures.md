@@ -114,4 +114,10 @@ KTX 2.0 (unreleased): unit tests parse files written byte by byte from the speci
 `BlockCompression` encoding's `VkFormat`, a base-level-only file and a complete non-square chain,
 and refuse truncated, short-level, partial-chain, foreign-format, cube, array, 3D and
 supercompressed files with the expected kind. `mulciber-texture`'s tests round-trip its writer
-through the parser. No native upload is claimed here yet.
+through the parser. On 2026-10-09, Linux / KDE Wayland / NVIDIA RTX 3060 Ti, Vulkan with
+`vulkan-validation` enabled and no validation messages, Shiplike loaded 17 `mulciber-texture` bakes
+(`Bc7Srgb` albedo and `Bc7Unorm` normal + roughness and metallic + occlusion, full chains, 128×128,
+384×512 and 768×768) through `create_ktx2_texture` and sampled them in its world material pipeline;
+the frame matched the same textures uploaded from their PNG sources as RGBA8 with GPU mips (mean
+absolute difference 0.12 of 255 per channel). Partial-chain files, the other block formats through
+KTX 2.0, and Metal were not exercised natively.

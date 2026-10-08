@@ -3322,6 +3322,7 @@ impl<'window> TexturedSession<'window> {
                 &raw const area,
             );
             let mut bound_pipeline = None;
+            let mut binds = GeometryBinds::default();
             for draw in draws {
                 let mesh = &self.meshes[draw.mesh];
                 let part = &mesh.parts[draw.part];
@@ -3347,50 +3348,28 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offset_count,
                     draw.dynamic_offsets.as_ptr(),
                 );
-                if let Some((instance_offset, _)) = draw.instances {
-                    let buffers = [mesh.buffer, self.record_instances.handle];
-                    let offsets = [mesh.vertex_offset, instance_offset];
-                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        0,
-                        2,
-                        buffers.as_ptr(),
-                        offsets.as_ptr(),
-                    );
-                } else {
-                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        0,
-                        1,
-                        &raw const mesh.buffer,
-                        &raw const mesh.vertex_offset,
-                    );
-                }
-                functions.cmd_bind_index_buffer.expect("loaded function")(
+                binds.vertices(
+                    functions,
+                    self.surface.frame_command_buffer(),
+                    (mesh.buffer, mesh.vertex_offset),
+                    draw.instances
+                        .map(|(offset, _)| (self.record_instances.handle, offset)),
+                );
+                let first_index = binds.indices(
+                    functions,
                     self.surface.frame_command_buffer(),
                     mesh.buffer,
                     part.index_offset,
                     part.index_type,
                 );
-                if let Some((_, instance_count)) = draw.instances {
-                    functions.cmd_draw_indexed.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        part.index_count,
-                        instance_count,
-                        0,
-                        0,
-                        0,
-                    );
-                } else {
-                    functions.cmd_draw_indexed.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        part.index_count,
-                        1,
-                        0,
-                        0,
-                        0,
-                    );
-                }
+                functions.cmd_draw_indexed.expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                    part.index_count,
+                    draw.instances.map_or(1, |(_, count)| count),
+                    first_index,
+                    0,
+                    0,
+                );
             }
             functions.cmd_end_rendering.expect("loaded function")(
                 self.surface.frame_command_buffer(),
@@ -4114,6 +4093,7 @@ impl<'window> TexturedSession<'window> {
         unsafe {
             let functions = &self.surface.device().functions;
             let mut bound_pipeline = None;
+            let mut binds = GeometryBinds::default();
             for draw in draws {
                 let pipeline = &self.material_pipelines[draw.pipeline];
                 let selected_pipeline = if overlay {
@@ -4141,87 +4121,58 @@ impl<'window> TexturedSession<'window> {
                     draw.dynamic_offset_count,
                     draw.dynamic_offsets.as_ptr(),
                 );
-                let (vertex_buffer, vertex_offset, geometry) = match draw.geometry {
-                    ResolvedGeometry::Mesh { mesh, .. } => (
-                        self.meshes[mesh].buffer,
-                        self.meshes[mesh].vertex_offset,
-                        draw.geometry,
-                    ),
-                    ResolvedGeometry::Transient { vertex_offset, .. } => {
-                        (self.transient_geometry.handle, vertex_offset, draw.geometry)
-                    }
-                };
-                if let Some((instance_offset, _)) = draw.instances {
-                    let buffers = [vertex_buffer, self.record_instances.handle];
-                    let offsets = [vertex_offset, instance_offset];
-                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        0,
-                        2,
-                        buffers.as_ptr(),
-                        offsets.as_ptr(),
-                    );
-                } else {
-                    functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                        self.surface.frame_command_buffer(),
-                        0,
-                        1,
-                        &raw const vertex_buffer,
-                        &raw const vertex_offset,
-                    );
-                }
-                match geometry {
-                    ResolvedGeometry::Mesh { mesh, part } => {
-                        let mesh = &self.meshes[mesh];
-                        let part = &mesh.parts[part];
-                        functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            mesh.buffer,
-                            part.index_offset,
-                            part.index_type,
-                        );
-                        if let Some((_, instance_count)) = draw.instances {
-                            functions.cmd_draw_indexed.expect("loaded function")(
-                                self.surface.frame_command_buffer(),
-                                part.index_count,
-                                instance_count,
-                                0,
-                                0,
-                                0,
-                            );
-                        } else {
-                            functions.cmd_draw_indexed.expect("loaded function")(
-                                self.surface.frame_command_buffer(),
-                                part.index_count,
-                                1,
-                                0,
-                                0,
-                                0,
-                            );
+                let (vertices, (index_buffer, index_offset, index_type, index_count)) =
+                    match draw.geometry {
+                        ResolvedGeometry::Mesh { mesh, part } => {
+                            let mesh = &self.meshes[mesh];
+                            let part = &mesh.parts[part];
+                            (
+                                (mesh.buffer, mesh.vertex_offset),
+                                (
+                                    mesh.buffer,
+                                    part.index_offset,
+                                    part.index_type,
+                                    part.index_count,
+                                ),
+                            )
                         }
-                    }
-                    ResolvedGeometry::Transient {
-                        index_offset,
-                        index_count,
-                        index_type,
-                        ..
-                    } => {
-                        functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            self.transient_geometry.handle,
+                        ResolvedGeometry::Transient {
+                            vertex_offset,
                             index_offset,
-                            index_type,
-                        );
-                        functions.cmd_draw_indexed.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
                             index_count,
-                            draw.instances.map_or(1, |(_, count)| count),
-                            0,
-                            0,
-                            0,
-                        );
-                    }
-                }
+                            index_type,
+                        } => (
+                            (self.transient_geometry.handle, vertex_offset),
+                            (
+                                self.transient_geometry.handle,
+                                index_offset,
+                                index_type,
+                                index_count,
+                            ),
+                        ),
+                    };
+                binds.vertices(
+                    functions,
+                    self.surface.frame_command_buffer(),
+                    vertices,
+                    draw.instances
+                        .map(|(offset, _)| (self.record_instances.handle, offset)),
+                );
+                let first_index = binds.indices(
+                    functions,
+                    self.surface.frame_command_buffer(),
+                    index_buffer,
+                    index_offset,
+                    index_type,
+                );
+                functions.cmd_draw_indexed.expect("loaded function")(
+                    self.surface.frame_command_buffer(),
+                    index_count,
+                    draw.instances.map_or(1, |(_, count)| count),
+                    first_index,
+                    0,
+                    0,
+                );
             }
         }
     }
@@ -4682,6 +4633,79 @@ fn create_buffer(
         (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
             .cast_unsigned(),
     )
+}
+
+/// The vertex and index buffers a pass last bound, so draws that share them skip the bind.
+/// Index buffers bind from their start once and each draw selects its range with `firstIndex`,
+/// so the parts of a mesh arena block share one index bind.
+#[derive(Default)]
+struct GeometryBinds {
+    /// The mesh vertices and, when bound, the per-instance stream (null buffer when not).
+    vertices: Option<[(vk::VkBuffer, vk::VkDeviceSize); 2]>,
+    indices: Option<(vk::VkBuffer, vk::VkIndexType)>,
+}
+
+impl GeometryBinds {
+    unsafe fn vertices(
+        &mut self,
+        functions: &super::DeviceFns,
+        command_buffer: vk::VkCommandBuffer,
+        vertices: (vk::VkBuffer, vk::VkDeviceSize),
+        instances: Option<(vk::VkBuffer, vk::VkDeviceSize)>,
+    ) {
+        let key = [vertices, instances.unwrap_or((ptr::null_mut(), 0))];
+        if self.vertices == Some(key) {
+            return;
+        }
+        let buffers = [key[0].0, key[1].0];
+        let offsets = [key[0].1, key[1].1];
+        unsafe {
+            functions.cmd_bind_vertex_buffers.expect("loaded function")(
+                command_buffer,
+                0,
+                if instances.is_some() { 2 } else { 1 },
+                buffers.as_ptr(),
+                offsets.as_ptr(),
+            );
+        }
+        self.vertices = Some(key);
+    }
+
+    /// Binds the indices starting `byte_offset` into `buffer`; returns the `firstIndex` at which
+    /// they start.
+    unsafe fn indices(
+        &mut self,
+        functions: &super::DeviceFns,
+        command_buffer: vk::VkCommandBuffer,
+        buffer: vk::VkBuffer,
+        byte_offset: vk::VkDeviceSize,
+        index_type: vk::VkIndexType,
+    ) -> u32 {
+        let size = if index_type == vk::VK_INDEX_TYPE_UINT32 {
+            4
+        } else {
+            2
+        };
+        let first = byte_offset
+            .is_multiple_of(size)
+            .then(|| u32::try_from(byte_offset / size).ok())
+            .flatten();
+        let (offset, first) = match first {
+            Some(first) if self.indices == Some((buffer, index_type)) => return first,
+            Some(first) => (0, first),
+            None => (byte_offset, 0),
+        };
+        unsafe {
+            functions.cmd_bind_index_buffer.expect("loaded function")(
+                command_buffer,
+                buffer,
+                offset,
+                index_type,
+            );
+        }
+        self.indices = (offset == 0).then_some((buffer, index_type));
+        first
+    }
 }
 
 /// A host-visible buffer mapped once for its whole life: the per-frame buffers, written every

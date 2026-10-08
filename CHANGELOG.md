@@ -2,6 +2,12 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unreleased
+
+- Vulkan material and shadow passes skip vertex binds that repeat the previous draw's, and bind
+  each index buffer once from its start, picking each draw's indices with `firstIndex`; parts that
+  share a mesh arena block share one index bind.
+
 ## Faster Vulkan frame recording (graphics 0.13.34)
 
 - Index range checks for meshes and transient geometry take the largest index, which vectorizes,

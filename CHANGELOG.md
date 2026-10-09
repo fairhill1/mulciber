@@ -2,6 +2,12 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## A signal no longer stops the UDP transport (net 0.1.1)
+
+`UdpTransport`'s receiving thread treated an interrupted wait (`EINTR`: a signal arriving, such as a
+debugger attaching or the terminal stopping and continuing the process) as a broken socket, so every
+later `receive` failed and a dedicated server quit. It now waits again, as it does for a timeout.
+
 ## KTX 2.0 uploads and the texture baker (graphics 0.13.36, texture 0.1.0)
 
 `Ktx2Texture::parse` reads a KTX 2.0 file in place, through the `ktx2` crate (0.5.0), and accepts

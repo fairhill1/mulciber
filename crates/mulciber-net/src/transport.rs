@@ -127,7 +127,8 @@ impl Drop for UdpTransport {
 }
 
 /// Errors a datagram socket reports that concern one packet, not the socket: no data or no room
-/// yet, or on Windows an earlier packet's ICMP "port unreachable" or an oversized datagram.
+/// yet, a signal arriving mid-wait (a debugger, the terminal stopping and continuing the process),
+/// or on Windows an earlier packet's ICMP "port unreachable" or an oversized datagram.
 fn transient(error: &io::Error) -> bool {
     #[cfg(windows)]
     const WSAEMSGSIZE: i32 = 10040;
@@ -138,6 +139,7 @@ fn transient(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::WouldBlock
+            | io::ErrorKind::Interrupted
             | io::ErrorKind::TimedOut
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionRefused
@@ -174,6 +176,30 @@ impl Transport for UdpTransport {
             }
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err(io::ErrorKind::BrokenPipe.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signal_or_a_lost_packet_is_not_a_broken_socket() {
+        for kind in [
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionRefused,
+        ] {
+            assert!(transient(&kind.into()), "{kind:?}");
+        }
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::AddrNotAvailable,
+        ] {
+            assert!(!transient(&kind.into()), "{kind:?}");
         }
     }
 }

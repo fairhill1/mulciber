@@ -2,6 +2,42 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Skins and animations (model 0.2.0)
+
+`Model` has a `skeleton` and `animations` when its scene has a skin or an animation of its nodes;
+without either, both are empty and the model loads as before. `Skeleton` holds every node of the
+scene, parents first, with its name, parent and rest `Transform` (translation, rotation, scale), and
+the `Joint`s of the palette: each skin's joints with their inverse bind matrices, a joint per node
+carrying rigid meshes (the inverse of its rest transform), and one that never moves. Every `Part`
+then has `joints` and `weights`, four per vertex, carried through flat normals, tangent splitting and
+double-sided copies. A skinned primitive keeps its four heaviest of `JOINTS_0`/`WEIGHTS_0` and
+`_1`, weights made to sum to 1, its vertices in the skin's bind space (glTF ignores the skinned
+node's own transform). A mesh that isn't skinned but hangs under an animated node or a skin's joint
+is placed at rest and bound wholly to the nearest such node, so figures built of rigid pieces on a
+rig animate without skin weights.
+
+`Animation`s keep their name, duration and `Channel`s (a node's translation, rotation or scale,
+step, linear or cubic spline; morph weights and nodes outside the scene are left out; a channel
+whose keys don't match its times is an error). `Animation::sample` sets the nodes it moves in a
+`Pose`, holding the end keys outside them, so animations layer. `Pose::blend` cross-fades two poses
+(rotations by `slerp`, along the shorter arc); `Pose::blend_masked` blends only the nodes of a mask,
+`Skeleton::subtree` gives one, for an upper body swinging over walking legs. `Skeleton::palette`
+gives a bone matrix per joint for a skinned vertex shader, `Skeleton::node_matrices` each node's
+matrix for attaching things to it, both in the model's frame after `Model::transform`, which now
+also moves the skeleton (`Skeleton::root`).
+
+Breaking: `Part` and `Model` have new public fields; literals need `joints`, `weights`, `skeleton`
+and `animations` (or `..Default::default()`).
+
+Tested on glTF files written by the tests (a skinned quad bending at an arm joint, upright after
+`Y_UP_TO_Z_UP` too; rigid quads riding an animated node; step, linear and cubic-spline keys; masked
+blends), and on three of Khronos's glTF sample models, turned Z up and sampled at 21 times through
+each animation: `CesiumMan` (19 joints, 3,572 vertices, loaded in 7.5 ms; its mesh is stored lying
+down and stands 1.51 m tall when posed), `Fox` (24 joints, Survey, Walk and Run) and
+`RiggedFigure`. Every weight sums to 1, every joint is in range, and every posed vertex is finite
+and stays within the figure's size. These are numeric checks; nothing was drawn. It does no GPU
+work, so it is the same on Vulkan and Metal.
+
 ## Model loading (model 0.1.0)
 
 New `mulciber-model` crate: `Model::load` reads a `.gltf` (its buffers in files or data URIs) or a

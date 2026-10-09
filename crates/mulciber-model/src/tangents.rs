@@ -84,6 +84,8 @@ pub(crate) fn generate(piece: &mut Piece) {
         normals: Vec::with_capacity(piece.positions.len()),
         tangents: Vec::with_capacity(piece.positions.len()),
         uvs: Vec::with_capacity(piece.positions.len()),
+        joints: Vec::new(),
+        weights: Vec::new(),
         indices: Vec::with_capacity(piece.indices.len()),
     };
     for (corner, &vertex) in piece.indices.iter().enumerate() {
@@ -96,6 +98,10 @@ pub(crate) fn generate(piece: &mut Piece) {
                 out.normals.push(piece.normals[v]);
                 out.uvs.push(piece.uvs[v]);
                 out.tangents.push(tangent);
+                if !piece.joints.is_empty() {
+                    out.joints.push(piece.joints[v]);
+                    out.weights.push(piece.weights[v]);
+                }
                 u32::try_from(out.positions.len() - 1).expect("fits u32")
             });
         out.indices.push(index);

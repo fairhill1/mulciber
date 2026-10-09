@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use base64::Engine as _;
-use mulciber_model::{Alpha, Image, Matrix, Model, TextureRef, Y_UP_TO_Z_UP};
+use mulciber_model::{Alpha, Image, Matrix, Model, Pose, TextureRef, Y_UP_TO_Z_UP};
 
 /// A folder of its own for one test's files.
 fn folder(name: &str) -> PathBuf {
@@ -367,5 +367,170 @@ fn a_file_that_cannot_be_read_says_which() {
     assert!(
         error.message().starts_with("no/such/chair.glb: "),
         "{error}"
+    );
+}
+
+/// Where each vertex of `model`'s parts goes in `pose`, its joints' bone matrices blended by its
+/// weights.
+fn posed(model: &Model, pose: &Pose) -> Vec<[f32; 3]> {
+    let palette = model.skeleton.as_ref().unwrap().palette(pose);
+    let apply = |m: &Matrix, p: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
+    };
+    model
+        .parts
+        .iter()
+        .flat_map(|part| {
+            part.positions.iter().enumerate().map(|(v, &p)| {
+                let mut out = [0.0; 3];
+                for (j, w) in part.joints[v].iter().zip(part.weights[v]) {
+                    let moved = apply(&palette[usize::from(*j)], p);
+                    for k in 0..3 {
+                        out[k] += moved[k] * w;
+                    }
+                }
+                out
+            })
+        })
+        .collect()
+}
+
+/// The accessor `k` of `layout` given the bounds glTF asks of an animation's times.
+fn timed(mut layout: Layout, k: usize, last: f32) -> Layout {
+    let accessor = layout.accessors[k].trim_end_matches('}').to_owned();
+    layout.accessors[k] = format!(r#"{accessor},"min":[0],"max":[{last}]}}"#);
+    layout
+}
+
+/// A rotation about +z turning to a quarter turn over a second.
+fn quarter_turn() -> [(Vec<u8>, u32, usize, &'static str); 2] {
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    [
+        (floats(&[0.0, 1.0]), 5126, 2, "SCALAR"),
+        (
+            floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, half, half]),
+            5126,
+            2,
+            "VEC4",
+        ),
+    ]
+}
+
+#[test]
+fn a_skinned_mesh_bends_with_its_joints() {
+    let dir = folder("skin");
+    // The quad's bottom edge bound to the hips at (0, 1, 0), its top edge to an arm at (1, 1, 0),
+    // their inverse binds undoing those.
+    let mut chunks = quad(true);
+    chunks.push((
+        shorts(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+        5123,
+        4,
+        "VEC4",
+    ));
+    chunks.push((floats(&[1.0, 0.0, 0.0, 0.0].repeat(4)), 5126, 4, "VEC4"));
+    let unbind = |x: f32, y: f32| {
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -x, -y, 0.0, 1.0,
+        ]
+    };
+    chunks.push((
+        floats(&[unbind(0.0, 1.0), unbind(1.0, 1.0)].concat()),
+        5126,
+        2,
+        "MAT4",
+    ));
+    chunks.extend(quarter_turn());
+    let layout = timed(layout(&chunks), 7, 1.0);
+    let rest = r#""meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"JOINTS_0":4,"WEIGHTS_0":5},"indices":3}]}],
+        "skins":[{"joints":[0,1],"inverseBindMatrices":6}],
+        "nodes":[{"name":"Hips","translation":[0,1,0],"children":[1]},{"name":"Arm","translation":[1,0,0]},{"mesh":0,"skin":0,"translation":[50,0,0]}],
+        "animations":[{"name":"Wave","channels":[{"sampler":0,"target":{"node":1,"path":"rotation"}}],"samplers":[{"input":7,"output":8}]}],
+        "scenes":[{"nodes":[0,2]}]"#;
+    let path = write_gltf(&dir, "skin.gltf", &layout, rest);
+    let model = Model::load(&path).unwrap();
+
+    let skeleton = model.skeleton.as_ref().unwrap();
+    assert_eq!(skeleton.nodes.len(), 3);
+    assert_eq!(skeleton.find("Arm"), Some(1));
+    assert_eq!(skeleton.nodes[1].parent, Some(0));
+    assert_eq!(model.animations.len(), 1);
+    let wave = &model.animations[0];
+    assert_eq!((wave.name.as_deref(), wave.duration), (Some("Wave"), 1.0));
+    let part = &model.parts[0];
+    assert_eq!(part.joints.len(), 4);
+    assert_eq!(part.weights[0], [1.0, 0.0, 0.0, 0.0]);
+
+    // At rest the quad is where it was bound, the skinned node's own move ignored, as glTF says.
+    let mut pose = skeleton.rest_pose();
+    let at_rest = posed(&model, &pose);
+    assert!(close(
+        &at_rest.concat(),
+        &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    ));
+    // A second in, the arm has turned a quarter about +z: the top edge swings round its corner at
+    // (1, 1, 0).
+    wave.sample(1.0, &mut pose);
+    let waved = posed(&model, &pose);
+    assert!(close(&waved[2], &[1.0, 1.0, 0.0]));
+    assert!(close(&waved[3], &[1.0, 0.0, 0.0]));
+    assert!(close(&waved[0], &[0.0, 0.0, 0.0]), "the hips' edge stays");
+
+    // Turned upright, the model and its poses turn together.
+    let mut upright = Model::load(&path).unwrap();
+    upright.transform(&Y_UP_TO_Z_UP);
+    let turned = posed(&upright, &pose);
+    for (a, b) in waved.iter().zip(&turned) {
+        assert!(close(b, &[a[0], -a[2], a[1]]), "{a:?} turned is {b:?}");
+    }
+    // The arm's node in the model's frame, for holding things: at its joint, turned up.
+    let arm = upright.skeleton.as_ref().unwrap().node_matrices(&pose)[1];
+    assert!(close(&arm[3], &[1.0, 0.0, 1.0, 1.0]));
+}
+
+#[test]
+fn rigid_pieces_ride_the_nodes_above_them() {
+    let dir = folder("rigid");
+    // An arm at (1, 1, 0) turning, a quad hung under it, and a quad standing apart that nothing
+    // moves.
+    let mut chunks = quad(true);
+    chunks.extend(quarter_turn());
+    let layout = timed(layout(&chunks), 4, 1.0);
+    let rest = r#""meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],
+        "materials":[{"doubleSided":true}],
+        "nodes":[{"name":"Arm","translation":[1,1,0],"children":[1]},{"mesh":0},{"mesh":0,"translation":[5,0,0]}],
+        "animations":[{"channels":[{"sampler":0,"target":{"node":0,"path":"rotation"}}],"samplers":[{"input":4,"output":5}]}],
+        "scenes":[{"nodes":[0,2]}]"#;
+    let mut model = Model::load(write_gltf(&dir, "rigid.gltf", &layout, rest)).unwrap();
+
+    let part = &model.parts[0];
+    assert!(part.weights.iter().all(|w| close(w, &[1.0, 0.0, 0.0, 0.0])));
+    // Placed at rest, as a static model is.
+    assert!(close(&part.positions[1], &[2.0, 1.0, 0.0]));
+    assert!(close(&part.positions[5], &[6.0, 0.0, 0.0]));
+    let skeleton = model.skeleton.as_ref().unwrap();
+    let mut pose = skeleton.rest_pose();
+    model.animations[0].sample(1.0, &mut pose);
+    let moved = posed(&model, &pose);
+    // The hung quad's (1, 0, 0) corner turns round the arm to (1, 2, 0); the other stays.
+    assert!(close(&moved[1], &[1.0, 2.0, 0.0]));
+    assert!(close(&moved[5], &[6.0, 0.0, 0.0]));
+    // Back faces keep their joints.
+    model.duplicate_double_sided();
+    let part = &model.parts[0];
+    assert_eq!((part.joints.len(), part.weights.len()), (16, 16));
+    assert_eq!(part.joints[9], part.joints[1]);
+}
+
+#[test]
+fn a_model_that_never_moves_has_no_skeleton() {
+    let dir = folder("still");
+    let rest = r#""meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}]"#;
+    let model = Model::load(write_gltf(&dir, "still.gltf", &layout(&quad(true)), rest)).unwrap();
+    assert_eq!(model.skeleton, None);
+    assert_eq!(model.animations.len(), 0);
+    assert_eq!(
+        (model.parts[0].joints.len(), model.parts[0].weights.len()),
+        (0, 0)
     );
 }

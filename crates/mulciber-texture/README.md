@@ -18,7 +18,7 @@ A game's runtime depends on the crate without the encoder:
 
 ```toml
 [dependencies]
-mulciber-texture = { version = "0.1.0", default-features = false }
+mulciber-texture = { version = "0.2.0", default-features = false }
 ```
 
 ```rust

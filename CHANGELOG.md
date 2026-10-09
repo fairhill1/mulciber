@@ -2,7 +2,7 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Progressive bloom upsampling (graphics, unreleased)
+## Progressive bloom upsampling (graphics 0.14.0, texture 0.2.0)
 
 `BloomShaders` has an optional `upsample` filter. With it, after the downsampling, each level is
 read from the smallest up and the filter's output is blended one-to-one into the next larger
@@ -17,6 +17,8 @@ smooth (Jimenez, SIGGRAPH 2014).
 Breaking: `BloomShaders` has a new public field; literals need `upsample: None` for the old
 behaviour. Metal is exercised on an Apple M2 by Shiplike; Vulkan compiles and passes Clippy for
 Linux but hasn't run on a device yet.
+
+`mulciber-texture` 0.2.0 only moves to `mulciber` 0.14.0, whose types its recipes take.
 
 ## A signal no longer stops the UDP transport (net 0.1.1)
 

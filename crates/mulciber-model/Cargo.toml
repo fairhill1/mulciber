@@ -1,0 +1,21 @@
+[package]
+name = "mulciber-model"
+version = "0.1.0"
+description = "Model loading for Mulciber games: static glTF 2.0 meshes and their materials, transforms baked, tangents generated"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "gltf", "mesh", "3d", "models"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+categories = ["game-development", "graphics", "parser-implementations"]
+publish = ["crates-io"]
+
+[dependencies]
+base64 = "0.23.1"
+bevy_mikktspace = "1.0.0"
+gltf = { version = "1.4.1", default-features = false, features = ["import", "utils", "names", "KHR_materials_emissive_strength"] }
+
+[lints]
+workspace = true

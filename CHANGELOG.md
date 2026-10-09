@@ -2,6 +2,28 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Model loading (model 0.1.0)
+
+New `mulciber-model` crate: `Model::load` reads a `.gltf` (its buffers in files or data URIs) or a
+`.glb` through the `gltf` crate (1.4.1). The default scene's nodes, else the first scene's, are
+walked with their transforms baked into the vertices (normals by the inverse transpose), and each
+material's primitives are merged into one `Part` of positions, unit normals, tangents, texture
+coordinate set 0 and a triangle list. Strips and fans are unrolled facing the way their first
+triangle does; points and lines are left out. A primitive without normals is split into flat
+triangles, as glTF asks; one without tangents gets MikkTSpace's from `bevy_mikktspace` (1.0.0), fed
+v turned over so the handedness is a Blender export's, each vertex split where its corners' tangents
+differ. `Material` is glTF's metallic-roughness material as stated, with
+`KHR_materials_emissive_strength`; `Image` is a file resolved against the model's folder
+(percent-decoded) or embedded bytes with their media type, not decoded. `Model::transform` applies a
+matrix, turning the winding and the tangents' handedness when it mirrors; `Y_UP_TO_Z_UP` is the
+quarter turn for a Z-up world. `Model::duplicate_double_sided` adds reversed back faces for
+double-sided materials, their tangents' handedness turned so normal maps read the same from either
+side. Skins, morph targets, animations, cameras and lights are not read yet.
+
+Tested on glTF and GLB files written by the tests, and on Poly Haven's `mantel_clock_01` (1k glTF,
+no tangents in the file): 25,721 triangles in two parts, every normal unit, every tangent across its
+normal, loaded in 34 ms on an Apple M2. It does no GPU work, so it is the same on Vulkan and Metal.
+
 ## Progressive bloom upsampling (graphics 0.14.0, texture 0.2.0)
 
 `BloomShaders` has an optional `upsample` filter. With it, after the downsampling, each level is

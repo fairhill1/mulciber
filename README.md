@@ -30,6 +30,9 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   data, packed into physically based materials, encoded as BC7 and written as KTX 2.0 beside their
   sources, with the same chains built from the sources at run time when a bake is stale. `mulciber`
   uploads KTX 2.0 files directly.
+- **Models** (`mulciber-model`): static glTF 2.0 meshes and their metallic-roughness materials,
+  node transforms baked in, one part per material, flat normals and MikkTSpace tangents where the
+  file has none, and images left for the texture baker.
 - **Offline shaders** (`mulciber-shader`): WGSL compiled into validated, cached native artifacts.
   Shaders `#import` shared WGSL modules, with `#ifdef` shader defs, including Mulciber's own
   `mulciber::` lighting library: photometric units, a Filament BRDF with a CPU-baked DFG table,

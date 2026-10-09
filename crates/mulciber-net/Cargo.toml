@@ -1,0 +1,16 @@
+[package]
+name = "mulciber-net"
+description = "Game networking over UDP for Mulciber: dedicated-server connections with reliable and unreliable messages"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "networking", "udp", "multiplayer", "netcode"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+version = "0.1.0"
+categories = ["game-development", "network-programming"]
+publish = ["crates-io"]
+
+[lints]
+workspace = true

@@ -23,6 +23,9 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   [Presentation controls](docs/frame-pacing-controls.md) also support explicit caps independent of refresh.
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
   spatialization, and a room reverb sized by probing the game's world.
+- **Networking** (`mulciber-net`): a dedicated server and its clients over UDP, with
+  address-proving connects, reliable ordered and unreliable messages of any size, acks, round-trip
+  time and loss, and a link conditioner for latency, jitter, loss and duplication.
 - **Texture baking** (`mulciber-texture`): mip chains filtered for colour, cutouts, normals and
   data, packed into physically based materials, encoded as BC7 and written as KTX 2.0 beside their
   sources, with the same chains built from the sources at run time when a bake is stale. `mulciber`
@@ -105,6 +108,7 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Graphics](docs/api-graphics-contract.md), [platform](docs/api-platform-contract.md), and
   [runtime](docs/runtime-contract.md) contracts
 - [Shader toolchain](crates/mulciber-shader/README.md) and [texture baker](crates/mulciber-texture/README.md)
+- [Networking contract](docs/net-contract.md)
 - [Materials](docs/material-contract.md), [HDR and bloom](docs/hdr-bloom-contract.md),
   [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),

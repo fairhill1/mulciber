@@ -4,6 +4,7 @@ members = [
     "crates/mulciber",
     "crates/mulciber-audio",
     "crates/mulciber-ecs",
+    "crates/mulciber-net",
     "crates/mulciber-platform",
     "crates/mulciber-runtime",
     "crates/mulciber-shader",

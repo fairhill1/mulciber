@@ -2584,7 +2584,14 @@ impl<'window> TexturedSession<'window> {
                 postprocess.sampler,
                 2,
             );
-            for (level, &texture) in targets.bloom.iter().enumerate() {
+            // Without upsampling the composite reads the first six levels; with it, the first,
+            // which holds the whole bloom.
+            let levels_read = if postprocess.bloom.len() > 2 {
+                1
+            } else {
+                crate::graphics::BLOOM_LEVELS
+            };
+            for (level, &texture) in targets.bloom.iter().take(levels_read).enumerate() {
                 objc::void_object_usize(
                     post_encoder,
                     c"setFragmentTexture:atIndex:",
@@ -4123,13 +4130,18 @@ fn create_postprocess_pipeline(
     let mut resource = create_postprocess_pipeline_base(device, bytes, config)?;
     resource.sample_count = samples as usize;
     if let Some(shaders) = config.bloom {
-        for shader in shaders {
+        // Prefilter, downsample, then the upsample (if any), which adds to its target.
+        let filters = [shaders.prefilter, shaders.downsample]
+            .into_iter()
+            .chain(shaders.upsample);
+        for (index, shader) in filters.enumerate() {
             let child = PostprocessPipelineConfig {
                 volume: None,
                 volume_stage: crate::graphics::VolumeStage::None,
                 samples: 1,
                 uniform_size: 0,
                 bloom: None,
+                additive: index == 2,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(device, shader.payload(), &child) {
@@ -4158,6 +4170,7 @@ fn create_postprocess_pipeline(
                 samples: if index == 0 { 1 } else { samples },
                 uniform_size: config.uniform_size,
                 bloom: None,
+                additive: false,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(device, shader.payload(), &child) {
@@ -4241,7 +4254,7 @@ fn create_postprocess_pipeline_base(
                 PIXEL_FORMAT_BGRA8_UNORM_SRGB
             },
         );
-        if config.volume_stage == crate::graphics::VolumeStage::Composite {
+        if config.volume_stage == crate::graphics::VolumeStage::Composite || config.additive {
             objc::void_bool(color, c"setBlendingEnabled:", true);
             objc::void_usize(color, c"setSourceRGBBlendFactor:", 1);
             objc::void_usize(color, c"setDestinationRGBBlendFactor:", 1);

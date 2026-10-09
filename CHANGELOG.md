@@ -2,6 +2,22 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Progressive bloom upsampling (graphics, unreleased)
+
+`BloomShaders` has an optional `upsample` filter. With it, after the downsampling, each level is
+read from the smallest up and the filter's output is blended one-to-one into the next larger
+level, whose contents are kept, so the first level ends up holding the whole bloom and the
+composite reads it alone at binding 3. The chain then halves past six levels until a level's
+smaller side is at most `BLOOM_SMALLEST` (16) texels, to at most twelve, so its coarsest level
+covers about the same share of the screen at any resolution. Without an upsample filter the six
+levels and the six-binding composite are as before. Sampling small levels straight to the screen
+showed their texels as a coarse grid round bright lights; the tent at every step up comes back
+smooth (Jimenez, SIGGRAPH 2014).
+
+Breaking: `BloomShaders` has a new public field; literals need `upsample: None` for the old
+behaviour. Metal is exercised on an Apple M2 by Shiplike; Vulkan compiles and passes Clippy for
+Linux but hasn't run on a device yet.
+
 ## A signal no longer stops the UDP transport (net 0.1.1)
 
 `UdpTransport`'s receiving thread treated an interrupted wait (`EINTR`: a signal arriving, such as a

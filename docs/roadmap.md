@@ -476,6 +476,9 @@ composite and native-resolution HUD. See the [HDR contract](hdr-bloom-contract.m
 format checks, synchronization, ownership and the validation boundary. Native rendering and visual
 validation of this addition remain outstanding.
 
+An optional upsample filter adds the levels back up from the smallest, with a chain long enough
+to reach about 16 texels at any resolution; Metal is exercised on hardware, Vulkan only compiled.
+
 ## Shadowed volumetrics checkpoint
 
 The opt-in HDR path can now sample native-MSAA world depth and the submitted shadow cascades

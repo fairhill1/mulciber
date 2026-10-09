@@ -40,8 +40,8 @@ pub use presentation::{
 pub use clear::{ClearColor, ClearFrame, ClearSurface, GraphicsError, GraphicsErrorKind};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use graphics::{
-    BlendMode, BlockCompression, BloomShaders, CascadedShadowPass, DepthMode, Device,
-    DeviceRequest, DeviceSelection, Frame, FrameCapture, GeometrySource, GpuFrameTiming,
+    BLOOM_SMALLEST, BlendMode, BlockCompression, BloomShaders, CascadedShadowPass, DepthMode,
+    Device, DeviceRequest, DeviceSelection, Frame, FrameCapture, GeometrySource, GpuFrameTiming,
     GpuRenderStageTiming, GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport,
     INSTANCE_SUPPLY_SIZE_LIMIT, InstancedTexturedPipeline, Ktx2Texture, MATERIAL_BUFFER_SLOT_LIMIT,
     MATERIAL_SLOT_LIMIT, MATERIAL_STORAGE_SIZE_LIMIT, MATERIAL_TEXTURE_COUNT_LIMIT,

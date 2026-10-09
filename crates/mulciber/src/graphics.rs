@@ -8,7 +8,8 @@ pub(crate) use sampled_texture::checked_staging_size;
 mod scene_depth;
 pub use capture::FrameCapture;
 pub(crate) use capture::{CaptureByteOrder, capture_byte_len, frame_capture_from_native};
-pub(crate) use hdr::bloom_extents;
+pub use hdr::BLOOM_SMALLEST;
+pub(crate) use hdr::{BLOOM_LEVELS, bloom_extents};
 use hdr::{validate_bloom_filter_interface, validate_hdr_pair};
 pub use ktx2::{Ktx2Texture, ktx2_vk_format};
 use scene_depth::validate_scene_depth_order;
@@ -1214,6 +1215,7 @@ impl Device<'_> {
             samples: 1,
             uniform_size,
             bloom: None,
+            additive: false,
             hdr_output: false,
         };
         let id =
@@ -1242,6 +1244,7 @@ impl Device<'_> {
             Some(BloomShaders {
                 prefilter,
                 downsample,
+                upsample: None,
             }),
             None,
         )
@@ -1265,6 +1268,7 @@ impl Device<'_> {
             Some(BloomShaders {
                 prefilter,
                 downsample,
+                upsample: None,
             }),
             Some(volume),
         )
@@ -1275,8 +1279,10 @@ impl Device<'_> {
     /// Absent effects create no child pipelines and execute no filter, scattering or upscale
     /// passes. Applications can cache the desired combinations and select a pipeline per frame.
     /// Without bloom, the composite must declare no bindings beyond its ordinary 0/1/2 inputs;
-    /// with bloom, it must declare all six textures at bindings 3 through 8. Targets remain HDR
-    /// in every combination and may be shared; their allocated bloom storage is retained.
+    /// with bloom, it must declare all six textures at bindings 3 through 8, or with an upsample
+    /// filter ([`BloomShaders::upsample`]) the one accumulated level at binding 3 alone. Targets
+    /// remain HDR in every combination and may be shared; their allocated bloom storage is
+    /// retained.
     /// Scattering retains its material-content and cascaded-shadow submission requirements.
     ///
     /// # Errors
@@ -1291,10 +1297,13 @@ impl Device<'_> {
         hdr::validate_optional_bloom_interface(
             descriptor.shader,
             descriptor.uniform_size,
-            bloom.is_some(),
+            bloom.map(|filters| filters.upsample.is_some()),
         )?;
         if let Some(filters) = bloom {
-            for shader in [filters.prefilter, filters.downsample] {
+            for shader in [filters.prefilter, filters.downsample]
+                .into_iter()
+                .chain(filters.upsample)
+            {
                 validate_postprocess_interface(shader, None)?;
                 validate_bloom_filter_interface(shader)?;
             }
@@ -1315,7 +1324,8 @@ impl Device<'_> {
             volume_stage: crate::graphics::VolumeStage::None,
             samples: 1,
             uniform_size,
-            bloom: bloom.map(|filters| [filters.prefilter, filters.downsample]),
+            bloom,
+            additive: false,
             hdr_output: false,
         };
         let id =
@@ -4708,13 +4718,20 @@ pub(crate) enum VolumeStage {
     Composite,
 }
 
-/// Application-authored filters for the six-level HDR bloom chain.
+/// Application-authored filters for the HDR bloom chain.
 #[derive(Clone, Copy)]
 pub struct BloomShaders<'inputs> {
     /// Extracts highlights from the resolved scene into the first half-resolution level.
     pub prefilter: ShaderArtifact<'inputs>,
     /// Filters each preceding level into the next smaller level.
     pub downsample: ShaderArtifact<'inputs>,
+    /// Optional progressive upsampling. After the downsampling, it reads each level from the
+    /// smallest up and its output is added (blended one-to-one) into the next larger level, so the
+    /// first level ends up holding the whole bloom and the composite reads it alone, at binding 3.
+    /// Its chain goes on halving past six levels until a level's smaller side is at most
+    /// [`BLOOM_SMALLEST`] texels, so its coarsest level covers about the same share of the screen
+    /// at any resolution. A filter learns its level's size from its input (`textureDimensions`).
+    pub upsample: Option<ShaderArtifact<'inputs>>,
 }
 
 /// Application shaders for shadowed, half-resolution HDR scattering.
@@ -4739,7 +4756,9 @@ pub(crate) struct PostprocessPipelineConfig<'inputs> {
     pub(crate) volume: Option<VolumetricShaders<'inputs>>,
     pub(crate) volume_stage: VolumeStage,
     pub(crate) samples: u32,
-    pub(crate) bloom: Option<[ShaderArtifact<'inputs>; 2]>,
+    pub(crate) bloom: Option<BloomShaders<'inputs>>,
+    /// Whether the output is added to the target's contents (one-to-one) instead of replacing it.
+    pub(crate) additive: bool,
     pub(crate) hdr_output: bool,
     /// Declared group-0/binding-0 byte size, or zero when absent.
     pub(crate) uniform_size: u32,

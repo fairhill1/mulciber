@@ -10,13 +10,16 @@ pub(super) fn validate_hdr_pair(pipeline: bool, target: bool) -> Result<(), Grap
     Ok(())
 }
 
+/// `bloom`: None without bloom; whether it's upsampled otherwise.
 pub(super) fn validate_optional_bloom_interface(
     artifact: ShaderArtifact<'_>,
     uniform_size: Option<u32>,
-    bloom: bool,
+    bloom: Option<bool>,
 ) -> Result<(), GraphicsError> {
-    if bloom {
-        return validate_bloom_interface(artifact, uniform_size);
+    match bloom {
+        Some(false) => return validate_bloom_interface(artifact, uniform_size, BLOOM_LEVELS),
+        Some(true) => return validate_bloom_interface(artifact, uniform_size, 1),
+        None => {}
     }
     if artifact
         .parse_interface()
@@ -31,10 +34,13 @@ pub(super) fn validate_optional_bloom_interface(
     Ok(())
 }
 
+/// A composite reading `levels` bloom levels, at bindings 3 on.
 pub(super) fn validate_bloom_interface(
     shader: ShaderArtifact<'_>,
     uniform_size: Option<u32>,
+    levels: usize,
 ) -> Result<(), GraphicsError> {
+    let last = 3 + u32::try_from(levels).expect("a few levels");
     let interface = shader.parse_interface();
     if uniform_size.is_none()
         && interface
@@ -46,7 +52,7 @@ pub(super) fn validate_bloom_interface(
             "HDR composite uniform must be declared explicitly",
         ));
     }
-    for binding in 3..9 {
+    for binding in 3..last {
         if !interface.bindings.iter().any(|slot| {
             slot.group == 0
                 && slot.binding == binding
@@ -60,7 +66,7 @@ pub(super) fn validate_bloom_interface(
     if interface
         .bindings
         .iter()
-        .any(|slot| slot.group != 0 || slot.binding > 8)
+        .any(|slot| slot.group != 0 || slot.binding >= last)
     {
         return Err(GraphicsError::invalid_request(
             "HDR composite contains unsupported bindings",
@@ -85,13 +91,25 @@ pub(super) fn validate_bloom_filter_interface(
     Ok(())
 }
 
-/// Repeated halving keeps tiny and non-square targets valid. Six levels are always supplied.
-pub(crate) fn bloom_extents(width: u32, height: u32) -> [(u32, u32); 6] {
+/// The bloom levels a composite without upsampling reads, at bindings 3 through 8.
+pub(crate) const BLOOM_LEVELS: usize = 6;
+/// An upsampled chain halves on past [`BLOOM_LEVELS`] until a level's smaller side is at most
+/// this many texels, to at most [`BLOOM_MOST`] levels.
+pub const BLOOM_SMALLEST: u32 = 16;
+const BLOOM_MOST: usize = 12;
+
+/// Repeated halving keeps tiny and non-square targets valid. At least [`BLOOM_LEVELS`] levels are
+/// always supplied, and more, for upsampling, while the last is larger than [`BLOOM_SMALLEST`].
+pub(crate) fn bloom_extents(width: u32, height: u32) -> std::vec::Vec<(u32, u32)> {
     let mut extent = (width, height);
-    core::array::from_fn(|_| {
+    let mut levels = std::vec::Vec::new();
+    while levels.len() < BLOOM_LEVELS
+        || (levels.len() < BLOOM_MOST && extent.0.min(extent.1) > BLOOM_SMALLEST)
+    {
         extent = ((extent.0 / 2).max(1), (extent.1 / 2).max(1));
-        extent
-    })
+        levels.push(extent);
+    }
+    levels
 }
 
 /// Keep native descriptor recipes and compiled texture sample counts in agreement.
@@ -189,6 +207,10 @@ mod tests {
             ]
         );
         assert_eq!(bloom_extents(1, 1), [(1, 1); 6]);
+        // Past six levels while the smaller side is over the smallest: a level more at 2160 lines.
+        assert_eq!(bloom_extents(3840, 2160)[5..], [(60, 33), (30, 16)]);
+        assert_eq!(bloom_extents(3024, 1890).last(), Some(&(23, 14)));
+        assert_eq!(bloom_extents(1 << 20, 1 << 20).len(), BLOOM_MOST);
         assert_eq!(
             bloom_extents(1, 7),
             [(1, 3), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)]
@@ -259,23 +281,54 @@ mod tests {
         let mut slots = std::vec![(1, texture), (2, sampler)];
         let bytes = artifact(&slots);
         assert!(
-            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, false)
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, None)
                 .is_ok()
         );
         assert!(
-            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, true)
-                .is_err()
+            validate_optional_bloom_interface(
+                ShaderArtifact::new(&bytes).unwrap(),
+                None,
+                Some(false)
+            )
+            .is_err()
         );
         slots.extend((3..9).map(|slot| (slot, texture)));
         let bytes = artifact(&slots);
         assert!(
-            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, true)
-                .is_ok()
+            validate_optional_bloom_interface(
+                ShaderArtifact::new(&bytes).unwrap(),
+                None,
+                Some(false)
+            )
+            .is_ok()
         );
         assert!(
-            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, false)
+            validate_optional_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, None)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn an_upsampled_composite_reads_the_first_level_alone() {
+        let texture = shader::INTERFACE_BINDING_SAMPLED_TEXTURE;
+        let sampler = shader::INTERFACE_BINDING_SAMPLER;
+        let mut slots = std::vec![(1, texture), (2, sampler), (3, texture)];
+        let bytes = artifact(&slots);
+        let upsampled = |bytes: &[u8]| {
+            validate_optional_bloom_interface(ShaderArtifact::new(bytes).unwrap(), None, Some(true))
+        };
+        assert!(upsampled(&bytes).is_ok());
+        assert!(
+            validate_optional_bloom_interface(
+                ShaderArtifact::new(&bytes).unwrap(),
+                None,
+                Some(false)
+            )
+            .is_err()
+        );
+        slots.push((4, texture));
+        assert!(upsampled(&artifact(&slots)).is_err());
+        assert!(upsampled(&artifact(&slots[..2])).is_err());
     }
 
     #[test]
@@ -287,16 +340,22 @@ mod tests {
         let bytes = artifact(&slots);
         let shader = ShaderArtifact::new(&bytes).unwrap();
         assert!(validate_postprocess_interface(shader, None).is_ok());
-        assert!(validate_bloom_interface(shader, None).is_ok());
+        assert!(validate_bloom_interface(shader, None, BLOOM_LEVELS).is_ok());
         for missing in 2..slots.len() {
             let mut incomplete = slots.clone();
             incomplete.remove(missing);
             let bytes = artifact(&incomplete);
-            assert!(validate_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None).is_err());
+            assert!(
+                validate_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, BLOOM_LEVELS)
+                    .is_err()
+            );
         }
         slots[4].1 = sampler;
         let bytes = artifact(&slots);
-        assert!(validate_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None).is_err());
+        assert!(
+            validate_bloom_interface(ShaderArtifact::new(&bytes).unwrap(), None, BLOOM_LEVELS)
+                .is_err()
+        );
     }
 
     #[test]

@@ -213,7 +213,8 @@ struct PipelineResource {
     volume: Vec<PipelineResource>,
     bloom: Vec<PipelineResource>,
     volume_sets: Vec<volumetric::DescriptorSets>,
-    bloom_sets: Vec<(vk::VkDescriptorSet, [vk::VkDescriptorSet; 6])>,
+    /// By composite set: a set for each downsample pass, then each upsample pass.
+    bloom_sets: Vec<(vk::VkDescriptorSet, Vec<vk::VkDescriptorSet>)>,
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
@@ -2921,7 +2922,13 @@ impl<'window> TexturedSession<'window> {
             })
             .collect();
         if !pipeline.bloom.is_empty() {
-            for (index, image) in bloom_images.iter().enumerate() {
+            // Without upsampling the composite reads the first six levels; with it, the first.
+            let levels_read = if pipeline.bloom.len() > 2 {
+                1
+            } else {
+                crate::graphics::BLOOM_LEVELS
+            };
+            for (index, image) in bloom_images.iter().take(levels_read).enumerate() {
                 writes.push(descriptor_write(
                     set,
                     3 + u32::try_from(index).expect("six bloom levels"),
@@ -6828,13 +6835,18 @@ fn create_postprocess_pipeline(
 ) -> Result<PipelineResource, GraphicsError> {
     let mut resource = create_postprocess_pipeline_base(surface, bytes, config)?;
     if let Some(shaders) = config.bloom {
-        for shader in shaders {
+        // Prefilter, downsample, then the upsample (if any), which adds to its target.
+        let filters = [shaders.prefilter, shaders.downsample]
+            .into_iter()
+            .chain(shaders.upsample);
+        for (index, shader) in filters.enumerate() {
             let child = PostprocessPipelineConfig {
                 volume: None,
                 volume_stage: crate::graphics::VolumeStage::None,
                 samples: 1,
                 uniform_size: 0,
                 bloom: None,
+                additive: index == 2,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(surface, shader.payload(), &child) {
@@ -6863,6 +6875,7 @@ fn create_postprocess_pipeline(
                 samples: if index == 0 { 1 } else { samples },
                 uniform_size: config.uniform_size,
                 bloom: None,
+                additive: false,
                 hdr_output: true,
             };
             match create_postprocess_pipeline_base(surface, shader.payload(), &child) {
@@ -6914,8 +6927,14 @@ fn create_postprocess_pipeline_base(
     if config.uniform_size != 0 {
         bindings.push(uniform_binding);
     }
-    if config.bloom.is_some() {
-        for binding in 3..9 {
+    if let Some(bloom) = config.bloom {
+        // The six levels, or with upsampling the first alone.
+        let levels = if bloom.upsample.is_some() {
+            1
+        } else {
+            crate::graphics::BLOOM_LEVELS
+        };
+        for binding in 3..3 + u32::try_from(levels).expect("six levels") {
             bindings.push(layout_binding(
                 binding,
                 vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -7039,7 +7058,9 @@ fn create_postprocess_pipeline_base(
             ..Default::default()
         };
         let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
-            blendEnable: u32::from(config.volume_stage == crate::graphics::VolumeStage::Composite),
+            blendEnable: u32::from(
+                config.volume_stage == crate::graphics::VolumeStage::Composite || config.additive,
+            ),
             srcColorBlendFactor: vk::VK_BLEND_FACTOR_ONE,
             dstColorBlendFactor: vk::VK_BLEND_FACTOR_ONE,
             colorBlendOp: vk::VK_BLEND_OP_ADD,

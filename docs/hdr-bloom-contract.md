@@ -24,6 +24,34 @@ surface-format material pipelines and postprocessing keep their original behavio
   engine owns allocation, pass ordering, dependencies and retirement. No shader compiler is added
   to the runtime. HDR scene storage does not imply HDR monitor output: presentation remains sRGB.
 
+## Progressive upsampling
+
+`BloomShaders::upsample` is optional. Without it nothing above changes. With it:
+
+- The chain is longer where the scene is large: `bloom_extents` keeps halving past six levels
+  while a level's smaller side exceeds `BLOOM_SMALLEST` (16 texels), to at most twelve, so its
+  coarsest level covers about the same share of the screen at any render scale or window size.
+  Targets allocate the whole chain whichever pipeline uses them; a six-level composite filters and
+  reads the first six only.
+- After downsampling every level, the upsample filter runs once per level from the smallest up:
+  it reads level `n + 1` (binding 1, the ordinary filter interface) and its output is blended
+  one-to-one (RGB `ONE`/`ONE`, alpha kept) into level `n`, whose downsampled contents are loaded,
+  not discarded. Level 0 then holds the whole bloom.
+- The composite reads that one level at binding 3 and declares no bindings past it. Six-level
+  composites are rejected for an upsampled pipeline and the reverse.
+- Filters receive no uniform. A filter that weights levels learns its level's size from its input
+  (`textureDimensions`); the application owns that weighting, as it owns thresholds and filtering.
+
+The reason is Jimenez's (SIGGRAPH 2014): sampling each small level straight to the screen magnifies
+its texels 32 to 128 times through bilinear filtering, whose creases show as a coarse grid round
+bright lights, while a tent applied at every step up comes back smooth.
+
+Evidence: Metal was exercised on an Apple M2 by Shiplike (2940x1782 drawable, render scale 100% and
+50%, seven and six levels): frames read back show a round, smooth halo with no texel grid, and the
+halo's brightness at several radii agrees between the two scales. Vulkan compiles and passes Clippy
+for `x86_64-unknown-linux-gnu`, but its upsample barriers, `LOAD` attachments and blending have not
+run on a device or under validation layers yet; that evidence remains outstanding.
+
 ## Independently optional effects
 
 `Device::create_hdr_composite_pipeline` accepts optional `BloomShaders` and `VolumetricShaders`.

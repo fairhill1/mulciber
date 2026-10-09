@@ -211,6 +211,11 @@ composite and native-resolution HUD. See the [HDR contract](hdr-bloom-contract.m
 format checks, synchronization, ownership and the validation boundary. Native rendering and visual
 validation of this addition remain outstanding.
 
+Optional progressive upsampling (`BloomShaders::upsample`) blends each level one-to-one into the
+next larger, loading its contents: Metal through `MTLLoadActionLoad` render encoders, Vulkan through
+`LOAD` dynamic-rendering attachments after a shader-read to color-attachment barrier. Metal is
+exercised on an Apple M2; the Vulkan path is compiled only.
+
 ## World depth and shadowed scattering
 
 The opt-in HDR path can now sample native-MSAA world depth and the submitted shadow cascades

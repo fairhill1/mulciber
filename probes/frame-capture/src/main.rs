@@ -251,6 +251,7 @@ fn render(
                 output: SceneOutput::Direct(targets.direct.as_ref().expect("created")),
                 shadow: None,
                 overlay: None,
+                offscreen: &[],
                 clear: ClearColor::BLACK,
             },
         )?
@@ -278,6 +279,7 @@ fn render(
                 },
                 shadow: None,
                 overlay: matches!(output, Output::HdrOverlay).then_some(&overlay[..]),
+                offscreen: &[],
                 clear: ClearColor::BLACK,
             },
         )?

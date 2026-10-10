@@ -757,6 +757,7 @@ impl<'window> Cases<'window> {
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -798,6 +799,7 @@ impl<'window> Cases<'window> {
                         },
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1031,6 +1033,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1074,6 +1077,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1121,6 +1125,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1252,6 +1257,7 @@ impl<'window> Cases<'window> {
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1365,6 +1371,7 @@ impl<'window> Cases<'window> {
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1443,6 +1450,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1492,6 +1500,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: Some(&records),
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1545,6 +1554,7 @@ impl<'window> Cases<'window> {
                                 },
                                 shadow: None,
                                 overlay: Some(&records),
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1688,6 +1698,7 @@ impl<'window> Cases<'window> {
                         },
                         shadow: None,
                         overlay: Some(&overlay_records),
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1860,6 +1871,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1906,6 +1918,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1951,6 +1964,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1997,6 +2011,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2054,6 +2069,7 @@ impl<'window> Cases<'window> {
                                     cascades: &cascades,
                                 })),
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2110,6 +2126,7 @@ impl<'window> Cases<'window> {
                                     records: &shadow_records,
                                 })),
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2306,6 +2323,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2363,6 +2381,7 @@ impl<'window> Cases<'window> {
                                     records: &shadow_records,
                                 })),
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2416,6 +2435,7 @@ impl<'window> Cases<'window> {
                             records: &shadow_records,
                         })),
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -2481,6 +2501,7 @@ impl<'window> Cases<'window> {
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -2518,6 +2539,7 @@ impl<'window> Cases<'window> {
                         output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                         shadow: None,
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -2561,6 +2583,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2607,6 +2630,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2653,6 +2677,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2701,6 +2726,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2810,6 +2836,7 @@ impl<'window> Cases<'window> {
                             cascades: &cascades,
                         })),
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -2950,6 +2977,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -2995,6 +3023,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3053,6 +3082,7 @@ impl<'window> Cases<'window> {
                             records: &shadow_records,
                         })),
                         overlay: None,
+                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -3176,6 +3206,7 @@ impl<'window> Cases<'window> {
                                 },
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3220,6 +3251,7 @@ impl<'window> Cases<'window> {
                                 },
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3398,6 +3430,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3445,6 +3478,7 @@ impl<'window> Cases<'window> {
                                 ),
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3488,6 +3522,7 @@ impl<'window> Cases<'window> {
                                 },
                                 shadow: None,
                                 overlay: None,
+                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3628,6 +3663,7 @@ impl<'window> Cases<'window> {
                 output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
                 shadow: None,
                 overlay: None,
+                offscreen: &[],
                 clear: ClearColor::BLACK,
             },
         )?)?;

@@ -26,6 +26,7 @@ impl TextureResource {
             pending: None,
             uploads: [Buffer::default(); ClearSurface::frames_in_flight()],
             upload_ready: false,
+            render: None,
         }
     }
 }

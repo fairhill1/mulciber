@@ -4,6 +4,7 @@ mod descriptor_cache;
 mod descriptor_pools;
 mod mesh;
 mod mip_generation;
+mod render_texture;
 mod sampled_texture;
 #[cfg(feature = "native-validation")]
 mod validation;
@@ -34,8 +35,8 @@ use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GpuFrameTiming,
     GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport, GraphicsError,
-    MaterialRecord, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowSource,
-    SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
+    MaterialRecord, OffscreenPass, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass,
+    ShadowSource, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
@@ -205,6 +206,8 @@ struct TextureResource {
     /// Per-frame-slot staging, sized to the whole chain on first use.
     uploads: [Buffer; ClearSurface::frames_in_flight()],
     upload_ready: bool,
+    /// Depth and multisample images when the texture is a render texture.
+    render: Option<render_texture::RenderAttachments>,
 }
 
 struct PipelineResource {
@@ -441,6 +444,11 @@ pub(crate) struct TexturedSession<'window> {
     /// Overlay records resolved by the last material preparation, recorded into the
     /// presentable pass after the postprocess draw.
     resolved_overlay_draws: Vec<ResolvedMaterialDraw>,
+    /// Offscreen records resolved by the last material preparation, in pass order.
+    resolved_offscreen_draws: Vec<ResolvedMaterialDraw>,
+    /// Offscreen passes queued by the last material preparation, recorded after the shadow
+    /// prepass.
+    pending_offscreen: Vec<render_texture::PendingOffscreen>,
     resolved_shadow_draws: Vec<ResolvedShadowDraw>,
     /// Per-cascade draw counts splitting `resolved_shadow_draws` in layer order; empty unless
     /// the prepared pre-pass targets a shadow map array.
@@ -592,6 +600,8 @@ impl<'window> TexturedSession<'window> {
                 resolved_instance_batches: Vec::new(),
                 resolved_material_draws: Vec::new(),
                 resolved_overlay_draws: Vec::new(),
+                resolved_offscreen_draws: Vec::new(),
+                pending_offscreen: Vec::new(),
                 resolved_shadow_draws: Vec::new(),
                 resolved_shadow_cascades: Vec::new(),
                 pending_shadow_target: None,
@@ -1541,7 +1551,7 @@ impl<'window> TexturedSession<'window> {
                 "render targets do not match acquired Vulkan generation",
             ));
         }
-        self.prepare_material_scene(records, &[], shadow, None)?;
+        self.prepare_material_scene(records, &[], &[], shadow, None)?;
         self.begin_capture(&token)?;
         self.record_draw(
             token.image_index,
@@ -1560,6 +1570,8 @@ impl<'window> TexturedSession<'window> {
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         overlay: &[MaterialRecord<'_>],
+        offscreen: &[OffscreenPass<'_>],
+        offscreen_depth_clears: &[f32],
         foreground_start: Option<usize>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
@@ -1611,7 +1623,13 @@ impl<'window> TexturedSession<'window> {
         } else {
             None
         };
-        self.prepare_material_scene(records, overlay, shadow, snapshot)?;
+        let offscreen_records: Vec<MaterialRecord<'_>> = offscreen
+            .iter()
+            .flat_map(|pass| pass.records)
+            .copied()
+            .collect();
+        self.prepare_material_scene(records, overlay, &offscreen_records, shadow, snapshot)?;
+        self.queue_offscreen_passes(offscreen, offscreen_depth_clears)?;
         let postprocess_descriptor =
             self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
         if let Some(shadow) = volume_shadow {
@@ -1641,16 +1659,26 @@ impl<'window> TexturedSession<'window> {
     }
 
     /// Checks handles and stages per-record data for the scene records, any overlay records,
-    /// and any shadow records in that fixed order, so recording consumes the same uniform
-    /// slots and storage offsets.
+    /// any offscreen records, and any shadow records in that fixed order, so recording consumes
+    /// the same uniform slots and storage offsets.
     #[allow(clippy::too_many_lines)]
     fn prepare_material_scene(
         &mut self,
         records: &[MaterialRecord<'_>],
         overlay: &[MaterialRecord<'_>],
+        offscreen: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         snapshot: Option<(ResourceId, vk::VkImageView)>,
     ) -> Result<(), GraphicsError> {
+        // Offscreen records stage exactly like overlay records, after them.
+        let staged_after_scene: Vec<MaterialRecord<'_>>;
+        let overlay_len = overlay.len();
+        let overlay = if offscreen.is_empty() {
+            overlay
+        } else {
+            staged_after_scene = overlay.iter().chain(offscreen).copied().collect();
+            &staged_after_scene
+        };
         let shadow_records = shadow.map_or(0, |shadow| shadow.records().count());
         let uniform_slots = records
             .len()
@@ -1757,6 +1785,7 @@ impl<'window> TexturedSession<'window> {
         }
         self.resolved_material_draws.clear();
         self.resolved_overlay_draws.clear();
+        self.resolved_offscreen_draws.clear();
         let mut sampled_ids = Vec::new();
         let mut texture_indices = Vec::new();
         let mut transient_offset = self.transient_base();
@@ -1802,9 +1831,8 @@ impl<'window> TexturedSession<'window> {
                 self.material_pipelines[pipeline].sample_count,
                 "material pipeline",
             )?;
-            if index >= records.len()
-                && self.material_pipelines[pipeline].overlay_pipeline.is_null()
-            {
+            let in_overlay = (records.len()..records.len() + overlay_len).contains(&index);
+            if in_overlay && self.material_pipelines[pipeline].overlay_pipeline.is_null() {
                 return Err(error(
                     "Vulkan material pipeline lacks the overlay variant its record needs",
                 ));
@@ -1868,8 +1896,10 @@ impl<'window> TexturedSession<'window> {
             };
             if index < records.len() {
                 self.resolved_material_draws.push(resolved);
-            } else {
+            } else if in_overlay {
                 self.resolved_overlay_draws.push(resolved);
+            } else {
+                self.resolved_offscreen_draws.push(resolved);
             }
         }
         Ok(())
@@ -3739,6 +3769,7 @@ impl<'window> TexturedSession<'window> {
         } else {
             self.write_empty_gpu_region(SHADOW_QUERY_START);
         }
+        self.record_offscreen_passes();
         let device = self.surface.device();
         let swapchain_barrier = acquired_image_barrier(image, old_layout);
         let scene_barrier = image_barrier(
@@ -4410,6 +4441,9 @@ impl Drop for TexturedSession<'_> {
 
 #[allow(clippy::needless_pass_by_value)]
 fn destroy_texture_device(device: &super::Device, texture: TextureResource) {
+    if let Some(render) = texture.render {
+        render.destroy(device);
+    }
     unsafe {
         for staging in texture.uploads {
             destroy_buffer_device(device, staging);

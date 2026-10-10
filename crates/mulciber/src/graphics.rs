@@ -659,6 +659,7 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?
             .create_texture_with_generated_mips(width, height, texels, format)?;
         Ok(Texture {
+            render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
         })
@@ -863,6 +864,7 @@ impl Device<'_> {
         cube_texture::validate_faces(format, size, &faces, complete)?;
         let id = session_mut(&self.shared)?.create_cube_texture(size, &faces, format)?;
         Ok(Texture {
+            render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::Cube,
         })
@@ -1031,6 +1033,11 @@ impl Device<'_> {
                 "float texture updates replace 2D textures only, not cube textures",
             ));
         }
+        if texture.render_target {
+            return Err(GraphicsError::invalid_request(
+                "a render texture is written by offscreen passes, not float texture updates",
+            ));
+        }
         Ok(())
     }
 
@@ -1087,6 +1094,7 @@ impl Device<'_> {
         };
         drop(session);
         Ok(Texture {
+            render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
         })
@@ -1102,6 +1110,7 @@ impl Device<'_> {
         validate_mip_level(format, width, height, 0, texels)?;
         let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
         Ok(Texture {
+            render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
         })
@@ -1132,6 +1141,7 @@ impl Device<'_> {
         }
         let id = session_mut(&self.shared)?.create_texture(width, height, levels, format)?;
         Ok(Texture {
+            render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
             dimension: TextureDimension::D2,
         })
@@ -1470,6 +1480,43 @@ impl Device<'_> {
         })
     }
 
+    /// Creates a linear `RGBA16Float` color texture for offscreen passes to render into, with
+    /// depth and any multisample color storage of its own at the session's current sample
+    /// count.
+    ///
+    /// It cannot be sampled until an offscreen pass has rendered into it, and it is never
+    /// updated from the CPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero extent, an extent above [`RENDER_TEXTURE_SIZE_LIMIT`], an
+    /// adapter that cannot render, blend and filter `RGBA16Float` at the sample count, or
+    /// native image allocation failure.
+    pub fn create_hdr_render_texture(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<RenderTexture, GraphicsError> {
+        for (axis, extent) in [("width", width), ("height", height)] {
+            if extent == 0 || extent > RENDER_TEXTURE_SIZE_LIMIT {
+                return Err(GraphicsError::invalid_request(format!(
+                    "render texture {axis} {extent} is outside the supported 1 through \
+                     {RENDER_TEXTURE_SIZE_LIMIT}"
+                )));
+            }
+        }
+        let id = session_mut(&self.shared)?.create_render_texture(width, height)?;
+        Ok(RenderTexture {
+            texture: Texture {
+                lease: self.lease(id, ResourceKind::Texture),
+                dimension: TextureDimension::D2,
+                render_target: true,
+            },
+            width,
+            height,
+        })
+    }
+
     /// Creates a depth-only pipeline from an application-authored shader module for shadow
     /// passes.
     ///
@@ -1674,6 +1721,16 @@ impl Device<'_> {
     /// Returns an error for a mixed-session or stale handle, or when native completion fails.
     pub fn destroy_texture(&self, mut texture: Texture) -> Result<(), GraphicsError> {
         self.destroy_lease(&mut texture.lease, ResourceKind::Texture)
+    }
+
+    /// Destroys a render texture, its color with its depth and multisample storage, after its
+    /// last submitted GPU use completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
+    pub fn destroy_render_texture(&self, mut target: RenderTexture) -> Result<(), GraphicsError> {
+        self.destroy_lease(&mut target.texture.lease, ResourceKind::Texture)
     }
 
     /// Destroys a textured pipeline after its last submitted GPU use completes.
@@ -1919,6 +1976,7 @@ impl Queue<'_> {
                 records,
                 submission.shadow,
                 submission.overlay,
+                submission.offscreen,
                 foreground_start,
                 pipeline,
                 targets,
@@ -2154,6 +2212,7 @@ impl Queue<'_> {
         records: &[MaterialRecord<'_>],
         shadow: Option<ShadowPrepass<'_>>,
         overlay: Option<&[MaterialRecord<'_>]>,
+        offscreen: &[OffscreenPass<'_>],
         foreground_start: Option<usize>,
         postprocess_pipeline: &PostprocessPipeline,
         targets: &PostprocessTargets,
@@ -2167,6 +2226,12 @@ impl Queue<'_> {
         if let Some(overlay) = overlay {
             self.validate_overlay_records(frame.shared.id, overlay)?;
         }
+        let offscreen_depth_clears =
+            self.validate_offscreen_passes(frame.shared.id, offscreen, shadow.as_ref())?;
+        self.validate_render_texture_sampling(
+            records.iter().chain(overlay.unwrap_or(&[])),
+            offscreen,
+        )?;
         if postprocess_pipeline.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "postprocess pipeline belongs to a different graphics session than the queue",
@@ -2183,6 +2248,8 @@ impl Queue<'_> {
             records,
             shadow.as_ref(),
             overlay.unwrap_or(&[]),
+            offscreen,
+            &offscreen_depth_clears,
             foreground_start,
             postprocess_pipeline.lease.id,
             targets.lease.id,
@@ -2347,6 +2414,100 @@ impl Queue<'_> {
                     "overlay records draw after the scene pass and may not sample a shadow map; \
                      their pipelines must declare no depth-texture slot",
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates the offscreen passes: each targets a distinct same-session render texture
+    /// with non-empty records whose HDR pipelines sample neither scene depth nor the pass's own
+    /// target, and any shadow map their records sample has been rendered. Returns each pass's
+    /// depth clear, in pass order.
+    fn validate_offscreen_passes(
+        &self,
+        frame_session: u64,
+        offscreen: &[OffscreenPass<'_>],
+        shadow: Option<&ShadowPrepass<'_>>,
+    ) -> Result<Vec<f32>, GraphicsError> {
+        let mut depth_clears = Vec::with_capacity(offscreen.len());
+        for (index, pass) in offscreen.iter().enumerate() {
+            let target = &pass.target.texture;
+            if target.lease.session != self.shared.id || target.lease.session != frame_session {
+                return Err(GraphicsError::invalid_request(
+                    "render texture belongs to a different graphics session than the queue and \
+                     frame",
+                ));
+            }
+            if offscreen[..index]
+                .iter()
+                .any(|earlier| earlier.target.texture.id() == target.id())
+            {
+                return Err(GraphicsError::invalid_request(
+                    "two offscreen passes in one submission target the same render texture",
+                ));
+            }
+            if pass.records.is_empty() {
+                return Err(GraphicsError::invalid_request(
+                    "offscreen pass must contain at least one record",
+                ));
+            }
+            self.validate_material_records(frame_session, pass.records)?;
+            for record in pass.records {
+                validate_hdr_pair(record.pipeline.hdr, true)?;
+                if record.pipeline.scene_depth {
+                    return Err(GraphicsError::invalid_request(
+                        "offscreen records may not sample scene depth",
+                    ));
+                }
+                if record
+                    .textures
+                    .iter()
+                    .any(|texture| texture.id() == target.id())
+                {
+                    return Err(GraphicsError::invalid_request(
+                        "offscreen record samples the render texture its pass renders into",
+                    ));
+                }
+            }
+            session_ref(&self.shared)?.validate_shadow_sampling(pass.records, shadow)?;
+            depth_clears.push(material_scene_depth_clear(pass.records)?);
+        }
+        Ok(depth_clears)
+    }
+
+    /// Rejects sampling a render texture nothing has rendered: neither an earlier submission
+    /// nor, for scene and overlay records, any of this submission's offscreen passes, nor, for
+    /// an offscreen pass's records, an earlier pass in it.
+    fn validate_render_texture_sampling<'a>(
+        &self,
+        scene: impl Iterator<Item = &'a MaterialRecord<'a>>,
+        offscreen: &[OffscreenPass<'_>],
+    ) -> Result<(), GraphicsError> {
+        let session = session_ref(&self.shared)?;
+        let check = |record: &MaterialRecord<'_>, passes: &[OffscreenPass<'_>]| {
+            for texture in record
+                .textures
+                .iter()
+                .filter(|texture| texture.render_target)
+            {
+                let pending = passes
+                    .iter()
+                    .any(|pass| pass.target.texture.id() == texture.id());
+                if !pending && !session.render_texture_rendered(texture.id())? {
+                    return Err(GraphicsError::invalid_request(
+                        "material record samples a render texture that no offscreen pass has \
+                         rendered",
+                    ));
+                }
+            }
+            Ok(())
+        };
+        for record in scene {
+            check(record, offscreen)?;
+        }
+        for (index, pass) in offscreen.iter().enumerate() {
+            for record in pass.records {
+                check(record, &offscreen[..index])?;
             }
         }
         Ok(())
@@ -3467,6 +3628,9 @@ impl<'resources> MeshSource<'resources> {
 pub struct Texture {
     lease: ResourceLease,
     dimension: TextureDimension,
+    /// Whether the texture is a [`RenderTexture`]'s color, written by offscreen passes rather
+    /// than uploads.
+    render_target: bool,
 }
 
 /// The shape of an uploaded [`Texture`], which decides the material slot it can feed.
@@ -3624,6 +3788,53 @@ impl Texture {
     }
 }
 
+/// A 2D linear `RGBA16Float` color texture that a scene submission's offscreen passes render
+/// into, then sampled through [`RenderTexture::texture`] like any uploaded 2D texture.
+///
+/// It owns depth and, at a multisample count, multisample color storage of its own, built for
+/// the session's sample count when it was created; HDR material pipelines built for the same
+/// count draw into it. Its contents persist until the next offscreen pass into it, so one
+/// render can be sampled for many frames.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RenderTexture {
+    texture: Texture,
+    width: u32,
+    height: u32,
+}
+
+impl RenderTexture {
+    /// The rendered color, for material records' texture slots.
+    #[must_use]
+    pub const fn texture(&self) -> &Texture {
+        &self.texture
+    }
+
+    /// Width in texels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in texels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+/// One offscreen material pass of a [`SceneSubmission`]: records drawn into a
+/// [`RenderTexture`] with its own clear, after any shadow prepass and before the scene pass.
+#[derive(Clone, Copy)]
+pub struct OffscreenPass<'resources> {
+    /// Destination; at most one pass per submission may target it.
+    pub target: &'resources RenderTexture,
+    /// Non-empty records encoded in slice order. Their pipelines must be HDR material pipelines
+    /// and may not sample scene depth or the target itself.
+    pub records: &'resources [MaterialRecord<'resources>],
+    /// Linear color the target is cleared to before the first record.
+    pub clear: ClearColor,
+}
+
 /// Native textured depth-tested graphics pipeline.
 #[derive(Debug, Eq, PartialEq)]
 pub struct TexturedPipeline {
@@ -3752,6 +3963,9 @@ pub const MATERIAL_TEXTURE_COUNT_LIMIT: u32 = 16;
 
 /// Largest supported shadow map extent along either axis.
 pub const SHADOW_MAP_SIZE_LIMIT: u32 = 8192;
+
+/// Largest supported render texture extent along either axis.
+pub const RENDER_TEXTURE_SIZE_LIMIT: u32 = 8192;
 
 /// Largest supported shadow map array layer count.
 ///
@@ -4662,6 +4876,11 @@ pub struct SceneSubmission<'resources> {
     /// Overlay pipelines rasterize at one sample, so [`BlendMode::Cutout`] degrades to a hard
     /// alpha threshold here.
     pub overlay: Option<&'resources [MaterialRecord<'resources>]>,
+    /// Offscreen passes into [`RenderTexture`]s, encoded in slice order after any shadow
+    /// prepass (whose map their records may sample) and before the scene pass, so the scene
+    /// and overlay records may sample what they rendered. Empty for none; any composes with
+    /// material content and postprocessed output only.
+    pub offscreen: &'resources [OffscreenPass<'resources>],
     /// Linear color used to clear the scene before its first draw or batch.
     pub clear: ClearColor,
 }
@@ -5673,6 +5892,20 @@ fn validate_scene_recipe(submission: &SceneSubmission<'_>) -> Result<Option<usiz
             "the shadow pass composes with material scene content only",
         ));
     }
+    if !submission.offscreen.is_empty()
+        && !matches!(
+            (submission.content, submission.output),
+            (
+                SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. },
+                SceneOutput::Postprocessed { .. }
+            )
+        )
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "offscreen passes compose with material scene content and postprocessed output only",
+        ));
+    }
     if submission.overlay.is_some()
         && !matches!(
             (submission.content, submission.output),
@@ -5739,6 +5972,66 @@ mod foreground_tests {
         assert!(validate_foreground_start(10, 9).is_ok());
         for (count, split) in [(0, 0), (1, 0), (1, 1), (3, 0), (3, 3), (3, usize::MAX)] {
             assert!(validate_foreground_start(count, split).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod offscreen_tests {
+    use super::{
+        ClearColor, DropQueue, GraphicsErrorKind, OffscreenPass, RenderTargets, RenderTexture,
+        ResourceKind, ResourceLease, SceneContent, SceneOutput, SceneSubmission, Texture,
+        TextureDimension, validate_scene_recipe,
+    };
+    use crate::resource::Arena;
+    use crate::{SurfaceExtent, SurfaceInfo};
+    use std::rc::Rc;
+
+    fn lease(arena: &mut Arena<()>, kind: ResourceKind) -> ResourceLease {
+        let mut lease = ResourceLease::new(
+            1,
+            arena.insert(()).expect("test identity"),
+            kind,
+            Rc::new(DropQueue::default()),
+        );
+        lease.disarm();
+        lease
+    }
+
+    #[test]
+    fn offscreen_passes_need_material_content_and_postprocessed_output() {
+        let mut arena = Arena::new("resource");
+        let target = RenderTexture {
+            texture: Texture {
+                lease: lease(&mut arena, ResourceKind::Texture),
+                dimension: TextureDimension::D2,
+                render_target: true,
+            },
+            width: 4,
+            height: 4,
+        };
+        let targets = RenderTargets {
+            lease: lease(&mut arena, ResourceKind::RenderTargets),
+            info: SurfaceInfo::initial(SurfaceExtent::new(4, 4)).expect("non-empty extent"),
+        };
+        let passes = [OffscreenPass {
+            target: &target,
+            records: &[],
+            clear: ClearColor::BLACK,
+        }];
+        let submission = |content, offscreen| SceneSubmission {
+            content,
+            output: SceneOutput::Direct(&targets),
+            shadow: None,
+            overlay: None,
+            offscreen,
+            clear: ClearColor::BLACK,
+        };
+        for content in [SceneContent::Material(&[]), SceneContent::Textured(&[])] {
+            let refused = validate_scene_recipe(&submission(content, &passes))
+                .expect_err("offscreen passes need postprocessed material scenes");
+            assert_eq!(refused.kind(), GraphicsErrorKind::Unsupported);
+            assert!(validate_scene_recipe(&submission(content, &[])).is_ok());
         }
     }
 }
@@ -6020,7 +6313,11 @@ mod cube_texture_slot_tests {
             Rc::new(DropQueue::default()),
         );
         lease.disarm();
-        Texture { lease, dimension }
+        Texture {
+            lease,
+            dimension,
+            render_target: false,
+        }
     }
 
     #[test]

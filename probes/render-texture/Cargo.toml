@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-render-texture"
+description = "Native validation of offscreen passes into render textures through the public API"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

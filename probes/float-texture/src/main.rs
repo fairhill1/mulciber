@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     storage: &[], instances: &[],
                 }]),
                 output: SceneOutput::Postprocessed { pipeline: &composite, targets: target, uniform: &[] },
-                shadow: None, overlay: None, clear: ClearColor::BLACK,
+                shadow: None, overlay: None, offscreen: &[], clear: ClearColor::BLACK,
             })?;
             // Exercise more submissions than the frame ring without a readback wait.
             if queued_frames < 8 { queued_frames += 1; return Ok(()); }

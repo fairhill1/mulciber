@@ -1,5 +1,6 @@
 mod bloom;
 mod capture;
+mod render_texture;
 mod scene_depth;
 mod streaming;
 #[cfg(feature = "native-validation")]
@@ -23,8 +24,9 @@ use crate::graphics::{
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GraphicsError,
-    MaterialRecord, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass, ShadowRecord,
-    ShadowSource, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
+    MaterialRecord, OffscreenPass, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass,
+    ShadowRecord, ShadowSource, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex,
+    VertexFormat,
 };
 
 use objc::{Object, Origin3, Region3, Size3};
@@ -244,6 +246,8 @@ struct TextureResource {
     /// The last queued replacement, tightly packed, base level first: every mip level, or level 0
     /// alone for the GPU to regenerate the rest.
     pending: Option<Vec<Vec<u8>>>,
+    /// Depth and multisample storage when the texture is a render texture.
+    render: Option<render_texture::RenderAttachments>,
 }
 
 struct PipelineResource {
@@ -855,6 +859,7 @@ impl<'window> TexturedSession<'window> {
                 slices: slices.len(),
                 generates_mips: generate_mips,
                 pending: None,
+                render: None,
             }) {
                 Ok(id) => Ok(id),
                 Err(failure) => {
@@ -1251,6 +1256,7 @@ impl<'window> TexturedSession<'window> {
             PreparedScene::Draws(draws),
             None,
             &[],
+            (&[], &[], &[]),
             postprocess_pipeline,
             target,
             uniform,
@@ -1324,6 +1330,7 @@ impl<'window> TexturedSession<'window> {
             PreparedScene::Instances,
             None,
             &[],
+            (&[], &[], &[]),
             postprocess_pipeline,
             target,
             uniform,
@@ -1414,6 +1421,8 @@ impl<'window> TexturedSession<'window> {
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         overlay: &[MaterialRecord<'_>],
+        offscreen: &[OffscreenPass<'_>],
+        offscreen_depth_clears: &[f32],
         foreground_start: Option<usize>,
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
@@ -1422,6 +1431,7 @@ impl<'window> TexturedSession<'window> {
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
         let postprocess_pipeline = self.postprocess_pipelines.index_of(postprocess_pipeline)?;
+        self.check_offscreen_targets(offscreen)?;
         let target = self.postprocess_targets.index_of(targets)?;
         self.check_sample_count(
             self.postprocess_targets[target].sample_count,
@@ -1441,12 +1451,26 @@ impl<'window> TexturedSession<'window> {
                 "postprocess targets were reclaimed by a newer surface generation",
             ));
         }
-        self.prepare_material_scene(records, overlay, shadow)?;
+        // Offscreen records stage after the overlay's, in pass order.
+        let staged_after_scene: Vec<MaterialRecord<'_>>;
+        let after_scene = if offscreen.is_empty() {
+            overlay
+        } else {
+            staged_after_scene = overlay
+                .iter()
+                .chain(offscreen.iter().flat_map(|pass| pass.records))
+                .copied()
+                .collect();
+            &staged_after_scene
+        };
+        self.prepare_material_scene(records, after_scene, shadow)?;
+        self.mark_offscreen_rendered(offscreen)?;
         self.encode_postprocessed_present(
             token,
             PreparedScene::Materials(records, foreground_start),
             shadow,
             overlay,
+            (offscreen, offscreen_depth_clears, after_scene),
             postprocess_pipeline,
             target,
             uniform,
@@ -2327,6 +2351,11 @@ impl<'window> TexturedSession<'window> {
         scene: PreparedScene<'_>,
         shadow: Option<&ShadowPrepass<'_>>,
         overlay: &[MaterialRecord<'_>],
+        (offscreen, offscreen_depth_clears, after_scene): (
+            &[OffscreenPass<'_>],
+            &[f32],
+            &[MaterialRecord<'_>],
+        ),
         postprocess_pipeline: usize,
         target: usize,
         uniform: &[u8],
@@ -2461,9 +2490,22 @@ impl<'window> TexturedSession<'window> {
                 self.encode_shadow_prepass(
                     command,
                     shadow,
-                    records.len() + overlay.len(),
-                    material_storage_len(records) + material_storage_len(overlay),
-                    material_instances_len(records) + material_instances_len(overlay),
+                    records.len() + after_scene.len(),
+                    material_storage_len(records) + material_storage_len(after_scene),
+                    material_instances_len(records) + material_instances_len(after_scene),
+                )?;
+            }
+            if let PreparedScene::Materials(records, _) = scene {
+                self.encode_offscreen_passes(
+                    command,
+                    offscreen,
+                    offscreen_depth_clears,
+                    [
+                        records.len() + overlay.len(),
+                        material_storage_len(records) + material_storage_len(overlay),
+                        transient_geometry_len(records) + transient_geometry_len(overlay),
+                        material_instances_len(records) + material_instances_len(overlay),
+                    ],
                 )?;
             }
             self.surface.attach_timing(scene_pass, super::timing::SCENE);
@@ -3116,8 +3158,14 @@ fn release_mesh(mesh: MeshResource) {
 #[allow(clippy::needless_pass_by_value)]
 fn release_texture(texture: TextureResource) {
     let TextureResource {
-        texture, sampler, ..
+        texture,
+        sampler,
+        render,
+        ..
     } = texture;
+    if let Some(render) = render {
+        render.release();
+    }
     unsafe {
         objc::void(sampler, c"release");
         objc::void(texture, c"release");

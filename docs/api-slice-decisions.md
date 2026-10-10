@@ -187,6 +187,23 @@ rejected by name; `mulciber-shader` records `texture_depth_2d_array` as interfac
 the unchanged container. Per-cascade resolutions, engine-side caster culling, and engine-side
 cascade selection or blending stay deliberately closed.
 
+## Render textures
+
+Decided 2026-10-10 as offscreen material passes into application-created color targets, opening
+the color render-to-texture the shadow decision above left closed, because a game's portraits
+need its own world materials drawn through a second camera into something its HUD samples.
+`Device::create_hdr_render_texture` creates a linear `RGBA16Float` color texture (1 through 8192
+texels per axis) with D32 depth and multisample color of its own at the session's sample count;
+`RenderTexture::texture` is an ordinary 2D `Texture` for material slots, refused by CPU updates.
+`SceneSubmission.offscreen` carries any number of `OffscreenPass`es (target, non-empty records,
+clear), encoded in slice order after the shadow prepass and before the scene pass, composing
+with material content and postprocessed output only, like the overlay. Their records are HDR
+material records that may sample this frame's shadow map but not scene depth or their own
+target; one target per submission. Sampling a render texture no pass has rendered is rejected by
+name before the frame token is consumed, as for shadow maps. Surface-format render textures,
+mip chains, load-preserving passes, readback, and engine-ordered pass graphs stay closed until
+a slice forces them. Recorded in the [render texture contract](render-textures.md).
+
 ## Render scale
 
 Decided as a property of postprocess targets rather than a per-frame toggle, reusing the

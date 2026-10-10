@@ -14,7 +14,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
 ## What it provides
 
 - **Graphics** (`mulciber`): device, queue, and surface ownership; textures, meshes, instancing,
-  and materials; shadow, HDR, bloom, volumetric, and postprocessing passes; native presentation,
+  and materials; shadow, offscreen render-texture, HDR, bloom, volumetric, and postprocessing
+  passes; native presentation,
   presented-frame capture, and GPU timing feedback.
 - **Windows and input** (`mulciber-platform`): native Win32, AppKit, Wayland, and X11
   implementations with window lifecycle, keyboard and pointer events, cursor capture, and fullscreen.
@@ -120,8 +121,8 @@ For commands, prerequisites, measured results, and coverage limits, see the
   [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md), and
   [cube textures](docs/cube-textures.md)
 - [Packed vertex formats](docs/vertex-formats.md),
-  [per-entry-point resource bindings](docs/per-entry-point-bindings.md), and
-  [frame capture](docs/frame-capture.md)
+  [per-entry-point resource bindings](docs/per-entry-point-bindings.md),
+  [frame capture](docs/frame-capture.md), and [render textures](docs/render-textures.md)
 - [Architecture](docs/architecture.md) and [backend contracts](docs/backend-contracts.md)
 - [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
   [API extraction plan](docs/api-extraction-plan.md)

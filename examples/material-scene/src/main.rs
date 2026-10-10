@@ -443,6 +443,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 cascades: &cascade_lists,
                             })),
                             overlay: None,
+                            offscreen: &[],
                             clear: CLEAR,
                         },
                     )?;

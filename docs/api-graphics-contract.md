@@ -210,6 +210,16 @@ opaque-composited surface. Abandoned or failed frames leave the request pending.
 without transfer-source swapchain usage answers `Unsupported`. See the
 [full contract](frame-capture.md).
 
+## Render textures
+
+`Device::create_hdr_render_texture(width, height)` creates a linear `RGBA16Float` color texture with
+depth and multisample storage of its own at the session's sample count. A `SceneSubmission`'s
+`offscreen` passes, each a target, HDR material records and a clear, render into render textures
+after any shadow prepass and before the scene pass; `RenderTexture::texture()` then feeds any
+material record's texture slot, that frame or later. Sampling one nothing has rendered, an
+offscreen record sampling its own target, and two passes on one target are refused before the
+frame is consumed. See the [full contract](render-textures.md).
+
 ## Block-compressed sampled uploads
 
 `Device::create_block_compressed_texture(BlockCompression, width, height, &[u8])` and its

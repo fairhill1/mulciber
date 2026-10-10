@@ -300,6 +300,19 @@ command buffer. On Linux / NVIDIA RTX 3060 Ti the `mulciber-frame-capture` probe
 (`R8G8B8A8_SRGB`) and XWayland (`B8G8R8A8_SRGB`) under Vulkan validation, including
 synchronization validation. Metal has not run. See the [contract](frame-capture.md).
 
+## Render textures
+
+**Metal native evidence, Vulkan unexercised:** `Device::create_hdr_render_texture` creates an
+`RGBA16Float` color texture with D32 depth and multisample color of its own, and a submission's
+offscreen passes render into it after the shadow prepass and before the scene pass. Metal encodes
+each pass in its own render encoder with memoryless multisample color and depth resolved into the
+private texture; Vulkan records each as a dynamic-rendering scope between barriers that order it
+after earlier sampling and leave the color in `SHADER_READ_ONLY_OPTIMAL` for later vertex and
+fragment reads. On an Apple M2 (macOS 15.8) the `mulciber-render-texture` probe matched four
+captures pixel by pixel under Metal API Validation at four samples and at one, after its
+refusals matched. The Vulkan path compiles and lints for Windows only. See the
+[contract](render-textures.md).
+
 ## Per-entry-point resource bindings (unreleased)
 
 **Vulkan native evidence, Metal MSL checked but unexercised:** `MULSHDR3` artifacts record the

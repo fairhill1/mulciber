@@ -226,7 +226,8 @@ scene pass.
 
 This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
 depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
-color render-to-texture beyond the postprocess recipe, load/store policy, compute, read-write
+color render-to-texture beyond the postprocess recipe and offscreen passes into HDR
+[render textures](render-textures.md), load/store policy, compute, read-write
 or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
 equations beyond the fixed mode set, bind-group abstractions, sampled color formats beyond RGBA8
 sRGB and RGBA8 UNORM, packed vertex formats, native mip generation, per-cascade map resolutions,

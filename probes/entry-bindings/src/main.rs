@@ -278,6 +278,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     },
                     shadow: None,
                     overlay: None,
+                    offscreen: &[],
                     clear: ClearColor::BLACK,
                 },
             )?;

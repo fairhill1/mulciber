@@ -120,6 +120,7 @@ impl Resources {
                 },
                 shadow: None,
                 overlay: None,
+                offscreen: &[],
                 clear: CLEAR,
             },
         )?;

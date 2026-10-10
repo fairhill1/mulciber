@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -834,6 +834,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mulciber-render-texture"
+version = "0.0.0"
+dependencies = [
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
 name = "mulciber-runtime"
 version = "0.5.6"
 dependencies = [
@@ -868,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-texture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bcdec_rs",
  "image",

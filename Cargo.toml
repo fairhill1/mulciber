@@ -29,6 +29,7 @@ members = [
     "probes/vertex-formats",
     "probes/entry-bindings",
     "probes/frame-capture",
+    "probes/render-texture",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

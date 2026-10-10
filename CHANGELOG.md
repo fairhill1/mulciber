@@ -2,6 +2,28 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Render textures (graphics 0.15.0, texture 0.3.0)
+
+`Device::create_hdr_render_texture(width, height)` makes a linear `RGBA16Float` color texture with
+D32 depth and multisample color of its own at the session's sample count; `destroy_render_texture`
+frees all three. `SceneSubmission::offscreen` takes `OffscreenPass`es (a target, HDR material
+records, a clear), drawn in order after any shadow prepass and before the scene pass, with
+material content and postprocessed output; `RenderTexture::texture()` then feeds any material
+record's texture slot that frame or later, so a game can draw something through its own world
+pipelines and a camera of its own once and show it on its HUD for as long as it stays the same.
+Sampling a render texture nothing has rendered, an offscreen record sampling its own target or
+scene depth, two passes on one target, and CPU updates of a render texture are refused by name.
+
+Breaking: `SceneSubmission` has a new public field; literals need `offscreen: &[]`.
+
+Tested on Metal (Apple M2, macOS 15.8) by the new `mulciber-render-texture` probe under Metal API
+Validation at four samples and one: the refusals, then four captured frames matched pixel by
+pixel (rendered and sampled in one frame, sampled again frames later, re-rendered while earlier
+frames still sampled it). The Vulkan path compiles and passes clippy for Windows but has not run.
+See [render textures](docs/render-textures.md).
+
+`mulciber-texture` 0.3.0 only moves to `mulciber` 0.15.0, whose types its recipes take.
+
 ## Skins and animations (model 0.2.0)
 
 `Model` has a `skeleton` and `animations` when its scene has a skin or an animation of its nodes;

@@ -622,3 +622,12 @@ attachment reuse after synchronization validation exposed both in the game menu.
 The [before/after evidence](swapchain-synchronization.md) is limited to this run;
 it does not advance a hardware-coverage gate or establish the reported RTX 4070
 device-loss cause.
+
+## Render textures (graphics 0.15.0)
+
+- [x] Offscreen material passes into application-created `RGBA16Float` render textures, sampled
+  like uploaded textures that frame and later ([contract](render-textures.md)). Metal passed the
+  `mulciber-render-texture` capture probe under API Validation at four samples and one on the
+  Apple M2 tier.
+- [ ] Run `mulciber-render-texture` under Vulkan validation (Windows and Linux), both sample
+  counts; the Vulkan path is compile- and lint-checked only.

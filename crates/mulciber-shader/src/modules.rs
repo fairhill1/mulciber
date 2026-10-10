@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use naga::valid::{Capabilities, ValidationFlags, Validator};
+use naga::valid::{ValidationFlags, Validator};
 use naga_oil::compose::preprocess::Preprocessor;
 use naga_oil::compose::{
     ComposableModuleDescriptor, Composer, ComposerError, ComposerErrorInner, ErrSource,
@@ -531,7 +531,7 @@ impl WgslShader<'_> {
         extra: &[(&str, &str)],
     ) -> Result<(naga::Module, naga::valid::ModuleInfo), ShaderBuildError> {
         // Validate exactly as compile_wgsl does; the composer's default adds capabilities.
-        let mut composer = Composer::default().with_capabilities(Capabilities::empty());
+        let mut composer = Composer::default().with_capabilities(crate::ACCEPTED_CAPABILITIES);
         for name in self.import_order(extra)? {
             let module = &self.modules.modules[name];
             let added = composer
@@ -569,7 +569,7 @@ impl WgslShader<'_> {
                 additional_imports: &additional_imports,
             })
             .map_err(|error| self.composition_error(&error, &composer))?;
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), crate::ACCEPTED_CAPABILITIES)
             .validate(&module)
             .map_err(|error| {
                 fail(format!(
@@ -820,6 +820,44 @@ struct Surface {
         assert_eq!(spirv(&module, &info).first().copied(), Some(0x0723_0203));
         let msl = metal_source(&module, &info).expect("MSL generation");
         assert!(msl.contains("[[texture(4)]]") && msl.contains("[[sampler(5)]]"));
+    }
+
+    /// Room reflection probes as a game binds them: every probe in one cube texture array, a
+    /// module sampling one by its array index at a level chosen from its mip count.
+    #[test]
+    fn an_imported_cube_texture_array_composes_and_records_its_kind() {
+        const PROBES: &str = "#define_import_path game::probes
+
+@group(0) @binding(12) var probes: texture_cube_array<f32>;
+@group(0) @binding(4) var probe_sampler: sampler;
+
+fn probe_specular(direction: vec3<f32>, probe: i32, roughness: f32) -> vec3<f32> {
+    let top = f32(textureNumLevels(probes) - 1u);
+    return textureSampleLevel(probes, probe_sampler, direction, probe, roughness * top).rgb;
+}
+";
+        const REFLECT: &str = "#import game::probes
+
+@fragment fn reflect_fragment(@location(0) normal: vec3<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(game::probes::probe_specular(normal, 3, 0.5), 1.0);
+}
+";
+        let mut modules = ShaderModules::new();
+        assert_eq!(
+            modules.add_source("shaders/probes.wgsl", PROBES).unwrap(),
+            "game::probes"
+        );
+        let (module, info) = compose(&modules.shader_source("shaders/reflect.wgsl", REFLECT));
+        let interface = shader_interface(&module, &info).expect("interface");
+        let records = &interface[interface.len() - 26..];
+        assert_eq!(records[4..8], 4_u32.to_le_bytes());
+        assert_eq!(records[8], crate::BINDING_SAMPLER);
+        assert_eq!(records[17..21], 12_u32.to_le_bytes());
+        assert_eq!(records[21], crate::BINDING_CUBE_TEXTURE_ARRAY);
+        assert_eq!(spirv(&module, &info).first().copied(), Some(0x0723_0203));
+        let msl = metal_source(&module, &info).expect("MSL generation");
+        assert!(msl.contains("texturecube_array<float"));
+        assert!(msl.contains("[[texture(12)]]") && msl.contains("[[sampler(4)]]"));
     }
 
     /// The composer rebuilds the module, so type order and therefore SPIR-V ids can differ from

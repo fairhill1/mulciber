@@ -195,7 +195,7 @@ struct TextureResource {
     extent: [u32; 2],
     format: SampledTextureFormat,
     mip_levels: u32,
-    /// Array layers: one for a 2D texture, six for a cube.
+    /// Array layers: one for a 2D texture, six for a cube, six per cube for a cube array.
     layers: u32,
     /// Whether the texture was created to generate its own mips: its image is also a transfer
     /// source, and a replacement may supply level 0 alone.
@@ -809,8 +809,49 @@ impl<'window> TexturedSession<'window> {
         self.create_sampled_texture(size, size, faces, format, ImageShape::Cube, false)
     }
 
-    /// Uploads one sampled image: a single 2D layer, or six cube faces in +X, -X, +Y, -Y, +Z,
-    /// -Z layer order. Every layer carries the same mip chain, already validated; with
+    /// Refuses cube texture arrays on an adapter without the `imageCubeArray` feature, which the
+    /// device enables wherever the adapter offers it.
+    pub(crate) fn require_cube_arrays(&self) -> Result<(), GraphicsError> {
+        if self.surface.device().adapter.image_cube_array {
+            return Ok(());
+        }
+        Err(GraphicsError::with_kind(
+            crate::GraphicsErrorKind::Unsupported,
+            "cube texture arrays require the adapter's imageCubeArray feature",
+        ))
+    }
+
+    /// Uploads validated cubes of one extent and chain length into one cube-compatible image
+    /// with six array layers per cube, layer `6 × cube + face`, behind a cube-array view.
+    pub(crate) fn create_cube_array_texture(
+        &mut self,
+        size: u32,
+        layers: &[[&[&[u8]]; 6]],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.require_cube_arrays()?;
+        let cubes = u32::try_from(layers.len())
+            .ok()
+            .filter(|cubes| cubes.checked_mul(6).is_some())
+            .ok_or_else(|| {
+                GraphicsError::with_kind(
+                    crate::GraphicsErrorKind::Unsupported,
+                    "cube texture array layer count exceeds Vulkan's range",
+                )
+            })?;
+        let slices: Vec<&[&[u8]]> = layers.iter().flatten().copied().collect();
+        self.create_sampled_texture(
+            size,
+            size,
+            &slices,
+            format,
+            ImageShape::CubeArray(cubes),
+            false,
+        )
+    }
+
+    /// Uploads one sampled image: a single 2D layer, or six cube faces per cube in +X, -X, +Y,
+    /// -Y, +Z, -Z layer order. Every layer carries the same mip chain, already validated; with
     /// `generate_mips` each carries level 0 alone and blits fill the rest of the full chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     fn create_sampled_texture(
@@ -5439,6 +5480,9 @@ pub(super) enum ImageShape {
     Single,
     /// Six square layers in +X, -X, +Y, -Y, +Z, -Z order behind a cube view.
     Cube,
+    /// This many cubes, six square layers each in the cube order, cube by cube, behind one
+    /// cube-array view. The count is nonzero and six times it fits `u32`.
+    CubeArray(u32),
 }
 
 impl ImageShape {
@@ -5446,13 +5490,16 @@ impl ImageShape {
         match self {
             Self::Single => 1,
             Self::Cube => 6,
+            Self::CubeArray(cubes) => cubes * 6,
         }
     }
 
     pub(super) const fn create_flags(self) -> vk::VkImageCreateFlags {
         match self {
             Self::Single => 0,
-            Self::Cube => vk::VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.cast_unsigned(),
+            Self::Cube | Self::CubeArray(_) => {
+                vk::VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.cast_unsigned()
+            }
         }
     }
 
@@ -5460,6 +5507,7 @@ impl ImageShape {
         match self {
             Self::Single => vk::VK_IMAGE_VIEW_TYPE_2D,
             Self::Cube => vk::VK_IMAGE_VIEW_TYPE_CUBE,
+            Self::CubeArray(_) => vk::VK_IMAGE_VIEW_TYPE_CUBE_ARRAY,
         }
     }
 }

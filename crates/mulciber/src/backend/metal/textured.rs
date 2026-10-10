@@ -19,7 +19,8 @@ use std::ffi::CString;
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
-    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
+    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, TextureDimension,
+    mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -84,6 +85,11 @@ const STORAGE_MODE_MEMORYLESS: usize = 3;
 const TEXTURE_TYPE_2D_ARRAY: usize = 3;
 const TEXTURE_TYPE_2D_MULTISAMPLE: usize = 4;
 const TEXTURE_TYPE_CUBE: usize = 5;
+const TEXTURE_TYPE_CUBE_ARRAY: usize = 6;
+/// `MTLGPUFamilyMetal3`, which Mulciber's `RGBA16Float` uploads and cube texture arrays require.
+const GPU_FAMILY_METAL3: usize = 5001;
+/// Metal's array-length ceiling for 2D and cube arrays, counted in slices (six per cube).
+const TEXTURE_ARRAY_SLICE_LIMIT: usize = 2048;
 const TEXTURE_USAGE_SHADER_READ: usize = 1;
 const TEXTURE_USAGE_RENDER_TARGET: usize = 4;
 const COMPARE_FUNCTION_LESS: usize = 1;
@@ -238,7 +244,7 @@ struct TextureResource {
     extent: [u32; 2],
     format: SampledTextureFormat,
     mip_levels: usize,
-    /// Slices: one for a 2D texture, six for a cube.
+    /// Slices: one for a 2D texture, six for a cube, six per cube for a cube array.
     slices: usize,
     /// Whether the texture was created to generate its own mips, so a replacement may supply
     /// level 0 alone.
@@ -671,7 +677,14 @@ impl<'window> TexturedSession<'window> {
         levels: &[&[u8]],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(width, height, &[levels], format, false)
+        self.create_sampled_texture(
+            width,
+            height,
+            &[levels],
+            format,
+            TextureDimension::D2,
+            false,
+        )
     }
 
     /// Uploads level 0 of a 2D texture and fills the rest of its full mip chain on the GPU.
@@ -682,7 +695,14 @@ impl<'window> TexturedSession<'window> {
         base: &[u8],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(width, height, &[&[base]], format, true)
+        self.create_sampled_texture(
+            width,
+            height,
+            &[&[base]],
+            format,
+            TextureDimension::D2,
+            true,
+        )
     }
 
     /// Uploads six validated square faces, each with the same mip chain length, into one
@@ -693,12 +713,57 @@ impl<'window> TexturedSession<'window> {
         faces: &[&[&[u8]]; 6],
         format: SampledTextureFormat,
     ) -> Result<ResourceId, GraphicsError> {
-        self.create_sampled_texture(size, size, faces, format, false)
+        self.create_sampled_texture(size, size, faces, format, TextureDimension::Cube, false)
     }
 
-    /// Uploads one sampled texture: a single 2D slice, or the six slices of a cube. Every
-    /// slice carries the same mip chain, already validated; with `generate_mips` each carries
-    /// level 0 alone and a blit encoder fills the rest of the full chain.
+    /// Refuses cube texture arrays on a device outside the Metal 3 family. Cube arrays are a
+    /// Mac2 and Apple4+ capability, which every Metal 3 device has; Mulciber gates on the family
+    /// it already requires for `RGBA16Float` sampling instead of a separate per-family table.
+    pub(crate) fn require_cube_arrays(&self) -> Result<(), GraphicsError> {
+        if unsafe { objc::bool_usize(self.surface.device, c"supportsFamily:", GPU_FAMILY_METAL3) } {
+            return Ok(());
+        }
+        Err(GraphicsError::with_kind(
+            crate::GraphicsErrorKind::Unsupported,
+            "cube texture arrays require a Metal 3 family device",
+        ))
+    }
+
+    /// Uploads validated cubes of one extent and chain length into one
+    /// `MTLTextureTypeCubeArray` texture, slice `6 × layer + face` per face in +X, -X, +Y, -Y,
+    /// +Z, -Z order.
+    pub(crate) fn create_cube_array_texture(
+        &mut self,
+        size: u32,
+        layers: &[[&[&[u8]]; 6]],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        self.require_cube_arrays()?;
+        let slices: Vec<&[&[u8]]> = layers.iter().flatten().copied().collect();
+        if slices.len() > TEXTURE_ARRAY_SLICE_LIMIT {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                format!(
+                    "a Metal cube texture array holds at most {} cubes, not {}",
+                    TEXTURE_ARRAY_SLICE_LIMIT / 6,
+                    layers.len()
+                ),
+            ));
+        }
+        self.create_sampled_texture(
+            size,
+            size,
+            &slices,
+            format,
+            TextureDimension::CubeArray,
+            false,
+        )
+    }
+
+    /// Uploads one sampled texture: a single 2D slice, the six slices of a cube, or six slices
+    /// per cube of a cube array. Every slice carries the same mip chain, already validated; with
+    /// `generate_mips` each carries level 0 alone and a blit encoder fills the rest of the full
+    /// chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
     fn create_sampled_texture(
         &mut self,
@@ -706,9 +771,10 @@ impl<'window> TexturedSession<'window> {
         height: u32,
         slices: &[&[&[u8]]],
         format: SampledTextureFormat,
+        dimension: TextureDimension,
         generate_mips: bool,
     ) -> Result<ResourceId, GraphicsError> {
-        let cube = slices.len() == 6;
+        let layered = dimension != TextureDimension::D2;
         let mip_levels = if generate_mips {
             crate::graphics::full_mip_chain_len(width, height)
         } else {
@@ -717,8 +783,9 @@ impl<'window> TexturedSession<'window> {
         // Metal 3's format table guarantees RGBA16Float filtering and 16384-wide 2D textures.
         // Metal has no Vulkan-style per-format query. Keep this exact-format request explicit.
         if format == SampledTextureFormat::Float16
-            && (!unsafe { objc::bool_usize(self.surface.device, c"supportsFamily:", 5001) }
-                || width > 16384
+            && (!unsafe {
+                objc::bool_usize(self.surface.device, c"supportsFamily:", GPU_FAMILY_METAL3)
+            } || width > 16384
                 || height > 16384)
         {
             return Err(GraphicsError::with_kind(
@@ -765,10 +832,18 @@ impl<'window> TexturedSession<'window> {
                 ),
                 "Metal sampled texture descriptor",
             )?;
-            if cube {
+            match dimension {
+                TextureDimension::D2 => {}
                 // A square 2D descriptor already counts the full chain; the cube type keeps
                 // `arrayLength` at one and gives the texture six slices.
-                objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_CUBE);
+                TextureDimension::Cube => {
+                    objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_CUBE);
+                }
+                // A cube array's `arrayLength` counts cubes; it has six slices per cube.
+                TextureDimension::CubeArray => {
+                    objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_CUBE_ARRAY);
+                    objc::void_usize(descriptor, c"setArrayLength:", slices.len() / 6);
+                }
             }
             // CPU replacement writes shared storage before the texture becomes bindable.
             objc::void_usize(descriptor, c"setStorageMode:", 0);
@@ -810,7 +885,7 @@ impl<'window> TexturedSession<'window> {
                     let bytes_per_row = format
                         .row_bytes(mip_extent(width, level_index))
                         .expect("validated texture row fits usize");
-                    if cube {
+                    if layered {
                         // A cube face is one slice; its image is the whole tightly packed
                         // level, which is what `bytesPerImage` measures.
                         objc::void_region_two_usizes_bytes_two_usizes(

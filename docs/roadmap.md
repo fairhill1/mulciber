@@ -631,3 +631,19 @@ device-loss cause.
   Apple M2 tier.
 - [ ] Run `mulciber-render-texture` under Vulkan validation (Windows and Linux), both sample
   counts; the Vulkan path is compile- and lint-checked only.
+
+## Cube texture arrays (graphics 0.16.0, shader 0.5.5)
+
+- [x] `RGBA16Float` cube texture arrays with a complete chain per face, bound through
+  `MaterialBinding::CubeTextureArray` and WGSL `texture_cube_array<f32>`, with layer- and
+  face-naming refusals and an `Unsupported` capability gate on texture and pipeline creation
+  ([contract](cube-textures.md#cube-texture-arrays)). Metal passed the `mulciber-cube-array-texture`
+  readback probe (110 cases) under API Validation on the Apple M2 tier, and `mulciber-cube-texture`
+  passed on Metal for the first time.
+- [ ] Run `mulciber-cube-array-texture` and `mulciber-cube-texture` under Vulkan validation on
+  Windows and Linux; the Vulkan cube-array path and its `imageCubeArray` enablement are compile- and
+  lint-checked only.
+- [ ] Physically reach the `Unsupported` refusal on a device without cube-array sampling (Vulkan
+  without `imageCubeArray`, or Metal outside the Metal 3 family); none of the available machines
+  lacks it.
+- [ ] Other formats (RGBA8, BC) and single-level arrays wait for a consumer.

@@ -791,3 +791,14 @@ transition and cross-frame direct-depth hazards on RTX 3060 Ti. The patched
 menu and subsequent map/dialogue test no longer report those hazards. The OBS layer API warning remains;
 RTX 4070 device-loss resolution is not established. See
 [the exact configuration, source correction, and evidence](swapchain-synchronization.md).
+
+## Cube texture arrays (graphics 0.16.0, pending)
+
+The Vulkan path (an `imageCubeArray`-gated, cube-compatible image of six layers per cube behind a
+`VK_IMAGE_VIEW_TYPE_CUBE_ARRAY` view) has Windows cross-target check and Clippy evidence from macOS
+only; it has not run on this platform. Run `cargo run -p mulciber-cube-array-texture` with the
+ordinary required Vulkan validation layer: all 110 readback cases must pass and every refusal must
+fire without warning/error callbacks. Record the adapter's `imageCubeArray` support; an adapter
+without it should refuse the first upload with `Unsupported` instead, and that refusal is itself
+unexercised. Run `mulciber-cube-texture` too, since both share the sampled-image path. This is
+readback evidence only. See the [contract](cube-textures.md#cube-texture-arrays).

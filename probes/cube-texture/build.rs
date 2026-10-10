@@ -1,9 +1,9 @@
 //! Select checked-in offline shaders for the native cube texture probe.
 //!
-//! The composite pass is the float-texture probe's. The sample shader's Metal artifact has not
-//! been generated yet (it needs Xcode's `metal` tools): a macOS build without it gets an empty
-//! placeholder and a warning, so workspace checks still pass, and the probe reports the missing
-//! artifact at startup instead of rendering.
+//! The composite pass is the float-texture probe's. The sample shader's Metal artifact needs
+//! Xcode's `metal` tools to regenerate: a macOS build without it gets an empty placeholder and a
+//! warning, so workspace checks still pass, and the probe reports the missing artifact at startup
+//! instead of rendering.
 use std::{env, fs, path::Path, path::PathBuf};
 fn main() {
     let flavor = if env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {

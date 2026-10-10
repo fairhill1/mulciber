@@ -1176,3 +1176,21 @@ full/half/full transitions and API conformance passes 101 cases with Metal valid
 uses FIFO relaxed or capability-gated relative presentation timing; the new paths are compile
 checked, not physically validated here. VRR and multi-display evidence remain outstanding.
 See [behavior, reproduction and limits](frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).
+
+## Cube textures and cube texture arrays (graphics 0.16.0)
+
+On 2026-10-10, on the Apple M2 / macOS 15.8 machine (Metal 3), under `MTL_DEBUG_LAYER=1`:
+
+- `MTL_DEBUG_LAYER=1 cargo run -p mulciber-cube-array-texture` printed the Metal selection at one
+  sample, the six refusals (no layers; a face without levels in cube 1, named `cube array layer 1:
+  cube face -Z`; a NaN texel, named `cube array layer 0: cube face +Y`; a float update; a
+  `CubeTexture` declaration of the cube-array binding; a single cube in the cube-array slot), then
+  110 readback cases within two half ULPs: every face centre, cube and level of a three-cube 4×4
+  array, every texel centre of a two-cube 2×2 array, a 1×1 array from binary16 bits, and the level
+  and cube counts the shader reads. Exit status 0, no Metal API Validation messages.
+- `MTL_DEBUG_LAYER=1 cargo run -p mulciber-cube-texture`, its Metal artifact generated for this run,
+  passed its 72 cases and five refusals, the first Metal run of single cube textures.
+
+Logs: `validation-artifacts/cube-array-texture/`. This is readback evidence from one GPU, not visual
+or broader hardware evidence; the `Unsupported` refusal for devices outside the Metal 3 family
+cannot be reached here. See the [contract](cube-textures.md#cube-texture-arrays).

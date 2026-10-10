@@ -335,15 +335,33 @@ the [contract](vertex-formats.md).
 
 ## Cube textures (unreleased)
 
-**Vulkan native evidence, Metal unexercised:** cube uploads in every 2D sampled format reach the
+**Vulkan and Metal native evidence:** cube uploads in every 2D sampled format reach the
 existing `Texture` with `TextureDimension::Cube` and bind through `MaterialBinding::CubeTexture`.
 Vulkan uses a `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` image with six layers behind a
 `VK_IMAGE_VIEW_TYPE_CUBE` view and one staged copy with a region per face and level; Metal uses
 `MTLTextureTypeCube` with a per-slice, per-level `replaceRegion`. On Linux / NVIDIA RTX 3060 Ti the
 `mulciber-cube-texture` probe passed 72 readback cases (face order, in-face orientation, RGBA8 sRGB
-and BC1 per-face mips, RGBA16Float) under Vulkan validation. Metal compiles for macOS but has not
-run, and the probe's Metal shader artifact is not generated yet. No viability gate is advanced. See
-the [contract](cube-textures.md).
+and BC1 per-face mips, RGBA16Float) under Vulkan validation, and on 2026-10-10 the same 72 cases
+passed on an Apple M2 under Metal API Validation, its Metal shader artifact generated for that run.
+No viability gate is advanced. See the [contract](cube-textures.md).
+
+## Cube texture arrays (graphics 0.16.0, shader 0.5.5)
+
+**Metal native evidence, Vulkan unexercised:** `RGBA16Float` cube texture arrays with a complete
+chain per face reach `Texture` with `TextureDimension::CubeArray` and bind through
+`MaterialBinding::CubeTextureArray` (WGSL `texture_cube_array<f32>`, interface kind 9, which
+`mulciber-shader` 0.5.5 validates with Naga's `CUBE_ARRAY_TEXTURES` capability). Vulkan enables
+the optional `imageCubeArray` core feature wherever the adapter reports it and otherwise refuses
+cube-array uploads and pipelines with `Unsupported`; it uses one cube-compatible image of `6 ×
+layers` layers behind a `VK_IMAGE_VIEW_TYPE_CUBE_ARRAY` view and the cube path's single staged copy.
+Metal gates on the Metal 3 family and uses `MTLTextureTypeCubeArray` with `arrayLength` set to the
+cube count and a `replaceRegion` per slice `6 × cube + face` and level. On the Apple M2 under Metal
+API Validation the new `mulciber-cube-array-texture` probe passed 110 readback cases (cube, face,
+level and in-face orientation selection, a `_from_bits` upload, `textureNumLevels` and
+`textureNumLayers`) and six refusals, and `mulciber-cube-texture` passed its 72 cases on Metal for
+the first time. Vulkan compiles and passes Clippy for Windows and Linux but has not run, and neither
+backend's `Unsupported` refusal has been physically reached. No viability gate is advanced. See the
+[contract](cube-textures.md#cube-texture-arrays).
 
 ## Growable Vulkan descriptor pools (0.13.14)
 

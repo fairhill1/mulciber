@@ -119,7 +119,7 @@ For commands, prerequisites, measured results, and coverage limits, see the
   [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
   [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md), and
-  [cube textures](docs/cube-textures.md)
+  [cube textures and cube texture arrays](docs/cube-textures.md)
 - [Packed vertex formats](docs/vertex-formats.md),
   [per-entry-point resource bindings](docs/per-entry-point-bindings.md),
   [frame capture](docs/frame-capture.md), and [render textures](docs/render-textures.md)

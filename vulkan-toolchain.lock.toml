@@ -95,7 +95,16 @@ target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.4"
 wgsl_sha256 = "4ebc04abde61eca1bf15c4577efd091d8247751bd416c0f878c4a3c6019a2809"
 vulkan_artifact_sha256 = "816a702ae6d3fd04b04d72dd3f06cb5e07426fc022afc2a909c13862522d8a8f"
-# The Metal artifact is not generated yet; see docs/cube-textures.md.
+# Generated on macOS with Xcode's metal tools beside the cube texture array probe's.
+metal_artifact_sha256 = "6b643794ddd0621b70699e00a35058c203ceb971337fcc02e75209c2d726b1d7"
+
+[cube_array_texture_sample_shader]
+compiler = "naga 30.0.1"
+target_environment = "vulkan1.3"
+spirv_validator = "SPIRV-Tools v2026.2"
+wgsl_sha256 = "4baae1e4049145806b4ca996a475d6b4dd9d8dae2ee03610a0fce0c049cdae00"
+vulkan_artifact_sha256 = "27aa990a0cc893bbb5f042b6d3fee897cddd36dff4a1f6c69c32c28274eedde5"
+metal_artifact_sha256 = "044ce55050a46ebd30e798dc8fac1a6477c1eb3efb227d314207de4b9c0860a9"
 
 [vertex_formats_fetch_shader]
 compiler = "naga 30.0.1"

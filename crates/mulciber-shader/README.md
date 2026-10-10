@@ -17,7 +17,8 @@ fail instead of requesting a second user-authored source.
 Each artifact (`MULSHDR4` container) records the module's interface — per entry point its
 stage, name, vertex-input locations with formats, and the bindings it uses (directly or through
 called functions), plus every binding's kind: uniform,
-texture, cube texture, sampler, depth texture, depth-texture array, comparison sampler, and
+texture, cube texture, cube texture array, sampler, depth texture, depth-texture array, comparison
+sampler, and
 read-only storage with its creation-fixed byte size. Every uniform and storage binding also
 records its memory layout: the WGSL type name and, for a struct, each member's name, byte offset,
 size and type. The paired `mulciber` crate validates pipeline
@@ -387,4 +388,10 @@ reject this binding kind rather than treating it as a single-sample texture.
 
 `texture_cube<f32>` records its own binding kind, which `MaterialBinding::CubeTexture` declares.
 Mulciber releases before cube textures reject artifacts that contain it rather than treating it as a
-2D texture. Arrayed cubes, depth cubes and integer cubes have no proven mapping and fail to compile.
+2D texture. `texture_cube_array<f32>` (since 0.5.5) records another, which
+`MaterialBinding::CubeTextureArray` declares and Mulciber 0.16.0 or newer reads; older runtimes
+reject the artifact. The compiler validates with Naga's `CUBE_ARRAY_TEXTURES` capability, part of
+WebGPU's core profile, so a module or an imported module may declare one and sample it with
+`textureSampleLevel(map, sampler, direction, layer, lod)`; its SPIR-V declares `SampledCubeArray`,
+which the Vulkan runtime requires the device's `imageCubeArray` feature for. Depth cubes, depth cube
+arrays and integer cubes have no proven mapping and fail to compile.

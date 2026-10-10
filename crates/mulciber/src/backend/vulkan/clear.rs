@@ -1489,6 +1489,10 @@ struct Adapter {
     /// Whether the adapter samples BC-family block-compressed images. Optional: an adapter
     /// without it is still selected and refuses only the compressed uploads themselves.
     texture_compression_bc: bool,
+    /// Whether the adapter samples cube-array image views (`imageCubeArray`). Optional: an
+    /// adapter without it is still selected and refuses only cube texture arrays and pipelines
+    /// declaring them.
+    image_cube_array: bool,
 }
 
 struct DeviceFns {
@@ -1770,9 +1774,11 @@ impl Device {
         let extensions = enabled_device_extensions(&adapter);
         // Core features ride on `pEnabledFeatures`, which the specification allows beside
         // the versioned feature structs on `pNext` as long as no `VkPhysicalDeviceFeatures2`
-        // is chained. BC sampling is enabled only where the adapter reported it.
+        // is chained. BC sampling and cube-array views are enabled only where the adapter
+        // reported them.
         let core_features = vk::VkPhysicalDeviceFeatures {
             textureCompressionBC: vk::VkBool32::from(adapter.texture_compression_bc),
+            imageCubeArray: vk::VkBool32::from(adapter.image_cube_array),
             ..Default::default()
         };
         let info = vk::VkDeviceCreateInfo {
@@ -2025,6 +2031,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                             && maintenance1_features.swapchainMaintenance1 == vk::VK_TRUE,
                         texture_compression_bc: features.features.textureCompressionBC
                             == vk::VK_TRUE,
+                        image_cube_array: features.features.imageCubeArray == vk::VK_TRUE,
                     },
                 ));
                 break;

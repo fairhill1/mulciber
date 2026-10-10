@@ -239,6 +239,15 @@ They return the existing `Texture` with `dimension() == TextureDimension::Cube`,
 through `MaterialBinding::CubeTexture` and WGSL `texture_cube<f32>`. See the
 [full contract](cube-textures.md).
 
+`create_rgba16_float_cube_array_texture_with_mips(size, &[[&[&[[f32; 4]]]; 6]])` and its
+`_from_bits` peer upload one or more such cubes, each with a complete chain per face, as one
+`Texture` with `dimension() == TextureDimension::CubeArray`. It binds only through
+`MaterialBinding::CubeTextureArray` and WGSL `texture_cube_array<f32>`, sampled with
+`textureSampleLevel(map, sampler, direction, layer, lod)`. Diagnostics name the layer and face; no
+layers is `InvalidRequest`. Creating the texture or a pipeline declaring the slot is `Unsupported`
+without Vulkan's `imageCubeArray` feature or Metal's Metal 3 family. See the
+[contract](cube-textures.md#cube-texture-arrays).
+
 ## Linear floating-point sampled uploads
 
 `Device::create_rgba16_float_texture(width, height, &[[f32; 4]])` and its

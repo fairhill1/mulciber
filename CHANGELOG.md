@@ -2,6 +2,36 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Cube texture arrays (graphics 0.16.0, shader 0.5.5, texture 0.4.0)
+
+`Device::create_rgba16_float_cube_array_texture_with_mips(size, &[[&[&[[f32; 4]]]; 6]])` and its
+`_from_bits` peer upload one or more `RGBA16Float` cubes of one extent, each face a complete mip
+chain in the single cube's face order and orientation, as one `Texture` whose `dimension()` is the
+new `TextureDimension::CubeArray`. A material pipeline declares it with
+`MaterialBinding::CubeTextureArray { binding }` and samples WGSL `texture_cube_array<f32>` with
+`textureSampleLevel(map, sampler, direction, layer, lod)`, so a game can bind every room's
+reflection probe in one draw. Diagnostics name the layer and face (`cube array layer 1: cube face
+-Z: ...`); no layers is refused; pipeline creation refuses declarations that disagree with the
+artifact and submission textures of another dimension, as for cubes. Creating the texture or a
+pipeline declaring the slot is `Unsupported` without Vulkan's `imageCubeArray` feature, which the
+device now enables wherever the adapter offers it, or outside Metal's Metal 3 family.
+
+`mulciber-shader` 0.5.5 validates with Naga's `CUBE_ARRAY_TEXTURES` capability (in `compile_wgsl`,
+module composition and host fields) and records `texture_cube_array<f32>` as binding kind 9,
+reflected as `ShaderBindingKind::CubeTextureArray`; Mulciber before 0.16.0 rejects artifacts that
+contain it.
+
+Breaking: `TextureDimension` has a new variant; exhaustive matches need a `CubeArray` arm.
+
+Tested on Metal (Apple M2, macOS 15.8) by the new `mulciber-cube-array-texture` probe under Metal
+API Validation: 110 readback cases (every cube, face and level of a three-cube array, in-face
+orientation in both cubes of a second, a `_from_bits` upload, the level and cube counts the shader
+reads) and six refusals. `mulciber-cube-texture` ran on Metal for the first time and passed its 72
+cases. The Vulkan path compiles and passes Clippy for Windows and Linux but has not run. See
+[cube texture arrays](docs/cube-textures.md#cube-texture-arrays).
+
+`mulciber-texture` 0.4.0 only moves to `mulciber` 0.16.0, whose types its recipes take.
+
 ## Render textures (graphics 0.15.0, texture 0.3.0)
 
 `Device::create_hdr_render_texture(width, height)` makes a linear `RGBA16Float` color texture with

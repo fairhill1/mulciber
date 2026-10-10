@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-cube-array-texture"
+description = "Native validation of sampled RGBA16Float cube texture arrays: layer, face and level selection"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

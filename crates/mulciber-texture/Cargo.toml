@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-texture"
-version = "0.3.0"
+version = "0.4.0"
 description = "Texture baking for Mulciber games: mip chains, channel packing, BC7 and KTX2, with a source fallback"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"
@@ -27,7 +27,7 @@ required-features = ["encode"]
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 intel_tex_2 = { version = "0.5.0", optional = true }
 ktx2 = "0.5.0"
-mulciber = { version = "0.15.0", path = "../mulciber" }
+mulciber = { version = "0.16.0", path = "../mulciber" }
 
 [dev-dependencies]
 bcdec_rs = "0.2.0"

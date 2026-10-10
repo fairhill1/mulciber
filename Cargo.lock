@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -718,6 +718,14 @@ name = "mulciber-cube"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "mulciber",
+ "mulciber-platform",
+]
+
+[[package]]
+name = "mulciber-cube-array-texture"
+version = "0.0.0"
+dependencies = [
  "mulciber",
  "mulciber-platform",
 ]
@@ -859,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-shader"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "naga",
  "naga_oil",
@@ -876,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-texture"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bcdec_rs",
  "image",

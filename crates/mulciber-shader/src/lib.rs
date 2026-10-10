@@ -1,7 +1,8 @@
 //! Offline compilation from one WGSL source to Mulciber's native shader artifact.
 //!
-//! The compiler intentionally accepts Naga's baseline WebGPU capabilities only. Advanced shader
-//! capabilities remain separate until each native output path has equivalent validation evidence.
+//! The compiler intentionally accepts Naga's baseline WebGPU capabilities only, plus arrayed cube
+//! textures, which WebGPU's core profile includes. Advanced shader capabilities remain separate until
+//! each native output path has equivalent validation evidence.
 //!
 //! The same source can also answer host questions: [`compile_host_field`] generates a Rust
 //! evaluator for designated WGSL functions, so a simulation can ask what the shader draws without
@@ -49,6 +50,12 @@ const BINDING_COMPARISON_SAMPLER: u8 = 5;
 const BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 const BINDING_MULTISAMPLED_DEPTH: u8 = 7;
 const BINDING_CUBE_TEXTURE: u8 = 8;
+const BINDING_CUBE_TEXTURE_ARRAY: u8 = 9;
+
+/// The Naga capabilities beyond the empty set the compiler validates with: arrayed cube textures,
+/// which WebGPU's core profile includes. Each native output has a proven mapping for them
+/// (`texture_cube_array<f32>` only); the runtime requires the device feature.
+pub(crate) const ACCEPTED_CAPABILITIES: Capabilities = Capabilities::CUBE_ARRAY_TEXTURES;
 
 /// Native shader output selected for an application target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,7 +117,7 @@ pub fn compile_wgsl(
         .map_err(|error| fail(format!("read {}: {error}", source_path.display())))?;
     let module = naga::front::wgsl::parse_str(&source)
         .map_err(|error| fail(format!("WGSL parse: {}", error.emit_to_string(&source))))?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), ACCEPTED_CAPABILITIES)
         .validate(&module)
         .map_err(|error| {
             fail(format!(
@@ -175,7 +182,7 @@ pub fn compile_host_field(
         .map_err(|error| fail(format!("read {}: {error}", source_path.display())))?;
     let module = naga::front::wgsl::parse_str(&text)
         .map_err(|error| fail(format!("WGSL parse: {}", error.emit_to_string(&text))))?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), ACCEPTED_CAPABILITIES)
         .validate(&module)
         .map_err(|error| fail(format!("WGSL validation: {}", error.emit_to_string(&text))))?;
     let label = source_path.file_name().map_or_else(
@@ -330,14 +337,21 @@ fn module_bindings(
                 AddressSpace::Handle,
                 TypeInner::Image {
                     dim: naga::ImageDimension::Cube,
-                    arrayed: false,
+                    arrayed,
                     class:
                         naga::ImageClass::Sampled {
                             kind: ScalarKind::Float,
                             multi: false,
                         },
                 },
-            ) => (BINDING_CUBE_TEXTURE, 0),
+            ) => (
+                if *arrayed {
+                    BINDING_CUBE_TEXTURE_ARRAY
+                } else {
+                    BINDING_CUBE_TEXTURE
+                },
+                0,
+            ),
             (
                 AddressSpace::Handle,
                 TypeInner::Image {
@@ -942,11 +956,80 @@ mod tests {
     }
 
     #[test]
-    fn arrayed_and_depth_cube_textures_are_rejected() {
+    fn cube_texture_array_records_its_own_kind_and_metal_texture_slot() {
+        let source = "
+            @group(0) @binding(12) var probes: texture_cube_array<f32>;
+            @group(0) @binding(4) var probe_sampler: sampler;
+            @fragment fn reflect_fragment() -> @location(0) vec4<f32> {
+                return textureSampleLevel(
+                    probes,
+                    probe_sampler,
+                    vec3<f32>(1.0, 0.0, 0.0),
+                    2,
+                    0.0,
+                );
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("cube array WGSL parses");
+        // Without the capability the compiler adds, Naga refuses the type itself.
+        assert!(
+            Validator::new(ValidationFlags::all(), Capabilities::empty())
+                .validate(&module)
+                .is_err()
+        );
+        let info = Validator::new(ValidationFlags::all(), super::ACCEPTED_CAPABILITIES)
+            .validate(&module)
+            .expect("cube array WGSL validates with the accepted capabilities");
+        let interface = shader_interface(&module, &info).expect("cube array interface");
+        // Two binding records trail the interface, sorted by binding: the sampler at 4 (kind 2),
+        // then the cube array at 12 (kind 9), each with a zero byte size.
+        let records = &interface[interface.len() - 26..];
+        assert_eq!(records[4..8], 4_u32.to_le_bytes());
+        assert_eq!(records[8], super::BINDING_SAMPLER);
+        assert_eq!(records[17..21], 12_u32.to_le_bytes());
+        assert_eq!(records[21], super::BINDING_CUBE_TEXTURE_ARRAY);
+        let resources = metal_resources(&module).expect("Metal mapping");
+        assert!(
+            resources
+                .values()
+                .any(|target| target.texture == Some(12) && target.sampler.is_none())
+        );
+        let words = naga::back::spv::write_vec(
+            &module,
+            &info,
+            &naga::back::spv::Options {
+                lang_version: (1, 4),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("cube array sampling emits SPIR-V");
+        assert_eq!(words.first().copied(), Some(0x0723_0203));
+        // SPIR-V declares the SampledCubeArray capability (`OpCapability`, opcode 17 in a
+        // two-word instruction, operand 45), which the Vulkan runtime gates on the device's
+        // imageCubeArray feature.
+        assert!(words.windows(2).any(|pair| pair == [0x0002_0011, 45]));
+        let options = naga::back::msl::Options {
+            lang_version: (3, 1),
+            ..Default::default()
+        };
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &options,
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .expect("cube array sampling emits MSL");
+        assert!(msl.contains("texturecube_array<float"));
+    }
+
+    #[test]
+    fn depth_and_integer_cube_textures_are_rejected() {
         for declaration in [
-            "@group(0) @binding(0) var map: texture_cube_array<f32>;",
             "@group(0) @binding(0) var map: texture_depth_cube;",
+            "@group(0) @binding(0) var map: texture_depth_cube_array;",
             "@group(0) @binding(0) var map: texture_cube<u32>;",
+            "@group(0) @binding(0) var map: texture_cube_array<i32>;",
         ] {
             let source = std::format!(
                 "{declaration}
@@ -955,8 +1038,7 @@ mod tests {
                 }}"
             );
             let module = naga::front::wgsl::parse_str(&source).expect("WGSL parses");
-            // Cube arrays also need a capability the compiler never enables; validate with every
-            // capability so the interface refusal itself is what is tested.
+            // Validate with every capability so the interface refusal itself is what is tested.
             let info = Validator::new(ValidationFlags::all(), Capabilities::all())
                 .validate(&module)
                 .expect("WGSL validates");

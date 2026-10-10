@@ -26,6 +26,7 @@ members = [
     "probes/api-conformance",
     "probes/float-texture",
     "probes/cube-texture",
+    "probes/cube-array-texture",
     "probes/vertex-formats",
     "probes/entry-bindings",
     "probes/frame-capture",

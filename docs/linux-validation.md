@@ -1062,6 +1062,13 @@ Run `cargo run -p mulciber-cube-texture` with the ordinary required Vulkan valid
 from one GPU; it is not visual, lifecycle or broader hardware evidence. See the
 [contract](cube-textures.md).
 
+## Cube texture arrays (graphics 0.16.0, pending)
+
+Run `cargo run -p mulciber-cube-array-texture` with the ordinary required Vulkan validation layer;
+all 110 readback cases must pass and every refusal must fire without warning/error callbacks. It
+has not run on Linux; the Vulkan path is cross-target Clippy-checked from macOS only. See the
+[contract](cube-textures.md#cube-texture-arrays).
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 Workspace format/check/Clippy/tests pass on this platform. The growth path was reached by

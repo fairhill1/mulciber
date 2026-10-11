@@ -130,6 +130,15 @@ Linux but hasn't run on a device yet.
 
 `mulciber-texture` 0.2.0 only moves to `mulciber` 0.14.0, whose types its recipes take.
 
+## Probes (net 0.1.2)
+
+A server answers a `Probe` packet from anyone, connected or not, at once: `probe(protocol, token)`
+builds one (17 bytes) and `probe_answer(bytes)` reads the answer, which carries the token back and
+whether the server runs the same protocol. A server list sends one to each server it shows and
+times the answer, for its ping, without joining. The answer is 10 bytes and the server keeps
+nothing for it, so a forged source address gets a third party less than the forger sent. Full
+servers answer too. Clients ignore the new packet kinds.
+
 ## A signal no longer stops the UDP transport (net 0.1.1)
 
 `UdpTransport`'s receiving thread treated an interrupted wait (`EINTR`: a signal arriving, such as a

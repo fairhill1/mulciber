@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use mulciber_net::{
     Channel, Client, ClientId, ClientState, Conditioned, Conditions, Config, DisconnectReason,
-    MemoryAddress, MemoryNetwork, MemoryTransport, Server, ServerConfig, ServerEvent, Transport,
-    UdpTransport,
+    MemoryAddress, MemoryNetwork, MemoryTransport, ProbeAnswer, Server, ServerConfig, ServerEvent,
+    Transport, UdpTransport, probe, probe_answer,
 };
 
 const CONFIG: Config = Config::new(0x5348_4950);
@@ -472,4 +472,62 @@ fn over_real_udp_sockets() {
     let reply = reply.expect("a reply within five seconds");
     assert_eq!(reply.data.len(), 3005);
     assert!(reply.data.ends_with(b" back"));
+}
+
+#[test]
+fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
+    let network = MemoryNetwork::new();
+    let mut server = setup(&network, 1);
+    let mut now = Instant::now();
+    let mut client =
+        Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
+    for _ in 0..3 {
+        now += TICK;
+        tick(now, &mut server, &mut [&mut client]);
+    }
+    let id = connected(&mut server);
+    // A full server answers too, saying whether the asker runs its protocol.
+    let mut asker = network.endpoint(MemoryAddress(3));
+    let mut buffer = [0; 1300];
+    for (token, protocol, same) in [(1, CONFIG.protocol, true), (2, 99, false)] {
+        asker.send(now, SERVER, &probe(protocol, token)).unwrap();
+        server.update(now).unwrap();
+        let received = asker.receive(now, &mut buffer).unwrap().unwrap();
+        assert_eq!(received.from, SERVER);
+        assert_eq!(
+            probe_answer(&buffer[..received.length]),
+            Some(ProbeAnswer {
+                token,
+                same_protocol: same
+            })
+        );
+    }
+    assert_eq!(events(&mut server), []);
+    assert_eq!(server.clients().collect::<Vec<_>>(), [id]);
+    // The client doesn't mind its server answering others.
+    now += TICK;
+    tick(now, &mut server, &mut [&mut client]);
+    assert_eq!(client.state(), ClientState::Connected);
+}
+
+#[test]
+fn a_probe_over_a_real_socket() {
+    let transport = UdpTransport::bind("127.0.0.1:0").unwrap();
+    let address = transport.local_address().unwrap();
+    let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4));
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    socket.set_nonblocking(true).unwrap();
+    socket.send_to(&probe(CONFIG.protocol, 9), address).unwrap();
+    let start = Instant::now();
+    let mut buffer = [0; 64];
+    let answer = loop {
+        server.update(Instant::now()).unwrap();
+        if let Ok((length, from)) = socket.recv_from(&mut buffer) {
+            assert_eq!(from, address);
+            break probe_answer(&buffer[..length]);
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "no answer");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(answer.map(|a| a.token), Some(9));
 }

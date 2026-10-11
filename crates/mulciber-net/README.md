@@ -9,6 +9,8 @@ graphics. The model is Quake 3's and Source's; see `docs/net-contract.md` in the
   split into fragments and resent until acknowledged.
 - **Unreliable messages** go out once; one larger than a packet arrives whole or not at all.
 - **Acks** on every packet give each side its round-trip time and packet loss.
+- **Probes**: a server answers anyone's probe at once, so a server list can show each server's
+  ping without joining it.
 - **Transports**: real UDP sockets, an in-process network, and a conditioner that adds latency,
   jitter, loss and duplication to either.
 - Every call takes the caller's `now`, so a test steps a fake clock through minutes in milliseconds.

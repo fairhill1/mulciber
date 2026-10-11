@@ -15,6 +15,8 @@
 //!   packet carrying them is acknowledged, and delivered once each, in the order they were sent.
 //! - **Unreliable messages** ([`Channel::Unreliable`]) go out once, in the next flush. One larger
 //!   than a packet is split into fragments and delivered only if every fragment arrives.
+//! - **Probes** ([`probe`]) are answered by a server to anyone, connected or not, so a server list
+//!   can time each server without joining it.
 //! - **Time** is the caller's: every call that does anything takes `now`, so the same code runs in
 //!   a game loop and in a test stepping a fake clock.
 //!
@@ -53,6 +55,7 @@ mod conditioner;
 mod connection;
 mod memory;
 mod packet;
+mod probe;
 mod random;
 mod sequence;
 mod server;
@@ -64,6 +67,7 @@ pub use client::{Client, ClientState};
 pub use conditioner::{Conditioned, Conditions};
 pub use connection::Stats;
 pub use memory::{MemoryAddress, MemoryNetwork, MemoryTransport};
+pub use probe::{PROBE_SIZE, ProbeAnswer, probe, probe_answer};
 pub use server::{ClientId, Server, ServerConfig, ServerEvent};
 pub use transport::{Received, Transport, UdpTransport};
 

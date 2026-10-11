@@ -9,7 +9,7 @@ use std::time::Instant;
 use crate::connection::{Connection, Stats};
 use crate::packet::{
     ACCEPTED, CHALLENGE, CHALLENGE_RESPONSE, CONNECT_REQUEST, DENIED, DISCONNECT, PAYLOAD,
-    PAYLOAD_UNACKED, Reader, Writer, reason_code,
+    PAYLOAD_UNACKED, PROBE, Reader, Writer, reason_code,
 };
 use crate::random::unpredictable;
 use crate::transport::Transport;
@@ -142,6 +142,10 @@ impl<T: Transport> Server<T> {
                 self.payload(now, kind, from, reader, size);
                 Ok(())
             }
+            Some(PROBE) => match crate::probe::answer(&mut reader, self.config.config.protocol) {
+                Some(answer) => self.transport.send(now, from, &answer),
+                None => Ok(()),
+            },
             _ => Ok(()),
         };
         self.buffer = buffer;

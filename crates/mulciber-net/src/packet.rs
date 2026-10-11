@@ -7,6 +7,10 @@
 //! - `Accepted`: nonce u64, session u64.
 //! - `Denied`: nonce u64, reason u8.
 //!
+//! Out of band, from anyone at any time:
+//! - `Probe`: protocol u64, token u64.
+//! - `ProbeAnswer`: token u64, same protocol u8 (1 or 0).
+//!
 //! On one, each packet carries the session u64 after its kind:
 //! - `Payload`: sequence u16, ack u16, ack bits u32, ack delay u16 (how long the ack was held, in
 //!   units of 100 µs), then messages to the end.
@@ -28,6 +32,8 @@ pub(crate) const DENIED: u8 = 5;
 pub(crate) const PAYLOAD: u8 = 6;
 pub(crate) const PAYLOAD_UNACKED: u8 = 7;
 pub(crate) const DISCONNECT: u8 = 8;
+pub(crate) const PROBE: u8 = 9;
+pub(crate) const PROBE_ANSWER: u8 = 10;
 
 const RELIABLE: u8 = 0;
 const RELIABLE_LAST: u8 = 1;

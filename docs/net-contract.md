@@ -19,6 +19,9 @@ Blocks of Data", "Reliable Ordered Messages"). No code is taken from any of them
   1024 bytes of game payload) → `Accepted` (a random 64-bit session) or `Denied` (server full,
   wrong protocol). A server holds no state for an address until its cookie comes back, and never
   answers with more bytes than it was sent. Requests and responses repeat every 100 ms.
+- **Probes.** A `Probe` (protocol, token: 17 bytes) from anyone, connected or not, is answered at
+  once with a `ProbeAnswer` (the token, and whether the protocols match: 10 bytes), so a server
+  list can time a server without joining it. No state is kept for it.
 - **Sessions.** Every packet after connecting carries the session; others are dropped. It stops
   blind spoofing, not an attacker who sees the traffic: packets are not encrypted.
 - **Packets.** At most 1200 bytes. Each carries a 16-bit sequence number and acknowledges the
@@ -53,7 +56,8 @@ burst acknowledgement, fragment reassembly, duplicates and the message limit; en
 connecting, both channels across a link with 60–100 ms latency each way, 20% loss and 10%
 duplication (300 reliable messages up to 200 KB each way, delivered exactly and in order), full
 servers, wrong protocols, goodbyes, timeouts, a client restarting on the same address, 20,000
-random and spoofed packets, and real UDP sockets on loopback. A one-off run across 40 seeds at 45%
+random and spoofed packets, probes (full servers, other protocols, a plain socket), and real UDP
+sockets on loopback. A one-off run across 40 seeds at 45%
 loss each way, 30% duplication and 200 ms of jitter also delivered everything, in order.
 
 Not yet exercised: two machines over a real network, IPv6, NAT, Steam's relay network.

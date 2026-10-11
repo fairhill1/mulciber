@@ -9,7 +9,8 @@
 //!
 //! Out of band, from anyone at any time:
 //! - `Probe`: protocol u64, token u64.
-//! - `ProbeAnswer`: token u64, same protocol u8 (1 or 0).
+//! - `ProbeAnswer`: token u64, same protocol u8 (1 or 0), how long the probe was held before the
+//!   answer went (as an ack delay).
 //!
 //! On one, each packet carries the session u64 after its kind:
 //! - `Payload`: sequence u16, ack u16, ack bits u32, ack delay u16 (how long the ack was held, in

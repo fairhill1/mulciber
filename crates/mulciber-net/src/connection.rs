@@ -21,7 +21,7 @@ const WINDOW: usize = 1024;
 /// How many packets each way are remembered, for acks and for spotting duplicates.
 const PACKETS: usize = 1024;
 /// The unit of an ack's delay: 100 microseconds, up to 6.5 seconds.
-const ACK_DELAY_MICROS: u64 = 100;
+pub(crate) const ACK_DELAY_MICROS: u64 = 100;
 /// How many earlier packets an ack covers besides the one it names.
 const ACK_BITS: u16 = 32;
 /// The longest a connection goes without sending, so the other end knows it's still there.

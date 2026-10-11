@@ -130,6 +130,15 @@ Linux but hasn't run on a device yet.
 
 `mulciber-texture` 0.2.0 only moves to `mulciber` 0.14.0, whose types its recipes take.
 
+## A probe's answer says how long it waited (net 0.1.3)
+
+A server reads probes when its game calls `Server::update`, once a tick, so the round trip to a
+server ticking every 15 ms came out up to 15 ms long, differently each time. A `ProbeAnswer` now
+says how long the probe waited between arriving (stamped by the transport, as acks' are) and being
+answered, to 100 µs, as `held`: the round trip less that is the network's, as the connection's
+round-trip time is. The answer is 12 bytes, still smaller than the probe. 0.1.2's answers don't
+read as 0.1.3's, nor the other way.
+
 ## Probes (net 0.1.2)
 
 A server answers a `Probe` packet from anyone, connected or not, at once: `probe(protocol, token)`

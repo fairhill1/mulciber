@@ -1,6 +1,7 @@
-//! Probes: a packet anyone may send a server, connected or not, that it answers at once, so a
-//! server list can time each server it shows (its ping) and tell whether it runs the same
-//! protocol, without connecting. The answer is smaller than the probe and the server keeps nothing
+//! Probes: a packet anyone may send a server, connected or not, that it answers as soon as it reads
+//! it, so a server list can time each server it shows (its ping) and tell whether it runs the same
+//! protocol, without connecting. The answer says how long the probe waited to be read, as an ack
+//! does, so the time is the network's alone: take [`ProbeAnswer::held`] off the round trip. The answer is smaller than the probe and the server keeps nothing
 //! for it, so probes can't be turned against a third party.
 //!
 //! ```
@@ -19,8 +20,13 @@
 //! let received = asker.receive(now, &mut buffer).unwrap().unwrap();
 //! let answer = probe_answer(&buffer[..received.length]).unwrap();
 //! assert_eq!((answer.token, answer.same_protocol), (42, true));
+//! // Read the moment it arrived: it waited for nothing.
+//! assert!(answer.held.is_zero());
 //! ```
 
+use std::time::Duration;
+
+use crate::connection::ACK_DELAY_MICROS;
 use crate::packet::{PROBE, PROBE_ANSWER, Reader, Writer};
 
 /// How many bytes a probe is.
@@ -44,6 +50,9 @@ pub struct ProbeAnswer {
     pub token: u64,
     /// Whether the server runs the protocol the probe was sent for: whether the client could join.
     pub same_protocol: bool,
+    /// How long the probe waited at the server before the answer went, to 100 µs: the round trip
+    /// less this is the network's.
+    pub held: Duration,
 }
 
 /// `packet` read as a server's answer to a probe; `None` if it's anything else.
@@ -53,21 +62,24 @@ pub fn probe_answer(packet: &[u8]) -> Option<ProbeAnswer> {
     if reader.u8()? != PROBE_ANSWER {
         return None;
     }
-    let (token, same) = (reader.u64()?, reader.u8()?);
+    let (token, same, held) = (reader.u64()?, reader.u8()?, reader.u16()?);
     (reader.is_empty() && same <= 1).then_some(ProbeAnswer {
         token,
         same_protocol: same == 1,
+        held: Duration::from_micros(u64::from(held) * ACK_DELAY_MICROS),
     })
 }
 
-/// A server's answer to a probe it read the rest of (after the kind) from `reader`, if it's one.
-pub(crate) fn answer(reader: &mut Reader<'_>, protocol: u64) -> Option<Vec<u8>> {
+/// A server's answer to a probe it read the rest of (after the kind) from `reader`, if it's one,
+/// having held it `held` since it arrived.
+pub(crate) fn answer(reader: &mut Reader<'_>, protocol: u64, held: Duration) -> Option<Vec<u8>> {
     let (theirs, token) = (reader.u64()?, reader.u64()?);
     if !reader.is_empty() {
         return None;
     }
     let mut answer = Writer::new(PROBE_ANSWER);
-    answer.u64(token).u8(u8::from(theirs == protocol));
+    let held = u16::try_from(held.as_micros() / u128::from(ACK_DELAY_MICROS)).unwrap_or(u16::MAX);
+    answer.u64(token).u8(u8::from(theirs == protocol)).u16(held);
     Some(answer.bytes)
 }
 
@@ -80,38 +92,33 @@ mod tests {
         let sent = probe(7, 0xfeed);
         let mut reader = Reader::new(&sent);
         assert_eq!(reader.u8(), Some(PROBE));
-        let answer_bytes = answer(&mut reader, 7).unwrap();
+        let answer_bytes = answer(&mut reader, 7, Duration::from_micros(12_345)).unwrap();
         assert!(answer_bytes.len() < sent.len());
         assert_eq!(
             probe_answer(&answer_bytes),
             Some(ProbeAnswer {
                 token: 0xfeed,
-                same_protocol: true
+                same_protocol: true,
+                held: Duration::from_micros(12_300)
             })
         );
         let mut reader = Reader::new(&sent[1..]);
-        assert!(
-            !probe_answer(&answer(&mut reader, 8).unwrap())
-                .unwrap()
-                .same_protocol
-        );
+        let other = probe_answer(&answer(&mut reader, 8, Duration::ZERO).unwrap()).unwrap();
+        assert!(!other.same_protocol && other.held.is_zero());
     }
 
     #[test]
     fn anything_else_is_no_answer() {
+        let none = Duration::ZERO;
         assert_eq!(probe_answer(&[]), None);
         assert_eq!(probe_answer(&probe(7, 1)), None);
-        let mut long = answer(&mut Reader::new(&probe(7, 1)[1..]), 7).unwrap();
+        let mut long = answer(&mut Reader::new(&probe(7, 1)[1..]), 7, none).unwrap();
         long.push(0);
         assert_eq!(probe_answer(&long), None);
         // A cut or padded probe isn't answered.
-        assert_eq!(
-            answer(&mut Reader::new(&probe(7, 1)[1..PROBE_SIZE - 1]), 7),
-            None
-        );
-        assert_eq!(
-            answer(&mut Reader::new(&[&probe(7, 1)[1..], &[0]].concat()), 7),
-            None
-        );
+        let cut = &probe(7, 1)[1..PROBE_SIZE - 1];
+        assert_eq!(answer(&mut Reader::new(cut), 7, none), None);
+        let padded = [&probe(7, 1)[1..], &[0]].concat();
+        assert_eq!(answer(&mut Reader::new(&padded), 7, none), None);
     }
 }

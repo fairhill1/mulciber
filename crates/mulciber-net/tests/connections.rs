@@ -486,7 +486,8 @@ fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
         tick(now, &mut server, &mut [&mut client]);
     }
     let id = connected(&mut server);
-    // A full server answers too, saying whether the asker runs its protocol.
+    // A full server answers too, saying whether the asker runs its protocol. (The network in
+    // memory stamps a packet as it's read, so none waits.)
     let mut asker = network.endpoint(MemoryAddress(3));
     let mut buffer = [0; 1300];
     for (token, protocol, same) in [(1, CONFIG.protocol, true), (2, 99, false)] {
@@ -498,7 +499,8 @@ fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
             probe_answer(&buffer[..received.length]),
             Some(ProbeAnswer {
                 token,
-                same_protocol: same
+                same_protocol: same,
+                held: Duration::ZERO
             })
         );
     }
@@ -511,23 +513,32 @@ fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
 }
 
 #[test]
-fn a_probe_over_a_real_socket() {
+fn a_probe_over_a_real_socket_says_how_long_it_waited() {
     let transport = UdpTransport::bind("127.0.0.1:0").unwrap();
     let address = transport.local_address().unwrap();
     let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4));
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.set_nonblocking(true).unwrap();
-    socket.send_to(&probe(CONFIG.protocol, 9), address).unwrap();
     let start = Instant::now();
+    socket.send_to(&probe(CONFIG.protocol, 9), address).unwrap();
+    // The server looks only after a while, as a game does once a tick.
+    std::thread::sleep(Duration::from_millis(40));
     let mut buffer = [0; 64];
     let answer = loop {
         server.update(Instant::now()).unwrap();
         if let Ok((length, from)) = socket.recv_from(&mut buffer) {
             assert_eq!(from, address);
-            break probe_answer(&buffer[..length]);
+            break probe_answer(&buffer[..length]).unwrap();
         }
         assert!(start.elapsed() < Duration::from_secs(5), "no answer");
         std::thread::sleep(Duration::from_millis(1));
     };
-    assert_eq!(answer.map(|a| a.token), Some(9));
+    let round_trip = start.elapsed();
+    assert_eq!(answer.token, 9);
+    // The wait is told, so what's left is the loopback's, well under the wait.
+    assert!(answer.held >= Duration::from_millis(35), "{answer:?}");
+    assert!(
+        round_trip.saturating_sub(answer.held) < Duration::from_millis(15),
+        "{round_trip:?} {answer:?}"
+    );
 }

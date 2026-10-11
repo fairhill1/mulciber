@@ -118,7 +118,7 @@ impl<T: Transport> Server<T> {
     pub fn update(&mut self, now: Instant) -> io::Result<()> {
         while let Some(received) = self.transport.receive(now, &mut self.buffer)? {
             if received.length <= MAX_PACKET_SIZE {
-                self.packet(received.at, received.length, received.from)?;
+                self.packet(received.at, now, received.length, received.from)?;
             }
         }
         let mut k = 0;
@@ -132,7 +132,14 @@ impl<T: Transport> Server<T> {
         Ok(())
     }
 
-    fn packet(&mut self, now: Instant, size: usize, from: T::Address) -> io::Result<()> {
+    /// A packet of `size` bytes from `from` that arrived `now`, taken at `taken`.
+    fn packet(
+        &mut self,
+        now: Instant,
+        taken: Instant,
+        size: usize,
+        from: T::Address,
+    ) -> io::Result<()> {
         let buffer = std::mem::take(&mut self.buffer);
         let mut reader = Reader::new(&buffer[..size]);
         let result = match reader.u8() {
@@ -142,10 +149,13 @@ impl<T: Transport> Server<T> {
                 self.payload(now, kind, from, reader, size);
                 Ok(())
             }
-            Some(PROBE) => match crate::probe::answer(&mut reader, self.config.config.protocol) {
-                Some(answer) => self.transport.send(now, from, &answer),
-                None => Ok(()),
-            },
+            Some(PROBE) => {
+                let held = taken.saturating_duration_since(now);
+                match crate::probe::answer(&mut reader, self.config.config.protocol, held) {
+                    Some(answer) => self.transport.send(taken, from, &answer),
+                    None => Ok(()),
+                }
+            }
             _ => Ok(()),
         };
         self.buffer = buffer;

@@ -11,7 +11,8 @@
 //! `.jpeg`. The roughness, metallic and occlusion maps are grey. Any of the four may be missing and
 //! is filled from [`MaterialDefaults`]; a texture none of whose sources exist is not baked at all,
 //! and the game binds a 1×1 texture of the defaults ([`MaterialDefaults::normal_roughness_texel`],
-//! [`MaterialDefaults::metallic_occlusion_texel`]) in its place.
+//! [`MaterialDefaults::metallic_occlusion_texel`]) in its place, unless its bake is there without
+//! them: a game shipped without its sources still has its maps, each read from its bake as it is.
 
 use std::path::{Path, PathBuf};
 
@@ -115,14 +116,27 @@ fn suffixed(stem: &Path, suffix: &str, extension: &str) -> PathBuf {
 }
 
 impl MaterialMaps {
-    /// The material whose albedo image is `albedo`, with its maps found beside it by suffix.
+    /// The material whose albedo image is `albedo`, with its maps found beside it by suffix: by
+    /// their sources, or by their bakes where none of a texture's sources are there (a game shipped
+    /// without them), when its recipe names the first source it would have, missing, so that
+    /// [`Recipe::prepare`] reads the bake as it is.
     #[must_use]
     pub fn beside(albedo: &Path, defaults: &MaterialDefaults) -> Self {
         let stem = albedo.with_extension("");
-        let normal = find_map(&stem, NORMAL_SUFFIX);
+        let shipped = |suffix: &str, found: [&Option<PathBuf>; 2]| {
+            (found.iter().all(|f| f.is_none()) && suffixed(&stem, suffix, "ktx2").exists())
+                .then(|| suffixed(&stem, suffix, IMAGE_EXTENSIONS[0]))
+        };
         let roughness = find_map(&stem, ROUGHNESS_SUFFIX);
-        let metallic = find_map(&stem, METALLIC_SUFFIX);
+        let normal = find_map(&stem, NORMAL_SUFFIX);
+        let normal = normal
+            .clone()
+            .or_else(|| shipped(NORMAL_SUFFIX, [&normal, &roughness]));
         let occlusion = find_map(&stem, OCCLUSION_SUFFIX);
+        let metallic = find_map(&stem, METALLIC_SUFFIX);
+        let metallic = metallic
+            .clone()
+            .or_else(|| shipped(METALLIC_SUFFIX, [&metallic, &occlusion]));
         let [nx, ny, nz, rough] = defaults.normal_roughness_texel();
         let [metal, ao, ..] = defaults.metallic_occlusion_texel();
         let normal_roughness = (normal.is_some() || roughness.is_some()).then(|| Recipe {

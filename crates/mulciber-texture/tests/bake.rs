@@ -305,4 +305,30 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
     assert!(again.iter().all(|(_, b)| *b == Baked::Current));
     // The bakes themselves are not mistaken for materials.
     assert_eq!(find_materials(&scratch.0).unwrap().len(), 2);
+
+    // A game ships the bakes without their sources: the material still has its maps, each read
+    // from its bake as it is, and a material that had none still has none.
+    for source in [
+        "carpet.png",
+        "carpet_normal.png",
+        "carpet_rough.png",
+        "carpet_ao.png",
+        "plain.png",
+    ] {
+        std::fs::remove_file(dir.join(source)).unwrap();
+    }
+    let shipped = MaterialMaps::beside(&carpet, &defaults);
+    for recipe in shipped.recipes() {
+        assert!(!recipe.has_sources(), "{}", recipe.output.display());
+        assert_eq!(
+            recipe.prepare().unwrap().origin,
+            Origin::Bake,
+            "{}",
+            recipe.output.display()
+        );
+    }
+    assert_eq!(shipped.recipes().count(), 3);
+    let bare = MaterialMaps::beside(&plain, &defaults);
+    assert!(bare.normal_roughness.is_none() && bare.metallic_occlusion.is_none());
+    assert_eq!(bare.albedo.prepare().unwrap().origin, Origin::Bake);
 }

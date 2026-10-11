@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## A material shipped without its sources keeps its maps (texture 0.4.1)
+
+`MaterialMaps::beside` found a material's normal + roughness and metallic + occlusion textures by
+their source images only, so a game that shipped its bakes without the sources (as a release
+should, the bakes being what's drawn) lost those maps: the albedo was read from its bake, but the
+surface drew flat and at the default roughness. Now a texture none of whose sources are there is
+still the material's if its bake is (`name_normal.ktx2`, `name_metal.ktx2`): its recipe names the
+first source it would have, missing, so `Recipe::prepare` reads the bake as it is, as it already did
+for an albedo without its image. A source removed on purpose, to drop a map, now leaves its bake in
+use until the bake is deleted too.
+
 ## Cube texture arrays (graphics 0.16.0, shader 0.5.5, texture 0.4.0)
 
 `Device::create_rgba16_float_cube_array_texture_with_mips(size, &[[&[&[[f32; 4]]]; 6]])` and its

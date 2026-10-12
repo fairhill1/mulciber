@@ -133,6 +133,7 @@ enum Command {
         rate: f64,
         position: Vec3,
         emitter: Option<EmitterId>,
+        bus: Bus,
     },
     Listener(Listener),
     MoveEmitter {
@@ -562,8 +563,8 @@ impl Mixer {
                 };
                 let (left, right) = (left * bus, right * bus);
                 // Post-gain send: distance and the user's volume carry into the tail. Music and
-                // ambience stay out of the room.
-                if voice.bus == Bus::Effects {
+                // ambience stay out of the room, unless they sound in it, from a place in the world.
+                if voice.bus == Bus::Effects || voice.spatial {
                     self.reverb_send[frame] += f32::midpoint(left, right);
                 }
                 if channels >= 2 {
@@ -671,9 +672,11 @@ impl Mixer {
                 rate,
                 position,
                 emitter,
+                bus,
             } => {
                 let mut voice = Voice::new(samples, channels, gain, rate);
                 voice.id = id;
+                voice.bus = bus;
                 voice.spatial = true;
                 voice.position = position;
                 voice.emitter = emitter;
@@ -724,7 +727,7 @@ impl Mixer {
             }
             Command::StopMusic { fade_samples } => {
                 for voice in &mut self.voices {
-                    if voice.bus == Bus::Music {
+                    if voice.bus == Bus::Music && !voice.spatial {
                         voice.fade_out(fade_samples);
                     }
                 }
@@ -862,6 +865,7 @@ impl Controls {
             rate,
             position: position.into(),
             emitter,
+            bus: Bus::Effects,
         });
     }
 
@@ -884,6 +888,32 @@ impl Controls {
             rate,
             position: position.into(),
             emitter: None,
+            bus: Bus::Effects,
+        });
+        id
+    }
+
+    /// Plays a clip once at a world position on the music bus: music heard from a thing in the
+    /// world, a radio or a gramophone, that follows the music volume as it changes. It's spatial
+    /// as [`Self::play_spatial`]'s voices are, and in the room's reverb with them;
+    /// [`Self::stop_music`] leaves it be, and [`Self::stop_voice`] fades it.
+    #[must_use = "the handle is the only way to stop the voice before its clip ends"]
+    pub fn play_spatial_music(
+        &self,
+        sound: &Sound,
+        gain_db: f32,
+        position: impl Into<[f32; 3]>,
+    ) -> VoiceId {
+        let id = self.next_id();
+        self.send(Command::PlaySpatial {
+            id: Some(id),
+            samples: Arc::clone(&sound.samples),
+            channels: sound.channels,
+            gain: db_to_amplitude(gain_db),
+            rate: 1.0,
+            position: position.into(),
+            emitter: None,
+            bus: Bus::Music,
         });
         id
     }
@@ -937,7 +967,8 @@ impl Controls {
         });
     }
 
-    /// Fades out every music track over `fade_seconds`.
+    /// Fades out every music track over `fade_seconds`: [`Self::start_music`]'s, not the music
+    /// playing in the world ([`Self::play_spatial_music`]).
     pub fn stop_music(&self, fade_seconds: f32) {
         self.send(Command::StopMusic {
             fade_samples: self.fade_samples(fade_seconds),
@@ -1039,6 +1070,41 @@ mod tests {
         });
         let clamped = render(&mut mixer, 64)[0];
         assert!((clamped - 0.5).abs() < 1.0e-6, "only the music, at unity");
+    }
+
+    /// Music played in the world is on the music bus, follows its volume while it plays, sounds
+    /// in the room, and outlasts the tracks stopping.
+    #[test]
+    fn music_in_the_world_follows_the_music_volume() {
+        let (mut mixer, controls) = Mixer::new(RATE);
+        controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        let sound = constant(0.5, RATE as usize, 1);
+        let radio = controls.play_spatial_music(&sound, 0.0, [0.0, 0.0, -1.0]);
+        let full = render(&mut mixer, 64)[0];
+        assert!(full > 0.3, "{full}");
+        controls.set_volumes(Volumes {
+            master: 1.0,
+            effects: 0.0,
+            music: 0.5,
+            ambience: 1.0,
+        });
+        let half = render(&mut mixer, 64)[0];
+        assert!((half - full * 0.5).abs() < 1.0e-5, "{half} of {full}");
+        controls.stop_music(0.0);
+        assert!((render(&mut mixer, 64)[0] - half).abs() < 1.0e-5);
+        controls.set_room(RoomAcoustics {
+            wet: 1.0,
+            room: 0.8,
+            damp: 0.2,
+        });
+        render(&mut mixer, 4_800);
+        controls.stop_voice(radio, 0.0);
+        let tail = render(&mut mixer, 4_800);
+        assert_eq!(mixer.active_voices(), 0);
+        assert!(
+            tail.iter().any(|&sample| sample.abs() > 1.0e-4),
+            "no reverb tail"
+        );
     }
 
     #[test]

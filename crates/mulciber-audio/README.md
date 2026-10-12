@@ -11,6 +11,8 @@ through a cloneable command handle.
   listener moves, and emitters that carry their voices with a moving source. Binaural through an
   HRIR sphere (the `hrtf` crate's format) when one is supplied, constant-power stereo pan
   otherwise.
+- **Music in the world**: spatial voices on the music bus, a radio's or a gramophone's, that
+  follow the music volume live and sound in the room.
 - **Room reverb**: a Freeverb-style bus fed by the effect voices, set by wet, room and damp.
   `probe_room` sizes the room by casting a sphere of rays through a trace the game supplies
   (voxels, heightfield, BSP, colliders), and `RoomTracker` re-probes on an interval and eases the

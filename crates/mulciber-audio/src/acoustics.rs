@@ -5,14 +5,15 @@
 
 use crate::math::Vec3;
 
-/// The reverb's room, each 0..1: `wet` is the tail level, `room` its decay length and `damp`
+/// The reverb's room: `wet` (0..1) is the tail level, `decay` how long it lasts and `damp` (0..1)
 /// how quickly its highs die (soft, absorbent rooms are higher).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoomAcoustics {
     /// Tail level; 0 turns the reverb off.
     pub wet: f32,
-    /// Decay length, from a tight slap at 0 to a many-second bloom at 1.
-    pub room: f32,
+    /// Seconds the tail takes to fall 60 dB (RT60): about 0.3 for a small furnished room, 1 to 2
+    /// for a hall, several for a cathedral or a cave. The reverb holds it to 0.1..10.
+    pub decay: f32,
     /// High-frequency absorption: 0 is bright stone, 1 dark and soft.
     pub damp: f32,
 }
@@ -21,21 +22,23 @@ impl RoomAcoustics {
     /// No reverb: open air, menus, underwater.
     pub const DRY: Self = Self {
         wet: 0.0,
-        room: 0.0,
+        decay: 0.0,
         damp: 0.5,
     };
 
     fn eased_toward(self, target: Self, amount: f32) -> Self {
         Self {
             wet: self.wet + (target.wet - self.wet) * amount,
-            room: self.room + (target.room - self.room) * amount,
+            decay: self.decay + (target.decay - self.decay) * amount,
             damp: self.damp + (target.damp - self.damp) * amount,
         }
     }
 
+    /// Whether any setting has moved more than `threshold`, the decay by that fraction of
+    /// itself (a hundredth of a second matters in a cabin, not in a cathedral).
     fn differs_from(self, other: Self, threshold: f32) -> bool {
         (self.wet - other.wet).abs() > threshold
-            || (self.room - other.room).abs() > threshold
+            || (self.decay - other.decay).abs() > threshold * other.decay.max(0.1)
             || (self.damp - other.damp).abs() > threshold
     }
 }
@@ -80,10 +83,21 @@ impl Default for ProbeSettings {
 const OPEN_ENCLOSURE: f32 = 0.70;
 /// Enclosure span over which the tail fades in to full.
 const ENCLOSURE_SPAN: f32 = 0.25;
-/// Mean free path (world units, metre scale) at which the room is smallest...
-const SMALLEST_PATH: f32 = 3.0;
-/// ...and the span to the largest.
-const PATH_SPAN: f32 = 22.0;
+/// Sabine's constant over four, seconds per metre: RT60 = 0.161 V / A, and a room's mean free
+/// path is 4V / S, so RT60 = 0.04 × path / mean absorption.
+const SABINE: f32 = 0.161 / 4.0;
+/// The share of sound a surface absorbs at hardness 1 (tile, stone, glass)...
+const HARD_ABSORPTION: f32 = 0.05;
+/// ...and at hardness 0 (carpet, cloth, earth): mid-band absorption coefficients.
+const SOFT_ABSORPTION: f32 = 0.35;
+/// The longest decay a probe gives, seconds: past this real spaces lose their highs to the air.
+const LONGEST_DECAY: f32 = 8.0;
+/// The tail level of a closed room whose decay is [`REFERENCE_DECAY`]...
+const REFERENCE_WET: f32 = 0.3;
+const REFERENCE_DECAY: f32 = 0.4;
+/// ...rising this much each time the decay doubles, between these.
+const WET_PER_DOUBLING: f32 = 0.1;
+const WET_RANGE: (f32, f32) = (0.25, 0.6);
 
 /// Sizes the acoustic space around `origin` by casting rays in all directions through the
 /// game's world, and returns the reverb settings for it.
@@ -92,10 +106,14 @@ const PATH_SPAN: f32 = 22.0;
 /// returns the first surface within `max_distance`, or `None` when the ray escapes. Leave out
 /// what sound passes through, such as foliage: a forest canopy is not a roof.
 ///
-/// The share of rays that hit is the enclosure, which sets the wet level: open ground stays dry
-/// and a sealed room is fully wet. The mean free path (escaped rays count as `max_distance`)
-/// sets the decay, so a cramped cell answers tight and a great hall blooms, and the mean
-/// hardness of what was hit sets the damping. The constants are tuned for metre-scale worlds.
+/// The share of rays that hit is the enclosure, which gates the tail: open ground stays dry and
+/// a sealed room is fully wet. The decay is Sabine's: the mean distance the hits travelled
+/// stands for the room's mean free path, and the absorption is the rays' mean, each hit
+/// absorbing by its hardness (0.05 at 1, 0.35 at 0) and each escaped ray all of it, as an open
+/// window does. So a cramped soft cell answers tight, a great stone hall blooms, and a gallery
+/// open along one side (a covered walk, a cloister, a cave mouth) loses most of its tail through
+/// the opening rather than sounding as big as the sky. Longer decays are a little wetter, and
+/// the mean hardness of what was hit sets the damping. Distances are in metres.
 ///
 /// Feed the result to [`RoomTracker`] rather than straight to the mixer, so the room eases as
 /// the listener moves.
@@ -114,6 +132,7 @@ pub fn probe_room(
 
     let mut hits = 0_usize;
     let mut hardness = 0.0_f32;
+    let mut absorption = 0.0_f32;
     let mut total_path = 0.0_f32;
     for ray in 0..rays {
         #[allow(clippy::cast_precision_loss)]
@@ -122,32 +141,32 @@ pub fn probe_room(
         let ring = (1.0 - y * y).max(0.0).sqrt();
         let theta = golden_angle * index;
         let direction = [ring * theta.cos(), y, ring * theta.sin()];
-        let path = match cast(origin, direction, max_distance) {
+        match cast(origin, direction, max_distance) {
             Some(hit) if hit.distance.is_finite() && hit.distance <= max_distance => {
+                let hard = hit.hardness.clamp(0.0, 1.0);
                 hits += 1;
-                hardness += hit.hardness.clamp(0.0, 1.0);
-                hit.distance.max(0.0)
+                hardness += hard;
+                absorption += SOFT_ABSORPTION + (HARD_ABSORPTION - SOFT_ABSORPTION) * hard;
+                total_path += hit.distance.max(0.0);
             }
-            _ => max_distance,
-        };
-        total_path += path;
+            _ => absorption += 1.0,
+        }
     }
 
     #[allow(clippy::cast_precision_loss)]
-    let enclosure = hits as f32 / count;
-    let mean_path = total_path / count;
-    let closed = ((enclosure - OPEN_ENCLOSURE) / ENCLOSURE_SPAN).clamp(0.0, 1.0);
-    let room = ((mean_path - SMALLEST_PATH) / PATH_SPAN).clamp(0.0, 1.0);
-    let wet = closed * (0.35 + 0.65 * room);
-    #[allow(clippy::cast_precision_loss)]
-    let hard = if hits > 0 {
-        hardness / hits as f32
+    let (enclosure, mean_path, hard) = if hits > 0 {
+        let hits = hits as f32;
+        (hits / count, total_path / hits, hardness / hits)
     } else {
-        0.0
+        (0.0, 0.0, 0.0)
     };
+    let decay = (SABINE * mean_path / (absorption / count)).min(LONGEST_DECAY);
+    let closed = ((enclosure - OPEN_ENCLOSURE) / ENCLOSURE_SPAN).clamp(0.0, 1.0);
+    let level =
+        REFERENCE_WET + WET_PER_DOUBLING * (decay.max(f32::EPSILON) / REFERENCE_DECAY).log2();
     RoomAcoustics {
-        wet,
-        room,
+        wet: closed * level.clamp(WET_RANGE.0, WET_RANGE.1),
+        decay,
         damp: 0.75 - 0.5 * hard,
     }
 }
@@ -330,19 +349,76 @@ mod tests {
         );
         assert!(hall.wet > cell.wet, "hall {hall:?} vs cell {cell:?}");
         assert!(
-            hall.room > cell.room + 0.2,
+            hall.decay > 2.0 * cell.decay,
             "hall {hall:?} vs cell {cell:?}"
         );
     }
 
+    /// Soft walls swallow the tail sooner and darken it.
     #[test]
-    fn soft_walls_damp_the_tail() {
+    fn soft_walls_shorten_and_damp_the_tail() {
         let settings = ProbeSettings::default();
         let stone = probe_room([0.0; 3], settings, inside_box([-4.0; 3], [4.0; 3], 1.0));
         let earth = probe_room([0.0; 3], settings, inside_box([-4.0; 3], [4.0; 3], 0.0));
         assert!((stone.damp - 0.25).abs() < 1.0e-6);
         assert!((earth.damp - 0.75).abs() < 1.0e-6);
-        assert!((stone.wet - earth.wet).abs() < 1.0e-6);
+        assert!(
+            (stone.decay / earth.decay - SOFT_ABSORPTION / HARD_ABSORPTION).abs() < 1.0e-3,
+            "stone {stone:?} vs earth {earth:?}"
+        );
+        assert!(stone.wet > earth.wet, "stone {stone:?} vs earth {earth:?}");
+    }
+
+    /// Rooms decay as Sabine's formula has them, to within the error of standing for the mean
+    /// free path with the mean distance from the middle: a tiled washroom, a carpeted study and
+    /// a stone hall.
+    #[test]
+    fn rooms_decay_as_sabine_has_them() {
+        let settings = ProbeSettings::default();
+        for (size, hardness) in [
+            ([6.0, 3.0, 2.2], 1.0),
+            ([4.0, 3.0, 5.0], 0.2),
+            ([30.0, 12.0, 60.0], 0.9),
+        ] {
+            let [x, y, z]: [f32; 3] = size;
+            let absorption = SOFT_ABSORPTION + (HARD_ABSORPTION - SOFT_ABSORPTION) * hardness;
+            let sabine = 0.161 * x * y * z / (2.0 * (x * y + y * z + z * x) * absorption);
+            let half = [x / 2.0, y / 2.0, z / 2.0];
+            let probed = probe_room(
+                [0.0; 3],
+                settings,
+                inside_box([-half[0], -half[1], -half[2]], half, hardness),
+            );
+            assert!(
+                (probed.decay / sabine.min(LONGEST_DECAY) - 1.0).abs() < 0.25,
+                "{size:?}: Sabine's {sabine} s, probed {probed:?}"
+            );
+        }
+    }
+
+    /// A covered walk, roofed and walled on one side and open along the other, keeps a short,
+    /// quiet tail: the opening swallows what reaches it, so it sounds smaller than the room it
+    /// would be closed, not as big as the sky beyond it.
+    #[test]
+    fn an_open_side_swallows_the_tail() {
+        let settings = ProbeSettings::default();
+        let (min, max) = ([-1.5, 0.0, -30.0], [1.5, 3.0, 30.0]);
+        let listener = [0.0, 1.6, 0.0];
+        let closed = probe_room(listener, settings, inside_box(min, max, 0.6));
+        let mut walls = inside_box(min, max, 0.6);
+        let open = probe_room(listener, settings, |origin, direction, limit| {
+            // No wall at +x: what would end there flies out over the rail.
+            let hit = walls(origin, direction, limit)?;
+            (origin[0] + direction[0] * hit.distance < max[0] - 1.0e-3).then_some(hit)
+        });
+        assert!(
+            open.wet > 0.0 && open.wet < closed.wet,
+            "open {open:?} vs closed {closed:?}"
+        );
+        assert!(
+            open.decay < 0.6 * closed.decay,
+            "open {open:?} vs closed {closed:?}"
+        );
     }
 
     #[test]
@@ -367,7 +443,7 @@ mod tests {
     fn the_tracker_eases_toward_the_probe_and_sends_only_changes() {
         let hall = RoomAcoustics {
             wet: 0.8,
-            room: 0.7,
+            decay: 1.5,
             damp: 0.3,
         };
         let mut tracker = RoomTracker::new();

@@ -13,10 +13,11 @@ through a cloneable command handle.
   otherwise.
 - **Music in the world**: spatial voices on the music bus, a radio's or a gramophone's, that
   follow the music volume live and sound in the room.
-- **Room reverb**: a Freeverb-style bus fed by the effect voices, set by wet, room and damp.
-  `probe_room` sizes the room by casting a sphere of rays through a trace the game supplies
-  (voxels, heightfield, BSP, colliders), and `RoomTracker` re-probes on an interval and eases the
-  result.
+- **Room reverb**: a Freeverb-style bus fed by the effect voices, set by wet, decay (RT60 in
+  seconds) and damp. `probe_room` sizes the room by casting a sphere of rays through a trace the
+  game supplies (voxels, heightfield, BSP, colliders) and works out its decay by Sabine's formula,
+  open sides absorbing as open windows do, and `RoomTracker` re-probes on an interval and eases
+  the result.
 - **Decoding**: WAV (`wav` feature) and Ogg Vorbis (`ogg` feature), resampled to the mixer rate
   at load.
 

@@ -2,6 +2,26 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Rooms decay by Sabine's formula (audio 0.2.0)
+
+`probe_room` mapped the mean ray length onto a 0..1 `room` from 3 m to 25 m, which the reverb
+turned into comb feedback 0.70..0.97 (about 0.6 to 7 s). Indoors at human scale nearly every room
+fell below 3 m and decayed in the same 0.6 s, whatever it was made of: a tiled washroom and a
+carpeted study alike, a marble hall barely longer. Hardness only darkened the tail. And a ray that
+escaped counted as 40 m long, so a covered walk open along one side rang longer than a closed hall.
+
+Now `RoomAcoustics::decay` is the tail's RT60 in seconds, and the probe works it out as Sabine's
+formula does: the mean distance of the hits stands for the mean free path, and the absorption is
+the rays' mean, a hit absorbing 0.05 at hardness 1 and 0.35 at hardness 0, an escaped ray all of
+it, as an open window does. Probed boxes land within a quarter of Sabine's decay for a washroom, a
+study and a hall. The wet level rises gently with the decay (0.3 at 0.4 s, 0.1 more each time it
+doubles, between 0.25 and 0.6), still gated by the enclosure. The reverb sets each comb's feedback
+from its own length so all of them fall 60 dB in the decay asked for (held to 0.1..10 s), which a
+test measures from the impulse response's backward-integrated energy.
+
+Breaking: `RoomAcoustics::room` (0..1) is replaced by `decay` (seconds); `RoomAcoustics::DRY` has
+a decay of 0.
+
 ## A material shipped without its sources keeps its maps (texture 0.4.1)
 
 `MaterialMaps::beside` found a material's normal + roughness and metallic + occlusion textures by

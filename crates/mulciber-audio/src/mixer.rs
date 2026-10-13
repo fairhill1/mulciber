@@ -733,7 +733,7 @@ impl Mixer {
                 }
             }
             Command::Volumes(volumes) => self.volumes = volumes,
-            Command::Room(room) => self.reverb.set_params(room.wet, room.room, room.damp),
+            Command::Room(room) => self.reverb.set_params(room.wet, room.decay, room.damp),
             Command::Rolloff(rolloff) => {
                 self.rolloff = rolloff;
                 self.relocate_spatial(|_| true);
@@ -1094,7 +1094,7 @@ mod tests {
         assert!((render(&mut mixer, 64)[0] - half).abs() < 1.0e-5);
         controls.set_room(RoomAcoustics {
             wet: 1.0,
-            room: 0.8,
+            decay: 2.0,
             damp: 0.2,
         });
         render(&mut mixer, 4_800);
@@ -1306,7 +1306,7 @@ mod tests {
         };
         let hall = RoomAcoustics {
             wet: 0.8,
-            room: 0.8,
+            decay: 2.0,
             damp: 0.3,
         };
         assert!(tail(false, hall) > 1.0e-4);

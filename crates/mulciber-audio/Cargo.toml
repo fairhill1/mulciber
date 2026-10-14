@@ -8,7 +8,7 @@ license.workspace = true
 readme = "README.md"
 repository = "https://github.com/fairhill1/mulciber"
 rust-version.workspace = true
-version = "0.2.0"
+version = "0.2.1"
 categories = ["game-development", "multimedia::audio"]
 publish = ["crates-io"]
 
@@ -16,6 +16,8 @@ publish = ["crates-io"]
 default = ["output", "hrtf", "wav", "ogg"]
 # Opens the default output device through cpal and runs the mixer on its callback.
 output = ["dep:cpal"]
+# Captures the default input device through cpal, for voice chat.
+input = ["dep:cpal"]
 # Binaural spatialization from an HRIR sphere file; spatial voices pan in stereo without it.
 hrtf = ["dep:hrtf"]
 # WAV decoding for `Sound::load`.

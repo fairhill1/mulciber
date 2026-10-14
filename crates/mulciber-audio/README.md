@@ -18,6 +18,13 @@ through a cloneable command handle.
   game supplies (voxels, heightfield, BSP, colliders) and works out its decay by Sabine's formula,
   open sides absorbing as open windows do, and `RoomTracker` re-probes on an interval and eases
   the result.
+- **Live voices**: `play_spatial_stream` plays audio pushed as it arrives, a player's speech
+  from the network, through the spatial path and the room's reverb. A jitter buffer holds back
+  `StreamConfig::latency` (60 ms by default) and leans the playback rate by at most 1% to keep it
+  through bunched packets and a sender's clock running fast or slow; a stream run dry fades out
+  and waits, and one fallen far behind drops what's late. `set_voice_gain` sets its volume live.
+- **Microphone** (`input` feature): the default input device, read as mono at the rate asked
+  for, through `StreamResampler`, which resamples chunked audio without seams.
 - **Decoding**: WAV (`wav` feature) and Ogg Vorbis (`ogg` feature), resampled to the mixer rate
   at load.
 

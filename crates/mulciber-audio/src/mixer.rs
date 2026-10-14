@@ -10,6 +10,7 @@ use crate::math::Vec3;
 use crate::reverb::Reverb;
 use crate::sound::{Sound, db_to_amplitude};
 use crate::spatial::Listener;
+use crate::stream::{StreamConfig, StreamReader, VoiceStream};
 
 /// A caller-chosen identity for a moving sound source, such as a packed entity id.
 ///
@@ -21,7 +22,7 @@ pub struct EmitterId(pub u64);
 
 /// A handle to one playing voice, for fading it out before its clip ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct VoiceId(u64);
+pub struct VoiceId(pub(crate) u64);
 
 /// Volume per bus, each 0..1. Every voice is scaled by `master` and by its own bus.
 ///
@@ -104,6 +105,8 @@ enum Bus {
     /// On the effects side of the world but on its own volume, and kept out of the reverb send:
     /// a recording of a forest already has the forest's reverb in it.
     Ambience,
+    /// Live speech, on the master's volume alone: the game sets each stream's own.
+    Voice,
 }
 
 enum Command {
@@ -134,6 +137,17 @@ enum Command {
         position: Vec3,
         emitter: Option<EmitterId>,
         bus: Bus,
+    },
+    PlayStream {
+        id: VoiceId,
+        reader: Box<StreamReader>,
+        gain: f32,
+        position: Vec3,
+        emitter: Option<EmitterId>,
+    },
+    SetGain {
+        id: VoiceId,
+        gain: f32,
     },
     Listener(Listener),
     MoveEmitter {
@@ -178,6 +192,8 @@ struct Voice {
     id: Option<VoiceId>,
     samples: Arc<[f32]>,
     channels: u8,
+    /// A live stream played in place of `samples`.
+    stream: Option<Box<StreamReader>>,
     /// Fractional read position in source frames; `rate` is added per output frame.
     cursor: f64,
     rate: f64,
@@ -216,6 +232,7 @@ impl Voice {
             id: None,
             samples,
             channels: channels.max(1),
+            stream: None,
             cursor: 0.0,
             rate,
             gain,
@@ -255,6 +272,10 @@ impl Voice {
     /// The source frame under the cursor, linearly interpolated, as left and right; mono plays
     /// on both. Advances the cursor by the voice's rate.
     fn interpolated_frame(&mut self) -> Option<(f32, f32)> {
+        if let Some(stream) = &mut self.stream {
+            let mono = stream.next()?;
+            return Some((mono, mono));
+        }
         let channels = usize::from(self.channels);
         let total_frames = self.samples.len() / channels;
         if total_frames == 0 {
@@ -542,6 +563,7 @@ impl Mixer {
                     Bus::Effects => self.volumes.effects,
                     Bus::Music => self.volumes.music,
                     Bus::Ambience => self.volumes.ambience,
+                    Bus::Voice => 1.0,
                 };
             let mut ended = false;
             for frame in 0..frames {
@@ -687,6 +709,40 @@ impl Mixer {
                     voice.hrtf.previous_gain = voice.gain;
                 }
                 self.voices.push(voice);
+            }
+            Command::PlayStream {
+                id,
+                reader,
+                gain,
+                position,
+                emitter,
+            } => {
+                let mut voice = Voice::new(Arc::from([]), 1, gain, 1.0);
+                voice.id = Some(id);
+                voice.stream = Some(reader);
+                voice.bus = Bus::Voice;
+                voice.spatial = true;
+                voice.position = position;
+                voice.emitter = emitter;
+                voice.relocate(&self.listener, self.rolloff);
+                #[cfg(feature = "hrtf")]
+                {
+                    voice.hrtf.previous_direction = voice.direction;
+                    voice.hrtf.previous_gain = voice.gain;
+                }
+                self.voices.push(voice);
+            }
+            Command::SetGain { id, gain } => {
+                for voice in &mut self.voices {
+                    if voice.id == Some(id) {
+                        voice.base_gain = gain;
+                        if voice.spatial {
+                            voice.relocate(&self.listener, self.rolloff);
+                        } else {
+                            voice.gain = gain;
+                        }
+                    }
+                }
             }
             Command::Listener(listener) => {
                 self.listener = listener;
@@ -916,6 +972,44 @@ impl Controls {
             bus: Bus::Music,
         });
         id
+    }
+
+    /// Starts a live voice at a world position, a player's speech, and returns the
+    /// [`VoiceStream`] to push its samples into as they arrive. It's spatial as
+    /// [`Self::play_spatial`]'s voices are, follows `emitter` with [`Self::move_emitter`], and
+    /// sounds in the room's reverb; it's on the master volume alone, so set its own with
+    /// [`Self::set_voice_gain`]. It plays what's pushed [`StreamConfig::latency`] late, and keeps
+    /// to that through bunched packets and a sender whose clock runs fast or slow.
+    ///
+    /// It ends once the stream is dropped and what was in it has played, or through
+    /// [`Self::stop_voice`] or [`Self::stop_emitter`].
+    #[must_use = "the stream is the only way to feed the voice, which ends when it is dropped"]
+    pub fn play_spatial_stream(
+        &self,
+        config: StreamConfig,
+        gain_db: f32,
+        position: impl Into<[f32; 3]>,
+        emitter: Option<EmitterId>,
+    ) -> VoiceStream {
+        let id = self.next_id();
+        let (reader, stream) = StreamReader::pair(config, self.sample_rate, id);
+        self.send(Command::PlayStream {
+            id,
+            reader: Box::new(reader),
+            gain: db_to_amplitude(gain_db),
+            position: position.into(),
+            emitter,
+        });
+        stream
+    }
+
+    /// Sets a live voice's gain, in place of the one it started with: a player's voice volume,
+    /// or a speaker turned down or muted. Unknown or finished voices are ignored.
+    pub fn set_voice_gain(&self, id: VoiceId, gain_db: f32) {
+        self.send(Command::SetGain {
+            id,
+            gain: db_to_amplitude(gain_db),
+        });
     }
 
     /// Moves the listener, in a world whose up is +Y. Call once per rendered frame with the
@@ -1331,6 +1425,78 @@ mod tests {
         let mut mono = vec![0.0; 32];
         mixer.render(&mut mono, 1);
         assert!(mono.iter().all(|&sample| (sample - 0.5).abs() < 1.0e-6));
+    }
+
+    /// A live voice is spatial and in the room, on the master volume and its own gain but not the
+    /// effects', outlasts a gap in what it's fed, and lets its writer know once it's stopped.
+    #[test]
+    fn a_live_voice_is_heard_in_the_world_and_room() {
+        let (mut mixer, controls) = Mixer::new(RATE);
+        controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        controls.set_room(RoomAcoustics {
+            wet: 1.0,
+            decay: 2.0,
+            damp: 0.2,
+        });
+        let speaker = EmitterId(3);
+        let mut stream = controls.play_spatial_stream(
+            StreamConfig::new(RATE),
+            0.0,
+            [3.0, 0.0, 0.0],
+            Some(speaker),
+        );
+        stream.push(&vec![0.5; 4_800]);
+        let buffer = render(&mut mixer, 1_024);
+        let (left, right) = buffer.as_chunks::<2>().0[512..]
+            .iter()
+            .fold((0.0_f32, 0.0_f32), |(l, r), frame| {
+                (l.max(frame[0].abs()), r.max(frame[1]))
+            });
+        assert!(right > 0.45, "right {right}");
+        assert!(left < right * 0.2, "left {left}, from the reverb alone");
+
+        controls.set_volumes(Volumes {
+            master: 1.0,
+            effects: 0.0,
+            music: 0.0,
+            ambience: 0.0,
+        });
+        controls.set_voice_gain(stream.id(), -6.0);
+        let quieter = render(&mut mixer, 64)[1];
+        assert!(
+            (quieter - right * db_to_amplitude(-6.0)).abs() < 0.03,
+            "{quieter} of {right}"
+        );
+
+        // Run it dry and leave it a while: the voice waits rather than ending.
+        render(&mut mixer, 8_192);
+        assert_eq!(mixer.active_voices(), 1);
+        assert!(stream.is_playing());
+        controls.stop_emitter(speaker, 0.0);
+        render(&mut mixer, 16);
+        assert_eq!(mixer.active_voices(), 0);
+        assert!(!stream.is_playing());
+    }
+
+    #[cfg(feature = "hrtf")]
+    #[test]
+    fn a_live_voice_through_the_hrtf_waits_out_a_gap_and_ends_when_dropped() {
+        let (mut mixer, controls) = Mixer::with_hrtf(RATE, ear_sphere());
+        controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        let mut stream =
+            controls.play_spatial_stream(StreamConfig::new(RATE), 0.0, [3.0, 0.0, 0.0], None);
+        stream.push(&vec![0.5; 2_880]);
+        // The test sphere's level is its own; what counts is the voice sounding again as loud.
+        let first = peak(&render(&mut mixer, 4_096));
+        assert!(first > 0.0);
+        render(&mut mixer, 8_192);
+        assert_eq!(mixer.active_voices(), 1, "ended in a gap");
+        stream.push(&vec![0.5; 2_880]);
+        let again = peak(&render(&mut mixer, 4_096));
+        assert!(again > first * 0.9, "{again} after the gap, {first} before");
+        drop(stream);
+        render(&mut mixer, 8_192);
+        assert_eq!(mixer.active_voices(), 0);
     }
 
     #[test]

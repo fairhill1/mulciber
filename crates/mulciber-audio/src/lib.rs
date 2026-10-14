@@ -30,10 +30,17 @@
 //! reverb, and [`RoomTracker`] re-probes on an interval and eases the result so walking through a
 //! door fades the tail instead of cutting it.
 //!
+//! Live audio, a player's speech, plays through [`Controls::play_spatial_stream`]: push samples
+//! into the [`VoiceStream`] it returns as they arrive, and a jitter buffer plays them a little
+//! late, in the world and the room as any spatial voice. With the `input` feature, `Microphone`
+//! captures the default input device.
+//!
 //! Positions and directions are `[f32; 3]`, accepted through `impl Into<[f32; 3]>` so math types
 //! such as `glam::Vec3` pass straight in.
 
 mod acoustics;
+#[cfg(feature = "input")]
+mod input;
 mod math;
 mod mixer;
 #[cfg(feature = "output")]
@@ -41,8 +48,11 @@ mod output;
 mod reverb;
 mod sound;
 mod spatial;
+mod stream;
 
 pub use acoustics::{ProbeSettings, RayHit, RoomAcoustics, RoomTracker, probe_room};
+#[cfg(feature = "input")]
+pub use input::{InputError, Microphone};
 pub use mixer::{Controls, EmitterId, Mixer, Rolloff, VoiceId, Volumes};
 #[cfg(feature = "output")]
 pub use output::{AudioEngine, OutputError};
@@ -51,3 +61,4 @@ pub use sound::{LoadError, LoadErrorKind};
 pub use sound::{Sound, db_to_amplitude, resample};
 #[cfg(feature = "hrtf")]
 pub use spatial::{Hrtf, HrtfLoadError};
+pub use stream::{StreamConfig, StreamResampler, VoiceStream};

@@ -91,6 +91,10 @@ const WP_CURSOR_SHAPE_DEVICE_SET_SHAPE: u32 = 1;
 const WP_CURSOR_SHAPE_DEVICE_SHAPE_DEFAULT: u32 = 1;
 const XKB_KEYMAP_FORMAT_TEXT_V1: c_int = 1;
 const XKB_MOD_INVALID: u32 = u32::MAX;
+/// xkb key codes are evdev codes offset by eight, the X11 keycode convention xkb inherited.
+const XKB_EVDEV_KEYCODE_OFFSET: u32 = 8;
+/// Room for the text of any one key; real keys type a few code points at most.
+const KEY_TEXT_CAPACITY: usize = 64;
 const PROT_READ: c_int = 0x1;
 const MAP_PRIVATE: c_int = 0x02;
 const POLLIN: i16 = 0x0001;
@@ -695,29 +699,108 @@ unsafe extern "C" {
 }
 
 #[repr(C)]
-struct XkbContext {
-    _unused: [u8; 0],
-}
-
-#[repr(C)]
 struct XkbKeymap {
     _unused: [u8; 0],
 }
 
+#[repr(C)]
+struct XkbState {
+    _unused: [u8; 0],
+}
+
 // The Wayland keyboard contract hands every client an xkb keymap; libxkbcommon is the platform's
-// canonical parser for it and is used here only to resolve modifier-mask bit positions.
+// canonical parser for it, resolving modifier-mask bit positions and the text each key types.
 #[link(name = "xkbcommon")]
 unsafe extern "C" {
-    fn xkb_context_new(flags: c_int) -> *mut XkbContext;
-    fn xkb_context_unref(context: *mut XkbContext);
     fn xkb_keymap_new_from_string(
-        context: *mut XkbContext,
+        context: *mut keymap::XkbContext,
         string: *const c_char,
         format: c_int,
         flags: c_int,
     ) -> *mut XkbKeymap;
     fn xkb_keymap_unref(keymap: *mut XkbKeymap);
     fn xkb_keymap_mod_get_index(keymap: *mut XkbKeymap, name: *const c_char) -> u32;
+    fn xkb_state_new(keymap: *mut XkbKeymap) -> *mut XkbState;
+    fn xkb_state_unref(state: *mut XkbState);
+    fn xkb_state_update_mask(
+        state: *mut XkbState,
+        depressed_mods: u32,
+        latched_mods: u32,
+        locked_mods: u32,
+        depressed_layout: u32,
+        latched_layout: u32,
+        locked_layout: u32,
+    ) -> c_int;
+    fn xkb_state_key_get_one_sym(state: *mut XkbState, key: u32) -> u32;
+    fn xkb_state_key_get_utf8(
+        state: *mut XkbState,
+        key: u32,
+        buffer: *mut c_char,
+        size: usize,
+    ) -> c_int;
+}
+
+/// The compositor's current keymap and the client-side state that follows its modifier events.
+///
+/// Wayland clients never feed key transitions into the state: the compositor owns modifier and
+/// layout tracking and forwards it through `wl_keyboard.modifiers`.
+struct XkbKeyboard {
+    keymap: *mut XkbKeymap,
+    state: *mut XkbState,
+}
+
+impl XkbKeyboard {
+    /// Compiles a NUL-terminated `xkb_v1` keymap string; null on any compilation failure.
+    ///
+    /// # Safety
+    ///
+    /// `context` must be a live xkb context and `keymap` a NUL-terminated string readable for
+    /// the duration of the call; xkbcommon does not retain it.
+    unsafe fn new(context: *mut keymap::XkbContext, keymap: *const c_char) -> Option<Self> {
+        if context.is_null() {
+            return None;
+        }
+        // SAFETY: Guaranteed by the caller.
+        let xkb_keymap =
+            unsafe { xkb_keymap_new_from_string(context, keymap, XKB_KEYMAP_FORMAT_TEXT_V1, 0) };
+        if xkb_keymap.is_null() {
+            return None;
+        }
+        // SAFETY: The keymap is live; the state takes its own keymap reference.
+        let state = unsafe { xkb_state_new(xkb_keymap) };
+        if state.is_null() {
+            // SAFETY: The keymap was created above and holds this one reference.
+            unsafe { xkb_keymap_unref(xkb_keymap) };
+            return None;
+        }
+        Some(Self {
+            keymap: xkb_keymap,
+            state,
+        })
+    }
+
+    fn modifier_indices(&self) -> ModifierIndices {
+        // SAFETY: The keymap is live and every modifier name is NUL-terminated.
+        unsafe {
+            ModifierIndices {
+                shift: xkb_keymap_mod_get_index(self.keymap, c"Shift".as_ptr()),
+                caps_lock: xkb_keymap_mod_get_index(self.keymap, c"Lock".as_ptr()),
+                control: xkb_keymap_mod_get_index(self.keymap, c"Control".as_ptr()),
+                alt: xkb_keymap_mod_get_index(self.keymap, c"Mod1".as_ptr()),
+                super_key: xkb_keymap_mod_get_index(self.keymap, c"Mod4".as_ptr()),
+            }
+        }
+    }
+}
+
+impl Drop for XkbKeyboard {
+    fn drop(&mut self) {
+        // SAFETY: Both objects hold exactly the one reference this value took.
+        unsafe {
+            xkb_state_unref(self.state);
+            xkb_keymap_unref(self.keymap);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -774,6 +857,8 @@ struct WindowState {
     pointer_proxy: Cell<*mut c_void>,
     keyboard_proxy: Cell<*mut c_void>,
     modifier_indices: Cell<ModifierIndices>,
+    xkb_keyboard: RefCell<Option<XkbKeyboard>>,
+    text_composer: keymap::TextComposer,
     modifiers: Cell<Modifiers>,
     keyboard_focused: Cell<bool>,
     pointer_inside: Cell<bool>,
@@ -871,6 +956,8 @@ impl Window {
                 pointer_proxy: Cell::new(ptr::null_mut()),
                 keyboard_proxy: Cell::new(ptr::null_mut()),
                 modifier_indices: Cell::new(ModifierIndices::default()),
+                xkb_keyboard: RefCell::new(None),
+                text_composer: keymap::TextComposer::new(),
                 modifiers: Cell::new(Modifiers::default()),
                 keyboard_focused: Cell::new(false),
                 pointer_inside: Cell::new(false),
@@ -1319,7 +1406,7 @@ impl Window {
     /// `repeat_info` rate, so a self-paced single repeat per pump reaches the configured cadence
     /// without a burst catch-up path after a render hitch.
     fn synthesize_key_repeat(&self) {
-        let Some((_, key)) = self.state.repeat_key.get() else {
+        let Some((evdev_key, key)) = self.state.repeat_key.get() else {
             return;
         };
         let rate = self.state.repeat_rate.get();
@@ -1339,6 +1426,7 @@ impl Window {
             repeat: true,
             modifiers: self.state.modifiers.get(),
         });
+        push_typed_text(&self.state, evdev_key);
         self.state
             .repeat_due
             .set(Some(now + Duration::from_secs_f64(1.0 / f64::from(rate))));
@@ -1980,6 +2068,8 @@ unsafe extern "C" fn seat_capabilities(data: *mut c_void, seat: *mut c_void, cap
         // SAFETY: The proxy was created by this module and is released exactly once.
         unsafe { release_input_proxy(keyboard, WL_KEYBOARD_RELEASE) };
         state.keyboard_proxy.set(ptr::null_mut());
+        state.xkb_keyboard.replace(None);
+        state.text_composer.reset();
         state.repeat_key.set(None);
         state.repeat_due.set(None);
         if state.keyboard_focused.replace(false) {
@@ -2016,31 +2106,21 @@ unsafe extern "C" fn keyboard_keymap(
         let bytes = unsafe { std::slice::from_raw_parts(mapping.cast::<u8>(), length) };
         // The xkb keymap string is NUL-terminated by convention; a malformed final byte skips
         // parsing rather than reading past the mapping.
-        if bytes[length - 1] == 0 {
-            // SAFETY: xkbcommon parses the NUL-terminated mapping without retaining it.
-            unsafe {
-                let context = xkb_context_new(0);
-                if !context.is_null() {
-                    let xkb_keymap = xkb_keymap_new_from_string(
-                        context,
-                        mapping.cast(),
-                        XKB_KEYMAP_FORMAT_TEXT_V1,
-                        0,
-                    );
-                    if !xkb_keymap.is_null() {
-                        state.modifier_indices.set(ModifierIndices {
-                            shift: xkb_keymap_mod_get_index(xkb_keymap, c"Shift".as_ptr()),
-                            caps_lock: xkb_keymap_mod_get_index(xkb_keymap, c"Lock".as_ptr()),
-                            control: xkb_keymap_mod_get_index(xkb_keymap, c"Control".as_ptr()),
-                            alt: xkb_keymap_mod_get_index(xkb_keymap, c"Mod1".as_ptr()),
-                            super_key: xkb_keymap_mod_get_index(xkb_keymap, c"Mod4".as_ptr()),
-                        });
-                        xkb_keymap_unref(xkb_keymap);
-                    }
-                    xkb_context_unref(context);
-                }
-            }
+        let keyboard = if bytes[length - 1] == 0 {
+            // SAFETY: The composer's context is live or null, and the mapping is a
+            // NUL-terminated string that outlives the call.
+            unsafe { XkbKeyboard::new(state.text_composer.context(), mapping.cast()) }
+        } else {
+            None
+        };
+        if let Some(keyboard) = &keyboard {
+            state.modifier_indices.set(keyboard.modifier_indices());
         }
+        // Replacing the keymap frees the previous keymap and state; a keymap that fails to
+        // compile types nothing rather than text from a stale layout. A pending dead key
+        // belongs to the old layout.
+        state.xkb_keyboard.replace(keyboard);
+        state.text_composer.reset();
         // SAFETY: The mapping was created above with this exact length.
         unsafe { munmap(mapping, length) };
     }
@@ -2078,6 +2158,7 @@ unsafe extern "C" fn keyboard_leave(
     let state = unsafe { &*data.cast::<WindowState>() };
     state.repeat_key.set(None);
     state.repeat_due.set(None);
+    state.text_composer.reset();
     state.modifiers.set(Modifiers::default());
     if state.keyboard_focused.replace(false) {
         state.push_input(InputEvent::FocusChanged { focused: false });
@@ -2112,6 +2193,10 @@ unsafe extern "C" fn keyboard_key(
         repeat: false,
         modifiers: state.modifiers.get(),
     });
+    if pressed {
+        // Modifier keys still pass through: a Compose key is often bound to one of them.
+        push_typed_text(state, key);
+    }
     if modifier {
         return;
     }
@@ -2127,6 +2212,55 @@ unsafe extern "C" fn keyboard_key(
     }
 }
 
+/// Delivers the characters one key press or client-side repeat types under the current keymap
+/// state, after dead-key and Compose sequences.
+fn push_typed_text(state: &WindowState, evdev_key: u32) {
+    if !keymap::modifiers_type_text(state.modifiers.get()) {
+        return;
+    }
+    let keyboard = state.xkb_keyboard.borrow();
+    let Some(keyboard) = keyboard.as_ref() else {
+        return;
+    };
+    let xkb_key = evdev_key.saturating_add(XKB_EVDEV_KEYCODE_OFFSET);
+    // SAFETY: The xkb state is live; any key code is accepted.
+    let keysym = unsafe { xkb_state_key_get_one_sym(keyboard.state, xkb_key) };
+    // A key with several keysyms reports none here; it bypasses Compose and types them all.
+    let composition = if keysym == 0 {
+        keymap::Composition::Unchanged
+    } else {
+        state.text_composer.feed(keysym)
+    };
+    match composition {
+        keymap::Composition::Unchanged => {
+            let mut text = [0_u8; KEY_TEXT_CAPACITY];
+            // SAFETY: The xkb state is live and the buffer holds the passed byte count.
+            let written = unsafe {
+                xkb_state_key_get_utf8(
+                    keyboard.state,
+                    xkb_key,
+                    text.as_mut_ptr().cast(),
+                    KEY_TEXT_CAPACITY,
+                )
+            };
+            // Truncated text would end in a cut code point; a key that long types nothing.
+            let length = usize::try_from(written)
+                .ok()
+                .filter(|&length| length < KEY_TEXT_CAPACITY)
+                .unwrap_or(0);
+            for character in keymap::printable_characters(&text[..length]) {
+                state.push_input(InputEvent::Character(character));
+            }
+        }
+        keymap::Composition::Absorbed => {}
+        keymap::Composition::Composed(text) => {
+            for character in text.characters() {
+                state.push_input(InputEvent::Character(character));
+            }
+        }
+    }
+}
+
 unsafe extern "C" fn keyboard_modifiers(
     data: *mut c_void,
     _keyboard: *mut c_void,
@@ -2134,13 +2268,18 @@ unsafe extern "C" fn keyboard_modifiers(
     depressed: u32,
     latched: u32,
     locked: u32,
-    _group: u32,
+    group: u32,
 ) {
     if data.is_null() {
         return;
     }
     // SAFETY: Listener data points to the boxed WindowState for the keyboard proxy lifetime.
     let state = unsafe { &*data.cast::<WindowState>() };
+    if let Some(keyboard) = state.xkb_keyboard.borrow().as_ref() {
+        // SAFETY: The xkb state is live; the compositor's serialized masks and effective layout
+        // replace the client-side state wholesale.
+        unsafe { xkb_state_update_mask(keyboard.state, depressed, latched, locked, 0, 0, group) };
+    }
     let modifiers =
         modifiers_from_masks(depressed | latched | locked, state.modifier_indices.get());
     if state.modifiers.replace(modifiers) != modifiers {

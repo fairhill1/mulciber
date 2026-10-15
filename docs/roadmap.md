@@ -653,3 +653,14 @@ device-loss cause.
   without `imageCubeArray`, or Metal outside the Metal 3 family); none of the available machines
   lacks it.
 - [ ] Other formats (RGBA8, BC) and single-level arrays wait for a consumer.
+
+## Typed text (platform 0.5.7)
+
+- [x] `InputEvent::Character` from the native layout on Win32, AppKit, X11 and Wayland, and stable
+  `KeyCode` tokens for saved bindings ([text entry](input-contract.md#text-entry)). X11 and Wayland
+  passed layout, AltGr, dead-key, Compose, repeat and Control checks under Xvfb and headless sway
+  ([evidence](linux-validation.md#typed-text-platform-057)).
+- [ ] Type on Windows and macOS with physical keyboards: US and AZERTY letters, AltGr or Option
+  characters, dead keys, Control and Command chords, repeat. Both are compile- and lint-checked only.
+- [ ] Decide whether AppKit should compose dead keys through `NSTextInputClient`.
+- [ ] IME composition on every platform.

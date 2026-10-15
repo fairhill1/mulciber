@@ -18,7 +18,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   passes; native presentation,
   presented-frame capture, and GPU timing feedback.
 - **Windows and input** (`mulciber-platform`): native Win32, AppKit, Wayland, and X11
-  implementations with window lifecycle, keyboard and pointer events, cursor capture, and fullscreen.
+  implementations with window lifecycle, keyboard and pointer events, typed text from the native
+  layout, cursor capture, and fullscreen.
 - **Game loop** (`mulciber-runtime`): input snapshots, fixed-step simulation, bounded catch-up,
   render interpolation, suspension coordination, and optional frame-start pacing.
   [Presentation controls](docs/frame-pacing-controls.md) also support explicit caps independent of refresh.

@@ -69,7 +69,8 @@ written comparison.
 The first input-transition experiment follows that same rule. AppKit delivers physical keys,
 modifiers, logical-coordinate pointer motion/buttons, precise or coarse scroll, and focus changes in
 native queue order before the pump's final redraw. It deliberately does not create input snapshots:
-snapshot boundaries belong to fixed/variable update policy in the later runtime. Text/IME, gamepads,
+snapshot boundaries belong to fixed/variable update policy in the later runtime. Typed text arrives as
+`InputEvent::Character` ([text entry](input-contract.md#text-entry)); IME composition, gamepads,
 relative-pointer capture, and peer Win32/Wayland/X11 evidence remain separate work. See the
 [experimental input contract](input-contract.md).
 

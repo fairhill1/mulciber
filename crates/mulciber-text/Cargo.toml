@@ -1,0 +1,25 @@
+[package]
+name = "mulciber-text"
+version = "0.1.0"
+description = "Text and flat shapes over a Mulciber scene: a glyph atlas from the game's fonts, measuring, wrapping and overlay geometry"
+edition.workspace = true
+homepage = "https://github.com/fairhill1/mulciber"
+keywords = ["gamedev", "text", "fonts", "hud", "ui"]
+license.workspace = true
+readme = "README.md"
+repository = "https://github.com/fairhill1/mulciber"
+rust-version.workspace = true
+categories = ["game-development", "graphics", "text-processing"]
+publish = ["crates-io"]
+# The tests rasterise a subset of Fira Sans that is not published; games bring their own fonts.
+exclude = ["tests"]
+
+[dependencies]
+fontdue = "0.9.4"
+mulciber = { version = "0.18.0", path = "../mulciber" }
+
+[dev-dependencies]
+mulciber-shader = { version = "0.5.7", path = "../mulciber-shader" }
+
+[lints]
+workspace = true

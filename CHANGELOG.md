@@ -2,6 +2,34 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Text and overlays (text 0.1.0, shader 0.5.7)
+
+`mulciber-text` is new, the mechanics both games on Mulciber had each built for their HUDs, menus and
+chat out of the same parts (fontdue, a shelf-packed atlas, a pos/uv/colour vertex, a premultiplied
+shader). The look stays the game's: it brings its fonts, sizes, character sets, keycap and icon
+glyphs, colours and layout, and the crate ships no fonts.
+
+- `AtlasBuilder` rasterises each `Font` at the pixel sizes and characters asked for into one RGBA8
+  sRGB `Atlas`, glyphs white with their coverage in alpha, with a solid block for flat shapes and any
+  coverage masks or colour images the game packs beside them; `Atlas::upload` makes the texture.
+- `Atlas::measure`, `wrap` (at spaces and line breaks, a long word overrunning on its own line) and
+  `fit` (cut with an ellipsis) need no device; `Style` adds tracking and scale.
+- `Batch` builds a frame's overlay geometry in pixels: text on whole pixels at its baked size, atlas
+  images, convex polygons, rectangles, lines and circles with edges softened across a pixel, every
+  triangle facing the screen. `Batch::geometry` is a material record's transient geometry, laid out
+  as `VERTEX_LAYOUT`.
+- `Batch::rasterise` draws it in software as the shader does (bilinear, premultiplied, the top-left
+  fill rule), for tests and previews without a GPU.
+
+`mulciber-shader` 0.5.7 adds the `mulciber::overlay` WGSL module the overlay pipeline imports. The
+README's overlay shader is compiled in a test and its pipeline declaration (`VERTEX_LAYOUT`, the atlas
+and sampler bindings) passes `MaterialPipelineDescriptor::validate` against it, the check pipeline
+creation makes.
+
+Tested in software only: the atlas, layout and geometry by unit tests against a subset of Fira Sans,
+and the rasteriser drawing a glyph texel for pixel, rectangles on whole pixels covering each pixel
+once, and polygons either way round. Nothing was drawn on a GPU, and neither game uses it yet.
+
 ## Typed text and key tokens (platform 0.5.7, runtime 0.6.1)
 
 `InputEvent::Character(char)` delivers what the keyboard types, for chat, consoles and names: the

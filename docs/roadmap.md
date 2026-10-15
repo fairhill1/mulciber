@@ -664,3 +664,12 @@ device-loss cause.
   characters, dead keys, Control and Command chords, repeat. Both are compile- and lint-checked only.
 - [ ] Decide whether AppKit should compose dead keys through `NSTextInputClient`.
 - [ ] IME composition on every platform.
+
+## Text and overlays (text 0.1.0)
+
+- [x] `mulciber-text`: the game's fonts in one atlas, measuring, wrapping and fitting, overlay
+  geometry, and a software rasteriser; `mulciber::overlay` in `mulciber-shader`. Unit-tested and
+  rasterised in software.
+- [ ] Draw it on Metal and Vulkan and compare with the software rasteriser.
+- [ ] Move Deadly Voyage's and Isle of Rán's HUD text onto it, keeping their panels, widgets and
+  palettes.

@@ -22,6 +22,9 @@ mod pbr {
 mod tonemap {
     include!("library_fixtures/tonemap.rs");
 }
+mod overlay {
+    include!("library_fixtures/overlay.rs");
+}
 
 const FIXTURES: &[(&str, &str, &[&str])] = &[
     (
@@ -80,6 +83,7 @@ const FIXTURES: &[(&str, &str, &[&str])] = &[
             "whitening_shoulder_inverse",
         ],
     ),
+    ("overlay", "mulciber::overlay", &["overlay_shade"]),
 ];
 
 #[test]
@@ -732,4 +736,83 @@ fn a_lit_fragment_shader_composes_with_every_library_module() {
         include_str!("../README.md").contains(include_str!("library_fixtures/lit_example.wgsl")),
         "the README's lit shader differs from src/library_fixtures/lit_example.wgsl"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// mulciber::overlay
+
+#[test]
+fn overlay_shading_premultiplies_coverage_and_tints_images() {
+    let shade = |texel, color, expected: [f32; 4]| {
+        let shaded = overlay::overlay_shade(texel, color);
+        assert!(
+            shaded
+                .iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < 1.0e-6),
+            "{texel:?} in {color:?} shades {shaded:?}, not {expected:?}"
+        );
+    };
+    // A glyph texel: white, half covered, in a half-transparent red.
+    shade(
+        [1.0, 1.0, 1.0, 0.5],
+        [1.0, 0.0, 0.0, 0.5],
+        [0.25, 0.0, 0.0, 0.25],
+    );
+    // An image texel keeps its colour under a white tint, premultiplied by its own alpha.
+    shade([0.2, 0.4, 0.8, 0.5], [1.0; 4], [0.1, 0.2, 0.4, 0.5]);
+    // Nothing shows where the atlas is clear, whatever the colour.
+    shade([1.0, 1.0, 1.0, 0.0], [0.3, 0.6, 0.9, 1.0], [0.0; 4]);
+}
+
+/// The vertex inputs `mulciber_text::VERTEX_LAYOUT` declares, location by location: two `vec2<f32>`
+/// and a `vec4<f32>`. That crate's tests hold its layout to the same list.
+const OVERLAY_VERTEX_INPUTS: [(u32, u32); 3] = [(0, 2), (1, 2), (2, 4)];
+
+#[test]
+fn an_overlay_shader_composes_with_the_text_crates_vertex_layout() {
+    let modules = ShaderModules::new();
+    let shader = modules.shader_source(
+        "overlay.wgsl",
+        include_str!("library_fixtures/overlay_example.wgsl"),
+    );
+    let (module, info) = shader.compose(&[]).expect("the overlay shader composes");
+    let entry = module
+        .entry_points
+        .iter()
+        .find(|entry| entry.name == "overlay_vertex")
+        .expect("the vertex entry point");
+    let argument = &entry.function.arguments[0];
+    let naga::TypeInner::Struct { members, .. } = &module.types[argument.ty].inner else {
+        panic!("the vertex input is OverlayVertex");
+    };
+    let inputs: Vec<(u32, u32)> = members
+        .iter()
+        .map(|member| {
+            let Some(naga::Binding::Location { location, .. }) = member.binding else {
+                panic!("every OverlayVertex member has a location");
+            };
+            let size = match module.types[member.ty].inner {
+                naga::TypeInner::Vector {
+                    size,
+                    scalar: naga::Scalar::F32,
+                } => size as u32,
+                ref other => panic!("an f32 vector, not {other:?}"),
+            };
+            (location, size)
+        })
+        .collect();
+    assert_eq!(inputs, OVERLAY_VERTEX_INPUTS);
+    let words = naga::back::spv::write_vec(
+        &module,
+        &info,
+        &naga::back::spv::Options {
+            lang_version: (1, 4),
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("SPIR-V generation");
+    assert_eq!(words.first().copied(), Some(0x0723_0203));
+    crate::metal_source(&module, &info).expect("MSL generation");
 }

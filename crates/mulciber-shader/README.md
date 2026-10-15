@@ -145,6 +145,7 @@ starts with `mulciber::` is an error, so a game cannot shadow one.
 | `mulciber::photometry` | light units, falloff and exposure; see [the lighting library](#the-lighting-library) |
 | `mulciber::pbr` | the BRDF, punctual lights and split-sum environment specular |
 | `mulciber::tonemap` | `hue_preserving_shoulder`, and `whitening_shoulder` with its inverse; `pbr_neutral` and its inverse, `pbr_neutral_inverse` |
+| `mulciber::overlay` | `OverlayVertex`, `OverlayRaster`, `overlay_raster` and `overlay_shade`: [`mulciber-text`](../mulciber-text/README.md)'s overlay geometry over one atlas, premultiplied |
 
 The module names end in segments that are unlikely local variable names, because of the alias rule
 under [composition rules](#composition-rules-and-limits).

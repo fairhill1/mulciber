@@ -17,6 +17,7 @@ struct Display {
 type XWindow = c_ulong;
 
 type Atom = c_ulong;
+type KeySym = c_ulong;
 type Status = c_int;
 
 const FALSE: c_int = 0;
@@ -43,6 +44,7 @@ const MAP_NOTIFY: c_int = 19;
 const CONFIGURE_NOTIFY: c_int = 22;
 const PROPERTY_NOTIFY: c_int = 28;
 const CLIENT_MESSAGE: c_int = 33;
+const MAPPING_NOTIFY: c_int = 34;
 const XEVENT_PADDING_WORDS: usize = 24;
 const XA_ATOM: Atom = 4;
 const XA_CARDINAL: Atom = 6;
@@ -188,6 +190,14 @@ unsafe extern "C" {
         data: *mut *mut u8,
     ) -> c_int;
     fn XFree(data: *mut c_void) -> c_int;
+    fn XLookupString(
+        event: *mut XKeyEvent,
+        buffer: *mut c_char,
+        bytes: c_int,
+        keysym: *mut KeySym,
+        compose_status: *mut c_void,
+    ) -> c_int;
+    fn XRefreshKeyboardMapping(event: *mut XMappingEvent) -> c_int;
 }
 
 #[repr(C)]
@@ -342,6 +352,19 @@ struct XPropertyEvent {
     state: c_int,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XMappingEvent {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut Display,
+    window: XWindow,
+    request: c_int,
+    first_keycode: c_int,
+    count: c_int,
+}
+
 /// The generic Xlib event union, sized by its libX11 padding member.
 #[repr(C)]
 union XEvent {
@@ -353,6 +376,7 @@ union XEvent {
     configure: XConfigureEvent,
     client_message: XClientMessageEvent,
     property: XPropertyEvent,
+    mapping: XMappingEvent,
     padding: [c_long; XEVENT_PADDING_WORDS],
 }
 
@@ -367,6 +391,7 @@ struct WindowState {
     focused: Cell<bool>,
     pointer_position: Cell<LogicalPosition>,
     pressed_keys: [Cell<u64>; 4],
+    text_composer: keymap::TextComposer,
     capture_requested: Cell<bool>,
     capture_engaged: Cell<bool>,
     fullscreen_requested: Cell<bool>,
@@ -476,6 +501,7 @@ impl Window {
                 focused: Cell::new(false),
                 pointer_position: Cell::new(LogicalPosition::default()),
                 pressed_keys: [const { Cell::new(0) }; 4],
+                text_composer: keymap::TextComposer::new(),
                 capture_requested: Cell::new(false),
                 capture_engaged: Cell::new(false),
                 fullscreen_requested: Cell::new(false),
@@ -778,6 +804,15 @@ impl Window {
                 self.state.capture_engaged.set(false);
                 false
             }
+            MAPPING_NOTIFY => {
+                // SAFETY: The discriminant identifies the mapping member as initialized.
+                let mut mapping = unsafe { event.mapping };
+                // Layout switches (`setxkbmap`) and tools that rebind spare keycodes announce
+                // themselves here; Xlib's cached keysym table must follow them.
+                // SAFETY: The event is a MappingNotify from this live display connection.
+                unsafe { XRefreshKeyboardMapping(&raw mut mapping) };
+                false
+            }
             MAP_NOTIFY => true,
             _ => false,
         }
@@ -805,6 +840,56 @@ impl Window {
             repeat,
             modifiers,
         });
+        if pressed && keymap::modifiers_type_text(modifiers) {
+            self.push_typed_text(event);
+        }
+    }
+
+    /// Delivers the characters one key press (or detectable auto-repeat) types.
+    ///
+    /// `XLookupString` resolves the keysym through Xlib's XKB-aware lookup, which applies the
+    /// event's layout group, Shift, Caps Lock, and `AltGr` level from the live server keymap.
+    /// libxkbcommon then turns it into a code point, covering keysyms beyond the Latin-1 bytes
+    /// `XLookupString` itself writes, and composes dead-key and Compose sequences from the
+    /// locale's Compose table. An X input method (`XOpenIM` with `Xutf8LookupString`) is
+    /// deliberately not used: it needs the process-global `setlocale` and `XSetLocaleModifiers`
+    /// a library must not change, interposes `XFilterEvent` (and, through `IBus` or `fcitx`, an
+    /// asynchronous round trip) in front of every key event, and its only extra coverage is
+    /// input-method composition, which the platform does not deliver yet.
+    fn push_typed_text(&self, event: &XKeyEvent) {
+        let mut event = *event;
+        let mut keysym: KeySym = 0;
+        let mut latin1 = [0 as c_char; 8];
+        // SAFETY: The event copy came from this live display connection, the buffer holds the
+        // passed byte count, and a null compose status is accepted.
+        unsafe {
+            XLookupString(
+                &raw mut event,
+                latin1.as_mut_ptr(),
+                c_int::try_from(latin1.len()).unwrap_or(0),
+                &raw mut keysym,
+                ptr::null_mut(),
+            );
+        }
+        let Ok(keysym) = u32::try_from(keysym) else {
+            return;
+        };
+        if keysym == 0 {
+            return;
+        }
+        match self.state.text_composer.feed(keysym) {
+            keymap::Composition::Unchanged => {
+                if let Some(character) = keymap::keysym_character(keysym) {
+                    self.state.push_input(InputEvent::Character(character));
+                }
+            }
+            keymap::Composition::Absorbed => {}
+            keymap::Composition::Composed(text) => {
+                for character in text.characters() {
+                    self.state.push_input(InputEvent::Character(character));
+                }
+            }
+        }
     }
 
     fn handle_button_event(&self, event: &XButtonEvent) {
@@ -882,6 +967,7 @@ impl Window {
             }
         } else {
             self.state.clear_pressed_keys();
+            self.state.text_composer.reset();
             self.state.modifiers.set(Modifiers::default());
             self.release_grab();
         }

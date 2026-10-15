@@ -249,6 +249,7 @@ impl Application {
                 pending_warp_delta: Cell::new((0.0, 0.0)),
                 function_key_held: Cell::new(false),
                 pending_modifier_key: Cell::new(None),
+                pending_characters: Cell::new(Vec::new()),
                 fullscreen_requested: Cell::new(false),
                 fullscreen_confirmed: Cell::new(false),
                 delegate,
@@ -326,6 +327,9 @@ impl Application {
                 if let Some(key) = window.pending_modifier_key.take() {
                     handler(WindowEvent::Input(key));
                 }
+                for character in window.pending_characters.take() {
+                    handler(WindowEvent::Input(InputEvent::Character(character)));
+                }
             }
             void(self.raw.as_ptr(), c"updateWindows");
         }
@@ -381,6 +385,9 @@ pub struct Window {
     // A modifier key's own transition, decoded from the `flagsChanged` event that also reports the
     // aggregate modifiers; delivered right after them.
     pending_modifier_key: Cell<Option<InputEvent>>,
+    // The characters a key-down event typed, decoded from that event and delivered right after
+    // its `Keyboard` press. See `typed_characters`.
+    pending_characters: Cell<Vec<char>>,
     fullscreen_requested: Cell<bool>,
     fullscreen_confirmed: Cell<bool>,
     delegate: NonNull<c_void>,
@@ -639,6 +646,27 @@ impl Window {
         self.pending_modifier_key.set(transition);
     }
 
+    /// Holds the characters a key-down event typed for delivery after its key press.
+    ///
+    /// # Safety
+    ///
+    /// `event` must be a live `keyDown` `NSEvent`.
+    unsafe fn queue_typed_characters(&self, event: Object) {
+        // SAFETY: The caller guarantees a live key event, for which `modifierFlags` and
+        // `characters` are defined. The returned NSString is autoreleased into the pump's pool and
+        // its UTF-16 code units are copied out immediately.
+        let characters = unsafe {
+            let flags = usize_value(event, c"modifierFlags");
+            if flags & (MODIFIER_CONTROL | MODIFIER_COMMAND) != 0 {
+                // Skip reading the string at all: the result would be discarded anyway.
+                Vec::new()
+            } else {
+                typed_characters(&string_utf16(object(event, c"characters")), flags)
+            }
+        };
+        self.pending_characters.set(characters);
+    }
+
     fn translate_input_event(&self, event: Object) -> Option<InputEvent> {
         // SAFETY: The event remains alive in the current AppKit autorelease pool. Every selector is
         // valid for NSEvent, and returned scalar/aggregate values are copied immediately.
@@ -649,12 +677,15 @@ impl Window {
             let event_type = usize_value(event, c"type");
             let modifiers = self.event_modifiers(event, event_type);
             match event_type {
-                EVENT_KEY_DOWN => Some(InputEvent::Keyboard {
-                    key: appkit_key_code(u16_value(event, c"keyCode")),
-                    state: ButtonState::Pressed,
-                    repeat: bool_value(event, c"isARepeat"),
-                    modifiers,
-                }),
+                EVENT_KEY_DOWN => {
+                    self.queue_typed_characters(event);
+                    Some(InputEvent::Keyboard {
+                        key: appkit_key_code(u16_value(event, c"keyCode")),
+                        state: ButtonState::Pressed,
+                        repeat: bool_value(event, c"isARepeat"),
+                        modifiers,
+                    })
+                }
                 EVENT_KEY_UP => Some(InputEvent::Keyboard {
                     key: appkit_key_code(u16_value(event, c"keyCode")),
                     state: ButtonState::Released,
@@ -1244,6 +1275,30 @@ unsafe fn u16_value(receiver: Object, name: &CStr) -> u16 {
     unsafe { function(receiver, selector(name)) }
 }
 
+unsafe fn u16_usize(receiver: Object, name: &CStr, value: usize) -> u16 {
+    let function: unsafe extern "C" fn(Object, Selector, usize) -> u16 =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), value) }
+}
+
+/// Copies an `NSString`'s UTF-16 code units; a nil string reads as empty.
+///
+/// # Safety
+///
+/// `string` must be nil or a live `NSString`.
+unsafe fn string_utf16(string: Object) -> Vec<u16> {
+    if string.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: The caller guarantees a live NSString; every index is below its `length`.
+    unsafe {
+        let length = usize_value(string, c"length");
+        (0..length)
+            .map(|index| u16_usize(string, c"characterAtIndex:", index))
+            .collect()
+    }
+}
+
 unsafe fn f64_value(receiver: Object, name: &CStr) -> f64 {
     let function: unsafe extern "C" fn(Object, Selector) -> f64 =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
@@ -1339,6 +1394,38 @@ fn physical_dimension(value: f64) -> Option<u32> {
     // The finite, positive, in-range checks above make this conversion exact for AppKit's integral
     // backing-pixel dimensions.
     Some(rounded as u32)
+}
+
+/// `AppKit`'s private-use block for function keys: `NSUpArrowFunctionKey` (U+F700) through the
+/// end of the range Apple reserves for them. Arrows, F-keys, Home/End, Page Up/Down and forward
+/// delete report their `characters` here.
+const APPKIT_FUNCTION_KEYS: core::ops::RangeInclusive<char> = '\u{F700}'..='\u{F8FF}';
+
+/// Decodes the text a key-down event's `characters` typed, given that event's `modifierFlags`.
+///
+/// Control and Command type nothing: with them held `characters` reports control codes or the
+/// shortcut's letter, neither of which is text. Option passes, because Mac layouts type characters
+/// with it (Option-2 is `™` on U.S.). Control characters (Return, Tab, Escape, Backspace's DEL,
+/// keypad Enter's ETX) and `AppKit`'s function-key private-use block are dropped, leaving those
+/// keys to their `Keyboard` events. Unpaired surrogates, which `characters` should never carry,
+/// are dropped rather than replaced.
+///
+/// The event path never enters the Cocoa text input system: the content view consumes `keyDown:`
+/// without calling `interpretKeyEvents:` and implements no `NSTextInputClient`. `characters` is
+/// still the active layout's translation of the key, so Shift, Caps Lock, Option and non-U.S.
+/// layouts are covered. Dead keys are the expected gap: their composition is normally driven by
+/// the input context that this path bypasses, so the dead key itself is expected to report an
+/// empty `characters` (typing nothing) and the following key its uncomposed base character
+/// (`´` then `e` typing `e`, not `é`). That expectation has not been checked on hardware.
+/// Input-method composition (CJK) is likewise not delivered. Both need `NSTextInputClient`.
+fn typed_characters(utf16: &[u16], flags: usize) -> Vec<char> {
+    if flags & (MODIFIER_CONTROL | MODIFIER_COMMAND) != 0 {
+        return Vec::new();
+    }
+    char::decode_utf16(utf16.iter().copied())
+        .filter_map(Result::ok)
+        .filter(|character| !character.is_control() && !APPKIT_FUNCTION_KEYS.contains(character))
+        .collect()
 }
 
 /// Reports the physical Fn/globe key's new state when `flagsChanged` describes that key.
@@ -1567,12 +1654,62 @@ mod tests {
 
     use super::{
         DEVICE_LEFT_CONTROL, DEVICE_RIGHT_CONTROL, DEVICE_RIGHT_SHIFT, KEY_CODE_FUNCTION,
-        MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_FUNCTION, MODIFIER_OPTION, MODIFIER_SHIFT,
-        Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
+        MODIFIER_CAPS_LOCK, MODIFIER_COMMAND, MODIFIER_CONTROL, MODIFIER_FUNCTION, MODIFIER_OPTION,
+        MODIFIER_SHIFT, Size, WindowDelegateState, WindowSlot, appkit_key_code, appkit_modifiers,
         appkit_pointer_button, bool_object, bool_value, create_content_view,
         create_window_delegate, function_key_transition, metrics_transition,
-        modifier_key_transition, physical_dimension, scroll_delta, void, void_object,
+        modifier_key_transition, physical_dimension, scroll_delta, typed_characters, void,
+        void_object,
     };
+
+    fn utf16(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn typed_characters_keep_layout_text_including_option_and_caps_lock() {
+        assert_eq!(typed_characters(&utf16("a"), 0), ['a']);
+        assert_eq!(typed_characters(&utf16("A"), MODIFIER_SHIFT), ['A']);
+        assert_eq!(typed_characters(&utf16("A"), MODIFIER_CAPS_LOCK), ['A']);
+        assert_eq!(
+            typed_characters(&utf16("\u{2122}"), MODIFIER_OPTION),
+            ['\u{2122}']
+        );
+        assert_eq!(typed_characters(&utf16(" "), 0), [' ']);
+        // Outside the Basic Multilingual Plane, as a surrogate pair.
+        assert_eq!(typed_characters(&utf16("\u{1F600}"), 0), ['\u{1F600}']);
+        assert_eq!(typed_characters(&utf16("ab"), 0), ['a', 'b']);
+    }
+
+    #[test]
+    fn typed_characters_drop_control_and_function_keys() {
+        // Return, Tab, Shift-Tab, Escape, Backspace (DEL), keypad Enter.
+        for control in ["\r", "\t", "\u{19}", "\u{1B}", "\u{7F}", "\u{3}"] {
+            assert!(
+                typed_characters(&utf16(control), 0).is_empty(),
+                "{control:?}"
+            );
+        }
+        // Up arrow, F1, forward delete, and the block's last code point.
+        for function in ["\u{F700}", "\u{F704}", "\u{F728}", "\u{F8FF}"] {
+            assert!(
+                typed_characters(&utf16(function), MODIFIER_FUNCTION).is_empty(),
+                "{function:?}"
+            );
+        }
+        assert_eq!(typed_characters(&utf16("\u{F6FF}"), 0), ['\u{F6FF}']);
+        assert_eq!(typed_characters(&[0xD800], 0), [] as [char; 0]);
+        // A dead key reports no characters and types nothing.
+        assert!(typed_characters(&[], MODIFIER_OPTION).is_empty());
+    }
+
+    #[test]
+    fn typed_characters_ignore_control_and_command_chords() {
+        assert!(typed_characters(&utf16("\u{1}"), MODIFIER_CONTROL).is_empty());
+        assert!(typed_characters(&utf16("c"), MODIFIER_COMMAND).is_empty());
+        assert!(typed_characters(&utf16("c"), MODIFIER_COMMAND | MODIFIER_SHIFT).is_empty());
+        assert!(typed_characters(&utf16("\u{E7}"), MODIFIER_CONTROL | MODIFIER_OPTION).is_empty());
+    }
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
         WindowMetrics::new(PhysicalExtent::new(1920, 1080), 2.0, revision)

@@ -21,10 +21,39 @@ The first slice delivers gameplay-oriented transitions through the existing fall
 - precise trackpad and coarse wheel scroll deltas without collapsing their units; and
 - keyboard-focus gain and loss.
 
-Text entry, dead keys, keyboard-layout output, IME composition, gestures, pressure, gamepads,
-relative-pointer motion, cursor confinement, and cursor visibility are outside this slice. They have
+Typed text arrives separately from key identity; see [text entry](#text-entry). IME composition,
+gestures, pressure, gamepads, relative-pointer motion, cursor confinement, and cursor visibility are
+outside this slice. They have
 different lifecycle and capability requirements and must not be inferred from physical key or
 ordinary pointer evidence.
+
+## Text entry
+
+`InputEvent::Character(char)` carries a character the keyboard typed, for chat, consoles and names,
+apart from `KeyCode`, which stays the key's physical place. It is the native layout's output after
+Shift, Caps Lock and AltGr (Option on macOS), so the AZERTY `Q` key types `a`, and it follows the
+`Keyboard` press that typed it and repeats with it. Only printable characters arrive: Enter,
+Backspace, Tab, Escape, the arrows and function keys are `Keyboard` events alone, and a key held with
+Control (or Command on macOS) types nothing. `KeyCode::name` and `KeyCode::from_name` give each key a
+stable token (its variant name) for saving bindings; `Unidentified` keys have none.
+
+Per platform:
+
+- **Win32:** `WM_CHAR`, after the `TranslateMessage` the pump already ran, with UTF-16 surrogate
+  pairs joined. Dead keys compose through `WM_DEADCHAR` into the next `WM_CHAR`. AltGr reaches
+  Windows as Control+Alt and types; Alt-only chords stay `WM_SYSCHAR` menu accelerators and type
+  nothing. An Alt+numpad code arrives when Alt is released.
+- **AppKit:** the key-down event's `characters`, without AppKit's function-key range
+  (U+F700–U+F8FF). The view does not go through the text input system (`NSTextInputClient`), so dead
+  keys are not expected to compose: unverified on hardware.
+- **X11:** `XLookupString` for the layout's keysym, `xkb_keysym_to_utf32` for its character, and
+  xkbcommon's Compose tables (from `LC_ALL`, `LC_CTYPE` or `LANG`) for dead keys and the Compose key.
+  XIM is not used, so the library never changes the process locale.
+- **Wayland:** an `xkb_state` kept from the compositor's keymap and modifiers, the same Compose
+  tables, and the backend's client-side repeat.
+- On X11 and Wayland, Alt alone does not stop typing.
+
+Input-method composition (Chinese, Japanese, Korean) is not delivered on any platform yet.
 
 ## Event delivery and ownership
 
@@ -150,9 +179,10 @@ delivered before redraw.
 
 The Win32 backend translates physical scan codes from `WM_KEYDOWN`, `WM_KEYUP`, and their system-key
 peers rather than treating keyboard-layout text as key identity. Modifier state comes from Win32's
-thread-local key state. `TranslateMessage` still runs as part of ordinary native dispatch, but the
-resulting `WM_CHAR` and `WM_SYSCHAR` messages are consumed because text entry, menu mnemonics, and IME
-composition are outside this render-window slice; this also prevents the default OS beep. Alt+F4 is
+thread-local key state. `TranslateMessage` still runs as part of ordinary native dispatch; the
+resulting `WM_CHAR` messages become [text entry](#text-entry), and `WM_SYSCHAR` is consumed because menu
+mnemonics and IME composition are outside this render-window slice, which also prevents the default
+OS beep. Alt+F4 is
 explicitly preserved through `DefWindowProcW` so native close behavior remains intact.
 
 Pointer messages use signed top-left client coordinates. Button presses acquire Win32 pointer

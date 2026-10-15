@@ -230,8 +230,10 @@ pub enum ButtonState {
 
 /// A physical, position-oriented keyboard key.
 ///
-/// Text entry and input-method composition are deliberately separate from this gameplay-oriented
-/// identity and are not part of the first input evidence slice.
+/// The identity is the key's place on the keyboard, whatever the layout prints on it: `KeyW` is
+/// the key right of Tab on AZERTY too. Typed text arrives separately, as
+/// [`InputEvent::Character`]. [`KeyCode::name`] and [`KeyCode::from_name`] give each key a stable
+/// token for saving bindings.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 #[allow(missing_docs)]
@@ -469,6 +471,52 @@ pub(crate) fn follow_confirmed_fullscreen(
     }
 }
 
+/// Expands to [`KeyCode::name`] and [`KeyCode::from_name`] over every named key. The match in
+/// `name` is exhaustive, so a key added to [`KeyCode`] without a name here fails to compile.
+macro_rules! key_names {
+    ($($key:ident,)*) => {
+        impl KeyCode {
+            /// A stable token for the key, its variant's name (`"KeyW"`, `"ArrowLeft"`,
+            /// `"Numpad0"`), for saving bindings in settings files. Tokens never change once
+            /// released; a game shows its own labels. `None` for [`KeyCode::Unidentified`], whose
+            /// native code means nothing on another platform or machine.
+            #[must_use]
+            pub const fn name(self) -> Option<&'static str> {
+                match self {
+                    $(Self::$key => Some(stringify!($key)),)*
+                    Self::Unidentified(_) => None,
+                }
+            }
+
+            /// The key [`KeyCode::name`] gives `name` for, or `None` for an unknown token.
+            #[must_use]
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $(stringify!($key) => Some(Self::$key),)*
+                    _ => None,
+                }
+            }
+        }
+
+        /// Every named key, for tests that cover them all.
+        #[cfg(test)]
+        const NAMED_KEYS: &[KeyCode] = &[$(KeyCode::$key,)*];
+    };
+}
+
+key_names! {
+    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO, KeyP,
+    KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ, Digit0, Digit1, Digit2, Digit3,
+    Digit4, Digit5, Digit6, Digit7, Digit8, Digit9, Escape, Space, Enter, Tab, Backspace, Delete,
+    Insert, Home, End, PageUp, PageDown, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, Minus, Equal,
+    BracketLeft, BracketRight, Backslash, Semicolon, Quote, Backquote, Comma, Period, Slash, F1,
+    F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19, F20, Numpad0,
+    Numpad1, Numpad2, Numpad3, Numpad4, Numpad5, Numpad6, Numpad7, Numpad8, Numpad9, NumpadDecimal,
+    NumpadMultiply, NumpadAdd, NumpadSubtract, NumpadDivide, NumpadEnter, NumpadEqual, NumpadClear,
+    ShiftLeft, ShiftRight, ControlLeft, ControlRight, AltLeft, AltRight, SuperLeft, SuperRight,
+    CapsLock,
+}
+
 /// A scroll delta preserving whether the platform supplied precise or coarse units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(missing_docs)]
@@ -495,6 +543,16 @@ pub enum InputEvent {
     },
     /// The aggregate modifier state changed.
     ModifiersChanged(Modifiers),
+    /// The keyboard typed a character, for text entry: chat, a console, a save's name.
+    ///
+    /// It is the character the native layout produces, after Shift, Caps Lock, `AltGr` and dead
+    /// keys where the platform composes them, so `Q` on an AZERTY keyboard types `a`. It follows
+    /// the [`Self::Keyboard`] press that typed it, and repeats with it; a Windows Alt+numpad code
+    /// arrives when Alt is released. Only printable characters
+    /// arrive: Enter, Backspace, Tab, Escape and the arrows are [`Self::Keyboard`] events, and a
+    /// key held with Control, or Command on macOS, types nothing. Input-method composition (for
+    /// Chinese, Japanese or Korean) is not yet delivered.
+    Character(char),
     /// The pointer moved in logical client coordinates.
     PointerMoved {
         position: LogicalPosition,
@@ -737,5 +795,31 @@ mod tests {
         let descriptor = WindowDescriptor::new("Mulciber", LogicalSize::new(960, 540));
         assert_eq!(descriptor.title(), "Mulciber");
         assert_eq!(descriptor.logical_size(), LogicalSize::new(960, 540));
+    }
+}
+
+#[cfg(test)]
+mod key_name_tests {
+    use super::{KeyCode, NAMED_KEYS};
+    use std::collections::HashSet;
+
+    #[test]
+    fn every_named_key_round_trips_through_a_unique_token() {
+        let mut tokens = HashSet::new();
+        for &key in NAMED_KEYS {
+            let name = key.name().expect("a named key has a token");
+            assert!(tokens.insert(name), "{name} names two keys");
+            assert_eq!(KeyCode::from_name(name), Some(key));
+        }
+        assert_eq!(KeyCode::KeyW.name(), Some("KeyW"));
+        assert_eq!(KeyCode::from_name("ArrowLeft"), Some(KeyCode::ArrowLeft));
+    }
+
+    #[test]
+    fn unidentified_keys_and_unknown_tokens_have_no_name() {
+        assert_eq!(KeyCode::Unidentified(0x1234).name(), None);
+        for token in ["", "keyw", "Unidentified", "Left Arrow", "KeyW "] {
+            assert_eq!(KeyCode::from_name(token), None, "{token:?}");
+        }
     }
 }

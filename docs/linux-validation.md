@@ -1069,6 +1069,21 @@ all 110 readback cases must pass and every refusal must fire without warning/err
 has not run on Linux; the Vulkan path is cross-target Clippy-checked from macOS only. See the
 [contract](cube-textures.md#cube-texture-arrays).
 
+## Typed text (platform 0.5.7)
+
+`InputEvent::Character` was tested on 2026-10-16 in a headless container with throwaway programs that
+print the platform's events, not with a hardware keyboard or a desktop session. X11: Xvfb with no
+window manager, keys injected through XTest and `xdotool`. Wayland: headless sway 1.9, keys from
+`wtype` and from a virtual-keyboard client sending real keymaps and modifier state. On both, the US
+layout typed text with Shift and Caps Lock; `fr` typed `a` from the Q key, `&` from 1 and `€` from
+AltGr+E, and the dead circumflex composed `ê`, `ë` and `^`; `de` typed `ü ö ä Ü @ z` and composed
+`é`; `ru` typed Cyrillic, and a `us,ru` layout switch followed the group; the Compose key (Right Alt)
+typed `©` and `€`; holding a key repeated its character (8 repeats on X11, 9 client-side repeats on
+Wayland); Ctrl+letter typed nothing, and Enter, Backspace, Tab, Escape and the arrows gave `Keyboard`
+events alone. On X11, `us intl` dead keys composed, and a dead key followed by a focus change was
+reset. Not covered: IME composition, GNOME, KDE or any window manager, user `~/.XCompose` files and
+non-English Compose locales. See [text entry](input-contract.md#text-entry).
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 Workspace format/check/Clippy/tests pass on this platform. The growth path was reached by

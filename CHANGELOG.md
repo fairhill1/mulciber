@@ -2,6 +2,26 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Typed text and key tokens (platform 0.5.7)
+
+`InputEvent::Character(char)` delivers what the keyboard types, for chat, consoles and names: the
+native layout's character after Shift, Caps Lock and AltGr (Option on macOS), so the AZERTY Q key
+types `a`, following the `Keyboard` press that typed it and repeating with it. Both games built on
+Mulciber had worked it out from `KeyCode`s with an American layout table. Only printable characters
+arrive, and a key held with Control, or Command on macOS, types nothing. Win32 reads `WM_CHAR`, joining
+surrogate pairs; AppKit the key-down's `characters`; X11 `XLookupString` with xkbcommon's keysym
+conversion; Wayland an `xkb_state` kept from the compositor's keymap. X11 and Wayland compose dead
+keys and the Compose key through xkbcommon's Compose tables, and Win32 through `WM_CHAR`; AppKit
+bypasses the text input system, so dead keys are not expected to compose there. IME composition is
+not delivered yet.
+
+`KeyCode::name` and `KeyCode::from_name` give every key a stable token, its variant's name, for
+saving bindings in settings; both games kept their own, incompatible tables.
+
+X11 and Wayland passed layout, AltGr, dead-key, Compose, repeat and Control checks under Xvfb and
+headless sway ([evidence](docs/linux-validation.md#typed-text-platform-057)). Windows and macOS are
+compile- and Clippy-checked only. See [text entry](docs/input-contract.md#text-entry).
+
 ## Smaller API fixes (graphics 0.17.0, runtime 0.6.0, net 0.2.0, model 0.3.0, texture 0.5.0, audio 0.3.0)
 
 Breaking unless noted.

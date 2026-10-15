@@ -456,6 +456,7 @@ struct WindowState {
     focused: Cell<bool>,
     last_focused: Cell<bool>,
     last_modifiers: Cell<Modifiers>,
+    pending_high_surrogate: Cell<Option<u16>>,
     captured_pointer_buttons: Cell<u16>,
     last_pointer_position: Cell<LogicalPosition>,
     capture_requested: Cell<bool>,
@@ -482,6 +483,7 @@ impl WindowState {
             focused: Cell::new(false),
             last_focused: Cell::new(false),
             last_modifiers: Cell::new(Modifiers::default()),
+            pending_high_surrogate: Cell::new(None),
             captured_pointer_buttons: Cell::new(0),
             last_pointer_position: Cell::new(LogicalPosition::default()),
             capture_requested: Cell::new(false),
@@ -956,6 +958,8 @@ unsafe fn handle_input_message(
         WM_SETFOCUS | WM_KILLFOCUS => {
             if let Some(state) = state {
                 state.focused.set(message == WM_SETFOCUS);
+                // A surrogate pair never straddles a focus change.
+                state.pending_high_surrogate.set(None);
                 // SAFETY: Focus messages are synchronous. If creation changes focus before a
                 // callback exists, the next pump reconciles the retained value.
                 unsafe { dispatch_focus_transition(window, state) };
@@ -977,9 +981,19 @@ unsafe fn handle_input_message(
                 Some(0)
             }
         }
-        // TranslateMessage derives these from physical key messages. Text and IME are a separate
-        // future contract; consuming them prevents the render-only window's default OS beep.
-        WM_CHAR | WM_SYSCHAR => Some(0),
+        // TranslateMessage in the pump derives WM_CHAR from the key press it follows, applying
+        // the layout, Shift, Caps Lock, AltGr and dead keys (WM_DEADCHAR announces a dead key and
+        // types nothing; the composed character arrives in the next WM_CHAR).
+        WM_CHAR => {
+            if let Some(state) = state {
+                // SAFETY: Character messages are delivered on the window thread.
+                unsafe { dispatch_character_event(state, w_param) };
+            }
+            Some(0)
+        }
+        // WM_SYSCHAR is an Alt chord (Alt without Control, so never AltGr): a menu accelerator,
+        // not typed text. Consuming it prevents the render-only window's default OS beep.
+        WM_SYSCHAR => Some(0),
         WM_MOUSEMOVE => {
             if let Some(state) = state {
                 if state.capture_engaged.get() {
@@ -1326,6 +1340,50 @@ unsafe fn dispatch_keyboard_event(
             },
         );
     }
+}
+
+unsafe fn dispatch_character_event(state: &WindowState, code_unit: Wparam) {
+    // A Unicode window receives one UTF-16 code unit per WM_CHAR.
+    let Ok(code_unit) = u16::try_from(code_unit) else {
+        return;
+    };
+    let Some(character) = decode_utf16_unit(&state.pending_high_surrogate, code_unit) else {
+        return;
+    };
+    // SAFETY: Character messages are handled on their owning window thread, where the key state
+    // still reflects the key message TranslateMessage derived this character from.
+    let modifiers = unsafe { win32_modifiers() };
+    if is_typed_text(character, modifiers) {
+        // SAFETY: The caller guarantees callback registration remains live for this dispatch.
+        unsafe { dispatch_input_event(state, InputEvent::Character(character)) };
+    }
+}
+
+/// Decodes one UTF-16 code unit from consecutive `WM_CHAR` messages. A high surrogate waits in
+/// `pending_high` for the low surrogate that completes it; a lone surrogate of either kind is
+/// dropped.
+fn decode_utf16_unit(pending_high: &Cell<Option<u16>>, code_unit: u16) -> Option<char> {
+    match code_unit {
+        0xd800..=0xdbff => {
+            pending_high.set(Some(code_unit));
+            None
+        }
+        0xdc00..=0xdfff => {
+            let high = pending_high.take()?;
+            char::decode_utf16([high, code_unit]).next()?.ok()
+        }
+        _ => {
+            pending_high.set(None);
+            char::from_u32(u32::from(code_unit))
+        }
+    }
+}
+
+/// Whether a `WM_CHAR` character is text for [`InputEvent::Character`]. Control+letter already
+/// arrives as a control character; Control+Space arrives as a space, so a Control chord is
+/// dropped explicitly. Control with Alt is how Win32 reports `AltGr`, which types real characters.
+fn is_typed_text(character: char, modifiers: Modifiers) -> bool {
+    !character.is_control() && (modifiers.alt() || !modifiers.control())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1803,13 +1861,16 @@ pub mod integration {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::{
         MOUSE_MOVE_ABSOLUTE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_XBUTTONDOWN, WindowSlot,
-        metrics_transition, pointer_button, pointer_position, raw_mouse_delta, win32_key_code,
+        decode_utf16_unit, is_typed_text, metrics_transition, pointer_button, pointer_position,
+        raw_mouse_delta, win32_key_code,
     };
     use crate::{
-        ButtonState, KeyCode, LogicalPosition, PhysicalExtent, PointerButton, WindowEvent,
-        WindowMetrics, WindowRevision,
+        ButtonState, KeyCode, LogicalPosition, Modifiers, PhysicalExtent, PointerButton,
+        WindowEvent, WindowMetrics, WindowRevision,
     };
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {
@@ -1901,6 +1962,83 @@ mod tests {
             pointer_button(WM_XBUTTONDOWN, 2 << 16),
             Some((PointerButton::Other(4), 1 << 4, ButtonState::Pressed))
         );
+    }
+
+    #[test]
+    fn utf16_units_pair_surrogates_and_drop_lone_ones() {
+        let pending = Cell::new(None);
+        let decode = |units: &[u16]| -> Vec<char> {
+            units
+                .iter()
+                .filter_map(|&unit| decode_utf16_unit(&pending, unit))
+                .collect()
+        };
+        assert_eq!(decode(&[0x61, 0xe9, 0x20ac]), ['a', '\u{e9}', '\u{20ac}']);
+        assert_eq!(decode(&[0xd83d, 0xde00]), ['\u{1f600}']);
+        // A lone low surrogate, a high surrogate replaced by another, and one interrupted by an
+        // ordinary unit are all dropped without disturbing their neighbours.
+        assert_eq!(decode(&[0xde00, 0x62]), ['b']);
+        assert_eq!(decode(&[0xd83d, 0xd83d, 0xde00]), ['\u{1f600}']);
+        assert_eq!(decode(&[0xd83d, 0x63, 0xde00]), ['c']);
+        assert_eq!(pending.get(), None);
+        assert_eq!(decode(&[0xd83d]), []);
+        assert_eq!(pending.get(), Some(0xd83d));
+    }
+
+    #[test]
+    fn typed_text_drops_control_characters_and_control_chords_but_keeps_altgr() {
+        let none = Modifiers::default();
+        let shift = Modifiers::from_bits(Modifiers::SHIFT);
+        let control = Modifiers::from_bits(Modifiers::CONTROL);
+        let alt_gr = Modifiers::from_bits(Modifiers::CONTROL | Modifiers::ALT);
+        assert!(is_typed_text('a', none));
+        assert!(is_typed_text('A', shift));
+        assert!(is_typed_text(' ', none));
+        // Enter, Backspace, Tab and Escape arrive as control characters.
+        for control_character in ['\r', '\u{8}', '\t', '\u{1b}', '\u{7f}'] {
+            assert!(!is_typed_text(control_character, none));
+        }
+        // Control+A arrives as SOH; Control+Space arrives as a plain space.
+        assert!(!is_typed_text('\u{1}', control));
+        assert!(!is_typed_text(' ', control));
+        // AltGr+E on a German layout types the euro sign.
+        assert!(is_typed_text('\u{20ac}', alt_gr));
+    }
+
+    #[test]
+    #[ignore = "requires a native Windows desktop; creates a hidden window"]
+    fn native_character_messages_deliver_text() {
+        unsafe fn record(context: *mut std::ffi::c_void, event: WindowEvent) {
+            // SAFETY: The test keeps this vector alive until after the window is dropped.
+            let characters = unsafe { &mut *context.cast::<Vec<char>>() };
+            if let WindowEvent::Input(crate::InputEvent::Character(character)) = event {
+                characters.push(character);
+            }
+        }
+
+        let mut characters = Vec::<char>::new();
+        let slot = WindowSlot::new();
+        let window = super::Window::new(
+            &crate::WindowDescriptor::new("Character regression", crate::LogicalSize::new(64, 64)),
+            false,
+            slot.claim().unwrap(),
+        )
+        .unwrap();
+        let handle = window.handle.as_ptr();
+        window
+            .state
+            .event_context
+            .set(std::ptr::from_mut(&mut characters).cast());
+        window.state.event_callback.set(Some(record));
+
+        // Assumes no Control key is held while the test runs.
+        for unit in [0x61, 0x0d, 0x08, 0xd83d, 0xde00, 0xde00, 0x20ac] {
+            // SAFETY: This hidden window and its callback are live on the creating thread.
+            unsafe { super::window_procedure(handle, super::WM_CHAR, unit, 0) };
+        }
+        // SAFETY: WM_SYSCHAR is consumed without typing text.
+        unsafe { super::window_procedure(handle, super::WM_SYSCHAR, 0x66, 0) };
+        assert_eq!(characters, ['a', '\u{1f600}', '\u{20ac}']);
     }
 
     #[test]

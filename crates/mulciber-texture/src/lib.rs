@@ -26,7 +26,7 @@ pub use container::{
     MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_bytes, level_bytes, write_ktx2,
 };
 #[cfg(feature = "encode")]
-pub use encode::{Baked, bake, bake_materials, encode_bc7, run};
+pub use encode::{BakeMode, Baked, bake, bake_materials, encode_bc7, run};
 pub use material::{
     IMAGE_EXTENSIONS, MAP_SUFFIXES, METALLIC_SUFFIX, MaterialDefaults, MaterialMaps, NORMAL_SUFFIX,
     OCCLUSION_SUFFIX, ROUGHNESS_SUFFIX, find_materials, is_albedo,

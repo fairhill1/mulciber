@@ -20,13 +20,12 @@ dismemberment events.
 
 ## Public vocabulary
 
-- `Device::create_mesh_with_parts(&[Vertex], &[MeshIndices])` uploads the fixed vertex layout once
-  with one or more index parts.
-- `Device::create_mesh_with_layout_and_parts(VertexLayout, &[u8], &[MeshIndices])` is the raw-layout
-  form. Each part may independently use `MeshIndices::U16` or `MeshIndices::U32`.
-- Existing `create_mesh` and `create_mesh_with_layout` create the ordinary one-part case. Part zero
-  is their default and remains selected by existing whole-mesh draw APIs and
-  `GeometrySource::Mesh(&mesh)`.
+- `Device::create_mesh(&MeshDescriptor { vertices, parts })` uploads the vertices once with one or
+  more index parts. `vertices` is `MeshVertices::Fixed(&[Vertex])` for the fixed vertex layout or
+  `MeshVertices::Bytes { layout, bytes }` for the raw-layout form. Each entry of
+  `parts: &[MeshIndices]` may independently use `MeshIndices::U16` or `MeshIndices::U32`.
+- A single-element `parts` is the ordinary one-part case. Part zero is the default and remains
+  selected by existing whole-mesh draw APIs and `GeometrySource::Mesh(&mesh)`.
 - `Mesh::part(index)` validates the number and returns a borrowed, `Copy` `MeshPart`. `part_count`
   exposes the immutable count. A bad number returns `GraphicsErrorKind::InvalidRequest` naming the
   requested number and available count.

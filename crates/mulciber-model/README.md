@@ -22,7 +22,7 @@ use mulciber_model::{Model, Y_UP_TO_Z_UP};
 
 let mut model = Model::load("assets/models/mantel_clock.gltf")?;
 model.transform(&Y_UP_TO_Z_UP);       // glTF is +Y up, in metres
-model.duplicate_double_sided();       // back faces for pipelines that cull them
+model.duplicate_double_sided();       // back faces for pipelines that cull them; clears double_sided
 for part in &model.parts {
     let material = model.material_of(part);
     // part.positions, normals, tangents, uvs and indices into the game's vertex layout

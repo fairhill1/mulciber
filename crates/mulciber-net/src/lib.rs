@@ -30,10 +30,10 @@
 //!
 //! let network = MemoryNetwork::new();
 //! let config = Config::new(0x5348_4950_0001);
-//! let mut server = Server::new(network.endpoint(MemoryAddress(1)), ServerConfig::new(config, 32));
-//! let mut client = Client::connect(network.endpoint(MemoryAddress(2)), MemoryAddress(1), config, b"name=Ann", Instant::now()).unwrap();
-//!
 //! let mut now = Instant::now();
+//! let mut server = Server::new(network.endpoint(MemoryAddress(1)), ServerConfig::new(config, 32), now);
+//! let mut client = Client::connect(network.endpoint(MemoryAddress(2)), MemoryAddress(1), config, b"name=Ann", now).unwrap();
+//!
 //! while client.state() == ClientState::Connecting {
 //!     now += Duration::from_millis(16);
 //!     server.update(now).unwrap();

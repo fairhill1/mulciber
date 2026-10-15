@@ -5,9 +5,9 @@
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
     MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
-    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
-    SampleCount, Scene, SceneColor, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
-    VertexLayout,
+    MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneSubmission,
+    ShaderArtifact, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -197,16 +197,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         skinned_layout,
         &[UNIFORM, PALETTE],
     ))?;
-    let prop_mesh = graphics.device.create_mesh_with_layout(
-        prop_layout,
-        &triangle(false),
-        MeshIndices::U16(&[0, 1, 2]),
-    )?;
-    let skinned_mesh = graphics.device.create_mesh_with_layout(
-        skinned_layout,
-        &triangle(true),
-        MeshIndices::U16(&[0, 1, 2]),
-    )?;
+    let prop_mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Bytes {
+            layout: prop_layout,
+            bytes: &triangle(false),
+        },
+        parts: &[MeshIndices::U16(&[0, 1, 2])],
+    })?;
+    let skinned_mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Bytes {
+            layout: skinned_layout,
+            bytes: &triangle(true),
+        },
+        parts: &[MeshIndices::U16(&[0, 1, 2])],
+    })?;
     let composite = graphics
         .device
         .create_postprocess_pipeline(PostprocessPipelineDescriptor {

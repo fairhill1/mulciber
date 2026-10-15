@@ -168,18 +168,19 @@ impl Runtime {
         self.input.handle_event(event);
     }
 
-    /// Applies the input and rendering-lifecycle parts of one platform window event.
+    /// Applies the input and rendering-lifecycle parts of one platform window event, received
+    /// at `now`.
     ///
-    /// Native display timing is consumed from metrics; redraw and close policy remain with the
-    /// application. Lower-level input, suspend,
+    /// Native display timing is consumed from metrics, and a resume restarts frame timing from
+    /// `now`; redraw and close policy remain with the application. Lower-level input, suspend,
     /// and resume methods remain available when an application uses a different coordination shape.
-    pub fn handle_window_event(&mut self, event: WindowEvent) {
+    pub fn handle_window_event(&mut self, event: WindowEvent, now: Instant) {
         match event {
             WindowEvent::Input(input) => self.handle_input(input),
             WindowEvent::RenderingSuspended => self.suspend(),
             WindowEvent::RenderingResumed(metrics) => {
                 self.set_display_timing(metrics.display_timing());
-                self.resume(Instant::now());
+                self.resume(now);
             }
             WindowEvent::MetricsChanged(metrics) | WindowEvent::RedrawRequested(metrics) => {
                 self.set_display_timing(metrics.display_timing());
@@ -456,12 +457,15 @@ mod tests {
     fn scoped_frame_cleanup_and_window_suspension_release_input() {
         let started = Instant::now();
         let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), started);
-        runtime.handle_window_event(WindowEvent::Input(InputEvent::Keyboard {
-            key: KeyCode::KeyW,
-            state: ButtonState::Pressed,
-            repeat: false,
-            modifiers: Modifiers::default(),
-        }));
+        runtime.handle_window_event(
+            WindowEvent::Input(InputEvent::Keyboard {
+                key: KeyCode::KeyW,
+                state: ButtonState::Pressed,
+                repeat: false,
+                modifiers: Modifiers::default(),
+            }),
+            started,
+        );
         let frame = runtime.begin_frame(started + STEP);
         assert_eq!(frame.plan().fixed_steps(), 1);
         assert!(frame.input().key_pressed(KeyCode::KeyW));
@@ -469,7 +473,7 @@ mod tests {
         assert!(!runtime.input().key_pressed(KeyCode::KeyW));
         assert!(runtime.input().key_held(KeyCode::KeyW));
 
-        runtime.handle_window_event(WindowEvent::RenderingSuspended);
+        runtime.handle_window_event(WindowEvent::RenderingSuspended, started + STEP);
         assert!(runtime.suspended());
         assert!(!runtime.input().key_held(KeyCode::KeyW));
         assert!(runtime.input().key_released(KeyCode::KeyW));

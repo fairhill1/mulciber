@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use mulciber::{BlockCompression, Ktx2Texture};
 use mulciber_texture::{
-    Baked, Chain, Channel, Fallback, MaterialDefaults, MaterialMaps, Origin, Pixels, Recipe,
-    SOURCE_DIGEST_KEY, bake, bake_materials, encode_bc7, find_materials, mip_extent,
+    BakeMode, Baked, Chain, Channel, Fallback, MaterialDefaults, MaterialMaps, Origin, Pixels,
+    Recipe, SOURCE_DIGEST_KEY, bake, bake_materials, encode_bc7, find_materials, mip_extent, run,
 };
 
 /// A fresh directory under the system temp dir, removed when dropped.
@@ -213,9 +213,9 @@ fn a_bake_is_used_while_current_and_the_sources_otherwise() {
     assert_eq!((fallback.width, fallback.height), (16, 8));
     assert_eq!(fallback.stats.min_alpha, 100);
 
-    assert_eq!(bake(&recipe, false).unwrap(), Baked::Built);
-    assert_eq!(bake(&recipe, false).unwrap(), Baked::Current);
-    assert_eq!(bake(&recipe, true).unwrap(), Baked::Built);
+    assert_eq!(bake(&recipe, BakeMode::IfStale).unwrap(), Baked::Built);
+    assert_eq!(bake(&recipe, BakeMode::IfStale).unwrap(), Baked::Current);
+    assert_eq!(bake(&recipe, BakeMode::Always).unwrap(), Baked::Built);
     assert!(recipe.is_current().unwrap());
     let baked = recipe.prepare().unwrap();
     assert_eq!(baked.origin, Origin::Bake);
@@ -289,7 +289,12 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
     let bare = MaterialMaps::beside(&plain, &defaults);
     assert!(bare.normal_roughness.is_none() && bare.metallic_occlusion.is_none());
 
-    let baked = bake_materials(std::slice::from_ref(&scratch.0), &defaults, false).unwrap();
+    let baked = bake_materials(
+        std::slice::from_ref(&scratch.0),
+        &defaults,
+        BakeMode::IfStale,
+    )
+    .unwrap();
     let outputs: Vec<&Path> = baked.iter().map(|(path, _)| path.as_path()).collect();
     assert_eq!(
         outputs,
@@ -300,9 +305,21 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
             dir.join("plain.ktx2"),
         ]
     );
-    assert!(baked.iter().all(|(_, b)| *b == Baked::Built));
-    let again = bake_materials(std::slice::from_ref(&scratch.0), &defaults, false).unwrap();
-    assert!(again.iter().all(|(_, b)| *b == Baked::Current));
+    assert!(baked.iter().all(|(_, b)| *b == Ok(Baked::Built)));
+    let again = bake_materials(
+        std::slice::from_ref(&scratch.0),
+        &defaults,
+        BakeMode::IfStale,
+    )
+    .unwrap();
+    assert!(again.iter().all(|(_, b)| *b == Ok(Baked::Current)));
+    let forced = bake_materials(
+        std::slice::from_ref(&scratch.0),
+        &defaults,
+        BakeMode::Always,
+    )
+    .unwrap();
+    assert!(forced.iter().all(|(_, b)| *b == Ok(Baked::Built)));
     // The bakes themselves are not mistaken for materials.
     assert_eq!(find_materials(&scratch.0).unwrap().len(), 2);
 
@@ -331,4 +348,71 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
     let bare = MaterialMaps::beside(&plain, &defaults);
     assert!(bare.normal_roughness.is_none() && bare.metallic_occlusion.is_none());
     assert_eq!(bare.albedo.prepare().unwrap().origin, Origin::Bake);
+}
+
+#[test]
+fn a_failed_texture_is_reported_beside_the_others_baked() {
+    let scratch = Scratch::new("partial");
+    let dir = scratch.path("walls");
+    std::fs::create_dir_all(&dir).unwrap();
+    let brick = dir.join("brick.png");
+    save_rgba(&brick, 8, 8, gradient);
+    save_rgba(&dir.join("brick_normal.png"), 8, 8, |_, _| {
+        [128, 128, 255, 255]
+    });
+    // A roughness map that is not an image fails the normal + roughness bake alone.
+    std::fs::write(dir.join("brick_rough.png"), b"not a png").unwrap();
+    save_grey(&dir.join("brick_ao.png"), 8, 8, |_, _| 200);
+    save_rgba(&dir.join("plaster.png"), 4, 4, gradient);
+    let defaults = MaterialDefaults::default();
+
+    let results = bake_materials(std::slice::from_ref(&dir), &defaults, BakeMode::IfStale).unwrap();
+    let outputs: Vec<&Path> = results.iter().map(|(path, _)| path.as_path()).collect();
+    assert_eq!(
+        outputs,
+        [
+            dir.join("brick.ktx2"),
+            dir.join("brick_normal.ktx2"),
+            dir.join("brick_metal.ktx2"),
+            dir.join("plaster.ktx2"),
+        ]
+    );
+    for (path, result) in &results {
+        if path.ends_with("brick_normal.ktx2") {
+            let error = result.as_ref().unwrap_err().to_string();
+            assert!(error.contains("brick_rough.png"), "{error}");
+            assert!(!path.exists());
+        } else {
+            assert_eq!(*result, Ok(Baked::Built), "{}", path.display());
+            assert!(path.exists());
+        }
+    }
+
+    // The command line tries every texture, reports the failure and fails; the rest are current.
+    let args = ["bake".to_owned(), dir.display().to_string()];
+    let error = run(args.clone()).unwrap_err().to_string();
+    assert!(error.contains("1 of 4"), "{error}");
+    let again = bake_materials(std::slice::from_ref(&dir), &defaults, BakeMode::IfStale).unwrap();
+    assert_eq!(
+        again
+            .iter()
+            .filter(|(_, result)| *result == Ok(Baked::Current))
+            .count(),
+        3
+    );
+
+    // A path naming no material is the only error for the whole call: nothing is baked.
+    let stray = dir.join("brick_normal.png");
+    let error = bake_materials(&[dir.clone(), stray], &defaults, BakeMode::Always)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("not a directory or a material's albedo"),
+        "{error}"
+    );
+
+    // Once the map is fixed, `--force` rebakes everything.
+    save_grey(&dir.join("brick_rough.png"), 8, 8, |_, _| 230);
+    run([args[0].clone(), args[1].clone(), "--force".to_owned()]).unwrap();
+    assert!(dir.join("brick_normal.ktx2").exists());
 }

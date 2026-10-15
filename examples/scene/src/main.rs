@@ -6,9 +6,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, RenderScale,
-    Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor,
-    TextureShape, TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, RenderScale, Scene, SceneColor, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -19,7 +19,7 @@ use scene::{
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.012, 0.018, 0.032);
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn Error>> {
     let mut application = Application::new()?;
     let window = application.create_window(&WindowDescriptor::new(
@@ -38,10 +38,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         graphics.selection.sample_count()
     );
 
-    let cube = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
-    let pyramid = graphics
-        .device
-        .create_mesh(&PYRAMID_VERTICES, &PYRAMID_INDICES)?;
+    let cube = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        parts: &[MeshIndices::U16(&CUBE_INDICES)],
+    })?;
+    let pyramid = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&PYRAMID_VERTICES),
+        parts: &[MeshIndices::U16(&PYRAMID_INDICES)],
+    })?;
     let amber = graphics.device.create_texture(&TextureDescriptor {
         shape: TextureShape::D2 {
             width: 8,

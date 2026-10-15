@@ -7,9 +7,9 @@ use std::time::Instant;
 
 use glam::Quat;
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, SampleCount, Scene,
-    SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
-    TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, SampleCount, Scene, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
+    TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{
     Application, ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, LogicalSize,
@@ -148,7 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("input: C captures the pointer for relative look, Escape releases it");
     println!("input: F11 toggles fullscreen");
 
-    let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        parts: &[MeshIndices::U16(&CUBE_INDICES)],
+    })?;
     let texture = graphics.device.create_texture(&TextureDescriptor {
         shape: TextureShape::D2 {
             width: 8,

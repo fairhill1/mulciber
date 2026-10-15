@@ -2,6 +2,31 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Smaller API fixes (graphics 0.17.0, runtime 0.6.0, net 0.2.0, model 0.3.0, texture 0.5.0, audio 0.3.0)
+
+Breaking unless noted.
+
+- `Device::create_mesh(&MeshDescriptor { vertices, parts })` replaces `create_mesh`,
+  `create_mesh_with_parts`, `create_mesh_with_layout` and `create_mesh_with_layout_and_parts`;
+  `vertices` is `MeshVertices::Fixed(&[Vertex])` or `MeshVertices::Bytes { layout, bytes }`. Fixed
+  meshes can now take 32-bit index parts, which no method offered.
+- `Surface::set_vsync` is removed; it was `set_presentation_mode` with `Synchronized` or
+  `Immediate`.
+- `Runtime::handle_window_event(event, now)` and `Server::new(transport, config, now)` take the time
+  instead of reading the wall clock, as every other call already did. A server's challenge cookies
+  now age on the caller's clock, which a new test checks with a fake one.
+- `Server::broadcast` queues to every client and returns those it could not, each with its
+  `SendError`; it used to stop at the first failure, leaving the rest without the message.
+- `bake_materials` returns every texture's result beside its output, so one failure no longer hides
+  what was baked; only discovery fails the call. `BakeMode::{IfStale, Always}` replaces the
+  `force: bool` of it and `bake`. `mulciber-texture bake` prints each bake and failure and fails when
+  any did.
+- `Model::duplicate_double_sided` clears `double_sided` once the back faces are geometry, so a
+  renderer that disables culling for double-sided materials no longer draws both copies, and a
+  second call adds nothing.
+- `AudioEngine::hrtf_error` (additive) says why the HRTF sphere did not load when the engine fell back
+  to the stereo pan, which it used to do silently.
+
 ## One way to play a clip (audio 0.3.0)
 
 Breaking. `Controls` had a method per combination of bus, placement, handle and looping (`play`,

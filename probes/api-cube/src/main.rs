@@ -8,9 +8,9 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, GpuTimingFeedback, GpuTimingScope, MipChain,
-    OpenedGraphics, PresentFeedback, Scene, SceneOutput, SceneSubmission, ShaderArtifact,
-    TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, GpuTimingFeedback, GpuTimingScope, MeshDescriptor,
+    MeshIndices, MeshVertices, MipChain, OpenedGraphics, PresentFeedback, Scene, SceneOutput,
+    SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::PacingDiagnostics;
@@ -51,7 +51,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         graphics.selection.gpu_timing_support()
     );
 
-    let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        parts: &[MeshIndices::U16(&CUBE_INDICES)],
+    })?;
     let texture = graphics.device.create_texture(&TextureDescriptor {
         shape: TextureShape::D2 {
             width: 8,

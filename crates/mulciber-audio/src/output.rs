@@ -13,15 +13,18 @@ use crate::mixer::{Controls, Mixer};
 /// stream.
 pub struct AudioEngine {
     controls: Controls,
+    #[cfg(feature = "hrtf")]
+    hrtf_error: Option<crate::spatial::HrtfLoadError>,
     _stream: cpal::Stream,
 }
 
 impl std::fmt::Debug for AudioEngine {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AudioEngine")
-            .field("controls", &self.controls)
-            .finish_non_exhaustive()
+        let mut debug = formatter.debug_struct("AudioEngine");
+        debug.field("controls", &self.controls);
+        #[cfg(feature = "hrtf")]
+        debug.field("hrtf_error", &self.hrtf_error);
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -29,9 +32,10 @@ impl AudioEngine {
     /// Opens the default output device at its default rate and channel count, spatializing
     /// through the HRIR sphere at `hrir_path`.
     ///
-    /// A missing or unreadable sphere is not an error: spatial voices fall back to the stereo
-    /// pan, which [`Controls::hrtf_enabled`] reports. Without the `hrtf` feature the path is
-    /// ignored.
+    /// A missing or unreadable sphere does not fail the engine: the game keeps its sound and
+    /// spatial voices fall back to the stereo pan, which [`Controls::hrtf_enabled`] reports.
+    /// The fallback is observable: `AudioEngine::hrtf_error` returns why the sphere did not
+    /// load, so the game can log or surface it. Without the `hrtf` feature the path is ignored.
     ///
     /// # Errors
     ///
@@ -63,7 +67,12 @@ impl AudioEngine {
         }
         let sample_rate = supported.sample_rate();
         let channels = usize::from(supported.channels());
-        let (mut mixer, controls) = mixer_for(sample_rate, hrir_path);
+        let MixerSetup {
+            mut mixer,
+            controls,
+            #[cfg(feature = "hrtf")]
+            hrtf_error,
+        } = mixer_for(sample_rate, hrir_path);
         let stream = device
             .build_output_stream(
                 supported.config(),
@@ -75,6 +84,8 @@ impl AudioEngine {
         stream.play().map_err(OutputError::Play)?;
         Ok(Self {
             controls,
+            #[cfg(feature = "hrtf")]
+            hrtf_error,
             _stream: stream,
         })
     }
@@ -84,19 +95,50 @@ impl AudioEngine {
     pub fn controls(&self) -> &Controls {
         &self.controls
     }
+
+    /// Why the HRIR sphere passed to [`AudioEngine::new`] failed to load, in which case spatial
+    /// voices pan in stereo instead.
+    ///
+    /// `None` when the sphere loaded, or when the engine was opened with
+    /// [`AudioEngine::without_hrtf`] and no sphere was requested.
+    #[cfg(feature = "hrtf")]
+    #[must_use]
+    pub fn hrtf_error(&self) -> Option<&crate::spatial::HrtfLoadError> {
+        self.hrtf_error.as_ref()
+    }
+}
+
+/// The mixer pair for the stream, and why a requested HRIR sphere did not load.
+struct MixerSetup {
+    mixer: Mixer,
+    controls: Controls,
+    #[cfg(feature = "hrtf")]
+    hrtf_error: Option<crate::spatial::HrtfLoadError>,
 }
 
 #[cfg(feature = "hrtf")]
-fn mixer_for(sample_rate: u32, hrir_path: Option<&Path>) -> (Mixer, Controls) {
-    match hrir_path.map(|path| crate::spatial::Hrtf::load(path, sample_rate)) {
-        Some(Ok(hrtf)) => Mixer::with_hrtf(sample_rate, hrtf),
-        _ => Mixer::new(sample_rate),
+fn mixer_for(sample_rate: u32, hrir_path: Option<&Path>) -> MixerSetup {
+    let (hrtf, hrtf_error) =
+        match hrir_path.map(|path| crate::spatial::Hrtf::load(path, sample_rate)) {
+            Some(Ok(hrtf)) => (Some(hrtf), None),
+            Some(Err(error)) => (None, Some(error)),
+            None => (None, None),
+        };
+    let (mixer, controls) = match hrtf {
+        Some(hrtf) => Mixer::with_hrtf(sample_rate, hrtf),
+        None => Mixer::new(sample_rate),
+    };
+    MixerSetup {
+        mixer,
+        controls,
+        hrtf_error,
     }
 }
 
 #[cfg(not(feature = "hrtf"))]
-fn mixer_for(sample_rate: u32, _: Option<&Path>) -> (Mixer, Controls) {
-    Mixer::new(sample_rate)
+fn mixer_for(sample_rate: u32, _: Option<&Path>) -> MixerSetup {
+    let (mixer, controls) = Mixer::new(sample_rate);
+    MixerSetup { mixer, controls }
 }
 
 impl std::ops::Deref for AudioEngine {

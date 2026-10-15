@@ -45,4 +45,5 @@ mixer.render(&mut buffer, 2);
 No HRIR data ships with the crate; pass the game's sphere file to `AudioEngine::new`. Spheres
 built from the IRCAM Listen database by
 [hrir_sphere_builder](https://github.com/mrDIMAS/hrir_sphere_builder) work; IRCAM asks that
-products using Listen acknowledge it.
+products using Listen acknowledge it. A sphere that fails to load does not fail the engine:
+spatial voices fall back to the stereo pan, and `AudioEngine::hrtf_error` says why.

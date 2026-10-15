@@ -243,6 +243,13 @@ fn double_sided_materials_get_back_faces() {
             .all(|t| close(t, &[1.0, 0.0, 0.0, -1.0]))
     );
     assert!(fronts_face_out(&model));
+
+    // The back faces are geometry now, so the material no longer asks for both sides, and a second
+    // call adds nothing.
+    assert!(!model.materials[0].double_sided);
+    let before = model.parts.clone();
+    model.duplicate_double_sided();
+    assert_eq!(model.parts, before);
 }
 
 #[test]

@@ -7,9 +7,9 @@ use std::time::Instant;
 
 use glam::Quat;
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, RenderScale,
-    SampleCount, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
-    TextureDescriptor, TextureShape, TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, RenderScale, SampleCount, Scene, SceneColor, SceneOutput,
+    SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{
     Application, ButtonState, InputEvent, KeyCode, LogicalPosition, LogicalSize, PointerButton,
@@ -140,7 +140,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "input: W/A/S/D or arrows rotate, primary-button drag orbits, scroll zooms, Space toggles spin, R resets"
     );
 
-    let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        parts: &[MeshIndices::U16(&CUBE_INDICES)],
+    })?;
     let texture = graphics.device.create_texture(&TextureDescriptor {
         shape: TextureShape::D2 {
             width: 8,

@@ -7,9 +7,10 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneOutput,
-    SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene,
+    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor,
+    TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -42,7 +43,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         graphics.selection.sample_count()
     );
 
-    let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        parts: &[MeshIndices::U16(&CUBE_INDICES)],
+    })?;
     let texture = graphics.device.create_texture(&TextureDescriptor {
         shape: TextureShape::D2 {
             width: 8,

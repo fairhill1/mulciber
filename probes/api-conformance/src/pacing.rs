@@ -1,7 +1,7 @@
 //! Native pacing transitions under repeatable light/CPU-bound workloads; no asset loading.
 use mulciber::{
-    DeviceRequest, FrameAcquire, OpenedGraphics, PresentFeedback, PresentationMode,
-    TexturedSceneDraw,
+    DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics,
+    PresentFeedback, PresentationMode, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{
@@ -20,9 +20,10 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     println!("display,{:?}", metrics.display_timing());
     let mut graphics =
         OpenedGraphics::open(window.surface_target(), metrics, DeviceRequest::default())?;
-    let mesh = graphics
-        .device
-        .create_mesh(&super::TRIANGLE_VERTICES, &[0, 1, 2])?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Fixed(&super::TRIANGLE_VERTICES),
+        parts: &[MeshIndices::U16(&[0, 1, 2])],
+    })?;
     let texture = super::rgba8_srgb(&graphics.device, 1, 1, &[255, 255, 255, 255])?;
     let shader = mulciber::ShaderArtifact::new(super::SHADER)?;
     let pipeline = graphics.device.create_textured_pipeline(shader)?;

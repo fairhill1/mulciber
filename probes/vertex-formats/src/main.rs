@@ -4,9 +4,9 @@
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
     MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
-    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
-    SampleCount, Scene, SceneColor, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
-    VertexLayout,
+    MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneSubmission,
+    ShaderArtifact, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -124,10 +124,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     println!("vertex-formats: {:?}", graphics.selection);
     let vertices = vertices();
-    let mesh =
-        graphics
-            .device
-            .create_mesh_with_layout(LAYOUT, &vertices, MeshIndices::U16(&[0, 1, 2]))?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Bytes {
+            layout: LAYOUT,
+            bytes: &vertices,
+        },
+        parts: &[MeshIndices::U16(&[0, 1, 2])],
+    })?;
     let shader = ShaderArtifact::new(fetch_artifact)?;
     let descriptor = |vertex_layout| MaterialPipelineDescriptor {
         shader,
@@ -156,14 +159,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     unaligned[2].offset = 13;
     let refused = graphics
         .device
-        .create_mesh_with_layout(
-            VertexLayout {
-                stride: 40,
-                attributes: &unaligned,
+        .create_mesh(&MeshDescriptor {
+            vertices: MeshVertices::Bytes {
+                layout: VertexLayout {
+                    stride: 40,
+                    attributes: &unaligned,
+                },
+                bytes: &vertices,
             },
-            &vertices,
-            MeshIndices::U16(&[0, 1, 2]),
-        )
+            parts: &[MeshIndices::U16(&[0, 1, 2])],
+        })
         .err()
         .ok_or("an attribute at offset 13 was accepted")?;
     println!("vertex-formats: unaligned offset refused: {refused}");

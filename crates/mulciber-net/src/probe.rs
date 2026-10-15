@@ -10,10 +10,10 @@
 //!
 //! let network = MemoryNetwork::new();
 //! let config = Config::new(0x5348_4950_0001);
-//! let mut server = Server::new(network.endpoint(MemoryAddress(1)), ServerConfig::new(config, 32));
+//! let now = Instant::now();
+//! let mut server = Server::new(network.endpoint(MemoryAddress(1)), ServerConfig::new(config, 32), now);
 //! let mut asker = network.endpoint(MemoryAddress(2));
 //!
-//! let now = Instant::now();
 //! asker.send(now, MemoryAddress(1), &probe(config.protocol, 42)).unwrap();
 //! server.update(now).unwrap();
 //! let mut buffer = [0; 64];

@@ -141,7 +141,8 @@ pub struct Material {
     pub emissive_texture: Option<TextureRef>,
     /// How the base colour's alpha is used.
     pub alpha: Alpha,
-    /// Whether both faces show.
+    /// Whether both faces show. [`Model::duplicate_double_sided`] clears it once it has made the
+    /// back faces explicit geometry.
     pub double_sided: bool,
 }
 
@@ -390,6 +391,10 @@ impl Model {
     /// tangents keep their direction and turn their handedness, so a normal map reads the same
     /// from either side.
     ///
+    /// The back faces are then explicit geometry, so every material's
+    /// [`double_sided`](Material::double_sided) is cleared: a renderer that turns culling off for
+    /// double-sided materials draws each face once, and calling this again adds nothing.
+    ///
     /// # Panics
     ///
     /// When a part has more vertices than `u32` indices reach.
@@ -423,6 +428,9 @@ impl Model {
                 .collect();
             part.tangents.extend(tangents);
             part.indices.extend(back);
+        }
+        for material in &mut self.materials {
+            material.double_sided = false;
         }
     }
 

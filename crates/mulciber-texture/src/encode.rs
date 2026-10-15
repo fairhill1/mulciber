@@ -21,6 +21,16 @@ pub enum Baked {
     Current,
 }
 
+/// Whether [`bake`] and [`bake_materials`] rebuild a bake that is already current.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BakeMode {
+    /// Bake only when the bake on disk is missing or stale ([`Recipe::is_current`] is false).
+    #[default]
+    IfStale,
+    /// Bake regardless, rewriting bakes that are already current.
+    Always,
+}
+
 /// Encodes every level of an RGBA8 chain as BC7, with the slow (best) settings: the opaque modes
 /// when every texel's alpha is 255, the alpha modes otherwise. A level whose extent is not a
 /// multiple of four is padded by repeating its last row and column; the GPU never samples the
@@ -73,13 +83,14 @@ pub fn encode_bc7(levels: &Levels) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Bakes `recipe` to its output, unless the bake there is already current and `force` is off.
+/// Bakes `recipe` to its output, unless `mode` is [`BakeMode::IfStale`] and the bake there is
+/// already current.
 ///
 /// # Errors
 ///
 /// When a source cannot be read or decoded, or the bake cannot be written, naming the file.
-pub fn bake(recipe: &Recipe, force: bool) -> Result<Baked, TextureError> {
-    if !force && recipe.is_current()? {
+pub fn bake(recipe: &Recipe, mode: BakeMode) -> Result<Baked, TextureError> {
+    if mode == BakeMode::IfStale && recipe.is_current()? {
         return Ok(Baked::Current);
     }
     let digest = recipe.digest()?;
@@ -125,20 +136,27 @@ fn materials(paths: &[PathBuf]) -> Result<Vec<PathBuf>, TextureError> {
 }
 
 /// Bakes every texture of every material under `paths` (directories, searched recursively, or
-/// albedo images), on every core. Returns each texture's output and what was done.
+/// albedo images), on every core, as `mode` says.
+///
+/// Returns every texture's output path with its own result, in recipe order (material by
+/// material, each material's textures in [`MaterialMaps::recipes`] order): what was done, or why
+/// that texture failed. A failed texture does not stop the others, so the caller sees both the
+/// bakes that were written and the ones that were not.
 ///
 /// # Errors
 ///
-/// The first failure, naming its file; the other textures are still baked.
+/// Only when the materials cannot be found: a path that is neither a directory nor an existing
+/// albedo image, or a directory that cannot be read. Nothing is baked then.
 ///
 /// # Panics
 ///
 /// If a bake panics on its worker thread.
+#[allow(clippy::type_complexity)]
 pub fn bake_materials(
     paths: &[PathBuf],
     defaults: &MaterialDefaults,
-    force: bool,
-) -> Result<Vec<(PathBuf, Baked)>, TextureError> {
+    mode: BakeMode,
+) -> Result<Vec<(PathBuf, Result<Baked, TextureError>)>, TextureError> {
     let recipes: Vec<Recipe> = materials(paths)?
         .iter()
         .flat_map(|albedo| {
@@ -157,7 +175,7 @@ pub fn bake_materials(
                     let Some(recipe) = recipes.get(index) else {
                         break;
                     };
-                    let result = bake(recipe, force);
+                    let result = bake(recipe, mode);
                     results
                         .lock()
                         .expect("no worker panics holding the lock")
@@ -168,32 +186,34 @@ pub fn bake_materials(
     });
     let mut results = results.into_inner().expect("the workers are done");
     results.sort_by_key(|(index, _)| *index);
-    results
+    Ok(results
         .into_iter()
-        .map(|(index, result)| result.map(|baked| (recipes[index].output.clone(), baked)))
-        .collect()
+        .map(|(index, result)| (recipes[index].output.clone(), result))
+        .collect())
 }
 
 /// The `mulciber-texture` command line, for a game's own bake binary to forward to as well.
 ///
 /// - `bake <dir|albedo>... [--force]` bakes every material's textures that are stale or missing
-///   (all of them with `--force`).
+///   (all of them with `--force`, [`BakeMode::Always`]). It prints each texture baked and each
+///   that failed, with its error, then a summary, and fails if any texture failed.
 /// - `check <dir|albedo>...` bakes nothing, lists every texture whose bake is stale or missing,
 ///   and fails if there is one.
 ///
 /// # Errors
 ///
-/// A usage error, the first failed bake, or stale bakes under `check`.
+/// A usage error, a path that names no materials, any failed bake (after every texture has been
+/// tried and reported), or stale bakes under `check`.
 pub fn run(args: impl IntoIterator<Item = String>) -> Result<(), TextureError> {
     const USAGE: &str = "usage: mulciber-texture bake <dir|albedo image>... [--force]\n       \
                          mulciber-texture check <dir|albedo image>...";
     let mut args = args.into_iter();
     let command = args.next().ok_or(TextureError::new(USAGE))?;
-    let mut force = false;
+    let mut mode = BakeMode::IfStale;
     let mut paths = Vec::new();
     for arg in args {
         match arg.as_str() {
-            "--force" if command == "bake" => force = true,
+            "--force" if command == "bake" => mode = BakeMode::Always,
             flag if flag.starts_with("--") => return Err(TextureError::new(USAGE)),
             path => paths.push(PathBuf::from(path)),
         }
@@ -205,20 +225,33 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<(), TextureError> {
     match command.as_str() {
         "bake" => {
             let started = std::time::Instant::now();
-            let baked = bake_materials(&paths, &defaults, force)?;
-            for (path, _) in baked.iter().filter(|(_, baked)| *baked == Baked::Built) {
-                println!("baked {}", path.display());
+            let results = bake_materials(&paths, &defaults, mode)?;
+            let (mut built, mut current, mut failed) = (0, 0, 0);
+            for (path, result) in &results {
+                match result {
+                    Ok(Baked::Built) => {
+                        built += 1;
+                        println!("baked {}", path.display());
+                    }
+                    Ok(Baked::Current) => current += 1,
+                    Err(error) => {
+                        failed += 1;
+                        eprintln!("failed {}: {error}", path.display());
+                    }
+                }
             }
-            let built = baked
-                .iter()
-                .filter(|(_, baked)| *baked == Baked::Built)
-                .count();
             println!(
-                "{built} baked, {} already current, in {:.1?}",
-                baked.len() - built,
+                "{built} baked, {current} already current, {failed} failed, in {:.1?}",
                 started.elapsed()
             );
-            Ok(())
+            if failed == 0 {
+                Ok(())
+            } else {
+                Err(TextureError::new(format!(
+                    "{failed} of {} textures failed to bake",
+                    results.len()
+                )))
+            }
         }
         "check" => {
             let mut stale = Vec::new();

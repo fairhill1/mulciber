@@ -74,7 +74,7 @@ replay/rollback evidence must decide whether that narrower input timeline belong
 
 `Runtime::handle_window_event` maps `RenderingSuspended` and `RenderingResumed` into runtime timing.
 Suspension releases held controls and schedules zero fixed or variable time. Resume restarts
-wall-clock sampling without counting the paused interval, while preserving the fractional
+wall-clock sampling from the `now` passed with the event, without counting the paused interval, while preserving the fractional
 accumulator so the first restored render does not jump backward. Direct `suspend` and `resume`
 methods remain available for a different application coordination shape.
 

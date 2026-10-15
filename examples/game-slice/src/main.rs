@@ -9,10 +9,10 @@ use std::time::Instant;
 use game::Game;
 use mulciber::{
     ClearColor, Device, DeviceRequest, Frame, FrameAcquire, GpuTimingFeedback,
-    InstancedTexturedPipeline, Mesh, MipChain, OpenedGraphics, Postprocess, PostprocessPipeline,
-    PostprocessTargets, PresentFeedback, Queue, RenderScale, Scene, SceneColor, SceneOutput,
-    SceneSubmission, ShaderArtifact, TexelData, Texture, TextureDescriptor, TextureShape,
-    TexturedInstanceBatch,
+    InstancedTexturedPipeline, Mesh, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue,
+    RenderScale, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
+    Texture, TextureDescriptor, TextureShape, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
@@ -40,10 +40,14 @@ struct Resources {
 impl Resources {
     fn new(graphics: &OpenedGraphics<'_>) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
-            cube: graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?,
-            pyramid: graphics
-                .device
-                .create_mesh(&PYRAMID_VERTICES, &PYRAMID_INDICES)?,
+            cube: graphics.device.create_mesh(&MeshDescriptor {
+                vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+                parts: &[MeshIndices::U16(&CUBE_INDICES)],
+            })?,
+            pyramid: graphics.device.create_mesh(&MeshDescriptor {
+                vertices: MeshVertices::Fixed(&PYRAMID_VERTICES),
+                parts: &[MeshIndices::U16(&PYRAMID_INDICES)],
+            })?,
             ground_texture: texture(&graphics.device, [30, 42, 58], [55, 72, 82], 1)?,
             obstacle_texture: texture(&graphics.device, [100, 105, 120], [42, 48, 65], 2)?,
             player_texture: texture(&graphics.device, [35, 230, 190], [20, 90, 145], 2)?,
@@ -161,7 +165,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         let status = application.pump_events(&window, |event| -> Result<(), Box<dyn Error>> {
-            runtime.handle_window_event(event);
+            runtime.handle_window_event(event, Instant::now());
             let WindowEvent::RedrawRequested(metrics) = event else {
                 return Ok(());
             };

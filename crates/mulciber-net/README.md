@@ -22,7 +22,7 @@ use mulciber_net::{Channel, Client, ClientState, Config, Server, ServerConfig, S
 let config = Config::new(0x5348_4950_0001);
 let transport = UdpTransport::bind("127.0.0.1:0")?;
 let address = transport.local_address()?;
-let mut server = Server::new(transport, ServerConfig::new(config, 32));
+let mut server = Server::new(transport, ServerConfig::new(config, 32), Instant::now());
 let mut client = Client::connect(UdpTransport::bind("127.0.0.1:0")?, address, config, b"Ann", Instant::now())?;
 
 while client.state() == ClientState::Connecting {

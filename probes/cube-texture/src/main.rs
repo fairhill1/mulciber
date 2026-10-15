@@ -4,10 +4,11 @@
 use mulciber::{
     BlendMode, BlockCompression, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, HdrComposite, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor,
-    MaterialRecord, MaterialScene, MeshIndices, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
-    SceneColor, SceneSubmission, ShaderArtifact, TexelData, Texture, TextureDescriptor,
-    TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
+    MaterialRecord, MaterialScene, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneSubmission, ShaderArtifact, TexelData,
+    Texture, TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -308,11 +309,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .flat_map(|v| v.to_ne_bytes())
         .collect();
-    let mesh = graphics.device.create_mesh_with_layout(
-        LAYOUT,
-        &vertices,
-        MeshIndices::U16(&[0, 1, 2, 0, 2, 1]),
-    )?;
+    let mesh = graphics.device.create_mesh(&MeshDescriptor {
+        vertices: MeshVertices::Bytes {
+            layout: LAYOUT,
+            bytes: &vertices,
+        },
+        parts: &[MeshIndices::U16(&[0, 1, 2, 0, 2, 1])],
+    })?;
     let shader = ShaderArtifact::new(sample_artifact)?;
     let descriptor = |bindings| MaterialPipelineDescriptor {
         shader,

@@ -8,7 +8,7 @@ platform events without owning the native event pump or game state.
 
 ## Frame flow
 
-Forward platform events to `Runtime::handle_window_event`, drain presentation feedback with
+Forward platform events, with the time each arrived, to `Runtime::handle_window_event`, drain presentation feedback with
 `Runtime::record_presented`, then call `Runtime::begin_frame` once per rendered frame. The returned
 `FramePlan` specifies the exact number and duration of fixed updates plus the interpolation fraction
 for rendering between the previous and current simulation states.

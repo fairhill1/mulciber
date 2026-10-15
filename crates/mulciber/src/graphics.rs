@@ -244,99 +244,50 @@ pub struct Device<'window> {
 }
 
 impl Device<'_> {
-    /// Uploads fixed-layout vertices and one default `u16` index part.
+    /// Uploads vertices once and one or more immutable indexed parts that share them.
     ///
-    /// Meshes that need 32-bit indices declare their layout and pass [`MeshIndices::U32`]
-    /// through [`Device::create_mesh_with_layout`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty geometry, an out-of-range index, or native allocation/upload
-    /// failure.
-    pub fn create_mesh(&self, vertices: &[Vertex], indices: &[u16]) -> Result<Mesh, GraphicsError> {
-        self.create_mesh_with_parts(vertices, &[MeshIndices::U16(indices)])
-    }
-
-    /// Uploads fixed-layout vertices once and one or more immutable indexed parts.
-    ///
-    /// Every part references the same vertex storage. Part zero is the default selected by
-    /// existing whole-mesh draw paths; use [`Mesh::part`] with a material or shadow record to
-    /// select another part.
+    /// Part zero is the default selected by [`GeometrySource::Mesh`], [`MeshSource::Mesh`] and
+    /// the textured paths; use [`Mesh::part`] with a material or shadow record to select another.
+    /// Each part may independently use 16- or 32-bit indices. Raw vertex bytes keep their
+    /// declared layout with the mesh: a material draw whose mesh and pipeline layouts differ is
+    /// rejected at submission.
     ///
     /// # Errors
     ///
-    /// Returns an error for empty vertices, no parts, an empty part, an out-of-range index, too
-    /// many parts, or native allocation/upload failure. Diagnostics identify the invalid part.
-    pub fn create_mesh_with_parts(
-        &self,
-        vertices: &[Vertex],
-        parts: &[MeshIndices<'_>],
-    ) -> Result<Mesh, GraphicsError> {
-        if vertices.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "mesh vertex data must be non-empty",
-            ));
-        }
-        let part_count = validate_mesh_parts(vertices.len(), parts)?;
-        let id = session_mut(&self.shared)?.create_mesh(vertices, parts)?;
+    /// Returns an error for an invalid layout, vertices that are empty or (as bytes) not a
+    /// multiple of the stride, no parts, an empty part, an out-of-range index, too many parts, or
+    /// native allocation/upload failure. Diagnostics identify the invalid part.
+    pub fn create_mesh(&self, descriptor: &MeshDescriptor<'_>) -> Result<Mesh, GraphicsError> {
+        let MeshDescriptor { vertices, parts } = *descriptor;
+        let (id, layout, part_count) = match vertices {
+            MeshVertices::Fixed(vertices) => {
+                if vertices.is_empty() {
+                    return Err(GraphicsError::invalid_request(
+                        "mesh vertex data must be non-empty",
+                    ));
+                }
+                let part_count = validate_mesh_parts(vertices.len(), parts)?;
+                let id = session_mut(&self.shared)?.create_mesh(vertices, parts)?;
+                (id, VertexLayout::VERTEX.to_owned_layout(), part_count)
+            }
+            MeshVertices::Bytes { layout, bytes } => {
+                let owned = validate_vertex_layout(layout)?;
+                let stride = usize::try_from(layout.stride).map_err(|_| {
+                    GraphicsError::invalid_request("vertex layout stride exceeds this target")
+                })?;
+                if bytes.is_empty() || !bytes.len().is_multiple_of(stride) {
+                    return Err(GraphicsError::invalid_request(
+                        "mesh vertex bytes must be a non-zero multiple of the layout stride",
+                    ));
+                }
+                let part_count = validate_mesh_parts(bytes.len() / stride, parts)?;
+                let id = session_mut(&self.shared)?.create_mesh_from_bytes(bytes, parts)?;
+                (id, owned, part_count)
+            }
+        };
         Ok(Mesh {
             lease: self.lease(id, ResourceKind::Mesh),
-            layout: VertexLayout::VERTEX.to_owned_layout(),
-            part_count,
-        })
-    }
-
-    /// Uploads indexed geometry from raw vertex bytes against a declared layout.
-    ///
-    /// The layout is retained with the mesh: a material draw whose mesh and pipeline layouts
-    /// differ is rejected at submission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid layout, vertex bytes that are empty or not a multiple of
-    /// the stride, empty indices, an out-of-range index, or native allocation/upload failure.
-    pub fn create_mesh_with_layout(
-        &self,
-        layout: VertexLayout<'_>,
-        vertices: &[u8],
-        indices: MeshIndices<'_>,
-    ) -> Result<Mesh, GraphicsError> {
-        self.create_mesh_with_layout_and_parts(layout, vertices, &[indices])
-    }
-
-    /// Uploads raw vertex bytes once and one or more immutable indexed parts against a declared
-    /// layout.
-    ///
-    /// Each part may independently use 16- or 32-bit indices. The layout and graphics-session
-    /// identity belong to the parent mesh and therefore apply to every borrowed [`MeshPart`]. Part
-    /// zero is the default selected by [`GeometrySource::Mesh`] and the compatibility draw APIs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid layout, vertex bytes that are empty or not a multiple of
-    /// the stride, no parts, an empty part, an out-of-range index, too many parts, or native
-    /// allocation/upload failure. Diagnostics identify the invalid part.
-    pub fn create_mesh_with_layout_and_parts(
-        &self,
-        layout: VertexLayout<'_>,
-        vertices: &[u8],
-        parts: &[MeshIndices<'_>],
-    ) -> Result<Mesh, GraphicsError> {
-        let owned = validate_vertex_layout(layout)?;
-        let stride = usize::try_from(layout.stride).map_err(|_| {
-            GraphicsError::invalid_request("vertex layout stride exceeds this target")
-        })?;
-        if vertices.is_empty() || !vertices.len().is_multiple_of(stride) {
-            return Err(GraphicsError::invalid_request(
-                "mesh vertex bytes must be a non-zero multiple of the layout stride",
-            ));
-        }
-        let vertex_count = vertices.len() / stride;
-        let part_count = validate_mesh_parts(vertex_count, parts)?;
-        let id = session_mut(&self.shared)?.create_mesh_from_bytes(vertices, parts)?;
-        Ok(Mesh {
-            lease: self.lease(id, ResourceKind::Mesh),
-            layout: owned,
+            layout,
             part_count,
         })
     }
@@ -1930,26 +1881,12 @@ impl<'window> Surface<'window> {
         }))
     }
 
-    /// Selects synchronized presentation (`true`) or immediate presentation (`false`).
+    /// Selects a presentation policy between frames. The default is synchronized.
     ///
     /// Immediate presentation preserves throughput below the display refresh rate but may tear.
-    /// The default is synchronized. Call between frames, before acquisition; Vulkan applies
-    /// changes through its normal swapchain reconfiguration/retirement path on next acquisition.
-    /// Compositors and variable-refresh displays can impose their own display policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` if immediate presentation is unavailable, without changing policy,
-    /// or a native/session error. Unsupported requests never silently turn synchronization on.
-    pub fn set_vsync(&mut self, enabled: bool) -> Result<(), GraphicsError> {
-        self.set_presentation_mode(if enabled {
-            crate::PresentationMode::Synchronized
-        } else {
-            crate::PresentationMode::Immediate
-        })
-    }
-
-    /// Selects a presentation policy between frames.
+    /// Call between frames, before acquisition; Vulkan applies changes through its normal
+    /// swapchain reconfiguration/retirement path on next acquisition. Compositors and
+    /// variable-refresh displays can impose their own display policy.
     ///
     /// Vulkan adaptive uses native FIFO relaxed. Metal starts unsynchronized and enables sync
     /// only after sustained native-refresh throughput with GPU headroom; a missed deadline
@@ -2507,6 +2444,30 @@ impl VertexLayout<'_> {
 pub(crate) struct OwnedVertexLayout {
     pub(crate) stride: u32,
     pub(crate) attributes: Vec<VertexAttribute>,
+}
+
+/// What [`Device::create_mesh`] uploads: vertices and the indexed parts that draw them.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshDescriptor<'data> {
+    /// Vertex storage every part references.
+    pub vertices: MeshVertices<'data>,
+    /// One or more non-empty index lists, each an immutable part; most meshes have one.
+    pub parts: &'data [MeshIndices<'data>],
+}
+
+/// The vertices of a [`MeshDescriptor`].
+#[derive(Clone, Copy, Debug)]
+pub enum MeshVertices<'data> {
+    /// Mulciber's fixed [`Vertex`] layout, which the textured pipelines read.
+    Fixed(&'data [Vertex]),
+    /// Tightly packed vertex bytes in an application-declared layout, which material pipelines
+    /// declare the same way.
+    Bytes {
+        /// Layout of each vertex.
+        layout: VertexLayout<'data>,
+        /// Vertex bytes, a non-zero multiple of the layout's stride.
+        bytes: &'data [u8],
+    },
 }
 
 /// Index data for mesh creation.

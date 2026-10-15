@@ -2,8 +2,9 @@
 
 Release versions: graphics 0.13.21, platform/runtime 0.5.5.
 
-`Surface::set_vsync(false)` requests immediate presentation, preserving available
-throughput below refresh at the cost of possible tearing. `true` retains the
+`Surface::set_presentation_mode(PresentationMode::Immediate)` requests immediate presentation,
+preserving available throughput below refresh at the cost of possible tearing.
+`PresentationMode::Synchronized` retains the
 platform synchronized policy: Metal display sync; Windows mailbox when supported,
 otherwise FIFO; Linux FIFO. Default engine policy remains synchronized. Applications
 choose their own default. Call between frames, before acquisition. A live acquired
@@ -68,7 +69,7 @@ Physical VRR and multi-display transitions remain unvalidated.
 
 ## Adaptive and Strict presentation — graphics 0.13.21
 
-`Surface::set_presentation_mode` adds policies alongside the compatible boolean API:
+`Surface::set_presentation_mode` selects among these policies:
 
 | Policy | Native behavior |
 | --- | --- |

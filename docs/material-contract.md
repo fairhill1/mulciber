@@ -42,9 +42,9 @@ outside the vocabulary (non-zero groups, storage buffers) are rejected as unsupp
 container bump was deliberately breaking: the tool and crate ship together and no artifact
 stability was promised.
 
-`Device::create_mesh_with_layout` uploads raw vertex bytes against a declared layout with
-16- or 32-bit indices (`MeshIndices`), lifting the fixed path's `u16` bound for chunked or
-merged geometry; every mesh (including the fixed `Vertex` path, which carries
+`Device::create_mesh` with `MeshVertices::Bytes` uploads raw vertex bytes against a declared
+layout with 16- or 32-bit indices (`MeshIndices`), lifting the original fixed path's `u16` bound
+for chunked or merged geometry; every mesh (including the fixed `Vertex` path, which carries
 `VertexLayout::VERTEX`) retains its layout, and a draw whose mesh and pipeline layouts differ
 is rejected at submission. Uniform
 data is supplied per record as plain bytes of exactly the declared size — the application owns
@@ -52,9 +52,8 @@ WGSL memory-layout correctness — and flows through the session's frame-transie
 uniform region; no persistent application-owned buffer handle was forced by this slice.
 
 The [shared-vertex mesh-parts checkpoint](mesh-parts-contract.md) extends that owner without
-changing the one-part path: `create_mesh_with_parts` and `create_mesh_with_layout_and_parts`
-store one vertex region plus one or more immutable `u16`/`u32` index parts, `Mesh::part` returns
-a lease-free borrow, `GeometrySource::MeshPart` selects it for a material record, and
+changing the one-part path: `MeshDescriptor::parts` lists one or more immutable `u16`/`u32`
+index parts stored beside one vertex region, `Mesh::part` returns a lease-free borrow, `GeometrySource::MeshPart` selects it for a material record, and
 `MeshSource::MeshPart` selects it for a shadow record. Part zero remains the whole/default mesh.
 Every part inherits the parent's layout, session, generation, and destruction boundary.
 

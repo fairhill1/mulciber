@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use mulciber_net::{
     Channel, Client, ClientId, ClientState, Conditioned, Conditions, Config, DisconnectReason,
-    MemoryAddress, MemoryNetwork, MemoryTransport, ProbeAnswer, Server, ServerConfig, ServerEvent,
-    Transport, UdpTransport, probe, probe_answer,
+    MAX_UNRELIABLE_SIZE, MemoryAddress, MemoryNetwork, MemoryTransport, ProbeAnswer, SendError,
+    Server, ServerConfig, ServerEvent, Transport, UdpTransport, probe, probe_answer,
 };
 
 const CONFIG: Config = Config::new(0x5348_4950);
@@ -40,18 +40,19 @@ fn connected<T: Transport>(server: &mut Server<T>) -> ClientId {
     }
 }
 
-fn setup(network: &MemoryNetwork, max_clients: usize) -> Server<MemoryTransport> {
+fn setup(network: &MemoryNetwork, max_clients: usize, now: Instant) -> Server<MemoryTransport> {
     Server::new(
         network.endpoint(SERVER),
         ServerConfig::new(CONFIG, max_clients),
+        now,
     )
 }
 
 #[test]
 fn a_client_connects_and_both_sides_talk() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let mut client = Client::connect(
         network.endpoint(MemoryAddress(2)),
         SERVER,
@@ -102,8 +103,8 @@ fn messages_survive_a_bad_network() {
         loss: 0.2,
         duplicate: 0.1,
     };
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let transport = Conditioned::new(network.endpoint(MemoryAddress(2)), bad, 2);
     let mut client = Client::connect(transport, SERVER, CONFIG, b"", now).unwrap();
     while client.state() == ClientState::Connecting {
@@ -198,11 +199,126 @@ fn messages_survive_a_bad_network() {
     );
 }
 
+/// A broadcast reaches every client that can take it, and names the ones that can't.
+#[test]
+fn a_broadcast_reaches_every_client_and_names_those_it_could_not() {
+    let network = MemoryNetwork::new();
+    let mut now = Instant::now();
+    let tight = Config {
+        max_backlog: 100,
+        ..CONFIG
+    };
+    let mut server = Server::new(network.endpoint(SERVER), ServerConfig::new(tight, 4), now);
+    let mut slow =
+        Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
+    let mut fine =
+        Client::connect(network.endpoint(MemoryAddress(3)), SERVER, CONFIG, b"", now).unwrap();
+    for _ in 0..3 {
+        now += TICK;
+        tick(now, &mut server, &mut [&mut slow, &mut fine]);
+    }
+    let id = |server: &Server<MemoryTransport>, address| {
+        server
+            .clients()
+            .find(|&client| server.address(client) == Some(address))
+            .unwrap()
+    };
+    let (slow_id, fine_id) = (id(&server, MemoryAddress(2)), id(&server, MemoryAddress(3)));
+    assert_eq!(server.broadcast(Channel::Reliable, b"hello all"), []);
+
+    // Fill the slow client's backlog before anything is acknowledged: the next broadcast can't be
+    // queued for it, but still is for the other.
+    server.send(slow_id, Channel::Reliable, &[1; 80]).unwrap();
+    assert_eq!(
+        server.broadcast(Channel::Reliable, &[2; 40]),
+        [(slow_id, SendError::Backlogged)]
+    );
+    for _ in 0..3 {
+        now += TICK;
+        tick(now, &mut server, &mut [&mut slow, &mut fine]);
+    }
+    let received = |client: &mut Client<MemoryTransport>| {
+        std::iter::from_fn(|| client.receive())
+            .map(|message| message.data)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        received(&mut fine),
+        [&b"hello all"[..], &[2; 40][..]].map(Box::from)
+    );
+    assert_eq!(
+        received(&mut slow),
+        [&b"hello all"[..], &[1; 80][..]].map(Box::from)
+    );
+
+    // A message too large for the channel fails for everyone alike, each named.
+    let mut failed = server.broadcast(Channel::Unreliable, &vec![0; MAX_UNRELIABLE_SIZE + 1]);
+    failed.sort_unstable_by_key(|&(client, _)| client);
+    let mut expected = [
+        (slow_id, SendError::TooLarge),
+        (fine_id, SendError::TooLarge),
+    ];
+    expected.sort_unstable_by_key(|&(client, _)| client);
+    assert_eq!(failed, expected);
+    // Once acknowledged, the slow client's backlog is free again.
+    assert_eq!(server.broadcast(Channel::Reliable, &[3; 40]), []);
+}
+
+/// The server's cookie windows count from the `now` it was made at, on the caller's clock: here a
+/// fake one running ahead of the real one.
+#[test]
+fn challenge_cookies_age_on_the_callers_clock() {
+    let network = MemoryNetwork::new();
+    let start = Instant::now() + Duration::from_secs(5);
+    let at = |seconds: f64| start + Duration::from_secs_f64(seconds);
+    let mut server = setup(&network, 4, start);
+    // Patient clients, so only the server's cookie decides.
+    let patient = Config {
+        timeout: Duration::from_mins(1),
+        ..CONFIG
+    };
+    let mut prompt = Client::connect(
+        network.endpoint(MemoryAddress(2)),
+        SERVER,
+        patient,
+        b"",
+        start,
+    )
+    .unwrap();
+    let mut late = Client::connect(
+        network.endpoint(MemoryAddress(3)),
+        SERVER,
+        patient,
+        b"",
+        start,
+    )
+    .unwrap();
+
+    // Both are challenged 4.9 seconds into the server's first ten-second window...
+    let challenged = at(4.9);
+    for client in [&mut prompt, &mut late] {
+        client.flush(challenged).unwrap();
+        server.update(challenged).unwrap();
+        client.update(challenged).unwrap();
+    }
+    // ...so a response in the next window is good, and one in the window after is not.
+    for (client, seconds) in [(&mut prompt, 15.5), (&mut late, 20.5)] {
+        client.flush(at(seconds)).unwrap();
+        server.update(at(seconds)).unwrap();
+        client.update(at(seconds)).unwrap();
+    }
+    assert_eq!(prompt.state(), ClientState::Connected);
+    assert_eq!(late.state(), ClientState::Connecting);
+    let id = connected(&mut server);
+    assert_eq!(server.clients().collect::<Vec<_>>(), [id]);
+    assert_eq!(server.address(id), Some(MemoryAddress(2)));
+}
+
 #[test]
 fn a_full_server_turns_clients_away() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 1);
     let mut now = Instant::now();
+    let mut server = setup(&network, 1, now);
     let mut first =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     let mut second =
@@ -222,8 +338,8 @@ fn a_full_server_turns_clients_away() {
 #[test]
 fn a_different_protocol_is_refused() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let other = Config::new(CONFIG.protocol + 1);
     let mut client =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, other, b"", now).unwrap();
@@ -241,8 +357,8 @@ fn a_different_protocol_is_refused() {
 #[test]
 fn hanging_up_reaches_the_other_side_and_silence_times_out() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let mut leaver =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     let mut vanisher =
@@ -301,8 +417,8 @@ fn hanging_up_reaches_the_other_side_and_silence_times_out() {
 #[test]
 fn a_client_learns_the_server_is_gone() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let mut client =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     for _ in 0..3 {
@@ -349,8 +465,8 @@ fn a_client_learns_the_server_is_gone() {
 #[test]
 fn a_client_starting_over_from_the_same_address_replaces_its_old_self() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let mut client =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     for _ in 0..3 {
@@ -382,8 +498,8 @@ fn a_client_starting_over_from_the_same_address_replaces_its_old_self() {
 #[test]
 fn garbage_and_forged_packets_change_nothing() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 4);
     let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
     let mut client =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     for _ in 0..3 {
@@ -436,8 +552,8 @@ fn garbage_and_forged_packets_change_nothing() {
 fn over_real_udp_sockets() {
     let transport = UdpTransport::bind("127.0.0.1:0").unwrap();
     let address = transport.local_address().unwrap();
-    let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4));
     let start = Instant::now();
+    let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4), start);
     let mut client = Client::connect(
         UdpTransport::bind("127.0.0.1:0").unwrap(),
         address,
@@ -477,8 +593,8 @@ fn over_real_udp_sockets() {
 #[test]
 fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
     let network = MemoryNetwork::new();
-    let mut server = setup(&network, 1);
     let mut now = Instant::now();
+    let mut server = setup(&network, 1, now);
     let mut client =
         Client::connect(network.endpoint(MemoryAddress(2)), SERVER, CONFIG, b"", now).unwrap();
     for _ in 0..3 {
@@ -516,7 +632,7 @@ fn anyone_probing_a_server_is_answered_and_nothing_else_changes() {
 fn a_probe_over_a_real_socket_says_how_long_it_waited() {
     let transport = UdpTransport::bind("127.0.0.1:0").unwrap();
     let address = transport.local_address().unwrap();
-    let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4));
+    let mut server = Server::new(transport, ServerConfig::new(CONFIG, 4), Instant::now());
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.set_nonblocking(true).unwrap();
     let start = Instant::now();

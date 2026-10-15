@@ -91,13 +91,16 @@ pub struct Server<T: Transport> {
 }
 
 impl<T: Transport> Server<T> {
-    /// A server taking packets from `transport`.
-    pub fn new(transport: T, config: ServerConfig) -> Server<T> {
+    /// A server taking packets from `transport`, started at `now`.
+    ///
+    /// `now` is on the same clock as every later call's: the challenge cookies a client must
+    /// return to connect are good for windows counted from it.
+    pub fn new(transport: T, config: ServerConfig, now: Instant) -> Server<T> {
         Server {
             transport,
             config,
             secret: RandomState::new(),
-            started: Instant::now(),
+            started: now,
             slots: Vec::new(),
             leaving: Vec::new(),
             next_id: 0,
@@ -335,14 +338,24 @@ impl<T: Transport> Server<T> {
             .send(channel, data)
     }
 
-    /// Queues a message to every connected client. Stops at the first that fails.
+    /// Queues a message to every connected client, and returns the clients it could not be
+    /// queued to, each with why ([`SendError`]), in no particular order.
     ///
-    /// # Errors
-    /// See [`SendError`].
-    pub fn broadcast(&mut self, channel: Channel, data: &[u8]) -> Result<(), SendError> {
+    /// A failure for one client doesn't stop the others: every client that can take the message
+    /// gets it. The result is empty when all of them did. A message too large for the channel
+    /// fails for every client alike; [`SendError::Backlogged`] names the clients not keeping up,
+    /// which the game may want to [`Server::disconnect`].
+    #[must_use = "clients the message could not be queued to are returned, not reported elsewhere"]
+    pub fn broadcast(&mut self, channel: Channel, data: &[u8]) -> Vec<(ClientId, SendError)> {
         self.slots
             .iter_mut()
-            .try_for_each(|slot| slot.connection.send(channel, data))
+            .filter_map(|slot| {
+                slot.connection
+                    .send(channel, data)
+                    .err()
+                    .map(|error| (slot.id, error))
+            })
+            .collect()
     }
 
     /// Sends what's queued to every client, with acks and keepalives.

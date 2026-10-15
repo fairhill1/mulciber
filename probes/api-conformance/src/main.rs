@@ -14,12 +14,12 @@ use std::time::Instant;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialRecord,
-    MaterialScene, Mesh, MeshIndices, MeshSource, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
-    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass,
-    ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, TextureDescriptor,
-    TextureShape, TexturedInstanceBatch, TexturedSceneDraw, TransientGeometry, Vertex,
-    VertexAttribute, VertexFormat, VertexLayout,
+    MaterialScene, Mesh, MeshDescriptor, MeshIndices, MeshSource, MeshVertices, MipChain,
+    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
+    ShadowPass, ShadowPrepass, ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT,
+    TexelData, TextureDescriptor, TextureShape, TexturedInstanceBatch, TexturedSceneDraw,
+    TransientGeometry, Vertex, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -385,7 +385,13 @@ impl<'window> Cases<'window> {
                 {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     expect_error(
-                        graphics.device.create_mesh(&[], &[]).map(|_| ()),
+                        graphics
+                            .device
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Fixed(&[]),
+                                parts: &[MeshIndices::U16(&[])],
+                            })
+                            .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "non-empty",
                         "empty mesh rejected",
@@ -393,7 +399,10 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 3])
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                parts: &[MeshIndices::U16(&[0, 1, 3])],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "out-of-range",
@@ -402,7 +411,10 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh_with_parts(&TRIANGLE_VERTICES, &[])
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                parts: &[],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "at least one indexed part",
@@ -411,10 +423,10 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh_with_parts(
-                                &TRIANGLE_VERTICES,
-                                &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[])],
-                            )
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[])],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "part 1",
@@ -423,10 +435,13 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh_with_parts(
-                                &TRIANGLE_VERTICES,
-                                &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 3, 2])],
-                            )
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                parts: &[
+                                    MeshIndices::U16(&[0, 1, 2]),
+                                    MeshIndices::U32(&[0, 3, 2]),
+                                ],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "part 1",
@@ -454,9 +469,10 @@ impl<'window> Cases<'window> {
                 self.pass("zero-dimension texture rejected");
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
-                let mesh = graphics
-                    .device
-                    .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?;
+                let mesh = graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    parts: &[MeshIndices::U16(&[0, 1, 2])],
+                })?;
                 expect_error(
                     mesh.part(1).map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -616,22 +632,20 @@ impl<'window> Cases<'window> {
                     .destroy_mesh(self.mesh.take().expect("mesh exists"))?;
 
                 for _ in 0..32 {
-                    drop(graphics.device.create_mesh_with_parts(
-                        &TRIANGLE_VERTICES,
-                        &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 2, 1])],
-                    )?);
+                    drop(graphics.device.create_mesh(&MeshDescriptor {
+                        vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                        parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 2, 1])],
+                    })?);
                 }
 
-                self.foreign_mesh = Some(
-                    graphics
-                        .device
-                        .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
-                );
-                self.mesh = Some(
-                    graphics
-                        .device
-                        .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
-                );
+                self.foreign_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    parts: &[MeshIndices::U16(&[0, 1, 2])],
+                })?);
+                self.mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    parts: &[MeshIndices::U16(&[0, 1, 2])],
+                })?);
                 self.texture = Some(rgba8_srgb(&graphics.device, 2, 2, &[255_u8; 16])?);
                 self.pipeline = Some(
                     graphics
@@ -933,11 +947,13 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh_with_layout(
-                                MATERIAL_LAYOUT,
-                                &truncated[..truncated.len() - 4],
-                                MeshIndices::U16(&[0, 1, 2]),
-                            )
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Bytes {
+                                    layout: MATERIAL_LAYOUT,
+                                    bytes: &truncated[..truncated.len() - 4],
+                                },
+                                parts: &[MeshIndices::U16(&[0, 1, 2])],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "multiple of the layout stride",
@@ -946,11 +962,13 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_mesh_with_layout(
-                                MATERIAL_LAYOUT,
-                                &material_triangle_vertices(),
-                                MeshIndices::U32(&[0, 1, 3]),
-                            )
+                            .create_mesh(&MeshDescriptor {
+                                vertices: MeshVertices::Bytes {
+                                    layout: MATERIAL_LAYOUT,
+                                    bytes: &material_triangle_vertices(),
+                                },
+                                parts: &[MeshIndices::U32(&[0, 1, 3])],
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "out-of-range index",
@@ -995,11 +1013,13 @@ impl<'window> Cases<'window> {
                 )?);
                 // 32-bit indices deliberately back the shared material mesh so every material
                 // draw, presentation, and reclamation case exercises the u32 index path.
-                self.material_mesh = Some(graphics.device.create_mesh_with_layout(
-                    MATERIAL_LAYOUT,
-                    &material_triangle_vertices(),
-                    MeshIndices::U32(&[0, 1, 2]),
-                )?);
+                self.material_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Bytes {
+                        layout: MATERIAL_LAYOUT,
+                        bytes: &material_triangle_vertices(),
+                    },
+                    parts: &[MeshIndices::U32(&[0, 1, 2])],
+                })?);
                 self.step = 11;
                 Ok(false)
             }
@@ -1785,11 +1805,13 @@ impl<'window> Cases<'window> {
                         instance_layout: None,
                     },
                 )?);
-                self.floor_mesh = Some(graphics.device.create_mesh_with_layout(
-                    LAVA_LAYOUT,
-                    &floor_vertices(),
-                    MeshIndices::U16(&[0, 1, 2, 0, 2, 3]),
-                )?);
+                self.floor_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Bytes {
+                        layout: LAVA_LAYOUT,
+                        bytes: &floor_vertices(),
+                    },
+                    parts: &[MeshIndices::U16(&[0, 1, 2, 0, 2, 3])],
+                })?);
                 self.material_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
                         scene_color: SceneColor::Surface,
@@ -1803,11 +1825,13 @@ impl<'window> Cases<'window> {
                         instance_layout: None,
                     },
                 )?);
-                self.material_mesh = Some(graphics.device.create_mesh_with_layout_and_parts(
-                    MATERIAL_LAYOUT,
-                    &material_part_vertices(),
-                    &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[1, 3, 2])],
-                )?);
+                self.material_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Bytes {
+                        layout: MATERIAL_LAYOUT,
+                        bytes: &material_part_vertices(),
+                    },
+                    parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[1, 3, 2])],
+                })?);
                 self.pass("zero-extent shadow map rejected");
                 self.pass("zero-layer shadow map array rejected");
                 self.pass("over-limit shadow map array layers rejected");
@@ -2232,11 +2256,13 @@ impl<'window> Cases<'window> {
                         instance_layout: None,
                     },
                 )?);
-                self.skinned_mesh = Some(graphics.device.create_mesh_with_layout(
-                    SKINNED_LAYOUT,
-                    &skinned_triangle_vertices(),
-                    MeshIndices::U16(&[0, 1, 2]),
-                )?);
+                self.skinned_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Bytes {
+                        layout: SKINNED_LAYOUT,
+                        bytes: &skinned_triangle_vertices(),
+                    },
+                    parts: &[MeshIndices::U16(&[0, 1, 2])],
+                })?);
                 self.pass("second storage slot rejected");
                 self.pass("oversized storage declaration rejected");
                 self.pass("storage size mismatch rejected");
@@ -2845,11 +2871,13 @@ impl<'window> Cases<'window> {
                         bindings: &SPROUT_BINDINGS,
                     },
                 )?);
-                self.sprout_mesh = Some(graphics.device.create_mesh_with_layout_and_parts(
-                    SPROUT_LAYOUT,
-                    &sprout_triangle_vertices(),
-                    &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 1, 2])],
-                )?);
+                self.sprout_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Bytes {
+                        layout: SPROUT_LAYOUT,
+                        bytes: &sprout_triangle_vertices(),
+                    },
+                    parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 1, 2])],
+                })?);
                 self.sprout_shadow_map = Some(graphics.device.create_shadow_map(256)?);
                 self.pass("instanced material and cutout shadow pipelines created");
                 self.step = 40;
@@ -3238,11 +3266,10 @@ impl<'window> Cases<'window> {
                 }
                 self.pass("forced one-sample selection observable");
 
-                self.mesh = Some(
-                    reopened
-                        .device
-                        .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
-                );
+                self.mesh = Some(reopened.device.create_mesh(&MeshDescriptor {
+                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    parts: &[MeshIndices::U16(&[0, 1, 2])],
+                })?);
                 self.texture = Some(rgba8_srgb(&reopened.device, 2, 2, &[255_u8; 16])?);
                 self.pipeline = Some(
                     reopened
@@ -3489,8 +3516,11 @@ impl<'window> Cases<'window> {
                 .as_mut()
                 .expect("session B is open")
                 .surface
-                .set_vsync(sync)
-            {
+                .set_presentation_mode(if sync {
+                    mulciber::PresentationMode::Synchronized
+                } else {
+                    mulciber::PresentationMode::Immediate
+                }) {
                 Ok(()) => self.pass(if sync {
                     "live VSync on"
                 } else {
@@ -3523,7 +3553,7 @@ impl<'window> Cases<'window> {
                     .as_mut()
                     .expect("session B is open")
                     .surface
-                    .set_vsync(true),
+                    .set_presentation_mode(mulciber::PresentationMode::Synchronized),
                 GraphicsErrorKind::Lifecycle,
                 "acquired frame is live",
                 "live-frame VSync change rejected",
@@ -3543,7 +3573,10 @@ impl<'window> Cases<'window> {
             if self.step == 7 {
                 vertices.resize(1 << 20, TRIANGLE_VERTICES[0]);
             }
-            self.mesh = Some(graphics.device.create_mesh(&vertices, &[0, 1, 2])?);
+            self.mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
+                vertices: MeshVertices::Fixed(&vertices),
+                parts: &[MeshIndices::U16(&[0, 1, 2])],
+            })?);
         }
         let draws: Vec<_> = (0..(1 << (self.step % 7)))
             .map(|index| TexturedSceneDraw {

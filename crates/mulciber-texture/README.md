@@ -14,6 +14,10 @@ mulciber-texture bake assets/textures --force    # rebakes everything
 mulciber-texture check assets/textures           # lists stale bakes and fails if there are any
 ```
 
+`bake` tries every texture: it prints each one baked and each one that failed with its error, and
+exits with failure if any did. A game's own bake binary can forward to `run`, or call
+`bake_materials(paths, defaults, BakeMode::IfStale)` for every texture's own result.
+
 A game's runtime depends on the crate without the encoder:
 
 ```toml

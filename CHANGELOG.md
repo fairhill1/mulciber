@@ -2,6 +2,28 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## BC6H light (graphics 0.19.0, texture 0.7.0)
+
+Breaking: `BlockCompression` gains `Bc6hUfloat`, so an exhaustive match on it needs an arm. BC6H holds
+three channels of unsigned half float, sampled linear and unclamped from 0 to 65504 with alpha 1, in
+one byte a texel: an eighth of `RGBA16Float`. It is for light that is baked and does not change, a
+sky, a lightmap, a reflection probe.
+
+- `TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, …)` uploads 2D textures and cubes like
+  the other BC formats (`VK_FORMAT_BC6H_UFLOAT_BLOCK`, `MTLPixelFormatBC6H_RGBUfloat`), behind the
+  same BC capability.
+- Cube texture arrays take BC6H as well as `RGBA16Float`, with a supplied chain.
+- KTX 2.0 reads and `ktx2_vk_format` writes it as VkFormat 143.
+- `mulciber-texture` 0.7.0: `encode_bc6h` encodes one level with Intel's ISPC encoder, padding odd
+  extents to whole blocks, clamping to 0..65504 (`HDR_MAX`) and refusing non-finite light by texel;
+  `hdr_chain` builds a mip chain of light by 2×2 means, since a GPU cannot filter BC6H mips.
+
+Only the unsigned variant is supported, the one the encoder writes. Encoding is tested against an
+independent decoder (`bcdec_rs`). `mulciber-cube-array-texture` sampled 37 BC6H cases, and passed
+whole on Vulkan for the first time, on Mesa's software lavapipe under validation
+([evidence](docs/linux-validation.md#cube-texture-arrays-graphics-0160-0190)); no GPU and no Metal
+run yet. See [block-compressed textures](docs/block-compressed-textures.md).
+
 ## Text and overlays (text 0.1.0, shader 0.5.7)
 
 `mulciber-text` is new, the mechanics both games on Mulciber had each built for their HUDs, menus and

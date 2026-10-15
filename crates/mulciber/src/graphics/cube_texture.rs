@@ -344,6 +344,23 @@ mod tests {
         let array = TextureShape::CubeArray { size: 4, layers: 1 };
         let error = request(array, MipChain::Supplied, 7).expect_err("an RGBA8 cube array");
         assert_eq!(error.kind(), GraphicsErrorKind::Unsupported);
+        // Light compressed as BC6H fills a cube array, its supplied chain one block a level per
+        // face; BC7 does not.
+        let block = [0_u8; 16];
+        let blocks = [&block[..]; 18];
+        let compressed = |compression, mips| {
+            validate_texture_request(&TextureDescriptor {
+                shape: array,
+                mips,
+                data: TexelData::BlockCompressed(compression, &blocks),
+            })
+        };
+        assert_eq!(
+            compressed(BlockCompression::Bc6hUfloat, MipChain::Supplied).ok(),
+            Some(3)
+        );
+        assert!(compressed(BlockCompression::Bc6hUfloat, MipChain::Single).is_err());
+        assert!(compressed(BlockCompression::Bc7Unorm, MipChain::Supplied).is_err());
         let empty = TextureShape::CubeArray { size: 4, layers: 0 };
         let error = request(empty, MipChain::Supplied, 0).expect_err("no layers");
         assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);

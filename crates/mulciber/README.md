@@ -137,8 +137,9 @@ No API change; Metal was never limited this way.
 
 `TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &level_slices)` in
 `Device::create_texture` (or `create_texture(&ktx.descriptor())` for a KTX 2.0 file) uploads
-already encoded BC7 or BC5 blocks and returns a `Texture` for the existing material bindings,
-sampled directly at a quarter of the RGBA8 footprint. The application encodes every level of
+already encoded BC1, BC2, BC3, BC5, BC6H or BC7 blocks and returns a `Texture` for the existing
+material bindings, sampled directly at a quarter of the RGBA8 footprint (BC6H, unsigned half-float
+light, at an eighth of `RGBA16Float`'s). The application encodes every level of
 its own filtered chain; Mulciber never encodes or decodes, so block-compressed data cannot ask
 for `MipChain::Generated` (`InvalidRequest`). Adapters without BC sampling return `Unsupported`
 for these uploads and are otherwise unaffected. See the

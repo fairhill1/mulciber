@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use intel_tex_2::{RgbaSurface, bc7};
+use intel_tex_2::{RgbaSurface, bc6h, bc7};
 
 use crate::TextureError;
 use crate::chain::{Levels, mip_extent};
 use crate::container::{SOURCE_DIGEST_KEY, write_ktx2};
+use crate::hdr::unsigned_halves;
 use crate::material::{MaterialDefaults, MaterialMaps, find_materials, is_albedo};
 use crate::recipe::{Recipe, Stats};
 
@@ -81,6 +82,71 @@ pub fn encode_bc7(levels: &Levels) -> Vec<Vec<u8>> {
             )
         })
         .collect()
+}
+
+/// Encodes one level of linear RGB light as BC6H unsigned half floats
+/// ([`BlockCompression::Bc6hUfloat`](mulciber::BlockCompression::Bc6hUfloat)) with ISPC's basic
+/// settings, a block row band per core. Alpha is dropped. Light below zero is encoded as zero
+/// and above [`HDR_MAX`](crate::HDR_MAX) as it, which BC6H's unsigned floats cannot hold. A level
+/// whose extent is not a multiple of four is padded by repeating its last row and column, which
+/// the GPU never samples.
+///
+/// For a texture with mips, encode every level of an [`hdr_chain`](crate::hdr_chain).
+///
+/// # Errors
+///
+/// When `texels` is not `width` × `height` texels or holds light that is not finite.
+///
+/// # Panics
+///
+/// If an encoder thread panics, or a level is wider than `u32` bytes a row.
+pub fn encode_bc6h(width: u32, height: u32, texels: &[[f32; 4]]) -> Result<Vec<u8>, TextureError> {
+    if width == 0 || height == 0 || texels.len() != width as usize * height as usize {
+        return Err(TextureError::new(format!(
+            "{} texels do not make a {width}x{height} level",
+            texels.len()
+        )));
+    }
+    let halves = unsigned_halves(texels)?;
+    let (w, h) = (width as usize, height as usize);
+    let (padded_width, padded_height) = (w.next_multiple_of(4), h.next_multiple_of(4));
+    // Eight bytes a texel, native-endian halves as the encoder reads them.
+    let mut data = Vec::with_capacity(padded_width * padded_height * 8);
+    for y in 0..padded_height {
+        let row = &halves[y.min(h - 1) * w..][..w];
+        for x in 0..padded_width {
+            data.extend(row[x.min(w - 1)].iter().flat_map(|half| half.to_ne_bytes()));
+        }
+    }
+    let block_rows = padded_height / 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(block_rows);
+    let band_rows = block_rows.div_ceil(workers);
+    let row_bytes = padded_width * 8 * 4;
+    let settings = bc6h::basic_settings();
+    let bands: Vec<Vec<u8>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = data
+            .chunks(band_rows * row_bytes)
+            .map(|band| {
+                scope.spawn(move || {
+                    let surface = RgbaSurface {
+                        data: band,
+                        width: u32::try_from(padded_width).expect("a level's width fits u32"),
+                        height: u32::try_from(band.len() / (padded_width * 8))
+                            .expect("a band's height fits u32"),
+                        stride: u32::try_from(padded_width * 8).expect("a row fits u32 bytes"),
+                    };
+                    bc6h::compress_blocks(&settings, &surface)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("no encoder thread panics"))
+            .collect()
+    });
+    Ok(bands.concat())
 }
 
 /// Bakes `recipe` to its output, unless `mode` is [`BakeMode::IfStale`] and the bake there is

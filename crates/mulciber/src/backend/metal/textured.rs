@@ -39,6 +39,7 @@ const PIXEL_FORMAT_BC2_RGBA_SRGB: usize = 133;
 const PIXEL_FORMAT_BC3_RGBA: usize = 134;
 const PIXEL_FORMAT_BC3_RGBA_SRGB: usize = 135;
 const PIXEL_FORMAT_BC5_RG_UNORM: usize = 144;
+const PIXEL_FORMAT_BC6H_RGB_UFLOAT: usize = 151;
 const PIXEL_FORMAT_BC7_RGBA_UNORM: usize = 152;
 const PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB: usize = 153;
 const PIXEL_FORMAT_BGRA8_UNORM_SRGB: usize = 81;
@@ -769,6 +770,7 @@ impl<'window> TexturedSession<'window> {
                 SampledTextureFormat::Bc2Unorm => PIXEL_FORMAT_BC2_RGBA,
                 SampledTextureFormat::Bc3Srgb => PIXEL_FORMAT_BC3_RGBA_SRGB,
                 SampledTextureFormat::Bc3Unorm => PIXEL_FORMAT_BC3_RGBA,
+                SampledTextureFormat::Bc6hUfloat => PIXEL_FORMAT_BC6H_RGB_UFLOAT,
             };
             let descriptor = required(
                 objc::object_three_usizes_bool(

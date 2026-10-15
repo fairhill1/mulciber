@@ -16,7 +16,7 @@ exclude = ["tests"]
 
 [dependencies]
 fontdue = "0.9.4"
-mulciber = { version = "0.18.0", path = "../mulciber" }
+mulciber = { version = "0.19.0", path = "../mulciber" }
 
 [dev-dependencies]
 mulciber-shader = { version = "0.5.7", path = "../mulciber-shader" }

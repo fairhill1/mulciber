@@ -1,11 +1,12 @@
 //! Native evidence for `RGBA16Float` cube texture arrays through public material bindings: layer,
 //! face, in-face orientation and per-face mip selection in every cube, the binary16-bits upload, and
 //! the level and cube counts the shader reads, sampled through `MaterialBinding::CubeTextureArray`
-//! and read back from an HDR target.
+//! and read back from an HDR target. A BC6H cube array of light past 1.0, encoded by
+//! `mulciber-texture`, must sample as an independent decoder (`bcdec`) decodes its blocks.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
-    GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord,
-    MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
+    BlendMode, BlockCompression, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
+    GeometrySource, GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialPipelineDescriptor,
+    MaterialRecord, MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
     PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
     SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, Texture,
     TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
@@ -250,6 +251,66 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
         lod: 0.0,
         query: true,
         expected: [1.0, 1.0, 0.0, 1.0],
+    });
+
+    // 3: two cubes of 4x4 faces with three levels, each level of each face one colour of light
+    // past 1.0, encoded as BC6H. A sample must read what bcdec decodes the same blocks to: the
+    // GPU's BC6H decoding, and the cube, face and level each block lands in.
+    let light = |layer: usize, face: usize, level: usize| {
+        [
+            (small(layer) + 1.0) * 100.0,
+            (small(face) + 1.0) * 10.0,
+            small(level) + 0.5,
+            1.0,
+        ]
+    };
+    let chains = cube_array(2, 4, 3, |layer, face, level, _, _| {
+        light(layer, face, level)
+    });
+    let blocks = chains
+        .iter()
+        .enumerate()
+        .map(|(image, texels)| {
+            let extent = u32::try_from(4_usize >> (image % 3))?;
+            Ok(mulciber_texture::encode_bc6h(extent, extent, texels)?)
+        })
+        .collect::<Result<Vec<Vec<u8>>, Box<dyn Error>>>()?;
+    let images: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::CubeArray { size: 4, layers: 2 },
+        mips: MipChain::Supplied,
+        data: TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, &images),
+    })?);
+    for layer in 0..2 {
+        for (face, name) in FACES.iter().enumerate() {
+            for level in 0..3 {
+                let mut decoded = [0.0_f32; 4 * 4 * 3];
+                bcdec_rs::bc6h_float(
+                    &blocks[(layer * 6 + face) * 3 + level],
+                    &mut decoded,
+                    12,
+                    false,
+                );
+                cases.push(Case {
+                    texture: 3,
+                    what: format!("BC6H 4x4 cube {layer} face {name} level {level}"),
+                    direction: direction(face, 0.5, 0.5),
+                    layer: i32::try_from(layer)?,
+                    lod: small(level),
+                    query: false,
+                    expected: [decoded[0], decoded[1], decoded[2], 1.0],
+                });
+            }
+        }
+    }
+    cases.push(Case {
+        texture: 3,
+        what: "BC6H array level and cube counts".to_owned(),
+        direction: [1.0, 0.0, 0.0],
+        layer: 0,
+        lod: 0.0,
+        query: true,
+        expected: [3.0, 2.0, 0.0, 1.0],
     });
 
     for texture in &textures {

@@ -2472,10 +2472,12 @@ pub enum TexelData<'data> {
     Rgba8Unorm(&'data [&'data [u8]]),
     /// Already-encoded 4×4 blocks, row-major and tightly packed exactly as an encoder writes
     /// them. Mulciber uploads them as they are and the GPU samples them directly, so the
-    /// payload is a quarter (BC1 an eighth) of its RGBA8 equivalent in video memory as well as
+    /// payload is a quarter (BC1 an eighth) of its RGBA8 equivalent, and BC6H an eighth of its
+    /// `RGBA16Float` equivalent, in video memory as well as
     /// on disk. Extents need not be multiples of four: a partial edge block is still a whole
     /// block, so the 2×2 and 1×1 tail levels are one block each. `Unsupported` when the adapter
-    /// cannot sample the encoding.
+    /// cannot sample the encoding. [`BlockCompression::Bc6hUfloat`] holds light for a 2D
+    /// texture, a cube or a cube array.
     BlockCompressed(BlockCompression, &'data [&'data [u8]]),
     /// Linear `RGBA16Float` from row-major RGBA f32 texels, eight GPU bytes each.
     ///
@@ -2510,6 +2512,10 @@ impl<'data> TexelData<'data> {
 
     const fn is_block_compressed(self) -> bool {
         matches!(self, Self::BlockCompressed(..))
+    }
+
+    const fn is_bc6h(self) -> bool {
+        matches!(self, Self::BlockCompressed(BlockCompression::Bc6hUfloat, _))
     }
 
     /// The images as tightly packed bytes in their sampled format: byte formats as supplied,
@@ -2573,11 +2579,11 @@ fn validate_texture_request(descriptor: &TextureDescriptor<'_>) -> Result<usize,
         ));
     }
     if matches!(shape, TextureShape::CubeArray { .. })
-        && (!data.is_float() || mips != MipChain::Supplied)
+        && (!(data.is_float() || data.is_bc6h()) || mips != MipChain::Supplied)
     {
         return Err(GraphicsError::with_kind(
             GraphicsErrorKind::Unsupported,
-            "a cube texture array takes RGBA16Float data with a supplied mip chain",
+            "a cube texture array takes RGBA16Float or BC6H data with a supplied mip chain",
         ));
     }
     let levels = match mips {
@@ -2659,8 +2665,10 @@ impl TextureDimension {
 /// colour, with or without the sRGB transfer function; BC5 carries two and suits a
 /// tangent-space normal whose Z is reconstructed in the shader. BC1, BC2 and BC3 are the
 /// older DXT1, DXT3 and DXT5 encodings that existing game data ships in: BC1 has one-bit
-/// alpha, BC2 explicit four-bit alpha, BC3 interpolated alpha. The encoder is the
-/// application's: Mulciber uploads blocks and never decodes or produces them.
+/// alpha, BC2 explicit four-bit alpha, BC3 interpolated alpha. BC6H carries three channels of
+/// unsigned half float and suits light: a sky, a lightmap, a probe, at one byte a texel against
+/// `RGBA16Float`'s eight. The encoder is the application's (`mulciber-texture`
+/// has BC7's and BC6H's): Mulciber uploads blocks and never decodes or produces them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum BlockCompression {
     /// BC7 RGBA, decoded through the sRGB transfer function when sampled.
@@ -2681,6 +2689,9 @@ pub enum BlockCompression {
     Bc3Srgb,
     /// BC3 (DXT5) RGBA with interpolated alpha, sampled as stored.
     Bc3Unorm,
+    /// BC6H RGB unsigned half float, linear and unclamped from 0 to 65504, sampled as stored with
+    /// alpha 1: high dynamic range light such as a sky, a lightmap or a reflection probe.
+    Bc6hUfloat,
 }
 
 impl BlockCompression {
@@ -2695,6 +2706,7 @@ impl BlockCompression {
             Self::Bc2Unorm => SampledTextureFormat::Bc2Unorm,
             Self::Bc3Srgb => SampledTextureFormat::Bc3Srgb,
             Self::Bc3Unorm => SampledTextureFormat::Bc3Unorm,
+            Self::Bc6hUfloat => SampledTextureFormat::Bc6hUfloat,
         }
     }
 }
@@ -2713,6 +2725,7 @@ pub(crate) enum SampledTextureFormat {
     Bc2Unorm,
     Bc3Srgb,
     Bc3Unorm,
+    Bc6hUfloat,
 }
 
 impl SampledTextureFormat {
@@ -2729,7 +2742,8 @@ impl SampledTextureFormat {
             | Self::Bc2Srgb
             | Self::Bc2Unorm
             | Self::Bc3Srgb
-            | Self::Bc3Unorm => 4,
+            | Self::Bc3Unorm
+            | Self::Bc6hUfloat => 4,
         }
     }
 
@@ -2744,7 +2758,8 @@ impl SampledTextureFormat {
             | Self::Bc2Srgb
             | Self::Bc2Unorm
             | Self::Bc3Srgb
-            | Self::Bc3Unorm => 16,
+            | Self::Bc3Unorm
+            | Self::Bc6hUfloat => 16,
         }
     }
 
@@ -4872,6 +4887,14 @@ mod block_compressed_tests {
         assert_eq!(
             BlockCompression::Bc2Srgb.sampled().level_bytes(2, 2),
             Some(16)
+        );
+        // BC6H too: a byte a texel, an eighth of RGBA16Float's.
+        let bc6h = BlockCompression::Bc6hUfloat.sampled();
+        assert_eq!(bc6h.level_bytes(8, 8), Some(64));
+        assert_eq!(bc6h.level_bytes(1, 1), Some(16));
+        assert_eq!(
+            bc6h.level_bytes(64, 64).map(|bytes| bytes * 8),
+            SampledTextureFormat::Float16.level_bytes(64, 64)
         );
         // The uncompressed formats keep their texel sizes through the same helper.
         assert_eq!(SampledTextureFormat::Srgb.level_bytes(3, 3), Some(36));

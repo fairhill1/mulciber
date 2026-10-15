@@ -226,8 +226,11 @@ let probes = device.create_texture(&TextureDescriptor {
 `data` is cube after cube, each six faces in the order and orientation of the single cube (the
 table above), each face the complete chain from `size`×`size` to 1×1, converted to binary16 as the
 2D float upload converts (or, from bits, taken as binary16 patterns with non-finite values
-refused). Only `RGBA16Float` with a supplied chain is implemented: any other `TexelData` format,
-`MipChain::Single` or `MipChain::Generated` is `Unsupported`, waiting for a consumer. The returned
+refused). `TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, &images)` takes the same images
+as encoded BC6H blocks (graphics 0.19.0), an eighth of the memory, for light that does not change at
+run time; `mulciber_texture::encode_bc6h` encodes a face's level. Both need a supplied chain: any other
+`TexelData` format, `MipChain::Single` or `MipChain::Generated` is `Unsupported`, waiting for a
+consumer. The returned
 `Texture` has `dimension() == TextureDimension::CubeArray`.
 
 ```wgsl

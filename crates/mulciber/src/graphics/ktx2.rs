@@ -26,6 +26,7 @@ pub const fn ktx2_vk_format(compression: BlockCompression) -> u32 {
         BlockCompression::Bc3Unorm => 137,
         BlockCompression::Bc3Srgb => 138,
         BlockCompression::Bc5Unorm => 141,
+        BlockCompression::Bc6hUfloat => 143,
         BlockCompression::Bc7Unorm => 145,
         BlockCompression::Bc7Srgb => 146,
     }
@@ -40,6 +41,7 @@ const fn compression_of(vk_format: u32) -> Option<BlockCompression> {
         137 => BlockCompression::Bc3Unorm,
         138 => BlockCompression::Bc3Srgb,
         141 => BlockCompression::Bc5Unorm,
+        143 => BlockCompression::Bc6hUfloat,
         145 => BlockCompression::Bc7Unorm,
         146 => BlockCompression::Bc7Srgb,
         _ => return None,
@@ -367,6 +369,7 @@ mod tests {
             BlockCompression::Bc2Unorm,
             BlockCompression::Bc3Srgb,
             BlockCompression::Bc3Unorm,
+            BlockCompression::Bc6hUfloat,
         ] {
             let block = compression.sampled().block_bytes();
             let bytes = file(compression, 4, 4, &[vec![7; block]], &[]);

@@ -69,7 +69,17 @@ const FIXTURES: &[(&str, &str, &[&str])] = &[
             "lod_from_roughness",
         ],
     ),
-    ("tonemap", "mulciber::tonemap", &["hue_preserving_shoulder"]),
+    (
+        "tonemap",
+        "mulciber::tonemap",
+        &[
+            "hue_preserving_shoulder",
+            "pbr_neutral",
+            "pbr_neutral_inverse",
+            "whitening_shoulder",
+            "whitening_shoulder_inverse",
+        ],
+    ),
 ];
 
 #[test]
@@ -546,6 +556,151 @@ fn shoulder_is_identity_below_it_monotonic_and_hue_preserving() {
     // Slope 1 where the shoulder meets the identity.
     let just_above = tonemap::hue_preserving_shoulder([0.6001, 0.0, 0.0])[0];
     assert!((just_above - 0.6001).abs() < 1e-6, "{just_above}");
+}
+
+#[test]
+fn pbr_neutral_matches_the_specification() {
+    // Black stays black; past the toe a colour under the start passes through less 0.04.
+    assert_eq!(tonemap::pbr_neutral([0.0; 3]), [0.0; 3]);
+    assert_eq!(tonemap::pbr_neutral([-1.0, -0.5, 0.0]), [0.0; 3]);
+    let mid = tonemap::pbr_neutral([0.5, 0.3, 0.2]);
+    for (shown, exposed) in mid.into_iter().zip([0.5_f64, 0.3, 0.2]) {
+        assert!(close(shown, exposed - 0.04, 1e-6), "{mid:?}");
+    }
+    // The toe: a grey x under 0.08 shows as 6.25x², meeting x − 0.04 at 0.08.
+    for grey in [0.01_f32, 0.04, 0.079] {
+        let expected = 6.25 * f64::from(grey) * f64::from(grey);
+        assert!(close(tonemap::pbr_neutral([grey; 3])[0], expected, 1e-5));
+    }
+    // A grey past the start, less the toe's 0.04, compressed as 1 − 0.24² / (p + 0.24 − 0.76),
+    // and still grey.
+    for (grey, expected) in [(1.0_f32, 1.0 - 0.0576 / 0.44), (4.0, 1.0 - 0.0576 / 3.44)] {
+        let shown = tonemap::pbr_neutral([grey; 3]);
+        assert!(close(shown[0], expected, 1e-6), "{grey}: {shown:?}");
+        assert_eq!(shown[0], shown[2]);
+    }
+    assert!(tonemap::pbr_neutral([1.0e6; 3])[0] < 1.0);
+}
+
+#[test]
+fn pbr_neutral_rises_and_whitens_what_it_compresses() {
+    let hue = [1.0_f32, 0.55, 0.2];
+    let mut previous = [0.0_f32; 3];
+    let mut previous_saturation = f32::MAX;
+    for step in 1..4000 {
+        #[allow(clippy::cast_precision_loss)]
+        let scale = step as f32 * 0.005;
+        let output = tonemap::pbr_neutral(hue.map(|channel| channel * scale));
+        for channel in 0..3 {
+            assert!(
+                output[channel] >= previous[channel],
+                "not monotonic at {scale}"
+            );
+        }
+        assert!(output[0] < 1.0);
+        // Once compressed, the brighter the whiter.
+        let saturation = 1.0 - output[2] / output[0];
+        if output[0] > 0.76 {
+            assert!(saturation <= previous_saturation, "resaturates at {scale}");
+            previous_saturation = saturation;
+        }
+        previous = output;
+    }
+    // A long way past the start, a warm colour has gone most of the way to white.
+    let bright = tonemap::pbr_neutral(hue.map(|channel| channel * 200.0));
+    assert!(bright[2] / bright[0] > 0.9, "{bright:?}");
+}
+
+#[test]
+fn pbr_neutral_inverse_gives_back_the_light() {
+    for hue in [
+        [1.0_f32, 1.0, 1.0],
+        [1.0, 0.55, 0.2],
+        [0.1, 0.4, 1.0],
+        [1.0, 0.0, 0.0],
+    ] {
+        for stop in -16..8 {
+            let exposed = hue.map(|channel| channel * 2.0_f32.powi(stop));
+            let back = tonemap::pbr_neutral_inverse(tonemap::pbr_neutral(exposed));
+            // Within a thousandth of the brightest channel: undoing the compression scales the
+            // shown colour's rounding up with the peak, and 128 shows within 0.0005 of 1, where
+            // f32 resolves only so much of the gap.
+            let peak = exposed[0].max(exposed[1]).max(exposed[2]);
+            for channel in 0..3 {
+                assert!(
+                    (back[channel] - exposed[channel]).abs() <= peak * 1.0e-3,
+                    "{exposed:?} came back {back:?}"
+                );
+            }
+        }
+    }
+    // White, which the curve never reaches, is taken as just under it.
+    assert!(tonemap::pbr_neutral_inverse([1.0; 3])[0] > 100.0);
+}
+
+#[test]
+fn whitening_shoulder_is_the_shoulder_below_it_and_whitens_above() {
+    for color in [[0.0_f32; 3], [0.6, 0.3, 0.1], [0.2, 0.59, 0.4]] {
+        assert_eq!(tonemap::whitening_shoulder(color), color);
+    }
+    // A grey is the shoulder's own: there's nothing to whiten.
+    for grey in [0.8_f32, 2.0, 10.0] {
+        let shown = tonemap::whitening_shoulder([grey; 3]);
+        let shoulder = tonemap::hue_preserving_shoulder([grey; 3]);
+        assert!(
+            (shown[0] - shoulder[0]).abs() < 1e-6 && (shown[0] - shown[2]).abs() < 1e-6,
+            "{shown:?}"
+        );
+    }
+    let hue = [1.0_f32, 0.55, 0.2];
+    let mut previous = [0.0_f32; 3];
+    let mut previous_saturation = f32::MAX;
+    for step in 1..4000 {
+        #[allow(clippy::cast_precision_loss)]
+        let scale = step as f32 * 0.005;
+        let input = hue.map(|channel| channel * scale);
+        let output = tonemap::whitening_shoulder(input);
+        // The brightest channel is the shoulder's.
+        let shoulder = tonemap::hue_preserving_shoulder(input)[0];
+        assert!((output[0] - shoulder).abs() < 1e-6, "at {scale}");
+        for channel in 0..3 {
+            assert!(
+                output[channel] >= previous[channel],
+                "not monotonic at {scale}"
+            );
+        }
+        let saturation = 1.0 - output[2] / output[0];
+        assert!(
+            saturation <= previous_saturation + 1e-6,
+            "resaturates at {scale}"
+        );
+        previous_saturation = saturation;
+        previous = output;
+    }
+    let bright = tonemap::whitening_shoulder(hue.map(|channel| channel * 200.0));
+    assert!(bright[2] / bright[0] > 0.9, "{bright:?}");
+}
+
+#[test]
+fn whitening_shoulder_inverse_gives_back_the_light() {
+    for hue in [
+        [1.0_f32, 1.0, 1.0],
+        [1.0, 0.55, 0.2],
+        [0.1, 0.4, 1.0],
+        [1.0, 0.0, 0.0],
+    ] {
+        for stop in -16..8 {
+            let exposed = hue.map(|channel| channel * 2.0_f32.powi(stop));
+            let back = tonemap::whitening_shoulder_inverse(tonemap::whitening_shoulder(exposed));
+            let peak = exposed[0].max(exposed[1]).max(exposed[2]);
+            for channel in 0..3 {
+                assert!(
+                    (back[channel] - exposed[channel]).abs() <= peak * 1.0e-3,
+                    "{exposed:?} came back {back:?}"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

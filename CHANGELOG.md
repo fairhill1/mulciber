@@ -2,6 +2,31 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Khronos PBR Neutral, and the shoulder's path to white (shader 0.5.6)
+
+`mulciber::tonemap` adds `pbr_neutral`, Khronos's PBR Neutral as Bevy 0.20 ships it, beside
+`hue_preserving_shoulder`, which is unchanged. The shoulder keeps a colour's channel ratios however
+bright it gets, so a saturated sky or lamp overexposed by a stop or two stays saturated all the way
+up and its gradients flatten into one band just under white. PBR Neutral compresses the brightest
+channel the same way (from 0.76, toward 1) and then mixes the colour toward white by how far it was
+compressed, as film and the eye whiten very bright light. It also has a toe: up to 0.04 comes off
+every channel by the darkest one, quadratically near black (6.25x² below 0.08), which deepens
+shadows and the colour in them. That makes it a different look, not a drop-in: a game switching to
+it should expect darker, richer shadows and re-check its exposure.
+
+`pbr_neutral_inverse` gives back the exposed colour a shown one came from, exactly and in closed
+form (the shown colour's brightest channel gives the compressed peak, hence the peak and the
+whitening; the darkest channel past them gives the toe), for measuring a captured frame's light.
+The tests check the toe, the compression of greys, monotonicity, whitening that only grows with
+brightness, and the inverse's round trip from 2⁻¹⁶ to 2⁷ over greys and saturated colours.
+
+`whitening_shoulder` is `hue_preserving_shoulder` with PBR Neutral's path to white and nothing else:
+identical up to 0.6 and in its brightest channel above it, the colour mixed toward white by how far
+the shoulder compressed it, for a game that wants highlights to whiten without PBR Neutral's toe
+recolouring its shadows. `whitening_shoulder_inverse` undoes it exactly, the shoulder's peak taken
+back as `(0.36 − 0.2n) / (1 − n)`. Its tests check it against the shoulder, that greys are left as the
+shoulder leaves them, monotonicity, whitening that only grows, and the round trip.
+
 ## Rooms decay by Sabine's formula (audio 0.2.0)
 
 `probe_room` mapped the mean ray length onto a 0..1 `room` from 3 m to 25 m, which the reverb

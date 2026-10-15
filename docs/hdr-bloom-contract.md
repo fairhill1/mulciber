@@ -48,9 +48,9 @@ bright lights, while a tent applied at every step up comes back smooth.
 
 Evidence: Metal was exercised on an Apple M2 by Shiplike (2940x1782 drawable, render scale 100% and
 50%, seven and six levels): frames read back show a round, smooth halo with no texel grid, and the
-halo's brightness at several radii agrees between the two scales. Vulkan compiles and passes Clippy
-for `x86_64-unknown-linux-gnu`, but its upsample barriers, `LOAD` attachments and blending have not
-run on a device or under validation layers yet; that evidence remains outstanding.
+halo's brightness at several radii agrees between the two scales. Vulkan has since run in Shiplike
+on Linux, bloom on, in play and in frames it wrote with `--shot`, which show the same smooth halo
+round its lamps. It has not yet run under validation layers; that evidence remains outstanding.
 
 ## Independently optional effects
 

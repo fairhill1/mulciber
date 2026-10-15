@@ -144,7 +144,7 @@ starts with `mulciber::` is an error, so a game cannot shadow one.
 | `mulciber::colorspace` | `srgb_to_linear`, `linear_to_srgb` (vec3, piecewise IEC 61966-2-1 curve) and their `_channel` scalar forms; `luminance` (BT.709 weights over linear Rec. 709 colour) |
 | `mulciber::photometry` | light units, falloff and exposure; see [the lighting library](#the-lighting-library) |
 | `mulciber::pbr` | the BRDF, punctual lights and split-sum environment specular |
-| `mulciber::tonemap` | `hue_preserving_shoulder` |
+| `mulciber::tonemap` | `hue_preserving_shoulder`, and `whitening_shoulder` with its inverse; `pbr_neutral` and its inverse, `pbr_neutral_inverse` |
 
 The module names end in segments that are unlikely local variable names, because of the alias rule
 under [composition rules](#composition-rules-and-limits).
@@ -152,7 +152,8 @@ under [composition rules](#composition-rules-and-limits).
 ### The lighting library
 
 `mulciber::photometry`, `mulciber::pbr` and `mulciber::tonemap` are one shading model shared by
-every game: Filament's units and BRDF, and Isle of Rán's tone-mapping shoulder.
+every game: Filament's units and BRDF, and two tone curves, Isle of Rán's shoulder and Khronos PBR
+Neutral.
 
 **Units** are SI and photometric, and distances are in metres:
 
@@ -212,6 +213,19 @@ roughness as authored:
 values below 1. A colour whose brightest channel is at most 0.6 passes through unchanged. Above
 that the brightest channel p maps to `0.6 + 0.4 (p − 0.6) / (p − 0.2)` and the whole colour scales
 with it, so hue and saturation are kept: 1 becomes 0.8, 2 becomes 0.911, 10 becomes 0.984.
+
+`mulciber::tonemap::pbr_neutral(luminance)` is Khronos PBR Neutral, as Bevy 0.20 ships it. A toe
+takes up to 0.04 off every channel by the darkest one (6.25x² below 0.08), which deepens shadows;
+past it a colour whose brightest channel is under 0.76 passes through, and above that the brightest
+channel p maps to `1 − 0.24² / (p − 0.52)`, the colour scaled with it and then mixed toward white by
+`1 − 1 / (0.15 (p − p′) + 1)`, p′ being the compressed channel, so very bright light whitens as it
+does on film rather than staying saturated up to white. `pbr_neutral_inverse(shown)` gives back the
+exposed colour exactly, in closed form, for measuring a captured frame's light.
+
+`mulciber::tonemap::whitening_shoulder(luminance)` is the shoulder with PBR Neutral's path to white:
+the same up to 0.6 and in the brightest channel above it, the colour mixed toward white by PBR
+Neutral's `1 − 1 / (0.15 (p − p′) + 1)`, so highlights whiten without PBR Neutral's toe. Its inverse,
+`whitening_shoulder_inverse`, is exact too.
 
 A typical lit fragment shader:
 
@@ -309,7 +323,8 @@ where the table is baked in the same process.
 
 The library's tests run on host evaluators generated from these modules, so they measure the WGSL
 that shaders import: GGX normalisation, reciprocity, a white furnace whose quadrature matches the
-baked DFG table, the table's smooth-surface limit, falloff, exposure and the tone mapper's shape.
+baked DFG table, the table's smooth-surface limit, falloff, exposure, the tone curves' shapes and
+PBR Neutral's inverse.
 
 ### Composition rules and limits
 

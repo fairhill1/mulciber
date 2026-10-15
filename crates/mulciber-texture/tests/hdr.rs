@@ -9,7 +9,7 @@ fn decode(blocks: &[u8], width: u32, height: u32) -> Vec<[f32; 3]> {
     let (w, h) = (width as usize, height as usize);
     let across = w.div_ceil(4);
     let mut out = vec![[0.0; 3]; w * h];
-    for (index, block) in blocks.chunks_exact(16).enumerate() {
+    for (index, block) in blocks.as_chunks::<16>().0.iter().enumerate() {
         let (bx, by) = (index % across, index / across);
         let mut texels = [0.0_f32; 4 * 4 * 3];
         bcdec_rs::bc6h_float(block, &mut texels, 4 * 3, false);

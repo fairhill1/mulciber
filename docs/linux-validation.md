@@ -1062,7 +1062,7 @@ Run `cargo run -p mulciber-cube-texture` with the ordinary required Vulkan valid
 from one GPU; it is not visual, lifecycle or broader hardware evidence. See the
 [contract](cube-textures.md).
 
-## Cube texture arrays (graphics 0.16.0, 0.19.0)
+## Cube texture arrays (graphics 0.16.0, 0.18.0)
 
 Run `cargo run -p mulciber-cube-array-texture` with the ordinary required Vulkan validation layer;
 all 147 readback cases must pass (110 `RGBA16Float`, 37 BC6H) and every refusal must fire without

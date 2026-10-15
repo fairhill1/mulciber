@@ -34,10 +34,10 @@ let normal = device.create_texture(&TextureDescriptor {
 })?;
 ```
 
-BC6H (graphics 0.19.0) holds light rather than colour: three channels of unsigned half float, sampled
+BC6H (graphics 0.18.0) holds light rather than colour: three channels of unsigned half float, sampled
 linear and unclamped, for a sky, a lightmap or a reflection probe that would otherwise be
 `RGBA16Float`. Only the unsigned variant exists, the one Intel's ISPC encoder writes; light is not
-negative. [`mulciber-texture`](../crates/mulciber-texture/README.md) 0.7.0 builds its chain and encodes
+negative. [`mulciber-texture`](../crates/mulciber-texture/README.md) 0.6.0 builds its chain and encodes
 it (`hdr_chain` averages light 2×2 down to 1×1, `encode_bc6h` encodes one level, clamping to 0..65504
 and refusing non-finite values):
 
@@ -157,7 +157,7 @@ the frame matched the same textures uploaded from their PNG sources as RGBA8 wit
 absolute difference 0.12 of 255 per channel). Partial-chain files, the other block formats through
 KTX 2.0, and Metal were not exercised natively.
 
-BC6H (graphics 0.19.0, texture 0.7.0): unit tests size BC6H levels (an eighth of `RGBA16Float`'s
+BC6H (graphics 0.18.0, texture 0.6.0): unit tests size BC6H levels (an eighth of `RGBA16Float`'s
 bytes), accept a BC6H cube array with a supplied chain and refuse it with one level, and round-trip
 VkFormat 143 through KTX 2.0. `mulciber-texture`'s tests encode a sky gradient with a sun in it and
 decode it with an independent decoder (`bcdec_rs`): the sky away from the sun's blocks within 5%
@@ -166,5 +166,5 @@ relative error, the sun still above 15000; odd extents padded to whole blocks; a
 `mulciber-cube-array-texture` sampled 37 BC6H cases (two cubes, three levels, every face and level,
 and a `textureQueryLevels`/`textureNumLayers` case) through `texture_cube_array<f32>` on Vulkan with
 no validation messages, each within two half ULPs of `bcdec_rs`'s decode of the same blocks; that run
-was Mesa's software rasteriser lavapipe (see [Linux validation](linux-validation.md#cube-texture-arrays-graphics-0160-0190)),
+was Mesa's software rasteriser lavapipe (see [Linux validation](linux-validation.md#cube-texture-arrays-graphics-0160-0180)),
 not a GPU. No hardware GPU, 2D BC6H upload, or Metal run yet.

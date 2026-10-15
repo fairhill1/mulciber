@@ -648,7 +648,7 @@ device-loss cause.
   passed on Metal for the first time.
 - [x] `mulciber-cube-array-texture` passed on Vulkan for the first time, under validation on Mesa's
   software lavapipe in a headless Linux container
-  ([evidence](linux-validation.md#cube-texture-arrays-graphics-0160-0190)).
+  ([evidence](linux-validation.md#cube-texture-arrays-graphics-0160-0180)).
 - [ ] Run `mulciber-cube-array-texture` and `mulciber-cube-texture` under Vulkan validation on a
   Windows and a Linux GPU; lavapipe is not a GPU driver.
 - [ ] Physically reach the `Unsupported` refusal on a device without cube-array sampling (Vulkan
@@ -656,7 +656,7 @@ device-loss cause.
   lacks it.
 - [ ] Other formats (RGBA8, BC1-BC7) and single-level arrays wait for a consumer.
 
-## BC6H light (graphics 0.19.0, texture 0.7.0)
+## BC6H light (graphics 0.18.0, texture 0.6.0)
 
 - [x] `BlockCompression::Bc6hUfloat` for 2D textures, cubes and cube arrays, through KTX 2.0 as
   VkFormat 143; `mulciber_texture::hdr_chain` and `encode_bc6h` build and encode light

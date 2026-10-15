@@ -11,11 +11,17 @@
 //!
 //! [`MaterialMaps`] is a physically based material as three such textures found beside its
 //! albedo image by name: albedo, normal + roughness, metallic + occlusion.
+//!
+//! High dynamic range light (a sky, a lightmap, a reflection probe) takes another road:
+//! [`hdr_chain`] filters its mips in linear light, and with `encode` `encode_bc6h` encodes each
+//! level as BC6H, a byte a texel against `RGBA16Float`'s eight, for the game to keep where it
+//! keeps its light and to upload as `TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, ..)`.
 
 mod chain;
 mod container;
 #[cfg(feature = "encode")]
 mod encode;
+mod hdr;
 mod material;
 mod recipe;
 
@@ -26,7 +32,8 @@ pub use container::{
     MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_bytes, level_bytes, write_ktx2,
 };
 #[cfg(feature = "encode")]
-pub use encode::{BakeMode, Baked, bake, bake_materials, encode_bc7, run};
+pub use encode::{BakeMode, Baked, bake, bake_materials, encode_bc6h, encode_bc7, run};
+pub use hdr::{HDR_MAX, hdr_chain};
 pub use material::{
     IMAGE_EXTENSIONS, MAP_SUFFIXES, METALLIC_SUFFIX, MaterialDefaults, MaterialMaps, NORMAL_SUFFIX,
     OCCLUSION_SUFFIX, ROUGHNESS_SUFFIX, find_materials, is_albedo,

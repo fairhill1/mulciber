@@ -646,13 +646,26 @@ device-loss cause.
   ([contract](cube-textures.md#cube-texture-arrays)). Metal passed the `mulciber-cube-array-texture`
   readback probe (110 cases) under API Validation on the Apple M2 tier, and `mulciber-cube-texture`
   passed on Metal for the first time.
-- [ ] Run `mulciber-cube-array-texture` and `mulciber-cube-texture` under Vulkan validation on
-  Windows and Linux; the Vulkan cube-array path and its `imageCubeArray` enablement are compile- and
-  lint-checked only.
+- [x] `mulciber-cube-array-texture` passed on Vulkan for the first time, under validation on Mesa's
+  software lavapipe in a headless Linux container
+  ([evidence](linux-validation.md#cube-texture-arrays-graphics-0160-0180)).
+- [ ] Run `mulciber-cube-array-texture` and `mulciber-cube-texture` under Vulkan validation on a
+  Windows and a Linux GPU; lavapipe is not a GPU driver.
 - [ ] Physically reach the `Unsupported` refusal on a device without cube-array sampling (Vulkan
   without `imageCubeArray`, or Metal outside the Metal 3 family); none of the available machines
   lacks it.
-- [ ] Other formats (RGBA8, BC) and single-level arrays wait for a consumer.
+- [ ] Other formats (RGBA8, BC1-BC7) and single-level arrays wait for a consumer.
+
+## BC6H light (graphics 0.18.0, texture 0.6.0)
+
+- [x] `BlockCompression::Bc6hUfloat` for 2D textures, cubes and cube arrays, through KTX 2.0 as
+  VkFormat 143; `mulciber_texture::hdr_chain` and `encode_bc6h` build and encode light
+  ([contract](block-compressed-textures.md)). Encoding is checked against an independent decoder,
+  and 37 BC6H cube-array cases passed on Vulkan under lavapipe.
+- [ ] Sample BC6H on a GPU: Metal on the Apple M2 tier and Vulkan on a hardware driver, 2D as well
+  as cube arrays.
+- [ ] Move Deadly Voyage's sky, lightmaps and reflection probes off `RGBA16Float` onto it.
+- [ ] Signed BC6H (`Bc6hSfloat`) waits for a consumer and an encoder that writes it.
 
 ## Typed text (platform 0.5.7)
 

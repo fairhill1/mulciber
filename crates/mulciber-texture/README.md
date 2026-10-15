@@ -80,6 +80,19 @@ not baked at all: the game binds a 1×1 texture of `normal_roughness_texel()` or
 `find_materials(dir)` lists every albedo image under a directory, which is every image whose stem
 does not end in a map suffix.
 
+## Light
+
+Light the game bakes itself (a sky, a lightmap, a reflection probe) is linear RGB in floats above
+one, which BC7 cannot hold. `hdr_chain(width, height, texels)` builds its complete mip chain, each
+level the mean of 2×2 texels of the one above (odd extents clamp the footprint), and
+`encode_bc6h(width, height, texels)` (the default `encode` feature) encodes one level as BC6H
+unsigned half float for `BlockCompression::Bc6hUfloat`: a byte a texel, an eighth of `RGBA16Float`.
+Values clamp to 0 and `HDR_MAX` (65504), alpha is dropped, a non-finite texel is an error naming it,
+and a level that is not a multiple of four is padded by repeating its edge. The encoder is ISPC's,
+at its basic quality, spread over the machine's threads. `ktx2_bytes(BlockCompression::Bc6hUfloat,
+…)` writes the chain to KTX 2.0. There is no recipe or source image for light: the game computes it,
+so it calls these directly.
+
 ## Building
 
 The `encode` feature (default) links Intel's encoder, which carries a C++ object; the crate's build

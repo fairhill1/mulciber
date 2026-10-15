@@ -807,6 +807,7 @@ impl<'window> TexturedSession<'window> {
             SampledTextureFormat::Bc2Unorm => vk::VK_FORMAT_BC2_UNORM_BLOCK,
             SampledTextureFormat::Bc3Srgb => vk::VK_FORMAT_BC3_SRGB_BLOCK,
             SampledTextureFormat::Bc3Unorm => vk::VK_FORMAT_BC3_UNORM_BLOCK,
+            SampledTextureFormat::Bc6hUfloat => vk::VK_FORMAT_BC6H_UFLOAT_BLOCK,
         };
         sampled_texture::validate_format(
             &self.surface,

@@ -29,8 +29,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   address-proving connects, reliable ordered and unreliable messages of any size, acks, round-trip
   time and loss, and a link conditioner for latency, jitter, loss and duplication.
 - **Texture baking** (`mulciber-texture`): mip chains filtered for colour, cutouts, normals and
-  data, packed into physically based materials, encoded as BC7 and written as KTX 2.0 beside their
-  sources, with the same chains built from the sources at run time when a bake is stale. `mulciber`
+  data, packed into physically based materials, encoded as BC7 (light as BC6H) and written as KTX 2.0
+  beside their sources, with the same chains built from the sources at run time when a bake is stale. `mulciber`
   uploads KTX 2.0 files directly.
 - **Models** (`mulciber-model`): glTF 2.0 meshes and their metallic-roughness materials,
   node transforms baked in, one part per material, flat normals and MikkTSpace tangents where the

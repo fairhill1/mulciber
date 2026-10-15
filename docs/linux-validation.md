@@ -1062,12 +1062,27 @@ Run `cargo run -p mulciber-cube-texture` with the ordinary required Vulkan valid
 from one GPU; it is not visual, lifecycle or broader hardware evidence. See the
 [contract](cube-textures.md).
 
-## Cube texture arrays (graphics 0.16.0, pending)
+## Cube texture arrays (graphics 0.16.0, 0.18.0)
 
 Run `cargo run -p mulciber-cube-array-texture` with the ordinary required Vulkan validation layer;
-all 110 readback cases must pass and every refusal must fire without warning/error callbacks. It
-has not run on Linux; the Vulkan path is cross-target Clippy-checked from macOS only. See the
-[contract](cube-textures.md#cube-texture-arrays).
+all 147 readback cases must pass (110 `RGBA16Float`, 37 BC6H) and every refusal must fire without
+warning/error callbacks. See the [contract](cube-textures.md#cube-texture-arrays).
+
+On 2026-10-15 it passed in a headless container on Mesa's lavapipe, a software Vulkan
+implementation: Ubuntu 24.04, `mesa-vulkan-drivers` 25.2.8 (llvmpipe, LLVM 20.1.2, 256 bits, device
+API 1.4.318, `textureCompressionBC` and `imageCubeArray` both reported), Khronos validation 1.3.275
+from `vulkan-validationlayers`, under Xvfb with no window manager:
+
+```sh
+Xvfb :97 &
+DISPLAY=:97 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  cargo run -p mulciber-cube-array-texture
+```
+
+All 147 cases passed within two half ULPs, every refusal fired, and validation reported nothing. It
+was the probe's first Vulkan run. A software rasteriser is evidence that the Vulkan path is valid
+usage and samples what was uploaded, not that a GPU driver does; the probe has still not run on
+Windows or on a Linux GPU, and its BC6H cases not on Metal.
 
 ## Typed text (platform 0.5.7)
 

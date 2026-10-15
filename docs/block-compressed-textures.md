@@ -1,19 +1,20 @@
 # Block-compressed sampled uploads (0.13.15)
 
 `Device::create_texture` with `TexelData::BlockCompressed(compression, &blocks)` uploads an already
-encoded BC1, BC2, BC3, BC5 or BC7 image and returns the existing owning `Texture`: one level with
+encoded BC1, BC2, BC3, BC5, BC6H or BC7 image and returns the existing owning `Texture`: one level with
 `MipChain::Single`, or a complete application-encoded chain with `MipChain::Supplied`. Both bind
 through the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in either stage,
 exactly as an RGBA8 upload does; nothing in a shader changes when a texture moves from RGBA8 to
 BC7. The same data uploads a cube with `TextureShape::Cube` (see [cube textures](cube-textures.md));
-a cube array takes `RGBA16Float` only.
+a cube array takes `RGBA16Float` or BC6H.
 
 ## What Mulciber does and does not do
 
 Mulciber uploads blocks. It never encodes, decodes, transcodes, or filters them: the application
 runs an encoder over each level of a mip chain it has already filtered in RGBA8 and hands the
 resulting blocks over, and the GPU samples the blocks directly. That is what makes the upload a
-quarter of its RGBA8 equivalent in video memory as well as on disk, and it is why
+quarter of its RGBA8 equivalent in video memory as well as on disk (BC6H an eighth of its
+`RGBA16Float` one), and it is why
 `MipChain::Generated` is refused with `InvalidRequest`: a block cannot be downsampled without
 decoding it first.
 
@@ -33,6 +34,31 @@ let normal = device.create_texture(&TextureDescriptor {
 })?;
 ```
 
+BC6H (graphics 0.18.0) holds light rather than colour: three channels of unsigned half float, sampled
+linear and unclamped, for a sky, a lightmap or a reflection probe that would otherwise be
+`RGBA16Float`. Only the unsigned variant exists, the one Intel's ISPC encoder writes; light is not
+negative. [`mulciber-texture`](../crates/mulciber-texture/README.md) 0.6.0 builds its chain and encodes
+it (`hdr_chain` averages light 2×2 down to 1×1, `encode_bc6h` encodes one level, clamping to 0..65504
+and refusing non-finite values):
+
+```rust
+let levels = mulciber_texture::hdr_chain(width, height, sky);
+let blocks = levels
+    .iter()
+    .enumerate()
+    .map(|(level, texels)| {
+        let (w, h) = ((width >> level).max(1), (height >> level).max(1));
+        mulciber_texture::encode_bc6h(w, h, texels)
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+let slices: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+let sky = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width, height },
+    mips: MipChain::Supplied,
+    data: TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, &slices),
+})?;
+```
+
 ## KTX 2.0 files
 
 `Ktx2Texture::parse(&bytes)` reads a KTX 2.0 file in place and `descriptor()` describes its upload,
@@ -45,7 +71,7 @@ refuses the rest by name:
 - `InvalidRequest`: not KTX 2.0, truncated, a level whose byte count is not its extent in blocks, a
   level count that is neither one nor the complete chain to 1×1 (0, "generate mips", included), or
   a level whose uncompressed length differs from its stored one.
-- `Unsupported`: a `VkFormat` outside `BlockCompression`'s nine, 1D, 3D, array and cube textures,
+- `Unsupported`: a `VkFormat` outside `BlockCompression`'s ten, 1D, 3D, array and cube textures,
   and any supercompression (Basis, Zstandard, zlib).
 
 `width()`, `height()`, `compression()`, `level_count()`, `level(n)` and `levels()` describe what was
@@ -71,6 +97,7 @@ uploaded as it is stored (BC1, BC2 and BC3 added in 0.13.32):
 | `Bc2Unorm` | RGBA, explicit alpha | as stored | `VK_FORMAT_BC2_UNORM_BLOCK` | `MTLPixelFormatBC2_RGBA` |
 | `Bc3Srgb` | RGBA, interpolated alpha | sRGB transfer function decoded | `VK_FORMAT_BC3_SRGB_BLOCK` | `MTLPixelFormatBC3_RGBA_sRGB` |
 | `Bc3Unorm` | RGBA, interpolated alpha | as stored | `VK_FORMAT_BC3_UNORM_BLOCK` | `MTLPixelFormatBC3_RGBA` |
+| `Bc6hUfloat` | RGB unsigned half float | linear, unclamped (0 to 65504); alpha 1 | `VK_FORMAT_BC6H_UFLOAT_BLOCK` | `MTLPixelFormatBC6H_RGBUfloat` |
 
 A level `w`×`h` texels in extent carries `ceil(w / 4) × ceil(h / 4)` blocks, row-major and tightly
 packed, so a level narrower or shorter than a block (the 2×2 and 1×1 tail of every chain) is one
@@ -129,3 +156,15 @@ through the parser. On 2026-10-09, Linux / KDE Wayland / NVIDIA RTX 3060 Ti, Vul
 the frame matched the same textures uploaded from their PNG sources as RGBA8 with GPU mips (mean
 absolute difference 0.12 of 255 per channel). Partial-chain files, the other block formats through
 KTX 2.0, and Metal were not exercised natively.
+
+BC6H (graphics 0.18.0, texture 0.6.0): unit tests size BC6H levels (an eighth of `RGBA16Float`'s
+bytes), accept a BC6H cube array with a supplied chain and refuse it with one level, and round-trip
+VkFormat 143 through KTX 2.0. `mulciber-texture`'s tests encode a sky gradient with a sun in it and
+decode it with an independent decoder (`bcdec_rs`): the sky away from the sun's blocks within 5%
+relative error, the sun still above 15000; odd extents padded to whole blocks; a chain baked to KTX
+2.0 and read back with its 1×1 level within 2% of the base's mean. On 2026-10-15
+`mulciber-cube-array-texture` sampled 37 BC6H cases (two cubes, three levels, every face and level,
+and a `textureQueryLevels`/`textureNumLayers` case) through `texture_cube_array<f32>` on Vulkan with
+no validation messages, each within two half ULPs of `bcdec_rs`'s decode of the same blocks; that run
+was Mesa's software rasteriser lavapipe (see [Linux validation](linux-validation.md#cube-texture-arrays-graphics-0160-0180)),
+not a GPU. No hardware GPU, 2D BC6H upload, or Metal run yet.

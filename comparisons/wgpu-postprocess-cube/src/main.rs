@@ -13,7 +13,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-const SHADER: &str = include_str!("../../../examples/postprocess-cube/src/postprocess.wgsl");
+const SHADER: &str = include_str!("../../../probes/api-conformance/shaders/postprocess.wgsl");
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 fn main() -> Result<(), Box<dyn Error>> {

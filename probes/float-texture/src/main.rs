@@ -1,11 +1,10 @@
 //! Native numerical evidence for `RGBA16Float` uploads through public material bindings.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
-    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
-    MeshDescriptor, MeshIndices, MeshVertices, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
-    SceneColor, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
-    VertexAttribute, VertexFormat, VertexLayout,
+    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor, MeshIndices,
+    MipChain, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
+    TexelData, TextureDescriptor, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -129,10 +128,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .flat_map(|v| v.to_ne_bytes())
         .collect();
     let mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: LAYOUT,
-            bytes: &vertices,
-        },
+        layout: LAYOUT,
+        vertices: &vertices,
         parts: &[MeshIndices::U16(&[0, 1, 2, 0, 2, 1])],
     })?;
     let pipeline = graphics
@@ -205,18 +202,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             let uniform: Vec<u8> = [query[0], query[1], query[2], f32::from(fragment)].iter().flat_map(|v| v.to_ne_bytes()).collect();
             graphics.queue.render_and_present(frame, SceneSubmission {
-                scene: Scene::Material(MaterialScene {
+                scene: Scene {
                     records: &[MaterialRecord {
                         pipeline: &pipeline, geometry: GeometrySource::Mesh(&mesh),
                         textures: &[&textures[usize::from(mips)]], shadow_map: None, uniform: &uniform,
                         storage: &[], instances: &[],
                     }],
                     shadow: None,
-                    output: MaterialOutput::Postprocessed {
+                    output: SceneOutput::Postprocessed {
                         postprocess: Postprocess { pipeline: &composite, targets: target, uniform: &[] },
                         foreground_start: None, offscreen: &[], overlay: &[],
                     },
-                }),
+                },
                 clear: ClearColor::BLACK,
             })?;
             // Exercise more submissions than the frame ring without a readback wait.

@@ -9,7 +9,7 @@ use winit::window::Window;
 use crate::game::Game;
 use crate::scene;
 
-const SHADER: &str = include_str!("../../../examples/instanced-scene/src/instanced.wgsl");
+const SHADER: &str = include_str!("../../../probes/api-conformance/shaders/instanced.wgsl");
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const INSTANCE_TRANSFORM_SIZE: u64 = 64;
 const OBJECT_COUNT: u64 = 26;

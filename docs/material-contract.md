@@ -42,11 +42,11 @@ outside the vocabulary (non-zero groups, storage buffers) are rejected as unsupp
 container bump was deliberately breaking: the tool and crate ship together and no artifact
 stability was promised.
 
-`Device::create_mesh` with `MeshVertices::Bytes` uploads raw vertex bytes against a declared
-layout with 16- or 32-bit indices (`MeshIndices`), lifting the original fixed path's `u16` bound
-for chunked or merged geometry; every mesh (including the fixed `Vertex` path, which carries
-`VertexLayout::VERTEX`) retains its layout, and a draw whose mesh and pipeline layouts differ
-is rejected at submission. Uniform
+`Device::create_mesh(&MeshDescriptor { layout, vertices, parts })` uploads raw vertex bytes
+against a declared layout with 16- or 32-bit indices (`MeshIndices`), lifting the original fixed
+path's `u16` bound for chunked or merged geometry; every mesh retains its layout, and a draw
+whose mesh and pipeline layouts differ is rejected at submission. (The fixed `Vertex` path and
+`VertexLayout::VERTEX` were removed in graphics 0.18.0.) Uniform
 data is supplied per record as plain bytes of exactly the declared size — the application owns
 WGSL memory-layout correctness — and flows through the session's frame-transient per-draw
 uniform region; no persistent application-owned buffer handle was forced by this slice.
@@ -84,7 +84,7 @@ outgrow the 512-byte uniform stride. Shadow pipelines accept the same slot
 (`ShadowRecord.storage`), so a skinned caster shadows with the same palette as its material
 record. No persistent application-owned buffer handle is part of the vocabulary.
 
-`Scene::Material(MaterialScene { records, shadow, output })` carries `records`, a non-empty
+`Scene { records, shadow, output }` carries `records`, a non-empty
 `&[MaterialRecord]`, each record selecting a material pipeline, a layout-matching mesh, one
 texture per declared texture slot in ascending binding order, and its uniform bytes. Each
 sampler slot declares its filter (`Nearest`/`Linear`) and address mode (`Repeat`/`ClampToEdge`);
@@ -106,7 +106,7 @@ mixed-session diagnostics name the new handle kind.
 The shadow recipe adds two resources and one submission axis. `Device::create_shadow_map`
 creates a square sampleable depth target; `Device::create_shadow_pipeline` builds a depth-only
 pipeline from a vertex entry point with at most one uniform binding, consuming any subset of
-its declared vertex layout. `MaterialScene.shadow` optionally carries one `ShadowPass`
+its declared vertex layout. `Scene.shadow` optionally carries one `ShadowPass`
 (`ShadowPrepass::Single`) — the map plus depth-only `ShadowRecord`s — rendered before the scene
 pass, and material pipelines may declare one `DepthTexture` slot (supplied per record from a
 shadow map) plus one `ComparisonSampler` slot whose native state is fixed: linear filtering,
@@ -118,7 +118,7 @@ is consumed. `ShadowMap` and `ShadowPipeline` join the explicit-destroy and drop
 
 The cascaded extension generalizes both ends of that recipe while keeping cascade policy
 application-owned. `Device::create_shadow_map_array` creates a square layered depth target
-(one through eight layers, one cascade per layer), and `MaterialScene.shadow` is an
+(one through eight layers, one cascade per layer), and `Scene.shadow` is an
 `Option<ShadowPrepass>`: `Single` wraps the existing one-map `ShadowPass`, while `Cascaded`
 carries a `CascadedShadowPass` — the layered map plus one depth-only record list per layer, in layer
 order, with the list count validated against the map's layer count. Each cascade renders with
@@ -168,10 +168,10 @@ identity. Mixed index widths are permitted between parts.
 
 Vulkan derives one descriptor-set layout from the declaration (dynamic uniform buffer, sampled
 images, samplers), reuses the shared 512-byte-stride dynamic uniform buffer for per-record
-bytes, caches descriptor sets per texture-identity tuple, and draws through the existing
-indexed-indirect path; descriptor pools reset with the same texture-reclamation and
-buffer-growth rules as the fixed pipelines. Immutable Vulkan meshes pack their vertex, index,
-and indirect regions into 16-byte-aligned allocations from persistently mapped, host-coherent
+bytes, caches descriptor sets per texture-identity tuple, and issues `vkCmdDrawIndexed` (since
+0.13.12; it was indexed-indirect before); descriptor pools reset with the same
+texture-reclamation and buffer-growth rules as the fixed pipelines had. Immutable Vulkan meshes
+pack their vertex and index regions (and, until graphics 0.18.0, per-part indirect commands) into 16-byte-aligned allocations from persistently mapped, host-coherent
 64 MiB blocks. Completed-frame reclamation returns each region to a coalescing free list, avoiding
 native buffer, device-memory, and mapping churn when a streaming consumer creates many meshes.
 Metal builds a vertex descriptor from the declared
@@ -181,16 +181,16 @@ and draws through the existing indirect encoder path. Both backends bake the dec
 depth modes into native creation-time state: Vulkan through the pipeline's color-blend,
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
-Fixed, material and shadow draws cull back faces with counter-clockwise front faces on both
+Material and shadow draws cull back faces with counter-clockwise front faces on both
 backends: Vulkan in each pipeline's rasterization state, Metal on every render encoder that
 records them, because Metal keeps culling on the encoder and otherwise culls nothing. Postprocess,
 bloom and volumetric passes cull nothing on either. A material that wants both sides of a surface
 supplies both windings.
 
-For a multi-part mesh, Vulkan stores the shared vertices, aligned index regions, and per-part
-indirect commands in one arena suballocation; Metal stores the same regions in one `MTLBuffer`.
-Encoding binds the parent vertex region and selects only the part's index offset, count, native
-type, and indirect offset. See the mesh-parts contract for exact ownership and validation rules.
+For a multi-part mesh, Vulkan stores the shared vertices and aligned index regions in one arena
+suballocation; Metal stores the same regions plus one indirect argument per part in one
+`MTLBuffer`. Encoding binds the parent vertex region and selects only the part's index offset,
+count, native type, and (on Metal) indirect offset. See the mesh-parts contract for exact ownership and validation rules.
 
 Record storage bytes flow through a second shared frame-transient buffer at 256-byte-aligned
 per-record offsets, the specification's cap on `minStorageBufferOffsetAlignment`. Vulkan binds
@@ -312,12 +312,12 @@ remains outstanding, per the [macOS runbook](macos-validation.md).
 
 ## Depth-isolated foreground checkpoint
 
-`MaterialOutput::Postprocessed { foreground_start: Some(split), .. }` splits the scene's
+`SceneOutput::Postprocessed { foreground_start: Some(split), .. }` splits the scene's
 ordered material records at `split` into non-empty world and foreground groups. The engine
 preserves world color, clears depth, and draws the foreground before postprocessing and the
 native-resolution HUD overlay. Both groups retain the scene's resolution, sample count,
 material/shadow bindings and must use the same depth comparison direction.
-`MaterialOutput::Direct` has no split, so direct output is unrepresentable for this recipe.
+`SceneOutput::Direct` has no split, so direct output is unrepresentable for this recipe.
 
 Vulkan uses a second dynamic-rendering scope with color LOAD, depth CLEAR, and explicit
 attachment reuse barriers. Metal uses a second render encoder; postprocessed MSAA color

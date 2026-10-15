@@ -78,9 +78,9 @@ range and `MATERIAL_TEXTURE_COUNT_LIMIT` with 2D slots. Arrayed cubes (`texture_
 are [cube texture arrays](#cube-texture-arrays), below; depth cubes and integer cubes have no proven
 mapping and fail to compile.
 
-A cube texture feeds material pipelines only. The fixed textured pipelines (`TexturedSceneDraw`,
-`TexturedInstanceBatch`) refuse it, shadow pipelines refuse a cube slot and shadow records a cube
-texture, and `update_texture` replaces 2D textures only.
+A cube texture feeds material pipelines only. Shadow pipelines refuse a cube slot and shadow
+records a cube texture, and `update_texture` replaces 2D textures only. (Until graphics 0.18.0 the
+fixed textured pipelines, `TexturedSceneDraw` and `TexturedInstanceBatch`, refused it too.)
 
 ## Input contract
 

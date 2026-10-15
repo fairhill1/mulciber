@@ -1,5 +1,10 @@
 # Experimental two-pass postprocess contract
 
+Graphics 0.18.0 removed the textured scene this checkpoint first drew and the
+`mulciber-postprocess-cube` and `mulciber-showcase-cube` examples; the postprocess pass now follows
+a `Scene` of material records, and the examples' postprocess shader lives on in
+`probes/api-conformance/shaders/postprocess.wgsl`. The dated evidence below is kept as it was run.
+
 This checkpoint adds a second materially different rendering operation to the unstable Gate 2
 graphics slice. It renders the existing indexed, textured, depth-tested cube into generation-bound
 offscreen color, resolves four-sample color when selected, samples that resolved image in a
@@ -36,11 +41,11 @@ reconfiguration. `PostprocessTargets::render_scale` reports it; `RenderScale::NA
 the surface extent. `SceneColor::Hdr` targets are described in the
 [HDR contract](hdr-bloom-contract.md).
 
-`MaterialOutput::Postprocessed { overlay, .. }` carries a second material record list, empty for
+`SceneOutput::Postprocessed { overlay, .. }` carries a second material record list, empty for
 none, drawn into the presentable target after the fullscreen resolve — loaded, not cleared — at
 the surface's native extent, so record-based text and UI stay sharp while a sub-native scale
-shrinks the scene pass. Only a `Scene::Material` with postprocessed output has the field, so an
-overlay without material content or postprocessing is unrepresentable. The presentable pass
+shrinks the scene pass. Only postprocessed output has the field, so an overlay without
+postprocessing is unrepresentable. The presentable pass
 carries no depth target: every overlay record's pipeline must declare `DepthMode::Off` and no
 depth-texture slot, and painter's order is the record order. Each backend rasterizes overlay
 records through a single-sample no-depth pipeline variant created alongside every depth-off
@@ -56,9 +61,8 @@ uniform is declared, its recorded kind and byte size must match exactly. The cur
 format records bindings module-wide rather than per entry point, so the no-uniform form cannot
 reject a binding 0 used only by a scene entry point in the same module.
 
-Every postprocessed submission carries a borrowed `uniform: &[u8]` in its `Postprocess`, which both
-`SceneOutput::Postprocessed` (textured and instanced scenes) and `MaterialOutput::Postprocessed`
-(material scenes) hold. Its length must exactly equal the pipeline declaration. A no-uniform
+Every postprocessed submission carries a borrowed `uniform: &[u8]` in its `Postprocess`, which
+`SceneOutput::Postprocessed` holds. Its length must exactly equal the pipeline declaration. A no-uniform
 pipeline accepts only an empty slice. Missing, unexpected, wrong-size, and over-limit data return
 `GraphicsErrorKind::InvalidRequest` before the acquired frame is consumed; session and generation
 validation retains precedence so those diagnostics are not hidden by uniform data. Applications
@@ -66,12 +70,14 @@ retain the bytes only for the submission call, and Mulciber copies them into nat
 frame-safe storage.
 
 `Queue::render_and_present` consumes a frame plus a `SceneSubmission` whose
-`Scene::Textured { draws, output: SceneOutput::Postprocessed(Postprocess { pipeline, targets,
-uniform }) }` names the scene draws and the fullscreen pass. It validates session identity, target
-generation, and finite transform data, then records the fixed sequence:
+`Scene { records, output: SceneOutput::Postprocessed { postprocess: Postprocess { pipeline, targets,
+uniform }, .. }, .. }` names the scene records and the fullscreen pass. It validates session identity,
+target generation, and the records, then records the fixed sequence (any shadow prepass, offscreen
+passes, foreground and overlay are placed in it as the [material contract](material-contract.md)
+says):
 
 1. clear offscreen scene color and depth;
-2. draw the indexed textured meshes in `draws` order with the selected scene sample count;
+2. draw the material records in order with the selected scene sample count;
 3. resolve into single-sample scene color when multisampling is active;
 4. make the resolved color readable by the fullscreen fragment stage;
 5. draw a fullscreen triangle into the presentation image; and
@@ -168,8 +174,8 @@ focused graphics, input, or postprocess pairs.
 
 The Mulciber showcase required no new public or backend API: ordered `mulciber-platform` transitions
 update the application-owned orientation/zoom state, which supplies the transform to the existing
-postprocessed textured draw (then `PostprocessedDraw`, now a one-element `Scene::Textured` with
-`SceneOutput::Postprocessed`). The wgpu peer implements the same composition through ordinary
+postprocessed textured draw (then `PostprocessedDraw`, later a one-element `Scene::Textured` with
+`SceneOutput::Postprocessed`, removed in graphics 0.18.0). The wgpu peer implements the same composition through ordinary
 `winit` events and `wgpu` resources. It also checks four-sample support and selects an equivalent
 one-sample scene path when necessary.
 

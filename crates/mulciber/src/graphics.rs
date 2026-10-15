@@ -36,7 +36,7 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 /// immutable index parts are one handle and one parent allocation/reclamation unit.
 const LAZY_RECLAIM_BUDGET: usize = 8;
 
-/// Multisample count supported by the first textured rendering slice.
+/// Multisample count of the scene pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SampleCount {
     /// One sample per pixel.
@@ -246,48 +246,36 @@ pub struct Device<'window> {
 impl Device<'_> {
     /// Uploads vertices once and one or more immutable indexed parts that share them.
     ///
-    /// Part zero is the default selected by [`GeometrySource::Mesh`], [`MeshSource::Mesh`] and
-    /// the textured paths; use [`Mesh::part`] with a material or shadow record to select another.
-    /// Each part may independently use 16- or 32-bit indices. Raw vertex bytes keep their
-    /// declared layout with the mesh: a material draw whose mesh and pipeline layouts differ is
-    /// rejected at submission.
+    /// Part zero is the default selected by [`GeometrySource::Mesh`] and [`MeshSource::Mesh`];
+    /// use [`Mesh::part`] with a material or shadow record to select another. Each part may
+    /// independently use 16- or 32-bit indices. The vertices keep their declared layout with the
+    /// mesh: a material draw whose mesh and pipeline layouts differ is rejected at submission.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid layout, vertices that are empty or (as bytes) not a
-    /// multiple of the stride, no parts, an empty part, an out-of-range index, too many parts, or
+    /// Returns an error for an invalid layout, vertex bytes that are empty or not a multiple of
+    /// the stride, no parts, an empty part, an out-of-range index, too many parts, or
     /// native allocation/upload failure. Diagnostics identify the invalid part.
     pub fn create_mesh(&self, descriptor: &MeshDescriptor<'_>) -> Result<Mesh, GraphicsError> {
-        let MeshDescriptor { vertices, parts } = *descriptor;
-        let (id, layout, part_count) = match vertices {
-            MeshVertices::Fixed(vertices) => {
-                if vertices.is_empty() {
-                    return Err(GraphicsError::invalid_request(
-                        "mesh vertex data must be non-empty",
-                    ));
-                }
-                let part_count = validate_mesh_parts(vertices.len(), parts)?;
-                let id = session_mut(&self.shared)?.create_mesh(vertices, parts)?;
-                (id, VertexLayout::VERTEX.to_owned_layout(), part_count)
-            }
-            MeshVertices::Bytes { layout, bytes } => {
-                let owned = validate_vertex_layout(layout)?;
-                let stride = usize::try_from(layout.stride).map_err(|_| {
-                    GraphicsError::invalid_request("vertex layout stride exceeds this target")
-                })?;
-                if bytes.is_empty() || !bytes.len().is_multiple_of(stride) {
-                    return Err(GraphicsError::invalid_request(
-                        "mesh vertex bytes must be a non-zero multiple of the layout stride",
-                    ));
-                }
-                let part_count = validate_mesh_parts(bytes.len() / stride, parts)?;
-                let id = session_mut(&self.shared)?.create_mesh_from_bytes(bytes, parts)?;
-                (id, owned, part_count)
-            }
-        };
+        let MeshDescriptor {
+            layout,
+            vertices,
+            parts,
+        } = *descriptor;
+        let owned = validate_vertex_layout(layout)?;
+        let stride = usize::try_from(layout.stride).map_err(|_| {
+            GraphicsError::invalid_request("vertex layout stride exceeds this target")
+        })?;
+        if vertices.is_empty() || !vertices.len().is_multiple_of(stride) {
+            return Err(GraphicsError::invalid_request(
+                "mesh vertex bytes must be a non-zero multiple of the layout stride",
+            ));
+        }
+        let part_count = validate_mesh_parts(vertices.len() / stride, parts)?;
+        let id = session_mut(&self.shared)?.create_mesh(vertices, parts)?;
         Ok(Mesh {
             lease: self.lease(id, ResourceKind::Mesh),
-            layout,
+            layout: owned,
             part_count,
         })
     }
@@ -364,7 +352,7 @@ impl Device<'_> {
     /// `data` is `RGBA16Float` texels at the texture's extent: its single level, its complete
     /// chain, or for a texture created with [`MipChain::Generated`] either its complete chain
     /// or its base level alone, from which the GPU regenerates every other level. The bytes are
-    /// copied now; the next textured or material scene submission uploads them (and blits a
+    /// copied now; the next scene submission uploads them (and blits a
     /// generated chain) before any draw, in its own command buffer. Earlier submitted frames
     /// keep their original contents, and several updates before that submission coalesce to
     /// the last. No device-idle wait or texture recreation is needed, so a texture rewritten
@@ -428,52 +416,17 @@ impl Device<'_> {
     /// for, and returns the count actually in use after the same fallback as opening: an
     /// unsupported count becomes one sample per pixel.
     ///
-    /// Nothing already created is rebuilt. Every textured, instanced, material and postprocess
-    /// pipeline and every render or postprocess target remembers the count it was built for,
-    /// and submitting one built for another count is refused with an error naming it. Shadow
-    /// maps and shadow pipelines are single-sample and unaffected. Destroy the old resources
-    /// and create replacements, then draw; frames in flight that used the old resources
-    /// complete normally.
+    /// Nothing already created is rebuilt. Every material and postprocess pipeline and every
+    /// render or postprocess target remembers the count it was built for, and submitting one
+    /// built for another count is refused with an error naming it. Shadow maps and shadow
+    /// pipelines are single-sample and unaffected. Destroy the old resources and create
+    /// replacements, then draw; frames in flight that used the old resources complete normally.
     ///
     /// # Errors
     ///
     /// Returns an error after session shutdown.
     pub fn set_sample_count(&self, preferred: SampleCount) -> Result<SampleCount, GraphicsError> {
         Ok(session_mut(&self.shared)?.set_sample_count(preferred))
-    }
-
-    /// Creates a depth-tested textured pipeline from target-selected offline shader code.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when native shader loading or pipeline creation fails.
-    pub fn create_textured_pipeline(
-        &self,
-        shader: ShaderArtifact<'_>,
-    ) -> Result<TexturedPipeline, GraphicsError> {
-        let id = session_mut(&self.shared)?.create_pipeline(shader)?;
-        Ok(TexturedPipeline {
-            lease: self.lease(id, ResourceKind::TexturedPipeline),
-        })
-    }
-
-    /// Creates a depth-tested textured pipeline whose vertex stage consumes one model-view-
-    /// projection matrix per instance.
-    ///
-    /// The shader module must contain `instanced_vertex` and `cube_fragment` entry points. Matrix
-    /// columns occupy vertex locations 3 through 6 with per-instance stepping.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when native shader loading or pipeline creation fails.
-    pub fn create_instanced_textured_pipeline(
-        &self,
-        shader: ShaderArtifact<'_>,
-    ) -> Result<InstancedTexturedPipeline, GraphicsError> {
-        let id = session_mut(&self.shared)?.create_instanced_pipeline(shader)?;
-        Ok(InstancedTexturedPipeline {
-            lease: self.lease(id, ResourceKind::InstancedTexturedPipeline),
-        })
     }
 
     /// Creates the single-sample fullscreen pipeline that reads resolved scene color and writes
@@ -911,30 +864,6 @@ impl Device<'_> {
         self.destroy_lease(&mut target.texture.lease, ResourceKind::Texture)
     }
 
-    /// Destroys a textured pipeline after its last submitted GPU use completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
-    pub fn destroy_textured_pipeline(
-        &self,
-        mut pipeline: TexturedPipeline,
-    ) -> Result<(), GraphicsError> {
-        self.destroy_lease(&mut pipeline.lease, ResourceKind::TexturedPipeline)
-    }
-
-    /// Destroys an instanced textured pipeline after its last submitted GPU use completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a mixed-session or stale handle, or when native completion fails.
-    pub fn destroy_instanced_textured_pipeline(
-        &self,
-        mut pipeline: InstancedTexturedPipeline,
-    ) -> Result<(), GraphicsError> {
-        self.destroy_lease(&mut pipeline.lease, ResourceKind::InstancedTexturedPipeline)
-    }
-
     /// Destroys a postprocess pipeline after its last submitted GPU use completes.
     ///
     /// # Errors
@@ -1064,9 +993,8 @@ impl Queue<'_> {
 
     /// Renders one scene recipe, presents the frame, and consumes it.
     ///
-    /// This one verb takes every workload: [`Scene`] selects textured draws, instance batches,
-    /// or material records with the passes that compose with them, and where each goes. It is
-    /// not a general command encoder.
+    /// This one verb takes every workload: a [`Scene`] of material records with the passes that
+    /// compose with them, and where it goes. It is not a general command encoder.
     ///
     /// # Errors
     ///
@@ -1078,104 +1006,32 @@ impl Queue<'_> {
         submission: SceneSubmission<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
         let SceneSubmission { scene, clear } = submission;
-        match scene {
-            Scene::Textured {
-                draws,
-                output: SceneOutput::Direct(targets),
-            } => self.draw_textured_scene_and_present(frame, draws, targets, clear),
-            Scene::Textured {
-                draws,
-                output: SceneOutput::Postprocessed(postprocess),
-            } => self.draw_textured_scene_postprocessed_and_present(
+        validate_material_scene_recipe(&scene)?;
+        match scene.output {
+            SceneOutput::Direct(targets) => self.draw_material_scene_and_present(
                 frame,
-                draws,
-                &postprocess,
+                scene.records,
+                scene.shadow,
+                targets,
                 clear,
             ),
-            Scene::Instanced {
-                batches,
-                output: SceneOutput::Direct(targets),
-            } => self.draw_instanced_textured_scene_and_present(frame, batches, targets, clear),
-            Scene::Instanced {
-                batches,
-                output: SceneOutput::Postprocessed(postprocess),
-            } => self.draw_instanced_textured_scene_postprocessed_and_present(
+            SceneOutput::Postprocessed {
+                postprocess,
+                foreground_start,
+                offscreen,
+                overlay,
+            } => self.draw_material_scene_postprocessed_and_present(
                 frame,
-                batches,
+                &scene,
                 &postprocess,
+                PostprocessedMaterialPasses {
+                    foreground_start,
+                    offscreen,
+                    overlay,
+                },
                 clear,
             ),
-            Scene::Material(material) => {
-                validate_material_scene_recipe(&material)?;
-                match material.output {
-                    MaterialOutput::Direct(targets) => self.draw_material_scene_and_present(
-                        frame,
-                        material.records,
-                        material.shadow,
-                        targets,
-                        clear,
-                    ),
-                    MaterialOutput::Postprocessed {
-                        postprocess,
-                        foreground_start,
-                        offscreen,
-                        overlay,
-                    } => self.draw_material_scene_postprocessed_and_present(
-                        frame,
-                        &material,
-                        &postprocess,
-                        PostprocessedMaterialPasses {
-                            foreground_start,
-                            offscreen,
-                            overlay,
-                        },
-                        clear,
-                    ),
-                }
-            }
         }
-    }
-
-    /// Draws a non-empty sequence of textured objects in one depth-tested render pass, presents
-    /// the frame, and consumes it.
-    fn draw_textured_scene_and_present(
-        &mut self,
-        mut frame: Frame<'_>,
-        draws: &[TexturedSceneDraw<'_>],
-        targets: &RenderTargets,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_scene(frame.shared.id, frame.info, draws, targets)?;
-        let token = frame
-            .token
-            .take()
-            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_scene_and_present(token, draws, targets.lease.id, clear)
-    }
-
-    /// Draws a non-empty sequence of textured objects into resolved scene color, runs one
-    /// fullscreen post-processing pass, presents the frame, and consumes it.
-    fn draw_textured_scene_postprocessed_and_present(
-        &mut self,
-        mut frame: Frame<'_>,
-        draws: &[TexturedSceneDraw<'_>],
-        postprocess: &Postprocess<'_>,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_scene(frame.shared.id, frame.info, draws, postprocess.targets)?;
-        self.validate_postprocess(postprocess)?;
-        let token = frame
-            .token
-            .take()
-            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_scene_postprocessed_and_present(
-            token,
-            draws,
-            postprocess.pipeline.lease.id,
-            postprocess.targets.lease.id,
-            postprocess.uniform,
-            clear,
-        )
     }
 
     /// Checks that the postprocess pipeline belongs to this queue's session, matches the
@@ -1188,65 +1044,6 @@ impl Queue<'_> {
         }
         validate_hdr_pair(postprocess.pipeline.hdr, postprocess.targets.hdr)?;
         validate_postprocess_uniform(postprocess.pipeline, postprocess.uniform)
-    }
-
-    /// Draws a non-empty sequence of non-empty textured instance batches in one depth-tested
-    /// render pass, presents the frame, and consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty scene or batch, mixed-session or stale handles, a non-finite
-    /// transform, an unsupported native count, or native encoding, submission, validation, or
-    /// presentation failure.
-    fn draw_instanced_textured_scene_and_present(
-        &mut self,
-        mut frame: Frame<'_>,
-        batches: &[TexturedInstanceBatch<'_>],
-        targets: &RenderTargets,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
-        let token = frame
-            .token
-            .take()
-            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_instanced_scene_and_present(
-            token,
-            batches,
-            targets.lease.id,
-            clear,
-        )
-    }
-
-    /// Draws a non-empty sequence of non-empty textured instance batches into resolved scene
-    /// color, runs one fullscreen post-processing pass, presents the frame, and consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty scene or batch, mixed-session or stale handles, a non-finite
-    /// transform, an unsupported native count, or native encoding, synchronization, submission,
-    /// validation, or presentation failure.
-    fn draw_instanced_textured_scene_postprocessed_and_present(
-        &mut self,
-        mut frame: Frame<'_>,
-        batches: &[TexturedInstanceBatch<'_>],
-        postprocess: &Postprocess<'_>,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_instanced_scene(frame.shared.id, frame.info, batches, postprocess.targets)?;
-        self.validate_postprocess(postprocess)?;
-        let token = frame
-            .token
-            .take()
-            .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_instanced_scene_postprocessed_and_present(
-            token,
-            batches,
-            postprocess.pipeline.lease.id,
-            postprocess.targets.lease.id,
-            postprocess.uniform,
-            clear,
-        )
     }
 
     /// Draws an optional depth-only shadow pass followed by a non-empty sequence of
@@ -1285,12 +1082,12 @@ impl Queue<'_> {
     fn draw_material_scene_postprocessed_and_present(
         &mut self,
         mut frame: Frame<'_>,
-        material: &MaterialScene<'_>,
+        material: &Scene<'_>,
         postprocess: &Postprocess<'_>,
         passes: PostprocessedMaterialPasses<'_>,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let MaterialScene {
+        let Scene {
             records, shadow, ..
         } = *material;
         let PostprocessedMaterialPasses {
@@ -1741,107 +1538,6 @@ impl Queue<'_> {
         }
         Ok(())
     }
-
-    fn validate_draw_handle_sessions(
-        queue_session: u64,
-        frame_session: u64,
-        mesh_session: u64,
-        texture_session: u64,
-        pipeline_session: u64,
-    ) -> Result<(), GraphicsError> {
-        for (label, session) in [
-            ("mesh", mesh_session),
-            ("texture", texture_session),
-            ("pipeline", pipeline_session),
-        ] {
-            if session != queue_session || session != frame_session {
-                return Err(GraphicsError::invalid_request(format!(
-                    "{label} belongs to a different graphics session than the queue and frame"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_scene(
-        &self,
-        frame_session: u64,
-        frame_info: SurfaceInfo,
-        draws: &[TexturedSceneDraw<'_>],
-        targets: &impl SceneTargets,
-    ) -> Result<(), GraphicsError> {
-        if draws.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "textured scene must contain at least one draw",
-            ));
-        }
-        validate_hdr_pair(false, targets.hdr())?;
-        self.validate_targets(frame_session, frame_info, targets)?;
-        for draw in draws {
-            Self::validate_draw_handle_sessions(
-                self.shared.id,
-                frame_session,
-                draw.mesh.lease.session,
-                draw.texture.lease.session,
-                draw.pipeline.lease.session,
-            )?;
-            validate_fixed_pipeline_texture(draw.texture)?;
-            if !draw
-                .model_view_projection
-                .iter()
-                .flatten()
-                .all(|component| component.is_finite())
-            {
-                return Err(GraphicsError::invalid_request(
-                    "draw transform must contain only finite values",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_instanced_scene(
-        &self,
-        frame_session: u64,
-        frame_info: SurfaceInfo,
-        batches: &[TexturedInstanceBatch<'_>],
-        targets: &impl SceneTargets,
-    ) -> Result<(), GraphicsError> {
-        if batches.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "instanced textured scene must contain at least one batch",
-            ));
-        }
-        validate_hdr_pair(false, targets.hdr())?;
-        self.validate_targets(frame_session, frame_info, targets)?;
-        for batch in batches {
-            if batch.model_view_projections.is_empty() {
-                return Err(GraphicsError::invalid_request(
-                    "instanced textured scene batches must contain at least one transform",
-                ));
-            }
-            Self::validate_draw_handle_sessions(
-                self.shared.id,
-                frame_session,
-                batch.mesh.lease.session,
-                batch.texture.lease.session,
-                batch.pipeline.lease.session,
-            )?;
-            validate_fixed_pipeline_texture(batch.texture)?;
-            if !batch
-                .model_view_projections
-                .iter()
-                .flatten()
-                .flatten()
-                .all(|component| component.is_finite())
-            {
-                return Err(GraphicsError::invalid_request(
-                    "instance transforms must contain only finite values",
-                ));
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Presentation owner for one native session.
@@ -2208,18 +1904,6 @@ pub enum GpuTimingFeedback {
     Unsupported,
 }
 
-/// Fixed vertex layout for the first textured slice.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Vertex {
-    /// Object-space position.
-    pub position: [f32; 3],
-    /// Linear vertex color multiplier.
-    pub color: [f32; 3],
-    /// Texture coordinate.
-    pub uv: [f32; 2],
-}
-
 /// Data format of one vertex attribute in the buffer, and through it the WGSL type the shader
 /// reads.
 ///
@@ -2393,9 +2077,8 @@ pub struct VertexAttribute {
 
 /// An application-described per-vertex data layout.
 ///
-/// The layout is declared once at material pipeline creation and once per mesh uploaded from raw
-/// vertex bytes; a draw whose mesh and pipeline layouts differ is rejected. Meshes uploaded
-/// through the fixed [`Vertex`] path carry [`VertexLayout::VERTEX`].
+/// The layout is declared once at material pipeline creation and once per mesh; a draw whose mesh
+/// and pipeline layouts differ is rejected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VertexLayout<'attributes> {
     /// Byte distance between consecutive vertices.
@@ -2405,29 +2088,6 @@ pub struct VertexLayout<'attributes> {
 }
 
 impl VertexLayout<'_> {
-    /// The fixed layout of [`Vertex`]: position, color, and texture coordinate at locations 0
-    /// through 2.
-    pub const VERTEX: VertexLayout<'static> = VertexLayout {
-        stride: 32,
-        attributes: &[
-            VertexAttribute {
-                location: 0,
-                format: VertexFormat::Float32x3,
-                offset: 0,
-            },
-            VertexAttribute {
-                location: 1,
-                format: VertexFormat::Float32x3,
-                offset: 12,
-            },
-            VertexAttribute {
-                location: 2,
-                format: VertexFormat::Float32x2,
-                offset: 24,
-            },
-        ],
-    };
-
     fn to_owned_layout(self) -> OwnedVertexLayout {
         let mut attributes: Vec<VertexAttribute> = self.attributes.to_vec();
         attributes.sort_unstable_by_key(|attribute| attribute.location);
@@ -2449,25 +2109,13 @@ pub(crate) struct OwnedVertexLayout {
 /// What [`Device::create_mesh`] uploads: vertices and the indexed parts that draw them.
 #[derive(Clone, Copy, Debug)]
 pub struct MeshDescriptor<'data> {
-    /// Vertex storage every part references.
-    pub vertices: MeshVertices<'data>,
+    /// Layout of each vertex, which material pipelines declare the same way.
+    pub layout: VertexLayout<'data>,
+    /// Tightly packed vertex bytes every part references, a non-zero multiple of the layout's
+    /// stride.
+    pub vertices: &'data [u8],
     /// One or more non-empty index lists, each an immutable part; most meshes have one.
     pub parts: &'data [MeshIndices<'data>],
-}
-
-/// The vertices of a [`MeshDescriptor`].
-#[derive(Clone, Copy, Debug)]
-pub enum MeshVertices<'data> {
-    /// Mulciber's fixed [`Vertex`] layout, which the textured pipelines read.
-    Fixed(&'data [Vertex]),
-    /// Tightly packed vertex bytes in an application-declared layout, which material pipelines
-    /// declare the same way.
-    Bytes {
-        /// Layout of each vertex.
-        layout: VertexLayout<'data>,
-        /// Vertex bytes, a non-zero multiple of the layout's stride.
-        bytes: &'data [u8],
-    },
 }
 
 /// Index data for mesh creation.
@@ -2979,8 +2627,7 @@ fn split_faces<T>(cube: &[T], levels: usize) -> [&[T]; 6] {
 
 /// The shape of an uploaded [`Texture`], which decides the material slot it can feed.
 ///
-/// A 2D texture feeds a [`MaterialBinding::Texture`] slot (WGSL `texture_2d<f32>`) and the
-/// fixed textured pipelines; a cube texture feeds a [`MaterialBinding::CubeTexture`] slot (WGSL
+/// A 2D texture feeds a [`MaterialBinding::Texture`] slot (WGSL `texture_2d<f32>`); a cube texture feeds a [`MaterialBinding::CubeTexture`] slot (WGSL
 /// `texture_cube<f32>`) and a cube texture array a [`MaterialBinding::CubeTextureArray`] slot
 /// (WGSL `texture_cube_array<f32>`), and nothing else.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -3183,30 +2830,6 @@ pub struct OffscreenPass<'resources> {
     pub records: &'resources [MaterialRecord<'resources>],
     /// Linear color the target is cleared to before the first record.
     pub clear: ClearColor,
-}
-
-/// Native textured depth-tested graphics pipeline.
-#[derive(Debug, Eq, PartialEq)]
-pub struct TexturedPipeline {
-    lease: ResourceLease,
-}
-
-/// Native textured depth-tested graphics pipeline with per-instance matrix input.
-#[derive(Debug, Eq, PartialEq)]
-pub struct InstancedTexturedPipeline {
-    lease: ResourceLease,
-}
-
-impl InstancedTexturedPipeline {
-    pub(crate) const fn id(&self) -> ResourceId {
-        self.lease.id
-    }
-}
-
-impl TexturedPipeline {
-    pub(crate) const fn id(&self) -> ResourceId {
-        self.lease.id
-    }
 }
 
 /// Single-sample fullscreen pipeline that samples resolved scene color and optionally consumes
@@ -4120,32 +3743,6 @@ impl RenderTargets {
     }
 }
 
-/// Resources and dynamic data for one object in a textured scene pass.
-#[derive(Clone, Copy)]
-pub struct TexturedSceneDraw<'resources> {
-    /// Geometry to draw.
-    pub mesh: &'resources Mesh,
-    /// Sampled color texture.
-    pub texture: &'resources Texture,
-    /// Depth-tested pipeline compatible with the scene targets.
-    pub pipeline: &'resources TexturedPipeline,
-    /// Column-major model-view-projection matrix for this object.
-    pub model_view_projection: [[f32; 4]; 4],
-}
-
-/// One homogeneous instance batch inside a textured scene pass.
-#[derive(Clone, Copy)]
-pub struct TexturedInstanceBatch<'resources> {
-    /// Geometry shared by every instance in this batch.
-    pub mesh: &'resources Mesh,
-    /// Sampled color texture shared by every instance in this batch.
-    pub texture: &'resources Texture,
-    /// Instanced depth-tested pipeline compatible with the scene targets.
-    pub pipeline: &'resources InstancedTexturedPipeline,
-    /// Non-empty column-major model-view-projection matrix sequence in instance order.
-    pub model_view_projections: &'resources [[[f32; 4]; 4]],
-}
-
 /// One application-authored material draw inside a scene pass.
 #[derive(Clone, Copy)]
 pub struct MaterialRecord<'resources> {
@@ -4179,41 +3776,8 @@ pub struct MaterialRecord<'resources> {
 pub struct SceneSubmission<'resources> {
     /// What the scene pass draws, the passes composed with it, and where it goes.
     pub scene: Scene<'resources>,
-    /// Linear color used to clear the scene before its first draw, batch or record.
+    /// Linear color used to clear the scene before its first record.
     pub clear: ClearColor,
-}
-
-/// The content and destination of one [`SceneSubmission`].
-#[derive(Clone, Copy)]
-#[non_exhaustive]
-pub enum Scene<'resources> {
-    /// Non-empty heterogeneous textured records encoded in slice order.
-    Textured {
-        /// Objects, each selecting its mesh, texture, pipeline and transform.
-        draws: &'resources [TexturedSceneDraw<'resources>],
-        /// Direct or postprocessed destination.
-        output: SceneOutput<'resources>,
-    },
-    /// Non-empty homogeneous instance batches encoded in slice order.
-    Instanced {
-        /// Batches, each drawing one mesh once per transform.
-        batches: &'resources [TexturedInstanceBatch<'resources>],
-        /// Direct or postprocessed destination.
-        output: SceneOutput<'resources>,
-    },
-    /// Application-authored material records with the shadow, offscreen, foreground and
-    /// overlay passes that compose with them.
-    Material(MaterialScene<'resources>),
-}
-
-/// Destination of a textured or instanced [`Scene`].
-#[derive(Clone, Copy)]
-#[non_exhaustive]
-pub enum SceneOutput<'resources> {
-    /// Render directly into generation-matched presentable targets.
-    Direct(&'resources RenderTargets),
-    /// Resolve into sampled scene color, then run one fullscreen postprocess pass.
-    Postprocessed(Postprocess<'resources>),
 }
 
 /// The fullscreen pass that samples resolved scene color and writes the presentable target.
@@ -4228,22 +3792,23 @@ pub struct Postprocess<'resources> {
     pub uniform: &'resources [u8],
 }
 
-/// Material records drawn in one depth-tested scene pass, after an optional shadow prepass.
+/// The content and destination of one [`SceneSubmission`]: material records drawn in one
+/// depth-tested scene pass, after an optional shadow prepass.
 #[derive(Clone, Copy)]
-pub struct MaterialScene<'resources> {
+pub struct Scene<'resources> {
     /// Non-empty records encoded in slice order.
     pub records: &'resources [MaterialRecord<'resources>],
     /// Optional depth-only pre-pass work — a single map or one pass per cascade layer —
     /// rendered before any offscreen pass and the scene pass.
     pub shadow: Option<ShadowPrepass<'resources>>,
     /// Direct or postprocessed destination, and the passes postprocessing makes available.
-    pub output: MaterialOutput<'resources>,
+    pub output: SceneOutput<'resources>,
 }
 
-/// Destination of a [`MaterialScene`].
+/// Destination of a [`Scene`].
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub enum MaterialOutput<'resources> {
+pub enum SceneOutput<'resources> {
     /// Render directly into generation-matched presentable targets.
     Direct(&'resources RenderTargets),
     /// Resolve into sampled scene color and run one fullscreen postprocess pass, with the
@@ -4277,7 +3842,7 @@ pub enum MaterialOutput<'resources> {
     },
 }
 
-/// The passes of [`MaterialOutput::Postprocessed`] besides the postprocess itself.
+/// The passes of [`SceneOutput::Postprocessed`] besides the postprocess itself.
 #[derive(Clone, Copy)]
 struct PostprocessedMaterialPasses<'resources> {
     foreground_start: Option<usize>,
@@ -5067,17 +4632,6 @@ fn validate_record_textures(
     Ok(())
 }
 
-/// The fixed textured pipelines sample `texture_2d<f32>` only.
-fn validate_fixed_pipeline_texture(texture: &Texture) -> Result<(), GraphicsError> {
-    if texture.dimension == TextureDimension::D2 {
-        return Ok(());
-    }
-    Err(GraphicsError::invalid_request(
-        "textured draws sample a 2D texture; cube textures and cube texture arrays bind through \
-         material pipelines only",
-    ))
-}
-
 /// Validates the fixed postprocess entry points and binding recipe against the artifact's
 /// module-wide reflection. Artifacts now record per-entry-point binding use, but the fixed
 /// postprocess, composite, bloom and volume recipes still check the whole module (and `MULSHDR2`
@@ -5224,10 +4778,10 @@ fn reclaim_lazy_resources(shared: &Shared<'_>) -> Result<(), GraphicsError> {
 
 /// Checks a material scene's foreground split and that scene-depth sampling and the depth
 /// comparison direction suit its world and foreground records.
-fn validate_material_scene_recipe(material: &MaterialScene<'_>) -> Result<(), GraphicsError> {
+fn validate_material_scene_recipe(material: &Scene<'_>) -> Result<(), GraphicsError> {
     let (foreground, hdr_postprocessed) = match material.output {
-        MaterialOutput::Direct(_) => (None, false),
-        MaterialOutput::Postprocessed {
+        SceneOutput::Direct(_) => (None, false),
+        SceneOutput::Postprocessed {
             postprocess,
             foreground_start,
             ..
@@ -5534,8 +5088,7 @@ mod cube_texture_slot_tests {
 
     use super::{
         MATERIAL_TEXTURE_COUNT_LIMIT, MaterialBinding, MipChain, Texture, TextureDimension,
-        validate_bindings_against_interface, validate_fixed_pipeline_texture,
-        validate_record_textures,
+        validate_bindings_against_interface, validate_record_textures,
     };
     use crate::resource::{Arena, DropQueue, ResourceKind, ResourceLease};
     use crate::shader::{
@@ -5663,9 +5216,6 @@ mod cube_texture_slot_tests {
                 .contains("supplies a 2D texture for texture 1, but that slot samples a cube")
         );
         assert!(validate_record_textures(&[&flat], &slots).is_err());
-        // The fixed textured pipelines sample 2D textures only.
-        assert!(validate_fixed_pipeline_texture(&flat).is_ok());
-        assert!(validate_fixed_pipeline_texture(&cube).is_err());
         assert_eq!(cube.dimension(), TextureDimension::Cube);
     }
 
@@ -5769,7 +5319,6 @@ mod cube_texture_slot_tests {
             "supplies a cube texture array for texture 0, but that slot samples a cube texture"
         ));
         assert!(validate_record_textures(&[&cube, &flat], &slots).is_err());
-        assert!(validate_fixed_pipeline_texture(&probes).is_err());
         assert_eq!(probes.dimension(), TextureDimension::CubeArray);
     }
 }

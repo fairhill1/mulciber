@@ -12,11 +12,19 @@ Eight animated crystals disappear when collected, four moving sentries reset the
 static obstacles resolve movement per axis, the camera follows the player, and R resets the run.
 Console diagnostics report collection, hits, completion, and reset.
 
-Rendering uses the existing instanced textured pipeline, two meshes, several textures, depth,
-capability-selected 4x/1x MSAA, and postprocessing. The scene dynamically omits the pickup batch
-after the eighth crystal is collected. No graphics or platform API was added for this checkpoint;
-that is evidence that the current extracted slice can express this small workload, not a claim that
-its fixed vertex/material vocabulary is sufficient for general games.
+Rendering uses one material pipeline with a declared vertex layout and a per-instance model
+matrix, two meshes, five textures, depth, capability-selected 4x/1x MSAA, and a postprocess grade
+and vignette. Each frame submits one instanced material record per kind of shape (ground,
+obstacles, player, pickups, hazards) and omits the pickups' record after the eighth crystal is
+collected, as a record must supply at least one instance. No graphics or platform API was added
+for this checkpoint; that is evidence that the extracted slice can express this small workload,
+not a claim that it is sufficient for general games.
+
+Its WGSL lives in `shaders/` and is compiled by `build.rs` with `mulciber-shader` into the target's
+artifact, as a game would: `forge.wgsl` draws the shapes, `grade.wgsl` is the postprocess, and the grade
+`#import`s its fullscreen triangle from a module in `shaders/shared/` that names itself with
+`#define_import_path`, beside the engine's `mulciber::colorspace`. The slice drew
+through the fixed instanced textured pipeline until graphics 0.18.0 removed it.
 
 Run it with:
 

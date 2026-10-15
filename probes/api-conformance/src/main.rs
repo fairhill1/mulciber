@@ -13,13 +13,12 @@ use std::time::Instant;
 
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialRecord,
-    MaterialScene, Mesh, MeshDescriptor, MeshIndices, MeshSource, MeshVertices, MipChain,
-    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
-    ShadowPass, ShadowPrepass, ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT,
-    TexelData, TextureDescriptor, TextureShape, TexturedInstanceBatch, TexturedSceneDraw,
-    TransientGeometry, Vertex, VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshDescriptor,
+    MeshIndices, MeshSource, MipChain, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor,
+    RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput,
+    SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord, ShadowSource,
+    TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, TextureDescriptor, TextureShape, TransientGeometry,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -241,22 +240,76 @@ const SHIFTED: [[f32; 4]; 4] = [
     [0.35, 0.0, 0.0, 1.0],
 ];
 
-const TRIANGLE_VERTICES: [Vertex; 3] = [
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [1.0, 1.0, 1.0],
-        uv: [0.0, 1.0],
+/// The cube modules' recorded vertex interface: position, color and texture coordinate.
+const CUBE_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 32,
+    attributes: &[
+        VertexAttribute {
+            location: 0,
+            format: VertexFormat::Float32x3,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 1,
+            format: VertexFormat::Float32x3,
+            offset: 12,
+        },
+        VertexAttribute {
+            location: 2,
+            format: VertexFormat::Float32x2,
+            offset: 24,
+        },
+    ],
+};
+
+/// The instanced cube module's per-instance model-view-projection matrix, one column per
+/// location.
+const INSTANCE_LAYOUT: VertexLayout<'static> = VertexLayout {
+    stride: 64,
+    attributes: &[
+        VertexAttribute {
+            location: 3,
+            format: VertexFormat::Float32x4,
+            offset: 0,
+        },
+        VertexAttribute {
+            location: 4,
+            format: VertexFormat::Float32x4,
+            offset: 16,
+        },
+        VertexAttribute {
+            location: 5,
+            format: VertexFormat::Float32x4,
+            offset: 32,
+        },
+        VertexAttribute {
+            location: 6,
+            format: VertexFormat::Float32x4,
+            offset: 48,
+        },
+    ],
+};
+
+/// The cube module's recorded binding interface: the model-view-projection uniform, one
+/// sampled texture and its sampler.
+const CUBE_BINDINGS: [MaterialBinding; 3] = [
+    MaterialBinding::Uniform {
+        binding: 0,
+        size: 64,
     },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [1.0, 1.0, 1.0],
-        uv: [1.0, 1.0],
+    MaterialBinding::Texture { binding: 1 },
+    MaterialBinding::Sampler {
+        binding: 2,
+        filter: SamplerFilter::Linear,
+        address: SamplerAddress::Repeat,
     },
-    Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [1.0, 1.0, 1.0],
-        uv: [0.5, 0.0],
-    },
+];
+
+/// One white triangle in the cube layout: position, color, texture coordinate.
+const TRIANGLE_VERTICES: [[f32; 8]; 3] = [
+    [-0.5, -0.5, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0],
+    [0.5, -0.5, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    [0.0, 0.5, 0.0, 1.0, 1.0, 1.0, 0.5, 0.0],
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -310,8 +363,8 @@ struct Cases<'window> {
     mesh: Option<Mesh>,
     foreign_mesh: Option<Mesh>,
     texture: Option<mulciber::Texture>,
-    pipeline: Option<mulciber::TexturedPipeline>,
-    instanced_pipeline: Option<mulciber::InstancedTexturedPipeline>,
+    pipeline: Option<mulciber::MaterialPipeline>,
+    instanced_pipeline: Option<mulciber::MaterialPipeline>,
     targets: Option<mulciber::RenderTargets>,
     postprocess_pipeline: Option<mulciber::PostprocessPipeline>,
     postprocess_uniform_pipeline: Option<mulciber::PostprocessPipeline>,
@@ -388,19 +441,21 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Fixed(&[]),
+                                layout: CUBE_LAYOUT,
+                                vertices: &[],
                                 parts: &[MeshIndices::U16(&[])],
                             })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
-                        "non-empty",
+                        "non-zero multiple of the layout stride",
                         "empty mesh rejected",
                     )?;
                     expect_error(
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                layout: CUBE_LAYOUT,
+                                vertices: &triangle_vertices(),
                                 parts: &[MeshIndices::U16(&[0, 1, 3])],
                             })
                             .map(|_| ()),
@@ -412,7 +467,8 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                layout: CUBE_LAYOUT,
+                                vertices: &triangle_vertices(),
                                 parts: &[],
                             })
                             .map(|_| ()),
@@ -424,7 +480,8 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                layout: CUBE_LAYOUT,
+                                vertices: &triangle_vertices(),
                                 parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[])],
                             })
                             .map(|_| ()),
@@ -436,7 +493,8 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                                layout: CUBE_LAYOUT,
+                                vertices: &triangle_vertices(),
                                 parts: &[
                                     MeshIndices::U16(&[0, 1, 2]),
                                     MeshIndices::U32(&[0, 3, 2]),
@@ -470,7 +528,8 @@ impl<'window> Cases<'window> {
 
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 let mesh = graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    layout: CUBE_LAYOUT,
+                    vertices: &triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2])],
                 })?;
                 expect_error(
@@ -480,12 +539,8 @@ impl<'window> Cases<'window> {
                     "invalid mesh part selection rejected before acquisition",
                 )?;
                 let texture = rgba8_srgb(&graphics.device, 2, 2, &[255_u8; 16])?;
-                let pipeline = graphics
-                    .device
-                    .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
-                let instanced_pipeline = graphics
-                    .device
-                    .create_instanced_textured_pipeline(ShaderArtifact::new(INSTANCED_SHADER)?)?;
+                let pipeline = cube_pipeline(&graphics.device)?;
+                let instanced_pipeline = instanced_pipeline(&graphics.device)?;
                 let targets = graphics
                     .device
                     .create_render_targets(graphics.surface.info()?)?;
@@ -498,34 +553,34 @@ impl<'window> Cases<'window> {
                 self.step = 1;
                 Ok(false)
             }
-            // A non-finite transform is rejected at draw time; the consumed frame's deferred
-            // abandonment must not poison the session.
+            // A record whose uniform does not match its pipeline's declaration is rejected at
+            // draw time; the consumed frame's deferred abandonment must not poison the session.
             1 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
                 let graphics = self.graphics.as_mut().expect("session A is open");
-                let mut transform = IDENTITY;
-                transform[3][3] = f32::NAN;
-                let draws = [TexturedSceneDraw {
-                    mesh: self.mesh.as_ref().expect("mesh exists"),
-                    texture: self.texture.as_ref().expect("texture exists"),
-                    pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                    model_view_projection: transform,
-                }];
+                let draws = [CubeDraw::new(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                    IDENTITY,
+                )];
+                let mut records = cube_records(&draws);
+                records[0].uniform = &draws[0].uniform[..32];
                 expect_error(
                     graphics
                         .queue
                         .render_and_present(
                             frame,
-                            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+                            cube_scene(&records, self.targets.as_ref().expect("targets exist")),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
-                    "finite",
-                    "non-finite transform rejected",
+                    "supplies 32 uniform bytes but its pipeline declares 64",
+                    "short record uniform rejected",
                 )?;
-                self.pass("non-finite transform rejected");
+                self.pass("short record uniform rejected");
                 self.step = 2;
                 Ok(false)
             }
@@ -555,19 +610,19 @@ impl<'window> Cases<'window> {
                     self.step = 5;
                 } else {
                     let graphics = self.graphics.as_mut().expect("session A is open");
-                    let draws = [TexturedSceneDraw {
-                        mesh: self.mesh.as_ref().expect("mesh exists"),
-                        texture: self.texture.as_ref().expect("texture exists"),
-                        pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                        model_view_projection: IDENTITY,
-                    }];
+                    let draws = [CubeDraw::new(
+                        self.mesh.as_ref().expect("mesh exists"),
+                        self.texture.as_ref().expect("texture exists"),
+                        self.pipeline.as_ref().expect("pipeline exists"),
+                        IDENTITY,
+                    )];
                     expect_error(
                         graphics
                             .queue
                             .render_and_present(
                                 frame,
-                                textured_scene(
-                                    &draws,
+                                cube_scene(
+                                    &cube_records(&draws),
                                     self.targets.as_ref().expect("targets exist"),
                                 ),
                             )
@@ -616,13 +671,13 @@ impl<'window> Cases<'window> {
                 graphics
                     .device
                     .destroy_render_targets(self.targets.take().expect("render targets exist"))?;
-                graphics.device.destroy_textured_pipeline(
-                    self.pipeline.take().expect("textured pipeline exists"),
+                graphics.device.destroy_material_pipeline(
+                    self.pipeline.take().expect("cube pipeline exists"),
                 )?;
-                graphics.device.destroy_instanced_textured_pipeline(
+                graphics.device.destroy_material_pipeline(
                     self.instanced_pipeline
                         .take()
-                        .expect("instanced textured pipeline exists"),
+                        .expect("instanced cube pipeline exists"),
                 )?;
                 graphics
                     .device
@@ -633,29 +688,25 @@ impl<'window> Cases<'window> {
 
                 for _ in 0..32 {
                     drop(graphics.device.create_mesh(&MeshDescriptor {
-                        vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                        layout: CUBE_LAYOUT,
+                        vertices: &triangle_vertices(),
                         parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 2, 1])],
                     })?);
                 }
 
                 self.foreign_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    layout: CUBE_LAYOUT,
+                    vertices: &triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2])],
                 })?);
                 self.mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    layout: CUBE_LAYOUT,
+                    vertices: &triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2])],
                 })?);
                 self.texture = Some(rgba8_srgb(&graphics.device, 2, 2, &[255_u8; 16])?);
-                self.pipeline = Some(
-                    graphics
-                        .device
-                        .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?,
-                );
-                self.instanced_pipeline =
-                    Some(graphics.device.create_instanced_textured_pipeline(
-                        ShaderArtifact::new(INSTANCED_SHADER)?,
-                    )?);
+                self.pipeline = Some(cube_pipeline(&graphics.device)?);
+                self.instanced_pipeline = Some(instanced_pipeline(&graphics.device)?);
                 self.targets = Some(
                     graphics
                         .device
@@ -698,7 +749,10 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+                    cube_scene(
+                        &cube_records(&draws),
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("multi-draw presentation after resource replacement");
@@ -720,19 +774,25 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        scene: Scene::Textured {
-                            draws: &draws,
-                            output: SceneOutput::Postprocessed(Postprocess {
-                                pipeline: self
-                                    .postprocess_pipeline
-                                    .as_ref()
-                                    .expect("postprocess pipeline exists"),
-                                targets: self
-                                    .postprocess_targets
-                                    .as_ref()
-                                    .expect("postprocess targets exist"),
-                                uniform: &[],
-                            }),
+                        scene: Scene {
+                            records: &cube_records(&draws),
+                            shadow: None,
+                            output: SceneOutput::Postprocessed {
+                                postprocess: Postprocess {
+                                    pipeline: self
+                                        .postprocess_pipeline
+                                        .as_ref()
+                                        .expect("postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &[],
+                                },
+                                foreground_start: None,
+                                offscreen: &[],
+                                overlay: &[],
+                            },
                         },
                         clear: ClearColor::BLACK,
                     },
@@ -742,27 +802,32 @@ impl<'window> Cases<'window> {
                 self.step = 8;
                 Ok(false)
             }
-            // Native instance-rate transforms draw the same mesh twice in one batch.
+            // One instanced material record draws the same mesh twice from instance-rate transforms.
             8 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
-                let transforms = [IDENTITY, SHIFTED];
-                let batches = [TexturedInstanceBatch {
-                    mesh: self.mesh.as_ref().expect("mesh exists"),
-                    texture: self.texture.as_ref().expect("texture exists"),
+                let mut instances = matrix_bytes(IDENTITY);
+                instances.extend_from_slice(&matrix_bytes(SHIFTED));
+                let records = [MaterialRecord {
                     pipeline: self
                         .instanced_pipeline
                         .as_ref()
                         .expect("instanced pipeline exists"),
-                    model_view_projections: &transforms,
+                    geometry: GeometrySource::Mesh(self.mesh.as_ref().expect("mesh exists")),
+                    textures: &[self.texture.as_ref().expect("texture exists")],
+                    shadow_map: None,
+                    uniform: &[],
+                    storage: &[],
+                    instances: &instances,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        scene: Scene::Instanced {
-                            batches: &batches,
+                        scene: Scene {
+                            records: &records,
+                            shadow: None,
                             output: SceneOutput::Direct(
                                 self.targets.as_ref().expect("targets exist"),
                             ),
@@ -780,33 +845,43 @@ impl<'window> Cases<'window> {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
-                let transforms = [IDENTITY, SHIFTED];
-                let batches = [TexturedInstanceBatch {
-                    mesh: self.mesh.as_ref().expect("mesh exists"),
-                    texture: self.texture.as_ref().expect("texture exists"),
+                let mut instances = matrix_bytes(IDENTITY);
+                instances.extend_from_slice(&matrix_bytes(SHIFTED));
+                let records = [MaterialRecord {
                     pipeline: self
                         .instanced_pipeline
                         .as_ref()
                         .expect("instanced pipeline exists"),
-                    model_view_projections: &transforms,
+                    geometry: GeometrySource::Mesh(self.mesh.as_ref().expect("mesh exists")),
+                    textures: &[self.texture.as_ref().expect("texture exists")],
+                    shadow_map: None,
+                    uniform: &[],
+                    storage: &[],
+                    instances: &instances,
                 }];
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        scene: Scene::Instanced {
-                            batches: &batches,
-                            output: SceneOutput::Postprocessed(Postprocess {
-                                pipeline: self
-                                    .postprocess_pipeline
-                                    .as_ref()
-                                    .expect("postprocess pipeline exists"),
-                                targets: self
-                                    .postprocess_targets
-                                    .as_ref()
-                                    .expect("postprocess targets exist"),
-                                uniform: &[],
-                            }),
+                        scene: Scene {
+                            records: &records,
+                            shadow: None,
+                            output: SceneOutput::Postprocessed {
+                                postprocess: Postprocess {
+                                    pipeline: self
+                                        .postprocess_pipeline
+                                        .as_ref()
+                                        .expect("postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &[],
+                                },
+                                foreground_start: None,
+                                offscreen: &[],
+                                overlay: &[],
+                            },
                         },
                         clear: ClearColor::BLACK,
                     },
@@ -948,10 +1023,8 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Bytes {
-                                    layout: MATERIAL_LAYOUT,
-                                    bytes: &truncated[..truncated.len() - 4],
-                                },
+                                layout: MATERIAL_LAYOUT,
+                                vertices: &truncated[..truncated.len() - 4],
                                 parts: &[MeshIndices::U16(&[0, 1, 2])],
                             })
                             .map(|_| ()),
@@ -963,10 +1036,8 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_mesh(&MeshDescriptor {
-                                vertices: MeshVertices::Bytes {
-                                    layout: MATERIAL_LAYOUT,
-                                    bytes: &material_triangle_vertices(),
-                                },
+                                layout: MATERIAL_LAYOUT,
+                                vertices: &material_triangle_vertices(),
                                 parts: &[MeshIndices::U32(&[0, 1, 3])],
                             })
                             .map(|_| ()),
@@ -1014,10 +1085,8 @@ impl<'window> Cases<'window> {
                 // 32-bit indices deliberately back the shared material mesh so every material
                 // draw, presentation, and reclamation case exercises the u32 index path.
                 self.material_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Bytes {
-                        layout: MATERIAL_LAYOUT,
-                        bytes: &material_triangle_vertices(),
-                    },
+                    layout: MATERIAL_LAYOUT,
+                    vertices: &material_triangle_vertices(),
                     parts: &[MeshIndices::U32(&[0, 1, 2])],
                 })?);
                 self.step = 11;
@@ -1467,7 +1536,7 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_material_pipeline(greater_pipeline)?;
                 self.pass("mixed depth compare directions rejected");
-                // Step 17 rejected an overlay paired with direct output; `MaterialOutput::Direct`
+                // Step 17 rejected an overlay paired with direct output; `SceneOutput::Direct`
                 // now has no overlay to supply.
                 self.step = 18;
                 Ok(false)
@@ -1499,10 +1568,10 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Material(MaterialScene {
+                                scene: Scene {
                                     records: &records,
                                     shadow: None,
-                                    output: MaterialOutput::Postprocessed {
+                                    output: SceneOutput::Postprocessed {
                                         postprocess: Postprocess {
                                             pipeline: self
                                                 .postprocess_pipeline
@@ -1518,7 +1587,7 @@ impl<'window> Cases<'window> {
                                         offscreen: &[],
                                         overlay: &records,
                                     },
-                                }),
+                                },
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1671,10 +1740,10 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        scene: Scene::Material(MaterialScene {
+                        scene: Scene {
                             records: &records,
                             shadow: None,
-                            output: MaterialOutput::Postprocessed {
+                            output: SceneOutput::Postprocessed {
                                 postprocess: Postprocess {
                                     pipeline: self
                                         .postprocess_pipeline
@@ -1690,7 +1759,7 @@ impl<'window> Cases<'window> {
                                 offscreen: &[],
                                 overlay: &overlay_records,
                             },
-                        }),
+                        },
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1806,10 +1875,8 @@ impl<'window> Cases<'window> {
                     },
                 )?);
                 self.floor_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Bytes {
-                        layout: LAVA_LAYOUT,
-                        bytes: &floor_vertices(),
-                    },
+                    layout: LAVA_LAYOUT,
+                    vertices: &floor_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2, 0, 2, 3])],
                 })?);
                 self.material_pipeline = Some(graphics.device.create_material_pipeline(
@@ -1826,10 +1893,8 @@ impl<'window> Cases<'window> {
                     },
                 )?);
                 self.material_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Bytes {
-                        layout: MATERIAL_LAYOUT,
-                        bytes: &material_part_vertices(),
-                    },
+                    layout: MATERIAL_LAYOUT,
+                    vertices: &material_part_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[1, 3, 2])],
                 })?);
                 self.pass("zero-extent shadow map rejected");
@@ -2257,10 +2322,8 @@ impl<'window> Cases<'window> {
                     },
                 )?);
                 self.skinned_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Bytes {
-                        layout: SKINNED_LAYOUT,
-                        bytes: &skinned_triangle_vertices(),
-                    },
+                    layout: SKINNED_LAYOUT,
+                    vertices: &skinned_triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2])],
                 })?);
                 self.pass("second storage slot rejected");
@@ -2872,10 +2935,8 @@ impl<'window> Cases<'window> {
                     },
                 )?);
                 self.sprout_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Bytes {
-                        layout: SPROUT_LAYOUT,
-                        bytes: &sprout_triangle_vertices(),
-                    },
+                    layout: SPROUT_LAYOUT,
+                    vertices: &sprout_triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2]), MeshIndices::U32(&[0, 1, 2])],
                 })?);
                 self.sprout_shadow_map = Some(graphics.device.create_shadow_map(256)?);
@@ -3043,24 +3104,30 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        scene: Scene::Textured {
-                            draws: &[TexturedSceneDraw {
-                                mesh: self.mesh.as_ref().expect("mesh exists"),
-                                texture: self.texture.as_ref().expect("texture exists"),
-                                pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                                model_view_projection: IDENTITY,
-                            }],
-                            output: SceneOutput::Postprocessed(Postprocess {
-                                pipeline: self
-                                    .postprocess_uniform_pipeline
-                                    .as_ref()
-                                    .expect("uniform postprocess pipeline exists"),
-                                targets: self
-                                    .postprocess_targets
-                                    .as_ref()
-                                    .expect("postprocess targets exist"),
-                                uniform: &uniform,
-                            }),
+                        scene: Scene {
+                            records: &cube_records(&[CubeDraw::new(
+                                self.mesh.as_ref().expect("mesh exists"),
+                                self.texture.as_ref().expect("texture exists"),
+                                self.pipeline.as_ref().expect("pipeline exists"),
+                                IDENTITY,
+                            )]),
+                            shadow: None,
+                            output: SceneOutput::Postprocessed {
+                                postprocess: Postprocess {
+                                    pipeline: self
+                                        .postprocess_uniform_pipeline
+                                        .as_ref()
+                                        .expect("uniform postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &uniform,
+                                },
+                                foreground_start: None,
+                                offscreen: &[],
+                                overlay: &[],
+                            },
                         },
                         clear: ClearColor::BLACK,
                     },
@@ -3082,24 +3149,30 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Textured {
-                                    draws: &[TexturedSceneDraw {
-                                        mesh: self.mesh.as_ref().expect("mesh exists"),
-                                        texture: self.texture.as_ref().expect("texture exists"),
-                                        pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                                        model_view_projection: IDENTITY,
-                                    }],
-                                    output: SceneOutput::Postprocessed(Postprocess {
-                                        pipeline: self
-                                            .postprocess_uniform_pipeline
-                                            .as_ref()
-                                            .expect("uniform postprocess pipeline exists"),
-                                        targets: self
-                                            .postprocess_targets
-                                            .as_ref()
-                                            .expect("postprocess targets exist"),
-                                        uniform: &[],
-                                    }),
+                                scene: Scene {
+                                    records: &cube_records(&[CubeDraw::new(
+                                        self.mesh.as_ref().expect("mesh exists"),
+                                        self.texture.as_ref().expect("texture exists"),
+                                        self.pipeline.as_ref().expect("pipeline exists"),
+                                        IDENTITY,
+                                    )]),
+                                    shadow: None,
+                                    output: SceneOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_uniform_pipeline
+                                                .as_ref()
+                                                .expect("uniform postprocess pipeline exists"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("postprocess targets exist"),
+                                            uniform: &[],
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &[],
+                                    },
                                 },
                                 clear: ClearColor::BLACK,
                             },
@@ -3130,19 +3203,25 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Textured {
-                                    draws: &draws,
-                                    output: SceneOutput::Postprocessed(Postprocess {
-                                        pipeline: self
-                                            .postprocess_pipeline
-                                            .as_ref()
-                                            .expect("postprocess pipeline exists"),
-                                        targets: self
-                                            .postprocess_targets
-                                            .as_ref()
-                                            .expect("postprocess targets exist"),
-                                        uniform: &[1],
-                                    }),
+                                scene: Scene {
+                                    records: &cube_records(&draws),
+                                    shadow: None,
+                                    output: SceneOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_pipeline
+                                                .as_ref()
+                                                .expect("postprocess pipeline exists"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("postprocess targets exist"),
+                                            uniform: &[1],
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &[],
+                                    },
                                 },
                                 clear: ClearColor::BLACK,
                             },
@@ -3174,19 +3253,25 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Textured {
-                                    draws: &draws,
-                                    output: SceneOutput::Postprocessed(Postprocess {
-                                        pipeline: self
-                                            .postprocess_uniform_pipeline
-                                            .as_ref()
-                                            .expect("uniform postprocess pipeline exists"),
-                                        targets: self
-                                            .postprocess_targets
-                                            .as_ref()
-                                            .expect("postprocess targets exist"),
-                                        uniform: &uniform,
-                                    }),
+                                scene: Scene {
+                                    records: &cube_records(&draws),
+                                    shadow: None,
+                                    output: SceneOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_uniform_pipeline
+                                                .as_ref()
+                                                .expect("uniform postprocess pipeline exists"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("postprocess targets exist"),
+                                            uniform: &uniform,
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &[],
+                                    },
                                 },
                                 clear: ClearColor::BLACK,
                             },
@@ -3213,24 +3298,30 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Textured {
-                                    draws: &[TexturedSceneDraw {
-                                        mesh: self.mesh.as_ref().expect("mesh exists"),
-                                        texture: self.texture.as_ref().expect("texture exists"),
-                                        pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                                        model_view_projection: IDENTITY,
-                                    }],
-                                    output: SceneOutput::Postprocessed(Postprocess {
-                                        pipeline: self
-                                            .postprocess_uniform_pipeline
-                                            .as_ref()
-                                            .expect("uniform postprocess pipeline exists"),
-                                        targets: self
-                                            .postprocess_targets
-                                            .as_ref()
-                                            .expect("postprocess targets exist"),
-                                        uniform: &oversized,
-                                    }),
+                                scene: Scene {
+                                    records: &cube_records(&[CubeDraw::new(
+                                        self.mesh.as_ref().expect("mesh exists"),
+                                        self.texture.as_ref().expect("texture exists"),
+                                        self.pipeline.as_ref().expect("pipeline exists"),
+                                        IDENTITY,
+                                    )]),
+                                    shadow: None,
+                                    output: SceneOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_uniform_pipeline
+                                                .as_ref()
+                                                .expect("uniform postprocess pipeline exists"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("postprocess targets exist"),
+                                            uniform: &oversized,
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &[],
+                                    },
                                 },
                                 clear: ClearColor::BLACK,
                             },
@@ -3267,15 +3358,12 @@ impl<'window> Cases<'window> {
                 self.pass("forced one-sample selection observable");
 
                 self.mesh = Some(reopened.device.create_mesh(&MeshDescriptor {
-                    vertices: MeshVertices::Fixed(&TRIANGLE_VERTICES),
+                    layout: CUBE_LAYOUT,
+                    vertices: &triangle_vertices(),
                     parts: &[MeshIndices::U16(&[0, 1, 2])],
                 })?);
                 self.texture = Some(rgba8_srgb(&reopened.device, 2, 2, &[255_u8; 16])?);
-                self.pipeline = Some(
-                    reopened
-                        .device
-                        .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?,
-                );
+                self.pipeline = Some(cube_pipeline(&reopened.device)?);
                 self.targets = Some(
                     reopened
                         .device
@@ -3309,18 +3397,21 @@ impl<'window> Cases<'window> {
                     return Ok(false);
                 };
                 let graphics = self.graphics.as_mut().expect("session B is open");
-                let draws = [TexturedSceneDraw {
-                    mesh: self.foreign_mesh.as_ref().expect("session A mesh kept"),
-                    texture: self.texture.as_ref().expect("texture exists"),
-                    pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                    model_view_projection: IDENTITY,
-                }];
+                let draws = [CubeDraw::new(
+                    self.foreign_mesh.as_ref().expect("session A mesh kept"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                    IDENTITY,
+                )];
                 expect_error(
                     graphics
                         .queue
                         .render_and_present(
                             frame,
-                            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+                            cube_scene(
+                                &cube_records(&draws),
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -3437,19 +3528,25 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                scene: Scene::Textured {
-                                    draws: &draws,
-                                    output: SceneOutput::Postprocessed(Postprocess {
-                                        pipeline: self
-                                            .postprocess_pipeline
-                                            .as_ref()
-                                            .expect("session A postprocess pipeline kept"),
-                                        targets: self
-                                            .postprocess_targets
-                                            .as_ref()
-                                            .expect("session B postprocess targets exist"),
-                                        uniform: &[1],
-                                    }),
+                                scene: Scene {
+                                    records: &cube_records(&draws),
+                                    shadow: None,
+                                    output: SceneOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_pipeline
+                                                .as_ref()
+                                                .expect("session A postprocess pipeline kept"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("session B postprocess targets exist"),
+                                            uniform: &[1],
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &[],
+                                    },
                                 },
                                 clear: ClearColor::BLACK,
                             },
@@ -3574,25 +3671,31 @@ impl<'window> Cases<'window> {
                 vertices.resize(1 << 20, TRIANGLE_VERTICES[0]);
             }
             self.mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
-                vertices: MeshVertices::Fixed(&vertices),
+                layout: CUBE_LAYOUT,
+                vertices: &vertex_bytes(&vertices),
                 parts: &[MeshIndices::U16(&[0, 1, 2])],
             })?);
         }
         let draws: Vec<_> = (0..(1 << (self.step % 7)))
-            .map(|index| TexturedSceneDraw {
-                mesh: self.mesh.as_ref().expect("mesh exists"),
-                texture: self.texture.as_ref().expect("texture exists"),
-                pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                model_view_projection: if (index + self.step).is_multiple_of(2) {
-                    IDENTITY
-                } else {
-                    SHIFTED
-                },
+            .map(|index| {
+                CubeDraw::new(
+                    self.mesh.as_ref().expect("mesh exists"),
+                    self.texture.as_ref().expect("texture exists"),
+                    self.pipeline.as_ref().expect("pipeline exists"),
+                    if (index + self.step).is_multiple_of(2) {
+                        IDENTITY
+                    } else {
+                        SHIFTED
+                    },
+                )
             })
             .collect();
         assert_presented(graphics.queue.render_and_present(
             frame,
-            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+            cube_scene(
+                &cube_records(&draws),
+                self.targets.as_ref().expect("targets exist"),
+            ),
         )?)?;
         self.ring_submitted += 1;
         if let mulciber::GpuTimingFeedback::Reported(frames) = graphics.queue.take_gpu_timings()? {
@@ -3669,15 +3772,18 @@ impl<'window> Cases<'window> {
         transform: [[f32; 4]; 4],
     ) -> Result<mulciber::FrameDisposition, Box<dyn Error>> {
         let graphics = self.graphics.as_mut().expect("a session is open");
-        let draws = [TexturedSceneDraw {
-            mesh: self.mesh.as_ref().expect("mesh exists"),
-            texture: self.texture.as_ref().expect("texture exists"),
-            pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-            model_view_projection: transform,
-        }];
+        let draws = [CubeDraw::new(
+            self.mesh.as_ref().expect("mesh exists"),
+            self.texture.as_ref().expect("texture exists"),
+            self.pipeline.as_ref().expect("pipeline exists"),
+            transform,
+        )];
         Ok(graphics.queue.render_and_present(
             frame,
-            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+            cube_scene(
+                &cube_records(&draws),
+                self.targets.as_ref().expect("targets exist"),
+            ),
         )?)
     }
 }
@@ -3696,18 +3802,106 @@ fn rgba8_srgb(
     })
 }
 
-/// Textured draws straight into `targets`.
-fn textured_scene<'resources>(
-    draws: &'resources [TexturedSceneDraw<'resources>],
+/// One cube-material draw: the record's borrowed texture list and its model-view-projection
+/// uniform, kept beside it so records can borrow them.
+struct CubeDraw<'resources> {
+    mesh: &'resources Mesh,
+    textures: [&'resources mulciber::Texture; 1],
+    pipeline: &'resources mulciber::MaterialPipeline,
+    uniform: Vec<u8>,
+}
+
+impl<'resources> CubeDraw<'resources> {
+    fn new(
+        mesh: &'resources Mesh,
+        texture: &'resources mulciber::Texture,
+        pipeline: &'resources mulciber::MaterialPipeline,
+        model_view_projection: [[f32; 4]; 4],
+    ) -> Self {
+        Self {
+            mesh,
+            textures: [texture],
+            pipeline,
+            uniform: matrix_bytes(model_view_projection),
+        }
+    }
+}
+
+/// The material records drawing `draws`.
+fn cube_records<'resources>(
+    draws: &'resources [CubeDraw<'resources>],
+) -> Vec<MaterialRecord<'resources>> {
+    draws
+        .iter()
+        .map(|draw| MaterialRecord {
+            pipeline: draw.pipeline,
+            geometry: GeometrySource::Mesh(draw.mesh),
+            textures: &draw.textures,
+            shadow_map: None,
+            uniform: &draw.uniform,
+            storage: &[],
+            instances: &[],
+        })
+        .collect()
+}
+
+/// The cube material: the textured triangle transformed by its record's uniform.
+fn cube_pipeline(device: &mulciber::Device) -> Result<mulciber::MaterialPipeline, Box<dyn Error>> {
+    Ok(
+        device.create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+            scene_color: SceneColor::Surface,
+            shader: ShaderArtifact::new(SHADER)?,
+            vertex_entry: "cube_vertex",
+            fragment_entry: "cube_fragment",
+            vertex_layout: CUBE_LAYOUT,
+            bindings: &CUBE_BINDINGS,
+            blend: BlendMode::Opaque,
+            depth: DepthMode::TestWrite,
+            instance_layout: None,
+        })?,
+    )
+}
+
+/// The instanced cube material: one draw per model-view-projection matrix in the record's
+/// instance bytes.
+fn instanced_pipeline(
+    device: &mulciber::Device,
+) -> Result<mulciber::MaterialPipeline, Box<dyn Error>> {
+    Ok(
+        device.create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+            scene_color: SceneColor::Surface,
+            shader: ShaderArtifact::new(INSTANCED_SHADER)?,
+            vertex_entry: "instanced_vertex",
+            fragment_entry: "cube_fragment",
+            vertex_layout: CUBE_LAYOUT,
+            bindings: &CUBE_BINDINGS[1..],
+            blend: BlendMode::Opaque,
+            depth: DepthMode::TestWrite,
+            instance_layout: Some(INSTANCE_LAYOUT),
+        })?,
+    )
+}
+
+/// Packs vertices in the cube layout.
+fn vertex_bytes(vertices: &[[f32; 8]]) -> Vec<u8> {
+    vertices
+        .iter()
+        .flatten()
+        .flat_map(|component| component.to_ne_bytes())
+        .collect()
+}
+
+/// The triangle's vertex bytes.
+fn triangle_vertices() -> Vec<u8> {
+    vertex_bytes(&TRIANGLE_VERTICES)
+}
+
+/// Cube-material records straight into `targets`.
+fn cube_scene<'resources>(
+    records: &'resources [MaterialRecord<'resources>],
     targets: &'resources mulciber::RenderTargets,
 ) -> SceneSubmission<'resources> {
-    SceneSubmission {
-        scene: Scene::Textured {
-            draws,
-            output: SceneOutput::Direct(targets),
-        },
-        clear: ClearColor::BLACK,
-    }
+    direct_material_scene(records, None, targets)
 }
 
 /// A material scene drawn straight into `targets`, after `shadow` when one is supplied.
@@ -3717,11 +3911,11 @@ fn direct_material_scene<'resources>(
     targets: &'resources mulciber::RenderTargets,
 ) -> SceneSubmission<'resources> {
     SceneSubmission {
-        scene: Scene::Material(MaterialScene {
+        scene: Scene {
             records,
             shadow,
-            output: MaterialOutput::Direct(targets),
-        }),
+            output: SceneOutput::Direct(targets),
+        },
         clear: ClearColor::BLACK,
     }
 }
@@ -3729,21 +3923,11 @@ fn direct_material_scene<'resources>(
 fn scene_draws<'resources>(
     mesh: &'resources Mesh,
     texture: &'resources mulciber::Texture,
-    pipeline: &'resources mulciber::TexturedPipeline,
-) -> [TexturedSceneDraw<'resources>; 2] {
+    pipeline: &'resources mulciber::MaterialPipeline,
+) -> [CubeDraw<'resources>; 2] {
     [
-        TexturedSceneDraw {
-            mesh,
-            texture,
-            pipeline,
-            model_view_projection: IDENTITY,
-        },
-        TexturedSceneDraw {
-            mesh,
-            texture,
-            pipeline,
-            model_view_projection: SHIFTED,
-        },
+        CubeDraw::new(mesh, texture, pipeline, IDENTITY),
+        CubeDraw::new(mesh, texture, pipeline, SHIFTED),
     ]
 }
 

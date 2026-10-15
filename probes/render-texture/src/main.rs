@@ -6,12 +6,11 @@
 //! Pass `--force-one-sample` to render without the multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, HdrComposite, MaterialBinding, MaterialOutput, MaterialPipeline,
-    MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices, OffscreenPass,
-    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor,
-    PostprocessTargets, RenderScale, RenderTexture, SampleCount, SamplerAddress, SamplerFilter,
-    Scene, SceneColor, SceneSubmission, ShaderArtifact, SurfaceInfo, TexelData, TransientGeometry,
-    VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, HdrComposite, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, MeshIndices, OffscreenPass, OpenedGraphics, Postprocess, PostprocessPipeline,
+    PostprocessPipelineDescriptor, PostprocessTargets, RenderScale, RenderTexture, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
+    SurfaceInfo, TexelData, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -353,10 +352,10 @@ fn render(
     graphics.queue.render_and_present(
         frame,
         SceneSubmission {
-            scene: Scene::Material(MaterialScene {
+            scene: Scene {
                 records: &scene,
                 shadow: None,
-                output: MaterialOutput::Postprocessed {
+                output: SceneOutput::Postprocessed {
                     postprocess: Postprocess {
                         pipeline: &pipelines.composite,
                         targets: targets.as_ref().expect("created"),
@@ -366,7 +365,7 @@ fn render(
                     offscreen: &passes,
                     overlay: &[],
                 },
-            }),
+            },
             clear: ClearColor::BLACK,
         },
     )

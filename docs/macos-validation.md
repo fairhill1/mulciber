@@ -487,9 +487,11 @@ line counts, and remaining Vulkan gap.
 
 ## Two-pass postprocess checkpoint
 
-The separate `mulciber-postprocess-cube` renders the existing textured/depth-tested scene into
-resolved offscreen color, samples that image in a fullscreen grade/vignette pass, and presents. Run
-it with:
+The separate `mulciber-postprocess-cube` rendered the textured/depth-tested cube into resolved
+offscreen color, sampled that image in a fullscreen grade/vignette pass, and presented. It, the
+showcase cube, and the scene and instanced-scene examples below were removed in graphics 0.18.0
+with the fixed textured pipelines; `mulciber-api-conformance` and the game slice now draw the
+postprocess path. It ran with:
 
 ```sh
 MTL_DEBUG_LAYER=1 cargo run -p mulciber-postprocess-cube

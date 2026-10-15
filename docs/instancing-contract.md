@@ -1,5 +1,12 @@
 # Experimental GPU instancing contract
 
+Status: historical. Graphics 0.18.0 removed this vocabulary (`InstancedTexturedPipeline`,
+`TexturedInstanceBatch`, `Scene::Instanced`) and the `mulciber-instanced-scene` example; instancing
+is now a material record's `instances` against its pipeline's instance layout
+([material contract](material-contract.md)), which `mulciber-game-slice` uses. The fixed instanced
+shader lives on in `probes/api-conformance/shaders/instanced.wgsl`; `wgpu-instanced-scene` remains in
+`comparisons/`. The record below is kept as it was run.
+
 This checkpoint adds native instance-rate drawing without replacing the heterogeneous multi-draw
 baseline. `mulciber-instanced-scene` and `wgpu-instanced-scene` render the same 100-object field as
 four homogeneous batches: cube/amber, cube/violet, pyramid/amber, and pyramid/violet. Both retain

@@ -4,10 +4,10 @@
 //! palette it reads. Each draw is read back from an HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
-    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
-    MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneSubmission,
-    ShaderArtifact, VertexAttribute, VertexFormat, VertexLayout,
+    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor, MeshIndices,
+    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene,
+    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -198,17 +198,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[UNIFORM, PALETTE],
     ))?;
     let prop_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: prop_layout,
-            bytes: &triangle(false),
-        },
+        layout: prop_layout,
+        vertices: &triangle(false),
         parts: &[MeshIndices::U16(&[0, 1, 2])],
     })?;
     let skinned_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: skinned_layout,
-            bytes: &triangle(true),
-        },
+        layout: skinned_layout,
+        vertices: &triangle(true),
         parts: &[MeshIndices::U16(&[0, 1, 2])],
     })?;
     let composite = graphics
@@ -277,10 +273,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    scene: Scene::Material(MaterialScene {
+                    scene: Scene {
                         records: &[record],
                         shadow: None,
-                        output: MaterialOutput::Postprocessed {
+                        output: SceneOutput::Postprocessed {
                             postprocess: Postprocess {
                                 pipeline: &composite,
                                 targets: target,
@@ -290,7 +286,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             offscreen: &[],
                             overlay: &[],
                         },
-                    }),
+                    },
                     clear: ClearColor::BLACK,
                 },
             )?;

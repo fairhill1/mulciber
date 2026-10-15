@@ -4,12 +4,11 @@
 //! and read back from an HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
-    GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor,
-    MaterialRecord, MaterialScene, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
-    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneSubmission, ShaderArtifact, TexelData,
-    Texture, TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat,
-    VertexLayout,
+    GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord,
+    MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
+    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, Texture,
+    TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -346,10 +345,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .flat_map(|v| v.to_ne_bytes())
         .collect();
     let mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: LAYOUT,
-            bytes: &vertices,
-        },
+        layout: LAYOUT,
+        vertices: &vertices,
         parts: &[MeshIndices::U16(&[0, 1, 2, 0, 2, 1])],
     })?;
     let shader = ShaderArtifact::new(include_bytes!(concat!(
@@ -445,7 +442,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let rendered = graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    scene: Scene::Material(MaterialScene {
+                    scene: Scene {
                         records: &[MaterialRecord {
                             pipeline: &pipeline,
                             geometry: GeometrySource::Mesh(&mesh),
@@ -456,7 +453,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             instances: &[],
                         }],
                         shadow: None,
-                        output: MaterialOutput::Postprocessed {
+                        output: SceneOutput::Postprocessed {
                             postprocess: Postprocess {
                                 pipeline: &composite,
                                 targets: target,
@@ -466,7 +463,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             offscreen: &[],
                             overlay: &[],
                         },
-                    }),
+                    },
                     clear: ClearColor::BLACK,
                 },
             );

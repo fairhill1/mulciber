@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn cube_shader_has_native_outputs_and_mapped_resources() {
-        let source = include_str!("../../../examples/cube/src/cube.wgsl");
+        let source = include_str!("../../../probes/api-cube/src/cube.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
         let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
             .validate(&module)
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn cube_shader_interface_records_entries_and_bindings() {
-        let source = include_str!("../../../examples/cube/src/cube.wgsl");
+        let source = include_str!("../../../probes/api-cube/src/cube.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
         let interface = shader_interface(&module, &validate(&module)).expect("cube interface");
 

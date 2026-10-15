@@ -864,7 +864,7 @@ fn probe_specular(direction: vec3<f32>, probe: i32, roughness: f32) -> vec3<f32>
     /// a direct parse; the interface `mulciber` validates against is identical.
     #[test]
     fn a_shader_without_imports_composes_to_the_compile_wgsl_module() {
-        let source = include_str!("../../../examples/cube/src/cube.wgsl");
+        let source = include_str!("../../../probes/api-cube/src/cube.wgsl");
         let plain = naga::front::wgsl::parse_str(source).expect("cube WGSL parses");
         let plain_info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

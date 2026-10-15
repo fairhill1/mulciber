@@ -21,7 +21,7 @@ surface-format material pipelines and postprocessing keep their original behavio
   1 is the resolved HDR scene, binding 2 is its linear clamp sampler, and bindings 3 through 8 are
   the six bloom levels. The existing optional, exact-size uniform at binding 0 belongs only to the
   composite.
-- `Scene::Material` with `MaterialOutput::Postprocessed` submits the path. The HDR pipeline and
+- A `Scene` with `SceneOutput::Postprocessed` submits the path. The HDR pipeline and
   targets must agree. Scene and foreground materials must also agree with the target format. HUD
   overlays use surface-format, depth-off material pipelines and execute after the composite at
   native resolution.

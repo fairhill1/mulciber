@@ -20,12 +20,11 @@ dismemberment events.
 
 ## Public vocabulary
 
-- `Device::create_mesh(&MeshDescriptor { vertices, parts })` uploads the vertices once with one or
-  more index parts. `vertices` is `MeshVertices::Fixed(&[Vertex])` for the fixed vertex layout or
-  `MeshVertices::Bytes { layout, bytes }` for the raw-layout form. Each entry of
+- `Device::create_mesh(&MeshDescriptor { layout, vertices, parts })` uploads the vertex bytes once,
+  against their declared layout, with one or more index parts. Each entry of
   `parts: &[MeshIndices]` may independently use `MeshIndices::U16` or `MeshIndices::U32`.
 - A single-element `parts` is the ordinary one-part case. Part zero is the default and remains
-  selected by existing whole-mesh draw APIs and `GeometrySource::Mesh(&mesh)`.
+  selected by `GeometrySource::Mesh(&mesh)`.
 - `Mesh::part(index)` validates the number and returns a borrowed, `Copy` `MeshPart`. `part_count`
   exposes the immutable count. A bad number returns `GraphicsErrorKind::InvalidRequest` naming the
   requested number and available count.
@@ -42,8 +41,8 @@ material and shadow pipelines use the same selection.
 `Mesh` remains the only owning lease and generational resource identity. `MeshPart` contains a
 borrow of that parent plus a part number; it owns no lease, native allocation, or deferred-drop
 entry. Rust prevents moving the parent into explicit destruction while a part is borrowed. Dropping
-or explicitly destroying the parent retires its vertex data, every index region, and every indirect
-command together after the established completed-frame boundary. Mixed-session, stale-generation,
+or explicitly destroying the parent retires its vertex data, every index region, and (on Metal)
+every indirect argument together after the established completed-frame boundary. Mixed-session, stale-generation,
 and vertex-layout validation all inspect the parent identity.
 
 Creation rejects empty or stride-ragged vertex data, no parts, an empty part, an index outside the
@@ -55,11 +54,11 @@ before taking the frame token.
 ## Native implementation
 
 Vulkan keeps one suballocation in the existing coalescing mesh arena. The vertex region comes first;
-each index region begins at a four-byte-aligned offset, followed by one aligned
-`VkDrawIndexedIndirectCommand` per part, and the complete parent allocation is 16-byte aligned.
-Encoding binds the parent vertex offset and the selected part's index offset,
-`VkIndexType`, count, and indirect-command offset. Instanced records use the selected count in
-`vkCmdDrawIndexed`; non-instanced records retain the established indirect path.
+each index region begins at a four-byte-aligned offset, and the complete parent allocation is
+16-byte aligned. Encoding binds the parent vertex offset and the selected part's index offset,
+`VkIndexType` and count, and every record draws with `vkCmdDrawIndexed`. Until graphics 0.18.0 each
+part also carried a `VkDrawIndexedIndirectCommand`, which only the fixed textured scene drew
+through; material and shadow records have drawn directly since 0.13.12.
 
 Metal uses one `MTLBuffer` for the parent. It stores the vertices once, then four-byte-aligned index
 regions and one indirect argument per part, with the complete storage length aligned to 16 bytes.
@@ -87,8 +86,8 @@ triangle parts sharing four vertices; this automated run is validation evidence,
 operator-inspected visual-correctness claim.
 
 Focused Vulkan and Metal backend tests pin the two mixed-width index offsets, counts, native types,
-indirect offsets, and alignment. The complete workspace cross-target checks for
-`aarch64-apple-darwin` with `MULCIBER_METAL_TYPECHECK_ONLY=1`; Metal cannot execute on this Linux
+indirect offsets (Metal's alone since graphics 0.18.0), and alignment. The complete workspace
+cross-target checks for `aarch64-apple-darwin` with `MULCIBER_METAL_TYPECHECK_ONLY=1`; Metal cannot execute on this Linux
 machine, so native Metal API Validation and visual evidence remain outstanding under the
 [macOS runbook](macos-validation.md).
 

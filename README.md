@@ -63,23 +63,24 @@ Metal or Vulkan at compile time.
 | --- | --- | --- |
 | `cargo run -p mulciber-clear` | Clear-only surface lifecycle | [graphics contract](docs/api-graphics-contract.md) |
 | `cargo run -p mulciber-capability-report` | Device-capability selection report, no rendering setup | supports `--force-one-sample` |
-| `cargo run -p mulciber-cube` | Spinning indexed, textured, depth-tested cube | [cube contract](docs/api-cube-contract.md) |
-| `cargo run -p mulciber-input-cube` | Ordered native keyboard/pointer/scroll/focus input | [input contract](docs/input-contract.md) |
-| `cargo run -p mulciber-postprocess-cube` | Half-render-scale resolve plus a uniform-animated fullscreen underwater grade on Vulkan | [postprocess contract](docs/postprocess-contract.md) |
-| `cargo run -p mulciber-showcase-cube` | Input and two-pass composition | composes the two above |
-| `cargo run -p mulciber-scene` | 100-object heterogeneous multi-draw scene | [scene contract](docs/scene-contract.md) |
-| `cargo run -p mulciber-instanced-scene` | Same field grouped into four native instance batches | [instancing contract](docs/instancing-contract.md) |
-| `cargo run -p mulciber-material-scene` | Application-authored materials, layouts, uniform bytes, cascaded shadow maps, and a frame-transient HUD overlay | [material contract](docs/material-contract.md) |
-| `cargo run -p mulciber-game-slice` | Playable Forge Run game on `mulciber-runtime` | [game contract](docs/game-slice.md) |
+| `cargo run -p mulciber-cube` | A spinning textured cube: one WGSL shader compiled at build time, one material pipeline | [material contract](docs/material-contract.md) |
+| `cargo run -p mulciber-input-cube` | Ordered native keyboard/pointer/scroll/focus input driving the cube | [input contract](docs/input-contract.md) |
+| `cargo run -p mulciber-game-slice` | Playable Forge Run game on `mulciber-runtime`: instanced material records, a shared WGSL module, and a postprocess grade | [game contract](docs/game-slice.md) |
 
 The examples are ordinary interactive programs; Mulciber prefers 4x MSAA and reports a fallback to
 1x. The cube examples use `glam` locally for transform math; no Mulciber crate depends on it.
 
+Every frame is a `Scene` of material records submitted through `Queue::render_and_present`; the
+cube is the smallest whole program on that path. The probes under `probes/` exercise the rest of
+the API, `mulciber-material-scene` among them (several vertex layouts, two-texture materials,
+cascaded shadows, skinning, instancing and a frame-transient HUD overlay).
+
 ### Writing your own program
 
 New programs follow the `examples/` pattern: copy an example package (path dependencies on the
-Mulciber crates, `publish = false`, workspace lints), add it to the root workspace `members`, and
-start from the example nearest your workload. A few conventions to know:
+Mulciber crates, `mulciber-shader` as a build dependency, `publish = false`, workspace lints), add
+it to the root workspace `members`, and start from the example nearest your workload. A few
+conventions to know:
 
 - A field the simulation also needs — terrain displacement, say — is authored once in WGSL and
   generated for the host with `mulciber_shader::compile_host_field` from a `build.rs`, then pulled
@@ -90,10 +91,11 @@ start from the example nearest your workload. A few conventions to know:
   `mulciber_shader::ShaderModules` and compiles each shader through it; see
   [WGSL modules and imports](crates/mulciber-shader/README.md#wgsl-modules-and-imports).
 - Shaders are offline artifacts. No shader compiler ships in the game process and there is no
-  runtime-WGSL path; each example embeds a checked-in `.shaderbin` selected by its `build.rs`.
-  Reuse a checked-in artifact when your pipeline shape matches (several examples and probes share
-  the cube's artifact for the standard textured pipeline), or generate a new one with
-  [`mulciber-shader`](crates/mulciber-shader/README.md).
+  runtime-WGSL path; each example's `build.rs` compiles its WGSL with
+  [`mulciber-shader`](crates/mulciber-shader/README.md) into `OUT_DIR` for the target (SPIR-V
+  checked by `spirv-val` for Vulkan, a Metal library built with Xcode's tools on macOS), and the
+  program embeds the result. `MULCIBER_METAL_TYPECHECK_ONLY=1` writes empty artifacts so a macOS
+  build can be type-checked on another host.
 - Rendering suspends while a window is minimized or fully occluded: redraw delivery pauses and
   resumes with visibility, so a program counting presented frames stalls while hidden. See the
   [platform contract](docs/api-platform-contract.md).

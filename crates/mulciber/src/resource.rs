@@ -35,8 +35,6 @@ impl ResourceId {
 pub(crate) enum ResourceKind {
     Mesh,
     Texture,
-    TexturedPipeline,
-    InstancedTexturedPipeline,
     PostprocessPipeline,
     MaterialPipeline,
     ShadowMap,
@@ -52,8 +50,6 @@ impl ResourceKind {
         match self {
             Self::Mesh => "mesh",
             Self::Texture => "texture",
-            Self::TexturedPipeline => "textured pipeline",
-            Self::InstancedTexturedPipeline => "instanced textured pipeline",
             Self::PostprocessPipeline => "postprocess pipeline",
             Self::MaterialPipeline => "material pipeline",
             Self::ShadowMap => "shadow map",

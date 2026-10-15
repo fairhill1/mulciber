@@ -4,11 +4,11 @@
 //! Pass `--force-one-sample` to render the direct path without a multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, HdrComposite, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, MaterialScene, MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline,
-    PostprocessPipelineDescriptor, PostprocessTargets, RenderScale, RenderTargets, SampleCount,
-    Scene, SceneColor, SceneSubmission, ShaderArtifact, SurfaceInfo, TransientGeometry,
-    VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, HdrComposite, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
+    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor,
+    PostprocessTargets, RenderScale, RenderTargets, SampleCount, Scene, SceneColor, SceneOutput,
+    SceneSubmission, ShaderArtifact, SurfaceInfo, TransientGeometry, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -248,11 +248,11 @@ fn render(
         graphics.queue.render_and_present(
             frame,
             SceneSubmission {
-                scene: Scene::Material(MaterialScene {
+                scene: Scene {
                     records: &[record(&pipelines.direct, &vertices, &indices)],
                     shadow: None,
-                    output: MaterialOutput::Direct(targets.direct.as_ref().expect("created")),
-                }),
+                    output: SceneOutput::Direct(targets.direct.as_ref().expect("created")),
+                },
                 clear: ClearColor::BLACK,
             },
         )?
@@ -272,10 +272,10 @@ fn render(
         graphics.queue.render_and_present(
             frame,
             SceneSubmission {
-                scene: Scene::Material(MaterialScene {
+                scene: Scene {
                     records: &[record(&pipelines.hdr, &vertices, &indices)],
                     shadow: None,
-                    output: MaterialOutput::Postprocessed {
+                    output: SceneOutput::Postprocessed {
                         postprocess: Postprocess {
                             pipeline: &pipelines.composite,
                             targets: targets.hdr.as_ref().expect("created"),
@@ -289,7 +289,7 @@ fn render(
                             &[]
                         },
                     },
-                }),
+                },
                 clear: ClearColor::BLACK,
             },
         )?

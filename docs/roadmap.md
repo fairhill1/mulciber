@@ -333,20 +333,24 @@ the Apple M2 tier, plus 100 automated rapid resizes and a manual drag-resize/clo
 
 A fourth showcase pair composes the input controller with the two-pass operation for side-by-side
 Mulciber/wgpu review without adding API; its line counts stay separate from the pre-registered Gate 2
-figures.
+figures. The Mulciber side was removed in graphics 0.18.0 with the fixed textured pipelines; the wgpu
+peer remains under `comparisons/`.
 
 Multi-object scene: `TexturedSceneDraw` plus direct and postprocessed scene operations submit an
 ordered non-empty slice with per-record mesh, texture, pipeline, and transform; both backends keep
 one scene pass open and issue one indexed draw per record. Passed Metal visual and conformance
 checks on the Apple M2 tier and Vulkan conformance plus interactive lifecycle checks on Intel UHD
 620. Line counts and the API boundary:
-[experimental multi-object scene contract](scene-contract.md).
+[experimental multi-object scene contract](scene-contract.md). `TexturedSceneDraw` and
+`mulciber-scene` were removed in graphics 0.18.0; material records submit the same ordered draws.
 
 GPU instancing: an instance-rate pipeline and non-empty homogeneous batches drive four native
 indexed draws for the same 100-object field through `Queue::render_and_present` and
 `SceneSubmission`. Passed Metal visual and conformance checks on Apple M2 and nineteen-case Vulkan
 conformance plus visual confirmation on Intel UHD 620. Line counts and native behavior:
-[experimental GPU instancing contract](instancing-contract.md).
+[experimental GPU instancing contract](instancing-contract.md). The fixed instance-rate pipeline and
+`mulciber-instanced-scene` were removed in graphics 0.18.0; instanced material records declare their
+instance layout.
 
 Runtime dogfood: Forge Run's playable loop earned a narrow `mulciber-runtime` extraction covering
 held/pressed/released input snapshots with focus-loss clearing, a configurable fixed-step
@@ -393,7 +397,9 @@ tool. Native KDE Wayland resize evidence forced two corrections, superseded-gene
 and paced extent-driven reconfiguration (see the [Linux validation runbook](linux-validation.md)).
 Destruction, drop churn, replacement rendering, and the Vulkan-only superseded-generation branch
 passed on Apple M2 and Intel UHD 620 / Vulkan 1.3. The provisional command vocabulary remains open
-for review and expansion through representative game slices.
+for review and expansion through representative game slices. Since graphics 0.18.0 the cube draws
+through a material pipeline, its WGSL compiled by its `build.rs`; the fixed textured pipeline it
+began on is removed.
 
 Do not stabilize names merely because both backends compile. Stable claims wait for Gate 1 completion
 and a successful Gate 2 decision.

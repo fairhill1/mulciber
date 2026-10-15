@@ -115,6 +115,11 @@ postprocess peer, the showcase wgpu path also performs a four-sample capability 
 one-sample fallback. The Mulciber side required no new public or backend API to compose input with
 postprocessing.
 
+`mulciber-postprocess-cube` and `mulciber-showcase-cube` were removed in graphics 0.18.0 with the
+fixed textured pipelines; the figures above are their last measured sizes. Their wgpu peers remain
+under `comparisons/` and include the shared WGSL from its new home,
+`probes/api-conformance/shaders/postprocess.wgsl`.
+
 ## Fixed measurement configuration
 
 - **Machines.** Linux: x86-64 CachyOS desktop, i5-12400F (12 threads), RTX 3060 Ti
@@ -266,3 +271,6 @@ abandonment/recovery, `metal-triangle` 120-frame abandonment run) under `MTL_DEB
 exiting zero with no validation output; Win32 and macOS additionally compile and lint clean from
 Linux via `--target`. Physical interactive lifecycle evidence for the new pump error path is not
 claimed.
+
+Since graphics 0.18.0 `examples/cube` draws through a material pipeline, its WGSL compiled by its
+`build.rs`; the size tables keep the figures of the revisions they record.

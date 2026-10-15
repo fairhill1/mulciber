@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -720,6 +720,7 @@ dependencies = [
  "glam",
  "mulciber",
  "mulciber-platform",
+ "mulciber-shader",
 ]
 
 [[package]]
@@ -774,6 +775,7 @@ dependencies = [
  "mulciber",
  "mulciber-platform",
  "mulciber-runtime",
+ "mulciber-shader",
 ]
 
 [[package]]
@@ -783,15 +785,7 @@ dependencies = [
  "glam",
  "mulciber",
  "mulciber-platform",
-]
-
-[[package]]
-name = "mulciber-instanced-scene"
-version = "0.0.0"
-dependencies = [
- "glam",
- "mulciber",
- "mulciber-platform",
+ "mulciber-shader",
 ]
 
 [[package]]
@@ -833,15 +827,6 @@ name = "mulciber-platform"
 version = "0.5.7"
 
 [[package]]
-name = "mulciber-postprocess-cube"
-version = "0.0.0"
-dependencies = [
- "glam",
- "mulciber",
- "mulciber-platform",
-]
-
-[[package]]
 name = "mulciber-render-texture"
 version = "0.0.0"
 dependencies = [
@@ -857,15 +842,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mulciber-scene"
-version = "0.0.0"
-dependencies = [
- "glam",
- "mulciber",
- "mulciber-platform",
-]
-
-[[package]]
 name = "mulciber-shader"
 version = "0.5.6"
 dependencies = [
@@ -874,17 +850,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mulciber-showcase-cube"
-version = "0.0.0"
-dependencies = [
- "glam",
- "mulciber",
- "mulciber-platform",
-]
-
-[[package]]
 name = "mulciber-texture"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bcdec_rs",
  "image",

@@ -36,22 +36,17 @@ use crate::{
     ClearColor, DeviceRequest, FrameAcquire, FrameDisposition, GeometrySource, GpuFrameTiming,
     GpuScopeTiming, GpuTimingFeedback, GpuTimingScope, GpuTimingSupport, GraphicsError,
     MaterialRecord, OffscreenPass, PresentFeedback, SampleCount, ShaderArtifact, ShadowPrepass,
-    ShadowSource, SurfaceInfo, TexturedInstanceBatch, TexturedSceneDraw, Vertex, VertexFormat,
+    ShadowSource, SurfaceInfo, VertexFormat,
 };
 
 const DEPTH_FORMAT: vk::VkFormat = vk::VK_FORMAT_D32_SFLOAT;
-/// Far-plane depth clear for conventional less-compare scenes; reversed-Z material scenes
-/// clear to 0.0 instead, selected per submission by the validated `depth_clear` argument.
-const DEPTH_CLEAR_FAR: f32 = 1.0;
 /// The specification's `VK_LOD_CLAMP_NONE`, absent from the generated bindings.
 const LOD_CLAMP_NONE: f32 = 1000.0;
-const DRAW_UNIFORM_SIZE: usize = 64;
 const DRAW_UNIFORM_STRIDE: usize = crate::MATERIAL_UNIFORM_SIZE_LIMIT as usize;
 
 /// Alignment for per-record offsets into the frame's read-only storage region: the
 /// specification's cap on `minStorageBufferOffsetAlignment`, valid on every implementation.
 const STORAGE_OFFSET_ALIGNMENT: usize = 256;
-const INSTANCE_TRANSFORM_SIZE: usize = 64;
 const GPU_QUERY_COUNT: u32 = 8;
 const FRAME_QUERY_START: u32 = 0;
 const SHADOW_QUERY_START: u32 = 2;
@@ -123,9 +118,8 @@ struct MeshResource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MeshPartResource {
-    index_offset: u64,
-    indirect_offset: u64,
-    index_count: u32,
+    offset: u64,
+    count: u32,
     index_type: vk::VkIndexType,
 }
 
@@ -159,33 +153,13 @@ fn plan_mesh_storage(
         cursor = align_up(cursor, 4)
             .ok_or_else(|| error(format!("mesh index part {part_index} alignment overflows")))?;
         parts.push(MeshPartResource {
-            index_offset,
-            indirect_offset: 0,
-            index_count: part.count,
+            offset: index_offset,
+            count: part.count,
             index_type: part.index_type,
         });
     }
-    let indirect_relative = cursor;
-    let indirect_stride = u64::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-        .expect("indirect command size fits u64");
-    for (part_index, part) in parts.iter_mut().enumerate() {
-        part.indirect_offset = u64::try_from(part_index)
-            .ok()
-            .and_then(|index| index.checked_mul(indirect_stride))
-            .and_then(|offset| indirect_relative.checked_add(offset))
-            .ok_or_else(|| error("mesh indirect part offsets overflow"))?;
-    }
-    let indirect_size = u64::try_from(index_parts.len())
-        .ok()
-        .and_then(|count| count.checked_mul(indirect_stride))
-        .ok_or_else(|| error("mesh indirect region size overflows"))?;
-    let allocation_size = align_up(
-        indirect_relative
-            .checked_add(indirect_size)
-            .ok_or_else(|| error("mesh buffer offsets overflow"))?,
-        MESH_ALLOCATION_ALIGNMENT,
-    )
-    .ok_or_else(|| error("mesh buffer offsets overflow"))?;
+    let allocation_size = align_up(cursor, MESH_ALLOCATION_ALIGNMENT)
+        .ok_or_else(|| error("mesh buffer offsets overflow"))?;
     Ok((parts, allocation_size))
 }
 
@@ -329,23 +303,6 @@ struct PostprocessTargetResource {
     depth: Option<Image>,
 }
 
-#[derive(Clone, Copy)]
-struct ResolvedDraw {
-    mesh: usize,
-    pipeline: usize,
-    descriptor: vk::VkDescriptorSet,
-    dynamic_offset: u32,
-}
-
-#[derive(Clone, Copy)]
-struct ResolvedInstanceBatch {
-    mesh: usize,
-    pipeline: usize,
-    descriptor: vk::VkDescriptorSet,
-    transform_offset: u64,
-    instance_count: u32,
-}
-
 /// Geometry for one material record resolved at preparation: an uploaded mesh's arena index, or
 /// offsets into the frame's transient-geometry region recomputed in staging order.
 #[derive(Clone, Copy)]
@@ -410,13 +367,6 @@ enum ShadowView {
     Array(vk::VkImageView),
 }
 
-#[derive(Clone, Copy)]
-enum PreparedScene {
-    Draws,
-    Instances,
-    Materials(Option<usize>),
-}
-
 pub(crate) struct TexturedSession<'window> {
     surface: ClearSurface<'window>,
     sample_count: vk::VkSampleCountFlagBits,
@@ -432,14 +382,10 @@ pub(crate) struct TexturedSession<'window> {
     /// Frame-transient indexed-geometry region for material records, in bytes.
     transient_geometry: Buffer,
     transient_capacity: usize,
-    resolved_draws: Vec<ResolvedDraw>,
-    instance_transforms: Buffer,
-    instance_capacity: usize,
     /// Frame-transient instance-rate attribute region for material and shadow records, in
     /// bytes.
     record_instances: Buffer,
     record_instance_capacity: usize,
-    resolved_instance_batches: Vec<ResolvedInstanceBatch>,
     resolved_material_draws: Vec<ResolvedMaterialDraw>,
     /// Overlay records resolved by the last material preparation, recorded into the
     /// presentable pass after the postprocess draw.
@@ -459,8 +405,6 @@ pub(crate) struct TexturedSession<'window> {
     mesh_buffers: MeshBufferArena,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
-    pipelines: Arena<PipelineResource>,
-    instanced_pipelines: Arena<PipelineResource>,
     material_pipelines: Arena<MaterialPipelineResource>,
     shadow_maps: Arena<ShadowMapResource>,
     shadow_map_arrays: Arena<ShadowMapArrayResource>,
@@ -543,21 +487,6 @@ impl<'window> TexturedSession<'window> {
                 return Err(failure);
             }
         };
-        let instance_transforms = match create_mapped_buffer(
-            &surface,
-            INSTANCE_TRANSFORM_SIZE * ClearSurface::frames_in_flight(),
-            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
-            &[],
-        ) {
-            Ok(buffer) => buffer,
-            Err(failure) => {
-                destroy_buffer(&surface, transient_geometry);
-                destroy_buffer(&surface, storage);
-                destroy_buffer(&surface, postprocess_uniform);
-                destroy_buffer(&surface, uniform);
-                return Err(failure);
-            }
-        };
         let record_instances = match create_mapped_buffer(
             &surface,
             STORAGE_OFFSET_ALIGNMENT * ClearSurface::frames_in_flight(),
@@ -566,7 +495,6 @@ impl<'window> TexturedSession<'window> {
         ) {
             Ok(buffer) => buffer,
             Err(failure) => {
-                destroy_buffer(&surface, instance_transforms);
                 destroy_buffer(&surface, transient_geometry);
                 destroy_buffer(&surface, storage);
                 destroy_buffer(&surface, postprocess_uniform);
@@ -592,12 +520,8 @@ impl<'window> TexturedSession<'window> {
                 storage_capacity: STORAGE_OFFSET_ALIGNMENT,
                 transient_geometry,
                 transient_capacity: STORAGE_OFFSET_ALIGNMENT,
-                resolved_draws: Vec::new(),
-                instance_transforms,
-                instance_capacity: 1,
                 record_instances,
                 record_instance_capacity: STORAGE_OFFSET_ALIGNMENT,
-                resolved_instance_batches: Vec::new(),
                 resolved_material_draws: Vec::new(),
                 resolved_overlay_draws: Vec::new(),
                 resolved_offscreen_draws: Vec::new(),
@@ -609,8 +533,6 @@ impl<'window> TexturedSession<'window> {
                 mesh_buffers: MeshBufferArena::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
-                pipelines: Arena::new("textured pipeline"),
-                instanced_pipelines: Arena::new("instanced textured pipeline"),
                 material_pipelines: Arena::new("material pipeline"),
                 shadow_maps: Arena::new("shadow map"),
                 shadow_map_arrays: Arena::new("shadow map array"),
@@ -731,14 +653,6 @@ impl<'window> TexturedSession<'window> {
     }
 
     pub(crate) fn create_mesh(
-        &mut self,
-        vertices: &[Vertex],
-        parts: &[MeshIndices<'_>],
-    ) -> Result<ResourceId, GraphicsError> {
-        self.create_mesh_from_bytes(bytes_of_slice(vertices), parts)
-    }
-
-    pub(crate) fn create_mesh_from_bytes(
         &mut self,
         vertex_bytes: &[u8],
         parts: &[MeshIndices<'_>],
@@ -1018,26 +932,6 @@ impl<'window> TexturedSession<'window> {
              recreate it after changing the sample count",
             self.sample_count
         )))
-    }
-
-    pub(crate) fn create_pipeline(
-        &mut self,
-        shader: ShaderArtifact<'_>,
-    ) -> Result<ResourceId, GraphicsError> {
-        let mut resource =
-            create_pipeline(&self.surface, shader.payload(), self.sample_count, false)?;
-        resource.sample_count = self.sample_count;
-        self.pipelines.insert(resource)
-    }
-
-    pub(crate) fn create_instanced_pipeline(
-        &mut self,
-        shader: ShaderArtifact<'_>,
-    ) -> Result<ResourceId, GraphicsError> {
-        let mut resource =
-            create_pipeline(&self.surface, shader.payload(), self.sample_count, true)?;
-        resource.sample_count = self.sample_count;
-        self.instanced_pipelines.insert(resource)
     }
 
     pub(crate) fn create_postprocess_pipeline(
@@ -1397,142 +1291,6 @@ impl<'window> TexturedSession<'window> {
         self.postprocess_targets.insert(resource)
     }
 
-    pub(crate) fn draw_scene_and_present(
-        &mut self,
-        token: TexturedFrameToken,
-        draws: &[TexturedSceneDraw<'_>],
-        targets: ResourceId,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let target_index = self.targets.index_of(targets)?;
-        self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
-        if self.targets[target_index].info != token.info {
-            return Err(error(
-                "render targets do not match acquired Vulkan generation",
-            ));
-        }
-        self.prepare_scene(draws)?;
-        self.begin_capture(&token)?;
-        self.record_draw(
-            token.image_index,
-            target_index,
-            PreparedScene::Draws,
-            clear,
-            DEPTH_CLEAR_FAR,
-        )?;
-        self.submit_recorded(token.image_index, false)
-    }
-
-    pub(crate) fn draw_scene_postprocessed_and_present(
-        &mut self,
-        token: TexturedFrameToken,
-        draws: &[TexturedSceneDraw<'_>],
-        postprocess_pipeline: ResourceId,
-        targets: ResourceId,
-        uniform: &[u8],
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let postprocess_pipeline_index =
-            self.postprocess_pipelines.index_of(postprocess_pipeline)?;
-        let target_index = self.postprocess_targets.index_of(targets)?;
-        self.check_sample_count(
-            self.postprocess_targets[target_index].sample_count,
-            "postprocess targets",
-        )?;
-        self.check_sample_count(
-            self.postprocess_pipelines[postprocess_pipeline_index].sample_count,
-            "postprocess pipeline",
-        )?;
-        if self.postprocess_targets[target_index].info != token.info {
-            return Err(error(
-                "postprocess targets do not match acquired Vulkan generation",
-            ));
-        }
-        self.prepare_scene(draws)?;
-        let postprocess_descriptor =
-            self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
-        self.begin_capture(&token)?;
-        self.record_postprocessed_draw(
-            token.image_index,
-            postprocess_pipeline_index,
-            target_index,
-            postprocess_descriptor,
-            PreparedScene::Draws,
-            uniform,
-            clear,
-            DEPTH_CLEAR_FAR,
-        )?;
-        self.submit_recorded(token.image_index, true)
-    }
-
-    pub(crate) fn draw_instanced_scene_and_present(
-        &mut self,
-        token: TexturedFrameToken,
-        batches: &[TexturedInstanceBatch<'_>],
-        targets: ResourceId,
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let target_index = self.targets.index_of(targets)?;
-        self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
-        if self.targets[target_index].info != token.info {
-            return Err(error(
-                "render targets do not match acquired Vulkan generation",
-            ));
-        }
-        self.prepare_instanced_scene(batches)?;
-        self.begin_capture(&token)?;
-        self.record_draw(
-            token.image_index,
-            target_index,
-            PreparedScene::Instances,
-            clear,
-            DEPTH_CLEAR_FAR,
-        )?;
-        self.submit_recorded(token.image_index, false)
-    }
-
-    pub(crate) fn draw_instanced_scene_postprocessed_and_present(
-        &mut self,
-        token: TexturedFrameToken,
-        batches: &[TexturedInstanceBatch<'_>],
-        postprocess_pipeline: ResourceId,
-        targets: ResourceId,
-        uniform: &[u8],
-        clear: ClearColor,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let postprocess_pipeline_index =
-            self.postprocess_pipelines.index_of(postprocess_pipeline)?;
-        let target_index = self.postprocess_targets.index_of(targets)?;
-        self.check_sample_count(
-            self.postprocess_targets[target_index].sample_count,
-            "postprocess targets",
-        )?;
-        self.check_sample_count(
-            self.postprocess_pipelines[postprocess_pipeline_index].sample_count,
-            "postprocess pipeline",
-        )?;
-        if self.postprocess_targets[target_index].info != token.info {
-            return Err(error(
-                "postprocess targets do not match acquired Vulkan generation",
-            ));
-        }
-        self.prepare_instanced_scene(batches)?;
-        let postprocess_descriptor =
-            self.postprocess_descriptor_set(postprocess_pipeline_index, target_index, targets)?;
-        self.begin_capture(&token)?;
-        self.record_postprocessed_draw(
-            token.image_index,
-            postprocess_pipeline_index,
-            target_index,
-            postprocess_descriptor,
-            PreparedScene::Instances,
-            uniform,
-            clear,
-            DEPTH_CLEAR_FAR,
-        )?;
-        self.submit_recorded(token.image_index, true)
-    }
-
     /// Rejects sampling a shadow map that neither an earlier frame nor this submission's shadow
     /// pass has rendered. This runs before the frame token is consumed so the rejection cannot
     /// strand an acquired image.
@@ -1594,13 +1352,7 @@ impl<'window> TexturedSession<'window> {
         }
         self.prepare_material_scene(records, &[], &[], shadow, None)?;
         self.begin_capture(&token)?;
-        self.record_draw(
-            token.image_index,
-            target_index,
-            PreparedScene::Materials(None),
-            clear,
-            depth_clear,
-        )?;
+        self.record_draw(token.image_index, target_index, None, clear, depth_clear)?;
         self.submit_recorded(token.image_index, false)
     }
 
@@ -1691,7 +1443,7 @@ impl<'window> TexturedSession<'window> {
             postprocess_pipeline_index,
             target_index,
             postprocess_descriptor,
-            PreparedScene::Materials(foreground_start),
+            foreground_start,
             uniform,
             clear,
             depth_clear,
@@ -2159,82 +1911,6 @@ impl<'window> TexturedSession<'window> {
         Ok(set)
     }
 
-    fn prepare_scene(&mut self, draws: &[TexturedSceneDraw<'_>]) -> Result<(), GraphicsError> {
-        self.pending_shadow_target = None;
-        let last_offset = draws
-            .len()
-            .saturating_sub(1)
-            .checked_mul(DRAW_UNIFORM_STRIDE)
-            .ok_or_else(|| error("Vulkan scene transform offsets overflow"))?;
-        u32::try_from(last_offset)
-            .map_err(|_| error("Vulkan scene transform offsets exceed u32"))?;
-        self.ensure_uniform_capacity(draws.len())?;
-        let uniform_base = self.uniform_base();
-        write_scene_transforms(&self.uniform, uniform_base, draws)?;
-        self.resolved_draws.clear();
-        for (index, draw) in draws.iter().enumerate() {
-            let mesh = self.meshes.index_of(draw.mesh.id())?;
-            let texture = self.textures.index_of(draw.texture.id())?;
-            let pipeline = self.pipelines.index_of(draw.pipeline.id())?;
-            self.check_sample_count(self.pipelines[pipeline].sample_count, "textured pipeline")?;
-            let descriptor = self.descriptor_set(pipeline, texture, draw.texture.id(), false)?;
-            self.resolved_draws.push(ResolvedDraw {
-                mesh,
-                pipeline,
-                descriptor,
-                dynamic_offset: u32::try_from(uniform_base + index * DRAW_UNIFORM_STRIDE)
-                    .expect("scene offset was validated"),
-            });
-        }
-        Ok(())
-    }
-
-    fn prepare_instanced_scene(
-        &mut self,
-        batches: &[TexturedInstanceBatch<'_>],
-    ) -> Result<(), GraphicsError> {
-        self.pending_shadow_target = None;
-        let instance_count = batches.iter().try_fold(0_usize, |total, batch| {
-            total
-                .checked_add(batch.model_view_projections.len())
-                .ok_or_else(|| error("Vulkan instance count exceeds address space"))
-        })?;
-        self.ensure_instance_capacity(instance_count)?;
-        let instance_base = self.instance_transform_base();
-        write_instance_transforms(&self.instance_transforms, instance_base, batches)?;
-        self.resolved_instance_batches.clear();
-        let mut transform_offset = instance_base;
-        for batch in batches {
-            let mesh = self.meshes.index_of(batch.mesh.id())?;
-            let texture = self.textures.index_of(batch.texture.id())?;
-            let pipeline = self.instanced_pipelines.index_of(batch.pipeline.id())?;
-            self.check_sample_count(
-                self.instanced_pipelines[pipeline].sample_count,
-                "instanced textured pipeline",
-            )?;
-            let descriptor = self.descriptor_set(pipeline, texture, batch.texture.id(), true)?;
-            self.resolved_instance_batches.push(ResolvedInstanceBatch {
-                mesh,
-                pipeline,
-                descriptor,
-                transform_offset: u64::try_from(transform_offset)
-                    .map_err(|_| error("Vulkan instance offset exceeds u64"))?,
-                instance_count: u32::try_from(batch.model_view_projections.len())
-                    .map_err(|_| error("Vulkan batch instance count exceeds u32"))?,
-            });
-            transform_offset = transform_offset
-                .checked_add(
-                    batch
-                        .model_view_projections
-                        .len()
-                        .checked_mul(INSTANCE_TRANSFORM_SIZE)
-                        .ok_or_else(|| error("Vulkan instance offset overflow"))?,
-                )
-                .ok_or_else(|| error("Vulkan instance offset overflow"))?;
-        }
-        Ok(())
-    }
-
     fn ensure_uniform_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
         if required <= self.uniform_capacity {
             return Ok(());
@@ -2257,29 +1933,6 @@ impl<'window> TexturedSession<'window> {
         let previous = mem::replace(&mut self.uniform, replacement);
         destroy_buffer(&self.surface, previous);
         self.uniform_capacity = capacity;
-        Ok(())
-    }
-
-    fn ensure_instance_capacity(&mut self, required: usize) -> Result<(), GraphicsError> {
-        if required <= self.instance_capacity {
-            return Ok(());
-        }
-        let capacity = required
-            .checked_next_power_of_two()
-            .ok_or_else(|| error("Vulkan instance transform capacity overflow"))?;
-        let bytes = capacity
-            .checked_mul(INSTANCE_TRANSFORM_SIZE)
-            .ok_or_else(|| error("Vulkan instance transform storage is too large"))?;
-        self.surface.wait_for_all_frames()?;
-        let replacement = create_mapped_buffer(
-            &self.surface,
-            bytes * super::ClearSurface::frames_in_flight(),
-            vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT as u32,
-            &[],
-        )?;
-        let previous = mem::replace(&mut self.instance_transforms, replacement);
-        destroy_buffer(&self.surface, previous);
-        self.instance_capacity = capacity;
         Ok(())
     }
 
@@ -2362,12 +2015,6 @@ impl<'window> TexturedSession<'window> {
             ResourceKind::Texture => {
                 destroy_texture_device(device, self.textures.remove(request.id)?);
             }
-            ResourceKind::TexturedPipeline => {
-                destroy_pipeline_device(device, self.pipelines.remove(request.id)?);
-            }
-            ResourceKind::InstancedTexturedPipeline => {
-                destroy_pipeline_device(device, self.instanced_pipelines.remove(request.id)?);
-            }
             ResourceKind::PostprocessPipeline => {
                 destroy_pipeline_device(device, self.postprocess_pipelines.remove(request.id)?);
             }
@@ -2409,14 +2056,6 @@ impl<'window> TexturedSession<'window> {
                 .textures
                 .remove_if_live(request.id)
                 .map(|resource| destroy_texture_device(device, resource)),
-            ResourceKind::TexturedPipeline => self
-                .pipelines
-                .remove_if_live(request.id)
-                .map(|resource| destroy_pipeline_device(device, resource)),
-            ResourceKind::InstancedTexturedPipeline => self
-                .instanced_pipelines
-                .remove_if_live(request.id)
-                .map(|resource| destroy_pipeline_device(device, resource)),
             ResourceKind::PostprocessPipeline => self
                 .postprocess_pipelines
                 .remove_if_live(request.id)
@@ -2458,16 +2097,6 @@ impl<'window> TexturedSession<'window> {
                 pipeline.volume_sets.clear();
             }
             return;
-        }
-        for pipeline in self
-            .pipelines
-            .iter_mut()
-            .chain(self.instanced_pipelines.iter_mut())
-        {
-            pipeline.descriptor_pools.reset(device);
-            pipeline.bindings.clear();
-            pipeline.bloom_sets.clear();
-            pipeline.volume_sets.clear();
         }
         for pipeline in self.material_pipelines.iter_mut() {
             pipeline.descriptor_pools.reset(device);
@@ -2680,78 +2309,6 @@ impl<'window> TexturedSession<'window> {
         )?;
         self.surface.mark_upload_pending();
         self.surface.wait_for_upload()
-    }
-
-    fn descriptor_set(
-        &mut self,
-        pipeline_index: usize,
-        texture_index: usize,
-        texture_id: ResourceId,
-        instanced: bool,
-    ) -> Result<vk::VkDescriptorSet, GraphicsError> {
-        let pipelines = if instanced {
-            &mut self.instanced_pipelines
-        } else {
-            &mut self.pipelines
-        };
-        if let Some(&set) = pipelines[pipeline_index].bindings.get(&(texture_id, 0)) {
-            return Ok(set);
-        }
-        let pipeline = &mut pipelines[pipeline_index];
-        let set = pipeline.descriptor_pools.allocate(
-            self.surface.device(),
-            pipeline.set_layout,
-            "vkAllocateDescriptorSets for texture",
-        )?;
-        let buffer = vk::VkDescriptorBufferInfo {
-            buffer: self.uniform.handle,
-            offset: 0,
-            range: DRAW_UNIFORM_SIZE as u64,
-        };
-        let image = vk::VkDescriptorImageInfo {
-            sampler: ptr::null_mut(),
-            imageView: self.textures[texture_index].image.view,
-            imageLayout: vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-        let sampler = vk::VkDescriptorImageInfo {
-            sampler: self.textures[texture_index].sampler,
-            ..Default::default()
-        };
-        let writes = [
-            descriptor_write(
-                set,
-                0,
-                vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-                (&raw const buffer).cast(),
-            ),
-            descriptor_write(
-                set,
-                1,
-                vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                (&raw const image).cast(),
-            ),
-            descriptor_write(
-                set,
-                2,
-                vk::VK_DESCRIPTOR_TYPE_SAMPLER,
-                (&raw const sampler).cast(),
-            ),
-        ];
-        unsafe {
-            self.surface
-                .device()
-                .functions
-                .update_descriptor_sets
-                .expect("loaded function")(
-                self.surface.device().handle,
-                u32::try_from(writes.len()).expect("texture descriptor write count fits u32"),
-                writes.as_ptr(),
-                0,
-                ptr::null(),
-            );
-        };
-        pipeline.bindings.insert((texture_id, 0), set);
-        Ok(set)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3159,10 +2716,6 @@ impl<'window> TexturedSession<'window> {
         self.slot_base(self.transient_capacity)
     }
 
-    fn instance_transform_base(&self) -> usize {
-        self.slot_base(self.instance_capacity * INSTANCE_TRANSFORM_SIZE)
-    }
-
     fn record_instance_base(&self) -> usize {
         self.slot_base(self.record_instance_capacity)
     }
@@ -3472,12 +3025,12 @@ impl<'window> TexturedSession<'window> {
                     functions,
                     self.surface.frame_command_buffer(),
                     mesh.buffer,
-                    part.index_offset,
+                    part.offset,
                     part.index_type,
                 );
                 functions.cmd_draw_indexed.expect("loaded function")(
                     self.surface.frame_command_buffer(),
-                    part.index_count,
+                    part.count,
                     draw.instances.map_or(1, |(_, count)| count),
                     first_index,
                     0,
@@ -3495,7 +3048,7 @@ impl<'window> TexturedSession<'window> {
         &mut self,
         image_index: u32,
         target_index: usize,
-        scene: PreparedScene,
+        foreground_start: Option<usize>,
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<(), GraphicsError> {
@@ -3688,7 +3241,7 @@ impl<'window> TexturedSession<'window> {
                 1,
                 &raw const area,
             );
-            self.record_prepared_scene(scene);
+            self.record_world(foreground_start);
             functions.cmd_end_rendering.expect("loaded function")(
                 self.surface.frame_command_buffer(),
             );
@@ -3719,20 +3272,11 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline_index: usize,
         target_index: usize,
         postprocess_descriptor: vk::VkDescriptorSet,
-        scene: PreparedScene,
+        foreground_start: Option<usize>,
         uniform: &[u8],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<(), GraphicsError> {
-        if !self.postprocess_pipelines[postprocess_pipeline_index]
-            .volume
-            .is_empty()
-            && !matches!(scene, PreparedScene::Materials(_))
-        {
-            return Err(error(
-                "volumetric HDR requires material content and cascaded shadows",
-            ));
-        }
         let slot = usize::try_from(image_index).map_err(|_| error("invalid image index"))?;
         let target = &self.postprocess_targets[target_index];
         let scene_color = target
@@ -3942,10 +3486,7 @@ impl<'window> TexturedSession<'window> {
             minDepth: 0.0,
             maxDepth: 1.0,
         };
-        let world_end = match scene {
-            PreparedScene::Materials(start) => start.unwrap_or(self.resolved_material_draws.len()),
-            _ => 0,
-        };
+        let world_end = foreground_start.unwrap_or(self.resolved_material_draws.len());
         let snapshot_start = self.resolved_material_draws[..world_end]
             .iter()
             .position(|draw| {
@@ -3975,7 +3516,7 @@ impl<'window> TexturedSession<'window> {
             if let Some(start) = snapshot_start {
                 self.record_material_draws(&self.resolved_material_draws[..start], false);
             } else {
-                self.record_prepared_scene(scene);
+                self.record_world(foreground_start);
             }
             functions.cmd_end_rendering.expect("loaded function")(
                 self.surface.frame_command_buffer(),
@@ -4020,7 +3561,7 @@ impl<'window> TexturedSession<'window> {
             scene_area,
             scene_viewport,
         );
-        if let PreparedScene::Materials(Some(start)) = scene {
+        if let Some(start) = foreground_start {
             // Preserve the world color (including MSAA samples), discard its depth,
             // and synchronize attachment reuse before the foreground rendering scope.
             let color = multisample_color.unwrap_or(scene_color);
@@ -4176,9 +3717,7 @@ impl<'window> TexturedSession<'window> {
                 0,
                 0,
             );
-            if matches!(scene, PreparedScene::Materials(_))
-                && !self.resolved_overlay_draws.is_empty()
-            {
+            if !self.resolved_overlay_draws.is_empty() {
                 self.record_material_draws(&self.resolved_overlay_draws, true);
             }
             functions.cmd_end_rendering.expect("loaded function")(
@@ -4242,12 +3781,7 @@ impl<'window> TexturedSession<'window> {
                             let part = &mesh.parts[part];
                             (
                                 (mesh.buffer, mesh.vertex_offset),
-                                (
-                                    mesh.buffer,
-                                    part.index_offset,
-                                    part.index_type,
-                                    part.index_count,
-                                ),
+                                (mesh.buffer, part.offset, part.index_type, part.count),
                             )
                         }
                         ResolvedGeometry::Transient {
@@ -4291,111 +3825,10 @@ impl<'window> TexturedSession<'window> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
-    unsafe fn record_prepared_scene(&self, scene: PreparedScene) {
-        unsafe {
-            let functions = &self.surface.device().functions;
-            match scene {
-                PreparedScene::Draws => {
-                    for draw in &self.resolved_draws {
-                        let mesh = &self.meshes[draw.mesh];
-                        let part = &mesh.parts[0];
-                        let pipeline = &self.pipelines[draw.pipeline];
-                        functions.cmd_bind_pipeline.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.pipeline,
-                        );
-                        functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            1,
-                            &raw const draw.descriptor,
-                            1,
-                            &raw const draw.dynamic_offset,
-                        );
-                        functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            0,
-                            1,
-                            &raw const mesh.buffer,
-                            &raw const mesh.vertex_offset,
-                        );
-                        functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            mesh.buffer,
-                            part.index_offset,
-                            part.index_type,
-                        );
-                        functions
-                            .cmd_draw_indexed_indirect
-                            .expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            mesh.buffer,
-                            part.indirect_offset,
-                            1,
-                            u32::try_from(mem::size_of::<vk::VkDrawIndexedIndirectCommand>())
-                                .expect("indirect command size fits u32"),
-                        );
-                    }
-                }
-                PreparedScene::Materials(foreground_start) => {
-                    self.record_material_draws(
-                        &self.resolved_material_draws
-                            [..foreground_start.unwrap_or(self.resolved_material_draws.len())],
-                        false,
-                    );
-                }
-                PreparedScene::Instances => {
-                    let dynamic_offset = 0_u32;
-                    for batch in &self.resolved_instance_batches {
-                        let mesh = &self.meshes[batch.mesh];
-                        let part = &mesh.parts[0];
-                        let pipeline = &self.instanced_pipelines[batch.pipeline];
-                        functions.cmd_bind_pipeline.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.pipeline,
-                        );
-                        functions.cmd_bind_descriptor_sets.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            vk::VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            1,
-                            &raw const batch.descriptor,
-                            1,
-                            &raw const dynamic_offset,
-                        );
-                        let buffers = [mesh.buffer, self.instance_transforms.handle];
-                        let offsets = [mesh.vertex_offset, batch.transform_offset];
-                        functions.cmd_bind_vertex_buffers.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            0,
-                            2,
-                            buffers.as_ptr(),
-                            offsets.as_ptr(),
-                        );
-                        functions.cmd_bind_index_buffer.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            mesh.buffer,
-                            part.index_offset,
-                            part.index_type,
-                        );
-                        functions.cmd_draw_indexed.expect("loaded function")(
-                            self.surface.frame_command_buffer(),
-                            part.index_count,
-                            batch.instance_count,
-                            0,
-                            0,
-                            0,
-                        );
-                    }
-                }
-            }
-        }
+    /// Records the world's material records: every record before the foreground, if any.
+    unsafe fn record_world(&self, foreground_start: Option<usize>) {
+        let world_end = foreground_start.unwrap_or(self.resolved_material_draws.len());
+        unsafe { self.record_material_draws(&self.resolved_material_draws[..world_end], false) };
     }
 
     fn destroy_resources(&mut self) {
@@ -4415,13 +3848,7 @@ impl<'window> TexturedSession<'window> {
             self.gpu_timing.query_pool = ptr::null_mut();
             self.gpu_timing.pending = [None; super::ClearSurface::frames_in_flight()];
         }
-        for pipeline in self
-            .pipelines
-            .take_all()
-            .into_iter()
-            .chain(self.instanced_pipelines.take_all())
-            .chain(self.postprocess_pipelines.take_all())
-        {
+        for pipeline in self.postprocess_pipelines.take_all() {
             destroy_pipeline_device(device, pipeline);
         }
         for pipeline in self.material_pipelines.take_all() {
@@ -4454,15 +3881,12 @@ impl<'window> TexturedSession<'window> {
             destroy_buffer_device(device, mem::take(&mut self.postprocess_uniform));
             destroy_buffer_device(device, mem::take(&mut self.storage));
             destroy_buffer_device(device, mem::take(&mut self.transient_geometry));
-            destroy_buffer_device(device, mem::take(&mut self.instance_transforms));
             destroy_buffer_device(device, mem::take(&mut self.record_instances));
         }
 
         // `shutdown` moves the surface out and deliberately suppresses this
         // session's destructor. Release the now-empty arenas' allocations here
         // so that path does not retain their backing storage.
-        self.pipelines = Arena::new("textured pipeline");
-        self.instanced_pipelines = Arena::new("instanced textured pipeline");
         self.material_pipelines = Arena::new("material pipeline");
         self.postprocess_pipelines = Arena::new("postprocess pipeline");
         self.textures = Arena::new("texture");
@@ -5095,35 +4519,6 @@ fn write_buffer(
     Ok(())
 }
 
-fn write_scene_transforms(
-    buffer: &Buffer,
-    base: usize,
-    draws: &[TexturedSceneDraw<'_>],
-) -> Result<(), GraphicsError> {
-    let required = draws
-        .len()
-        .saturating_sub(1)
-        .checked_mul(DRAW_UNIFORM_STRIDE)
-        .and_then(|offset| offset.checked_add(DRAW_UNIFORM_SIZE))
-        .ok_or_else(|| error("scene transform write exceeds address space"))?;
-    if u64::try_from(required).map_err(|_| error("scene transform write exceeds u64"))?
-        > buffer.size
-    {
-        return Err(error("scene transform write exceeds allocation"));
-    }
-    let mapped = persistent_mapping(buffer)?;
-    unsafe {
-        for (index, draw) in draws.iter().enumerate() {
-            ptr::copy_nonoverlapping(
-                ptr::from_ref(&draw.model_view_projection).cast::<u8>(),
-                mapped.cast::<u8>().add(base + index * DRAW_UNIFORM_STRIDE),
-                DRAW_UNIFORM_SIZE,
-            );
-        }
-    }
-    Ok(())
-}
-
 fn write_material_uniforms(
     buffer: &Buffer,
     base: usize,
@@ -5412,40 +4807,6 @@ fn write_transient_geometry(
                 .indices
                 .byte_len()
                 .next_multiple_of(STORAGE_OFFSET_ALIGNMENT);
-        }
-    }
-    Ok(())
-}
-
-fn write_instance_transforms(
-    buffer: &Buffer,
-    base: usize,
-    batches: &[TexturedInstanceBatch<'_>],
-) -> Result<(), GraphicsError> {
-    let required = batches.iter().try_fold(0_usize, |bytes, batch| {
-        batch
-            .model_view_projections
-            .len()
-            .checked_mul(INSTANCE_TRANSFORM_SIZE)
-            .and_then(|batch_bytes| bytes.checked_add(batch_bytes))
-            .ok_or_else(|| error("instance transform write exceeds address space"))
-    })?;
-    if u64::try_from(base + required).map_err(|_| error("instance transform write exceeds u64"))?
-        > buffer.size
-    {
-        return Err(error("instance transform write exceeds allocation"));
-    }
-    let mapped = persistent_mapping(buffer)?;
-    unsafe {
-        let mut offset = base;
-        for batch in batches {
-            let bytes = mem::size_of_val(batch.model_view_projections);
-            ptr::copy_nonoverlapping(
-                batch.model_view_projections.as_ptr().cast::<u8>(),
-                mapped.cast::<u8>().add(offset),
-                bytes,
-            );
-            offset += bytes;
         }
     }
     Ok(())
@@ -5823,266 +5184,6 @@ fn complete_shadow_map_array_storage(
         "vkCreateImageView for shadow map array",
     )?;
     Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-fn create_pipeline(
-    surface: &ClearSurface<'_>,
-    bytes: &[u8],
-    sample_count: vk::VkSampleCountFlagBits,
-    instanced: bool,
-) -> Result<PipelineResource, GraphicsError> {
-    let device = surface.device();
-    let bindings = [
-        layout_binding(
-            0,
-            vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            vk::VK_SHADER_STAGE_VERTEX_BIT as u32,
-        ),
-        layout_binding(
-            1,
-            vk::VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-        ),
-        layout_binding(
-            2,
-            vk::VK_DESCRIPTOR_TYPE_SAMPLER,
-            vk::VK_SHADER_STAGE_FRAGMENT_BIT as u32,
-        ),
-    ];
-    let layout_info = vk::VkDescriptorSetLayoutCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        bindingCount: 3,
-        pBindings: bindings.as_ptr(),
-        ..Default::default()
-    };
-    let mut resource = PipelineResource {
-        sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
-        volume: Vec::new(),
-        bloom: Vec::new(),
-        volume_sets: Vec::new(),
-        bloom_sets: Vec::new(),
-        set_layout: ptr::null_mut(),
-        layout: ptr::null_mut(),
-        pipeline: ptr::null_mut(),
-        descriptor_pools: DescriptorPools::new(create_descriptor_pool),
-        sampler: ptr::null_mut(),
-        uniform_size: 0,
-        bindings: KeyedSets::default(),
-    };
-    check(
-        unsafe {
-            device
-                .functions
-                .create_descriptor_set_layout
-                .expect("loaded function")(
-                device.handle,
-                &raw const layout_info,
-                ptr::null(),
-                &raw mut resource.set_layout,
-            )
-        },
-        "vkCreateDescriptorSetLayout for textured pipeline",
-    )?;
-    let pipeline_layout = vk::VkPipelineLayoutCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        setLayoutCount: 1,
-        pSetLayouts: &raw const resource.set_layout,
-        ..Default::default()
-    };
-    check(
-        unsafe {
-            device
-                .functions
-                .create_pipeline_layout
-                .expect("loaded function")(
-                device.handle,
-                &raw const pipeline_layout,
-                ptr::null(),
-                &raw mut resource.layout,
-            )
-        },
-        "vkCreatePipelineLayout for textured pipeline",
-    )?;
-    let words: Vec<u32> = bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|word| u32::from_le_bytes(*word))
-        .collect();
-    let module_info = vk::VkShaderModuleCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        codeSize: bytes.len(),
-        pCode: words.as_ptr(),
-        ..Default::default()
-    };
-    let mut module = ptr::null_mut();
-    check(
-        unsafe {
-            device
-                .functions
-                .create_shader_module
-                .expect("loaded function")(
-                device.handle,
-                &raw const module_info,
-                ptr::null(),
-                &raw mut module,
-            )
-        },
-        "vkCreateShaderModule for cube",
-    )?;
-    let stages = [
-        shader_stage(
-            vk::VK_SHADER_STAGE_VERTEX_BIT,
-            module,
-            if instanced {
-                c"instanced_vertex"
-            } else {
-                c"cube_vertex"
-            },
-        ),
-        shader_stage(vk::VK_SHADER_STAGE_FRAGMENT_BIT, module, c"cube_fragment"),
-    ];
-    let bindings = [
-        vk::VkVertexInputBindingDescription {
-            binding: 0,
-            stride: u32::try_from(mem::size_of::<Vertex>()).expect("vertex size fits u32"),
-            inputRate: vk::VK_VERTEX_INPUT_RATE_VERTEX,
-        },
-        vk::VkVertexInputBindingDescription {
-            binding: 1,
-            stride: u32::try_from(INSTANCE_TRANSFORM_SIZE)
-                .expect("instance transform stride fits u32"),
-            inputRate: vk::VK_VERTEX_INPUT_RATE_INSTANCE,
-        },
-    ];
-    let attributes = [
-        attribute(0, 0, vk::VK_FORMAT_R32G32B32_SFLOAT, 0),
-        attribute(1, 0, vk::VK_FORMAT_R32G32B32_SFLOAT, 12),
-        attribute(2, 0, vk::VK_FORMAT_R32G32_SFLOAT, 24),
-        attribute(3, 1, vk::VK_FORMAT_R32G32B32A32_SFLOAT, 0),
-        attribute(4, 1, vk::VK_FORMAT_R32G32B32A32_SFLOAT, 16),
-        attribute(5, 1, vk::VK_FORMAT_R32G32B32A32_SFLOAT, 32),
-        attribute(6, 1, vk::VK_FORMAT_R32G32B32A32_SFLOAT, 48),
-    ];
-    let vertex_input = vk::VkPipelineVertexInputStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        vertexBindingDescriptionCount: if instanced { 2 } else { 1 },
-        pVertexBindingDescriptions: bindings.as_ptr(),
-        vertexAttributeDescriptionCount: if instanced { 7 } else { 3 },
-        pVertexAttributeDescriptions: attributes.as_ptr(),
-        ..Default::default()
-    };
-    let assembly = vk::VkPipelineInputAssemblyStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        topology: vk::VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        ..Default::default()
-    };
-    let viewport = vk::VkPipelineViewportStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        viewportCount: 1,
-        scissorCount: 1,
-        ..Default::default()
-    };
-    let raster = vk::VkPipelineRasterizationStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        polygonMode: vk::VK_POLYGON_MODE_FILL,
-        cullMode: vk::VK_CULL_MODE_BACK_BIT as u32,
-        frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        lineWidth: 1.0,
-        ..Default::default()
-    };
-    let multisample = vk::VkPipelineMultisampleStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        rasterizationSamples: sample_count,
-        ..Default::default()
-    };
-    let depth = vk::VkPipelineDepthStencilStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        depthTestEnable: vk::VK_TRUE,
-        depthWriteEnable: vk::VK_TRUE,
-        depthCompareOp: vk::VK_COMPARE_OP_LESS,
-        minDepthBounds: 0.0,
-        maxDepthBounds: 1.0,
-        ..Default::default()
-    };
-    let blend_attachment = vk::VkPipelineColorBlendAttachmentState {
-        colorWriteMask: (vk::VK_COLOR_COMPONENT_R_BIT
-            | vk::VK_COLOR_COMPONENT_G_BIT
-            | vk::VK_COLOR_COMPONENT_B_BIT
-            | vk::VK_COLOR_COMPONENT_A_BIT) as u32,
-        ..Default::default()
-    };
-    let blend = vk::VkPipelineColorBlendStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        attachmentCount: 1,
-        pAttachments: &raw const blend_attachment,
-        ..Default::default()
-    };
-    let dynamic_states = [vk::VK_DYNAMIC_STATE_VIEWPORT, vk::VK_DYNAMIC_STATE_SCISSOR];
-    let dynamic = vk::VkPipelineDynamicStateCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        dynamicStateCount: 2,
-        pDynamicStates: dynamic_states.as_ptr(),
-        ..Default::default()
-    };
-    let color_format = surface.swapchain.format;
-    let rendering = vk::VkPipelineRenderingCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        colorAttachmentCount: 1,
-        pColorAttachmentFormats: &raw const color_format,
-        depthAttachmentFormat: DEPTH_FORMAT,
-        ..Default::default()
-    };
-    let pipeline_info = vk::VkGraphicsPipelineCreateInfo {
-        sType: vk::VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        pNext: (&raw const rendering).cast(),
-        stageCount: 2,
-        pStages: stages.as_ptr(),
-        pVertexInputState: &raw const vertex_input,
-        pInputAssemblyState: &raw const assembly,
-        pViewportState: &raw const viewport,
-        pRasterizationState: &raw const raster,
-        pMultisampleState: &raw const multisample,
-        pDepthStencilState: &raw const depth,
-        pColorBlendState: &raw const blend,
-        pDynamicState: &raw const dynamic,
-        layout: resource.layout,
-        basePipelineIndex: -1,
-        ..Default::default()
-    };
-    let result = check(
-        unsafe {
-            device
-                .functions
-                .create_graphics_pipelines
-                .expect("loaded function")(
-                device.handle,
-                ptr::null_mut(),
-                1,
-                &raw const pipeline_info,
-                ptr::null(),
-                &raw mut resource.pipeline,
-            )
-        },
-        "vkCreateGraphicsPipelines for cube",
-    );
-    unsafe {
-        device
-            .functions
-            .destroy_shader_module
-            .expect("loaded function")(device.handle, module, ptr::null());
-    };
-    result?;
-    Ok(resource)
-}
-
-fn create_descriptor_pool(device: &super::Device) -> Result<vk::VkDescriptorPool, GraphicsError> {
-    create_pipeline_descriptor_pool(
-        device,
-        "textured",
-        vk::VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-    )
 }
 
 fn create_material_descriptor_pool(
@@ -7565,16 +6666,13 @@ mod tests {
         .expect("valid mixed-width layout");
 
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].index_offset, 8);
-        assert_eq!(parts[0].index_count, 3);
+        assert_eq!(parts[0].offset, 8);
+        assert_eq!(parts[0].count, 3);
         assert_eq!(parts[0].index_type, vk::VK_INDEX_TYPE_UINT16);
-        assert_eq!(parts[0].indirect_offset, 28);
-        assert_eq!(parts[1].index_offset, 16);
-        assert_eq!(parts[1].index_count, 3);
+        assert_eq!(parts[1].offset, 16);
+        assert_eq!(parts[1].count, 3);
         assert_eq!(parts[1].index_type, vk::VK_INDEX_TYPE_UINT32);
-        assert_eq!(parts[1].indirect_offset, 48);
-        assert_eq!(allocation_size, 80);
-        assert!(parts.iter().all(|part| part.index_offset % 4 == 0));
-        assert!(parts.iter().all(|part| part.indirect_offset % 4 == 0));
+        assert_eq!(allocation_size, 32);
+        assert!(parts.iter().all(|part| part.offset % 4 == 0));
     }
 }

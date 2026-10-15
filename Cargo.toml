@@ -9,6 +9,7 @@ members = [
     "crates/mulciber-platform",
     "crates/mulciber-runtime",
     "crates/mulciber-shader",
+    "crates/mulciber-text",
     "crates/mulciber-texture",
     "examples/capability-report",
     "examples/clear",

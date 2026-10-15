@@ -42,6 +42,10 @@ pub(crate) const ENGINE_MODULES: &[(&str, &str)] = &[
         "mulciber-shader/wgsl/mulciber/tonemap.wgsl",
         include_str!("../wgsl/mulciber/tonemap.wgsl"),
     ),
+    (
+        "mulciber-shader/wgsl/mulciber/overlay.wgsl",
+        include_str!("../wgsl/mulciber/overlay.wgsl"),
+    ),
 ];
 
 /// A value for a shader def, tested by `#ifdef`, `#if` and `#else` and substituted for

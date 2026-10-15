@@ -2717,7 +2717,9 @@ pub struct Texture {
 /// and its texels.
 ///
 /// `data` holds one tightly packed image per layer, face and level, ordered by layer, then
-/// face (+X, -X, +Y, -Y, +Z, -Z), then level, the order KTX 2.0 and both native APIs use.
+/// face (+X, -X, +Y, -Y, +Z, -Z, the face order KTX 2.0 and both native APIs share), then
+/// level. A KTX 2.0 file nests the other way, level outermost, so a cube or array read from one
+/// must be reordered.
 /// Level zero has the shape's extent and each following level halves both dimensions,
 /// flooring at one texel, through 1×1. A 2D texture with [`MipChain::Single`] takes one image;
 /// a cube with [`MipChain::Supplied`] takes six complete chains, face after face; a cube array

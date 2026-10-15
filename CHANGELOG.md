@@ -67,8 +67,9 @@ let texture = device.create_texture(&TextureDescriptor {
 device.update_texture(&heights, TexelData::Rgba16Float(&[&level_zero]))?;
 ```
 
-`data` holds one image per layer, face and level, in that order, as KTX 2.0 and both native APIs
-lay them out, so a cube with its chain is its six faces' chains one after another.
+`data` holds one image per layer, face and level, in that order, so a cube with its chain is its
+six faces' chains one after another (KTX 2.0 nests level outermost; a KTX cube or array would need
+reordering).
 `Ktx2Texture::descriptor` gives a parsed file's upload, replacing `create_ktx2_texture`.
 `update_texture` takes the extent and mip mode from the texture: one image for a single-level
 texture, the complete chain for one created with a supplied chain, and for one created with

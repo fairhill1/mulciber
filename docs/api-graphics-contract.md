@@ -151,10 +151,11 @@ operation; that pressure will determine which objects deserve independent public
 ### Postprocess parameters are bounded submission data
 
 `PostprocessPipelineDescriptor` optionally declares one exact-size group-0/binding-0 uniform of at
-most 256 bytes. The shader-only conversion remains the no-uniform convenience path. Every direct or
-`SceneSubmission` postprocessed route borrows a byte slice for that submission; its length is
-validated exactly before the acquired frame is consumed, while group-0 bindings 1 and 2 remain the
-resolved scene-color texture and fixed sampler. The application owns byte layout and animation
+most 256 bytes. The shader-only conversion remains the no-uniform convenience path. Every
+postprocessed `SceneSubmission` borrows a byte slice for that submission in its `Postprocess`
+(`SceneOutput::Postprocessed` or `MaterialOutput::Postprocessed`); its length is validated
+exactly before the acquired frame is consumed, while group-0 bindings 1 and 2 remain the resolved
+scene-color texture and fixed sampler. The application owns byte layout and animation
 policy. Vulkan uses storage independent from the scene/material uniform region and rewrites it only
 after fence completion; Metal copies it into fragment buffer index 0. This extends the fixed
 two-pass recipe rather than opening retained parameter buffers or general pass bindings. See the
@@ -202,8 +203,8 @@ depth-tested slice.
 
 ## Frame capture
 
-`Surface::request_frame_capture()` marks the next acquired frame; whichever `Queue` verb presents
-it copies the presentable image after its last pass, blocks until the GPU finishes that frame, and
+`Surface::request_frame_capture()` marks the next acquired frame; `Queue::render_and_present`
+copies the presentable image after its last pass, blocks until the GPU finishes that frame, and
 leaves a `FrameCapture` for `Surface::take_frame_capture()`: the frame's index, width, height and
 tightly packed, top-down RGBA8 pixels in the sRGB encoding the display receives, alpha 255 on an
 opaque-composited surface. Abandoned or failed frames leave the request pending. A Vulkan surface
@@ -213,36 +214,50 @@ without transfer-source swapchain usage answers `Unsupported`. See the
 ## Render textures
 
 `Device::create_hdr_render_texture(width, height)` creates a linear `RGBA16Float` color texture with
-depth and multisample storage of its own at the session's sample count. A `SceneSubmission`'s
-`offscreen` passes, each a target, HDR material records and a clear, render into render textures
-after any shadow prepass and before the scene pass; `RenderTexture::texture()` then feeds any
-material record's texture slot, that frame or later. Sampling one nothing has rendered, an
-offscreen record sampling its own target, and two passes on one target are refused before the
-frame is consumed. See the [full contract](render-textures.md).
+depth and multisample storage of its own at the session's sample count. The `offscreen` passes of
+`MaterialOutput::Postprocessed`, each a target, HDR material records and a clear, render into render
+textures after any shadow prepass and before the scene pass; `RenderTexture::texture()` then feeds
+any material record's texture slot, that frame or later. Sampling one nothing has rendered, an
+offscreen record sampling its own target, and two passes on one target are refused before the frame
+is consumed. See the [full contract](render-textures.md).
+
+## Sampled texture uploads
+
+`Device::create_texture(&TextureDescriptor { shape, mips, data })` is the one sampled-upload entry
+point. `TextureShape` is `D2 { width, height }`, `Cube { size }` or `CubeArray { size, layers }`;
+`MipChain` is `Single`, `Supplied` (the complete chain to 1×1) or `Generated` (GPU-generated from
+level 0, 2D only); `TexelData` is `Rgba8Srgb`, `Rgba8Unorm`, `BlockCompressed`, `Rgba16Float` or
+`Rgba16FloatBits`, each holding one slice per image, ordered by layer, then face, then level. The
+sections below give each format's and shape's rules. Combinations not implemented are refused:
+generated mips on a cube or cube array and a cube array other than `RGBA16Float` with a supplied
+chain are `Unsupported`; block-compressed data with generated mips is `InvalidRequest`.
+`Device::update_texture(&texture, data)` accepts `RGBA16Float` data for 2D, non-render textures
+only.
 
 ## Block-compressed sampled uploads
 
-`Device::create_block_compressed_texture(BlockCompression, width, height, &[u8])` and its
-`_with_mips(BlockCompression, width, height, &[&[u8]])` peer return the existing `Texture` from
-already encoded BC7 sRGB, BC7 UNORM, or BC5 UNORM blocks. Every level is `ceil(w/4) × ceil(h/4)`
-sixteen-byte blocks, tightly packed; sub-block tail levels are one block. Mulciber never encodes,
-decodes, or generates mips. Adapters without BC sampling return `Unsupported` for these calls only.
-See the [full contract](block-compressed-textures.md).
+`Device::create_texture` with `TexelData::BlockCompressed(BlockCompression, &[&[u8]])` returns the
+existing `Texture` from already encoded BC1, BC2, BC3, BC5 or BC7 blocks, one level
+(`MipChain::Single`) or a complete encoded chain (`MipChain::Supplied`). Every level is
+`ceil(w/4) × ceil(h/4)` blocks, eight bytes for BC1 and sixteen for the rest, tightly packed;
+sub-block tail levels are one block. Mulciber never encodes or decodes, so `MipChain::Generated`
+is `InvalidRequest`. `create_texture(&ktx.descriptor())` uploads a parsed KTX 2.0 file. Adapters
+without BC sampling return `Unsupported` for these uploads only. See the
+[full contract](block-compressed-textures.md).
 
 ## Cube textures
 
-Each 2D sampled upload has a cube peer taking six square `size`×`size` faces in +X, -X, +Y, -Y, +Z,
--Z order, single-level or with a complete chain per face:
-`create_rgba8_{srgb,unorm}_cube_texture(_with_mips)`,
-`create_block_compressed_cube_texture(_with_mips)` and `create_rgba16_float_cube_texture(_with_mips)`.
-They return the existing `Texture` with `dimension() == TextureDimension::Cube`, which binds only
+`TextureShape::Cube { size }` uploads six square `size`×`size` faces in +X, -X, +Y, -Y, +Z, -Z
+order, in any `TexelData` format, with `MipChain::Single` (six images) or `MipChain::Supplied` (a
+complete chain per face, face after face); `MipChain::Generated` is `Unsupported`, being 2D only.
+The result is the existing `Texture` with `dimension() == TextureDimension::Cube`, which binds only
 through `MaterialBinding::CubeTexture` and WGSL `texture_cube<f32>`. See the
 [full contract](cube-textures.md).
 
-`create_rgba16_float_cube_array_texture_with_mips(size, &[[&[&[[f32; 4]]]; 6]])` and its
-`_from_bits` peer upload one or more such cubes, each with a complete chain per face, as one
-`Texture` with `dimension() == TextureDimension::CubeArray`. It binds only through
-`MaterialBinding::CubeTextureArray` and WGSL `texture_cube_array<f32>`, sampled with
+`TextureShape::CubeArray { size, layers }` uploads one or more such cubes, cube after cube, as one
+`Texture` with `dimension() == TextureDimension::CubeArray`. It takes `TexelData::Rgba16Float` or
+`Rgba16FloatBits` with `MipChain::Supplied` only; other combinations are `Unsupported`. It binds
+only through `MaterialBinding::CubeTextureArray` and WGSL `texture_cube_array<f32>`, sampled with
 `textureSampleLevel(map, sampler, direction, layer, lod)`. Diagnostics name the layer and face; no
 layers is `InvalidRequest`. Creating the texture or a pipeline declaring the slot is `Unsupported`
 without Vulkan's `imageCubeArray` feature or Metal's Metal 3 family. See the
@@ -250,9 +265,11 @@ without Vulkan's `imageCubeArray` feature or Metal's Metal 3 family. See the
 
 ## Linear floating-point sampled uploads
 
-`Device::create_rgba16_float_texture(width, height, &[[f32; 4]])` and its
-`_with_mips(width, height, &[&[[f32; 4]]])` peer return the existing `Texture`.
+`Device::create_texture` with `TexelData::Rgba16Float(&[&[[f32; 4]]])` (or `Rgba16FloatBits` from
+binary16 bit patterns) returns the existing `Texture`, single-level, with a supplied chain, or with
+a GPU-generated 2D chain. `Device::update_texture` replaces a 2D `RGBA16Float` texture's contents
+before the next scene submission; other formats are `Unsupported`.
 Finite components in -65504..=65504 round to binary16 with ties to even; there is no color transform
 or normalized clamp. Signed zero and representable half subnormals are uploaded; GPU subnormal
-arithmetic remains hardware-dependent. Complete mip content is application-owned. See the
+arithmetic remains hardware-dependent. Supplied mip content is application-owned. See the
 [full conversion, binding, native ownership and validation contract](float-texture-uploads.md).

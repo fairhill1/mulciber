@@ -9,9 +9,9 @@ use std::time::Instant;
 use game::Game;
 use mulciber::{
     ClearColor, Device, DeviceRequest, Frame, FrameAcquire, GpuTimingFeedback,
-    InstancedTexturedPipeline, Mesh, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
-    PresentFeedback, Queue, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, Texture,
-    TexturedInstanceBatch,
+    InstancedTexturedPipeline, Mesh, MipChain, OpenedGraphics, Postprocess, PostprocessPipeline,
+    PostprocessTargets, PresentFeedback, Queue, Scene, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexelData, Texture, TextureDescriptor, TextureShape, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
@@ -112,15 +112,14 @@ impl Resources {
         queue.render_and_present(
             frame,
             SceneSubmission {
-                content: SceneContent::Instanced(&batches),
-                output: SceneOutput::Postprocessed {
-                    pipeline: &self.postprocess_pipeline,
-                    targets: &self.targets,
-                    uniform: &[],
+                scene: Scene::Instanced {
+                    batches: &batches,
+                    output: SceneOutput::Postprocessed(Postprocess {
+                        pipeline: &self.postprocess_pipeline,
+                        targets: &self.targets,
+                        uniform: &[],
+                    }),
                 },
-                shadow: None,
-                overlay: None,
-                offscreen: &[],
                 clear: CLEAR,
             },
         )?;
@@ -227,5 +226,12 @@ fn texture(
     second: [u8; 3],
     scale: usize,
 ) -> Result<Texture, Box<dyn Error>> {
-    Ok(device.create_rgba8_srgb_texture(8, 8, &checkerboard(first, second, scale))?)
+    Ok(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard(first, second, scale)]),
+    })?)
 }

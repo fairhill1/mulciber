@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use mulciber::{Device, GraphicsError, Ktx2Texture, Texture};
+use mulciber::{
+    Device, GraphicsError, Ktx2Texture, MipChain, TexelData, Texture, TextureDescriptor,
+    TextureShape,
+};
 
 use crate::TextureError;
 use crate::chain::{Chain, Levels, srgb_to_linear};
@@ -457,29 +460,44 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Uploads the texture: a bake through [`Device::create_ktx2_texture`], RGBA8 as sRGB or UNORM
-    /// by the chain, its mips generated on the GPU where the chain allows.
+    /// Uploads the texture through [`Device::create_texture`]: a bake as its KTX 2.0
+    /// [`descriptor`](Ktx2Texture::descriptor), RGBA8 as sRGB or UNORM by the chain, its mips
+    /// generated on the GPU where the chain allows and supplied otherwise.
     ///
     /// # Errors
     ///
     /// The device's upload errors.
     pub fn upload(&self, device: &Device<'_>) -> Result<Texture, GraphicsError> {
         match &self.pixels {
-            Pixels::Ktx2(bytes) => device.create_ktx2_texture(&Ktx2Texture::parse(bytes)?),
-            Pixels::Rgba8GeneratedMips { srgb: true, base } => {
-                device.create_rgba8_srgb_texture_with_generated_mips(self.width, self.height, base)
-            }
-            Pixels::Rgba8GeneratedMips { srgb: false, base } => {
-                device.create_rgba8_unorm_texture_with_generated_mips(self.width, self.height, base)
+            Pixels::Ktx2(bytes) => device.create_texture(&Ktx2Texture::parse(bytes)?.descriptor()),
+            Pixels::Rgba8GeneratedMips { srgb, base } => {
+                self.upload_rgba8(device, *srgb, MipChain::Generated, &[base])
             }
             Pixels::Rgba8 { srgb, levels } => {
-                let slices: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
-                if *srgb {
-                    device.create_rgba8_srgb_texture_with_mips(self.width, self.height, &slices)
-                } else {
-                    device.create_rgba8_unorm_texture_with_mips(self.width, self.height, &slices)
-                }
+                let levels: Vec<&[u8]> = levels.iter().map(Vec::as_slice).collect();
+                self.upload_rgba8(device, *srgb, MipChain::Supplied, &levels)
             }
         }
+    }
+
+    fn upload_rgba8(
+        &self,
+        device: &Device<'_>,
+        srgb: bool,
+        mips: MipChain,
+        levels: &[&[u8]],
+    ) -> Result<Texture, GraphicsError> {
+        device.create_texture(&TextureDescriptor {
+            shape: TextureShape::D2 {
+                width: self.width,
+                height: self.height,
+            },
+            mips,
+            data: if srgb {
+                TexelData::Rgba8Srgb(levels)
+            } else {
+                TexelData::Rgba8Unorm(levels)
+            },
+        })
     }
 }

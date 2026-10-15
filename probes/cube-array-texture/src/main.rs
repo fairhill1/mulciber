@@ -1,13 +1,13 @@
 //! Native evidence for `RGBA16Float` cube texture arrays through public material bindings: layer,
-//! face, in-face orientation and per-face mip selection in every cube, the `_from_bits` upload, and
+//! face, in-face orientation and per-face mip selection in every cube, the binary16-bits upload, and
 //! the level and cube counts the shader reads, sampled through `MaterialBinding::CubeTextureArray`
 //! and read back from an HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
-    GraphicsErrorKind, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
-    OpenedGraphics, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, Texture, TextureDimension, VertexAttribute,
-    VertexFormat, VertexLayout,
+    GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
+    MaterialScene, MeshIndices, MipChain, OpenedGraphics, Postprocess, RenderScale, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneSubmission, ShaderArtifact, TexelData, Texture,
+    TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -96,33 +96,46 @@ struct Uploads {
     cases: Vec<Case>,
 }
 
-/// Every texel of every face at every level of a cube array of `layers` cubes, `layer`-major
-/// then face then level, from `texel(layer, face, level, column, row)`.
+/// Every texel of every face at every level of a cube array of `layers` cubes, one image per
+/// layer, face and level in that order, from `texel(layer, face, level, column, row)`.
 fn cube_array(
     layers: usize,
     size: usize,
     levels: usize,
     texel: impl Fn(usize, usize, usize, usize, usize) -> [f32; 4],
-) -> Vec<[Vec<Vec<[f32; 4]>>; 6]> {
-    (0..layers)
-        .map(|layer| {
-            std::array::from_fn(|face| {
-                (0..levels)
-                    .map(|level| {
-                        let extent = (size >> level).max(1);
-                        (0..extent)
-                            .flat_map(|row| {
-                                (0..extent).map({
-                                    let texel = &texel;
-                                    move |column| texel(layer, face, level, column, row)
-                                })
+) -> Vec<Vec<[f32; 4]>> {
+    let mut images = Vec::new();
+    for layer in 0..layers {
+        for face in 0..6 {
+            for level in 0..levels {
+                let extent = (size >> level).max(1);
+                images.push(
+                    (0..extent)
+                        .flat_map(|row| {
+                            (0..extent).map({
+                                let texel = &texel;
+                                move |column| texel(layer, face, level, column, row)
                             })
-                            .collect()
-                    })
-                    .collect()
-            })
-        })
-        .collect()
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    images
+}
+
+/// A cube array of `layers` cubes of `size` faces with complete supplied `RGBA16Float` chains.
+fn float_cube_array<'data>(
+    size: u32,
+    layers: u32,
+    images: &'data [&'data [[f32; 4]]],
+) -> TextureDescriptor<'data> {
+    TextureDescriptor {
+        shape: TextureShape::CubeArray { size, layers },
+        mips: MipChain::Supplied,
+        data: TexelData::Rgba16Float(images),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -143,18 +156,8 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
         ]
     };
     let chains = cube_array(3, 4, 3, |layer, face, level, _, _| id(layer, face, level));
-    let views: Vec<[Vec<&[[f32; 4]]>; 6]> = chains
-        .iter()
-        .map(|cube| {
-            cube.each_ref()
-                .map(|levels| levels.iter().map(Vec::as_slice).collect())
-        })
-        .collect();
-    let layers: Vec<[&[&[[f32; 4]]]; 6]> = views
-        .iter()
-        .map(|cube| cube.each_ref().map(Vec::as_slice))
-        .collect();
-    textures.push(device.create_rgba16_float_cube_array_texture_with_mips(4, &layers)?);
+    let images: Vec<&[[f32; 4]]> = chains.iter().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&float_cube_array(4, 3, &images))?);
     for layer in 0..3 {
         for (face, name) in FACES.iter().enumerate() {
             for level in 0..3 {
@@ -195,18 +198,8 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
         ]
     };
     let chains = cube_array(2, 2, 2, oriented);
-    let views: Vec<[Vec<&[[f32; 4]]>; 6]> = chains
-        .iter()
-        .map(|cube| {
-            cube.each_ref()
-                .map(|levels| levels.iter().map(Vec::as_slice).collect())
-        })
-        .collect();
-    let layers: Vec<[&[&[[f32; 4]]]; 6]> = views
-        .iter()
-        .map(|cube| cube.each_ref().map(Vec::as_slice))
-        .collect();
-    textures.push(device.create_rgba16_float_cube_array_texture_with_mips(2, &layers)?);
+    let images: Vec<&[[f32; 4]]> = chains.iter().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&float_cube_array(2, 2, &images))?);
     for layer in 0..2 {
         for (face, name) in FACES.iter().enumerate() {
             for (column, row) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -231,9 +224,12 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
         [0xc100, positive, 0x6400, 0x3c00]
     };
     let faces: [[[u16; 4]; 1]; 6] = std::array::from_fn(|face| [bits(face)]);
-    let chains: [[&[[u16; 4]]; 1]; 6] = faces.each_ref().map(|face| [&face[..]]);
-    let cube: [&[&[[u16; 4]]]; 6] = chains.each_ref().map(|chain| &chain[..]);
-    textures.push(device.create_rgba16_float_cube_array_texture_with_mips_from_bits(1, &[cube])?);
+    let images: [&[[u16; 4]]; 6] = faces.each_ref().map(|face| &face[..]);
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::CubeArray { size: 1, layers: 1 },
+        mips: MipChain::Supplied,
+        data: TexelData::Rgba16FloatBits(&images),
+    })?);
     for (face, name) in FACES.iter().enumerate() {
         cases.push(Case {
             texture: 2,
@@ -261,10 +257,10 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
     Ok(Uploads { textures, cases })
 }
 
-/// Input the cube array constructors and the float update must refuse.
+/// Input cube array creation and the float update must refuse.
 fn check_rejections(device: &mulciber::Device<'_>, array: &Texture) -> Result<(), Box<dyn Error>> {
     let refused = device
-        .create_rgba16_float_cube_array_texture_with_mips(1, &[])
+        .create_texture(&float_cube_array(1, 0, &[]))
         .err()
         .ok_or("an array of no cubes was accepted")?;
     if refused.kind() != GraphicsErrorKind::InvalidRequest {
@@ -272,15 +268,25 @@ fn check_rejections(device: &mulciber::Device<'_>, array: &Texture) -> Result<()
     }
     println!("cube-array-texture: no layers refused: {refused}");
     let texel = [[1.0_f32; 4]];
-    let chain: [&[[f32; 4]]; 1] = [&texel];
-    let good: [&[&[[f32; 4]]]; 6] = [&chain; 6];
-    let mut short = good;
-    let empty: [&[[f32; 4]]; 0] = [];
-    short[5] = &empty;
+    let good: [&[[f32; 4]]; 12] = [&texel; 12];
+    // Cube 1's -Z face (the last image) missing entirely: the flat image count is short.
     let refused = device
-        .create_rgba16_float_cube_array_texture_with_mips(1, &[good, short])
+        .create_texture(&float_cube_array(1, 2, &good[..11]))
         .err()
-        .ok_or("a -Z face without levels in cube 1 was accepted")?;
+        .ok_or("two cubes with a missing -Z image were accepted")?;
+    if refused.kind() != GraphicsErrorKind::InvalidRequest
+        || !refused.to_string().contains("takes 12 images")
+    {
+        return Err(format!("missing image refusal does not count it: {refused}").into());
+    }
+    println!("cube-array-texture: missing image refused: {refused}");
+    // Cube 1's -Z face present but holding no texels: the refusal names layer and face.
+    let mut short = good;
+    short[11] = &[];
+    let refused = device
+        .create_texture(&float_cube_array(1, 2, &short))
+        .err()
+        .ok_or("a -Z face without texels in cube 1 was accepted")?;
     if !refused
         .to_string()
         .contains("cube array layer 1: cube face -Z")
@@ -289,11 +295,10 @@ fn check_rejections(device: &mulciber::Device<'_>, array: &Texture) -> Result<()
     }
     println!("cube-array-texture: short face refused: {refused}");
     let nan = [[f32::NAN, 0.0, 0.0, 1.0]];
-    let bad_chain: [&[[f32; 4]]; 1] = [&nan];
-    let mut bad = good;
-    bad[2] = &bad_chain;
+    let mut bad: [&[[f32; 4]]; 6] = [&texel; 6];
+    bad[2] = &nan;
     let refused = device
-        .create_rgba16_float_cube_array_texture_with_mips(1, &[bad])
+        .create_texture(&float_cube_array(1, 1, &bad))
         .err()
         .ok_or("a NaN texel was accepted")?;
     if !refused
@@ -304,7 +309,7 @@ fn check_rejections(device: &mulciber::Device<'_>, array: &Texture) -> Result<()
     }
     println!("cube-array-texture: NaN texel refused: {refused}");
     let refused = device
-        .update_rgba16_float_texture(array, 1, 1, &[[0.0; 4]])
+        .update_texture(array, TexelData::Rgba16Float(&[&[[0.0; 4]]]))
         .err()
         .ok_or("a cube array accepted a 2D replacement")?;
     println!("cube-array-texture: float update refused: {refused}");
@@ -329,9 +334,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cube-array-texture: {:?}", graphics.selection);
     let Uploads { textures, cases } = upload(&graphics.device)?;
     check_rejections(&graphics.device, &textures[0])?;
-    let single_cube = graphics
-        .device
-        .create_rgba16_float_cube_texture(1, [&[[1.0, 1.0, 1.0, 1.0]][..]; 6])?;
+    let single_cube = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::Cube { size: 1 },
+        mips: MipChain::Single,
+        data: TexelData::Rgba16Float(&[&[[1.0, 1.0, 1.0, 1.0]][..]; 6]),
+    })?;
     let vertices: Vec<u8> = [-1.0_f32, -1.0, 3.0, -1.0, -1.0, 3.0]
         .iter()
         .flat_map(|v| v.to_ne_bytes())
@@ -432,23 +439,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             let rendered = graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    content: SceneContent::Material(&[MaterialRecord {
-                        pipeline: &pipeline,
-                        geometry: GeometrySource::Mesh(&mesh),
-                        textures: &[texture],
-                        shadow_map: None,
-                        uniform: &uniform,
-                        storage: &[],
-                        instances: &[],
-                    }]),
-                    output: SceneOutput::Postprocessed {
-                        pipeline: &composite,
-                        targets: target,
-                        uniform: &[],
-                    },
-                    shadow: None,
-                    overlay: None,
-                    offscreen: &[],
+                    scene: Scene::Material(MaterialScene {
+                        records: &[MaterialRecord {
+                            pipeline: &pipeline,
+                            geometry: GeometrySource::Mesh(&mesh),
+                            textures: &[texture],
+                            shadow_map: None,
+                            uniform: &uniform,
+                            storage: &[],
+                            instances: &[],
+                        }],
+                        shadow: None,
+                        output: MaterialOutput::Postprocessed {
+                            postprocess: Postprocess {
+                                pipeline: &composite,
+                                targets: target,
+                                uniform: &[],
+                            },
+                            foreground_start: None,
+                            offscreen: &[],
+                            overlay: &[],
+                        },
+                    }),
                     clear: ClearColor::BLACK,
                 },
             );

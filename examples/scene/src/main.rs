@@ -6,7 +6,8 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessedScene, ShaderArtifact,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, Scene,
+    SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
     TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
@@ -41,16 +42,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pyramid = graphics
         .device
         .create_mesh(&PYRAMID_VERTICES, &PYRAMID_INDICES)?;
-    let amber = graphics.device.create_rgba8_srgb_texture(
-        8,
-        8,
-        &checkerboard([245, 165, 40], [35, 90, 210]),
-    )?;
-    let violet = graphics.device.create_rgba8_srgb_texture(
-        8,
-        8,
-        &checkerboard([175, 70, 235], [25, 180, 145]),
-    )?;
+    let amber = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard([245, 165, 40], [35, 90, 210])]),
+    })?;
+    let violet = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard([175, 70, 235], [25, 180, 145])]),
+    })?;
     let scene_pipeline = graphics
         .device
         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -86,18 +93,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                     model_view_projection,
                 })
                 .collect();
-            graphics
-                .queue
-                .draw_textured_scene_postprocessed_and_present(
-                    frame,
-                    PostprocessedScene {
+            graphics.queue.render_and_present(
+                frame,
+                SceneSubmission {
+                    scene: Scene::Textured {
                         draws: &draws,
-                        postprocess_pipeline: &postprocess_pipeline,
-                        targets: &targets,
-                        uniform: &[],
-                        clear: CLEAR,
+                        output: SceneOutput::Postprocessed(Postprocess {
+                            pipeline: &postprocess_pipeline,
+                            targets: &targets,
+                            uniform: &[],
+                        }),
                     },
-                )?;
+                    clear: CLEAR,
+                },
+            )?;
             Ok(())
         })?;
         if status == PumpStatus::Exit {

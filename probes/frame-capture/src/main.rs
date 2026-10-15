@@ -4,10 +4,10 @@
 //! Pass `--force-one-sample` to render the direct path without a multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
-    OpenedGraphics, PostprocessPipeline, PostprocessTargets, RenderScale, RenderTargets,
-    SampleCount, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, SurfaceInfo,
-    TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
+    MaterialScene, MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline,
+    PostprocessTargets, RenderScale, RenderTargets, SampleCount, Scene, SceneSubmission,
+    ShaderArtifact, SurfaceInfo, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -247,11 +247,11 @@ fn render(
         graphics.queue.render_and_present(
             frame,
             SceneSubmission {
-                content: SceneContent::Material(&[record(&pipelines.direct, &vertices, &indices)]),
-                output: SceneOutput::Direct(targets.direct.as_ref().expect("created")),
-                shadow: None,
-                overlay: None,
-                offscreen: &[],
+                scene: Scene::Material(MaterialScene {
+                    records: &[record(&pipelines.direct, &vertices, &indices)],
+                    shadow: None,
+                    output: MaterialOutput::Direct(targets.direct.as_ref().expect("created")),
+                }),
                 clear: ClearColor::BLACK,
             },
         )?
@@ -271,15 +271,24 @@ fn render(
         graphics.queue.render_and_present(
             frame,
             SceneSubmission {
-                content: SceneContent::Material(&[record(&pipelines.hdr, &vertices, &indices)]),
-                output: SceneOutput::Postprocessed {
-                    pipeline: &pipelines.composite,
-                    targets: targets.hdr.as_ref().expect("created"),
-                    uniform: &[],
-                },
-                shadow: None,
-                overlay: matches!(output, Output::HdrOverlay).then_some(&overlay[..]),
-                offscreen: &[],
+                scene: Scene::Material(MaterialScene {
+                    records: &[record(&pipelines.hdr, &vertices, &indices)],
+                    shadow: None,
+                    output: MaterialOutput::Postprocessed {
+                        postprocess: Postprocess {
+                            pipeline: &pipelines.composite,
+                            targets: targets.hdr.as_ref().expect("created"),
+                            uniform: &[],
+                        },
+                        foreground_start: None,
+                        offscreen: &[],
+                        overlay: if matches!(output, Output::HdrOverlay) {
+                            &overlay
+                        } else {
+                            &[]
+                        },
+                    },
+                }),
                 clear: ClearColor::BLACK,
             },
         )?

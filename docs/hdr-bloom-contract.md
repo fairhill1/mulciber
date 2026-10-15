@@ -17,9 +17,10 @@ surface-format material pipelines and postprocessing keep their original behavio
   declare only texture binding 1 and sampler binding 2. Composite binding 1 is the resolved HDR
   scene, binding 2 is its linear clamp sampler, and bindings 3 through 8 are the six bloom levels.
   The existing optional, exact-size uniform at binding 0 belongs only to the composite.
-- `SceneOutput::Postprocessed` submits the path. The HDR pipeline and targets must agree. Scene and
-  foreground materials must also agree with the target format. HUD overlays use surface-format,
-  depth-off material pipelines and execute after the composite at native resolution.
+- `Scene::Material` with `MaterialOutput::Postprocessed` submits the path. The HDR pipeline and
+  targets must agree. Scene and foreground materials must also agree with the target format. HUD
+  overlays use surface-format, depth-off material pipelines and execute after the composite at
+  native resolution.
 - The application owns thresholds, filtering, exposure, bloom strength, and tone mapping. The
   engine owns allocation, pass ordering, dependencies and retirement. No shader compiler is added
   to the runtime. HDR scene storage does not imply HDR monitor output: presentation remains sRGB.

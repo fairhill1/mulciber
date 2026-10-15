@@ -79,6 +79,10 @@ That is deliberate pressure evidence rather than an immediate generalization: on
 does not settle arbitrary pass ordering, attachment load/store policy, multiple draws, transient
 allocation, or copy/compute integration.
 
+Both fixed operations have since been folded into `Queue::render_and_present`: the cube is a
+one-element `Scene::Textured { draws, output }` whose `SceneOutput` is `Direct(&targets)` or
+`Postprocessed(Postprocess { .. })`, and the dedicated draw types and queue methods are removed.
+
 ## Fixed first-slice formats
 
 - Vertex: three `f32` position components, three `f32` color components, and two `f32` UV

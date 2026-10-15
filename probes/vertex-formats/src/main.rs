@@ -3,9 +3,9 @@
 //! HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, MaterialBinding,
-    MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics, RenderScale,
-    SampleCount, SceneContent, SceneOutput, SceneSubmission, ShaderArtifact, VertexAttribute,
-    VertexFormat, VertexLayout,
+    MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices,
+    OpenedGraphics, Postprocess, RenderScale, SampleCount, Scene, SceneSubmission, ShaderArtifact,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -215,23 +215,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    content: SceneContent::Material(&[MaterialRecord {
-                        pipeline: &pipeline,
-                        geometry: GeometrySource::Mesh(&mesh),
-                        textures: &[],
-                        shadow_map: None,
-                        uniform: &uniform,
-                        storage: &[],
-                        instances: &[],
-                    }]),
-                    output: SceneOutput::Postprocessed {
-                        pipeline: &composite,
-                        targets: target,
-                        uniform: &[],
-                    },
-                    shadow: None,
-                    overlay: None,
-                    offscreen: &[],
+                    scene: Scene::Material(MaterialScene {
+                        records: &[MaterialRecord {
+                            pipeline: &pipeline,
+                            geometry: GeometrySource::Mesh(&mesh),
+                            textures: &[],
+                            shadow_map: None,
+                            uniform: &uniform,
+                            storage: &[],
+                            instances: &[],
+                        }],
+                        shadow: None,
+                        output: MaterialOutput::Postprocessed {
+                            postprocess: Postprocess {
+                                pipeline: &composite,
+                                targets: target,
+                                uniform: &[],
+                            },
+                            foreground_start: None,
+                            offscreen: &[],
+                            overlay: &[],
+                        },
+                    }),
                     clear: ClearColor::BLACK,
                 },
             )?;

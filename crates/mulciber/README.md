@@ -18,17 +18,16 @@ declare an optional group-0/binding-0 uniform of at most 256 bytes and borrow ex
 bytes per submission, independently from scene/material uniform storage. Policy that engines
 commonly absorb
 (cascade fitting and selection, depth bias, mip content, draw ordering) deliberately stays in
-application code. Sampled RGBA8 uploads support both sRGB color data and linear UNORM data such as
-normal maps, with either one level or a complete application-authored mip chain.
-Sampled `RGBA16Float` textures support creation with or without authored mips, from `f32` or
-directly from binary16 bit patterns (`_from_bits`). RGBA8 and `RGBA16Float` textures can instead
-generate their mip chain on the GPU (`_with_generated_mips`), and
-`Device::update_rgba16_float_texture_with_generated_mips` replaces level 0 and regenerates the rest.
-`Device::update_rgba16_float_texture` queues same-sized, single-level replacements, and
-`Device::update_rgba16_float_texture_with_mips` complete-chain replacements of mipped textures,
-before the next scene submission without recreating bindings or waiting for device
-idle. Input is copied immediately; pending writes coalesce and submitted frames
-retain their prior contents.
+application code. `Device::create_texture(&TextureDescriptor { shape, mips, data })` uploads
+every sampled texture: `TextureShape` selects 2D, cube or cube array; `MipChain` selects one
+level, a complete application-authored chain, or a chain the GPU generates from level 0 (2D
+only); `TexelData` carries sRGB or linear UNORM RGBA8 (normal maps), block-compressed BC
+blocks, or `RGBA16Float` from `f32` or directly from binary16 bit patterns, one slice per image.
+`Device::update_texture(&texture, TexelData::Rgba16Float(..))` queues a same-sized replacement
+of a 2D `RGBA16Float` texture — its single level, its complete chain, or, for a texture created
+with `MipChain::Generated`, level 0 alone with the rest regenerated — before the next scene
+submission without recreating bindings or waiting for device idle. Input is copied immediately;
+pending writes coalesce and submitted frames retain their prior contents.
 Immutable meshes may keep one vertex region with multiple mixed-width indexed parts; material and
 shadow records borrow a selected part without creating another resource lease or allocation, while
 the existing mesh APIs remain the one-part/default-part path.
@@ -57,8 +56,8 @@ decision records, runnable examples, and recorded validation evidence live in th
 
 ## Frame capture
 
-`Surface::request_frame_capture()` before acquiring a frame makes whichever `Queue` verb presents
-it read back its final color, blocking until the GPU finishes that frame;
+`Surface::request_frame_capture()` before acquiring a frame makes `Queue::render_and_present`
+read back its final color, blocking until the GPU finishes that frame;
 `Surface::take_frame_capture()` then returns a `FrameCapture` with tightly packed, top-down RGBA8
 pixels in the sRGB encoding the display receives. It is a screenshot path: frames without a
 request pay nothing. Metal's path has not run yet. See the
@@ -77,11 +76,11 @@ dependency graph. Repository examples and probes deliberately enable it for thei
 
 ## Depth-isolated first-person geometry
 
-`SceneContent::MaterialWithForeground { records, foreground_start }` draws the world
+`MaterialOutput::Postprocessed { foreground_start: Some(split), .. }` draws the world
 records before the split, preserves color, clears depth, and draws the foreground
 records before postprocessing and the HUD overlay. Both groups must be non-empty
-and use the same depth comparison direction. This recipe requires postprocessed
-output and retains material lighting, shadow sampling, scene resolution and MSAA.
+and use the same depth comparison direction. Only postprocessed material output carries a
+split; it retains material lighting, shadow sampling, scene resolution and MSAA.
 
 Material and shadow records expose their per-record instance upload cap through
 `mulciber::INSTANCE_SUPPLY_SIZE_LIMIT`. Split larger supplies on whole-instance
@@ -116,9 +115,9 @@ The runtime limiter is opt-in; graphics presentation mode selection is unchanged
 
 ## Floating-point sampled uploads (0.13.13)
 
-`device.create_rgba16_float_texture(width, height, &rgba_f32_texels)` returns a `Texture`
-for existing material bindings and WGSL `texture_2d<f32>` in vertex or fragment shaders.
-`create_rgba16_float_texture_with_mips` accepts a complete authored chain. Conversion rounds
+`TexelData::Rgba16Float(&[&rgba_f32_texels])` in `Device::create_texture` returns a `Texture`
+for existing material bindings and WGSL `texture_2d<f32>` in vertex or fragment shaders;
+`MipChain::Supplied` takes a complete authored chain. Conversion rounds
 to binary16, ties to even, without color transforms or a 0–1 clamp; non-finite values and
 magnitudes above 65504 are rejected. Signed zero and half subnormals are preserved in storage,
 while GPU subnormal arithmetic can differ. Linear material samplers interpolate texels and mips.
@@ -134,9 +133,11 @@ No API change; Metal was never limited this way.
 
 ## Block-compressed sampled uploads (0.13.15)
 
-`device.create_block_compressed_texture_with_mips(BlockCompression::Bc7Srgb, width, height,
-&level_slices)` uploads already encoded BC7 or BC5 blocks and returns a `Texture` for the
-existing material bindings, sampled directly at a quarter of the RGBA8 footprint. The application
-encodes every level of its own filtered chain; Mulciber never encodes or decodes. Adapters without
-BC sampling return `Unsupported` for these uploads and are otherwise unaffected. See the
+`TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &level_slices)` in
+`Device::create_texture` (or `create_texture(&ktx.descriptor())` for a KTX 2.0 file) uploads
+already encoded BC7 or BC5 blocks and returns a `Texture` for the existing material bindings,
+sampled directly at a quarter of the RGBA8 footprint. The application encodes every level of
+its own filtered chain; Mulciber never encodes or decodes, so block-compressed data cannot ask
+for `MipChain::Generated` (`InvalidRequest`). Adapters without BC sampling return `Unsupported`
+for these uploads and are otherwise unaffected. See the
 [contract](https://github.com/fairhill1/mulciber/blob/main/docs/block-compressed-textures.md).

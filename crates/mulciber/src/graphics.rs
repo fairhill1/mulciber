@@ -341,769 +341,96 @@ impl Device<'_> {
         })
     }
 
-    /// Uploads a tightly packed RGBA8 sRGB texture.
+    /// Uploads a sampled texture: a 2D image, a cube or a cube array, in any [`TexelData`]
+    /// format, with one level, an application-supplied mip chain, or a chain the GPU generates
+    /// from the base level. [`TextureDescriptor`] describes the layout of the data.
+    ///
+    /// The texture binds through [`MaterialBinding::Texture`] (WGSL `texture_2d<f32>`),
+    /// [`MaterialBinding::CubeTexture`] (`texture_cube<f32>`) or
+    /// [`MaterialBinding::CubeTextureArray`] (`texture_cube_array<f32>`) by its shape.
     ///
     /// # Errors
     ///
-    /// Returns an error for empty dimensions, a mismatched byte count, overflow, or native upload
-    /// failure.
-    pub fn create_rgba8_srgb_texture(
+    /// Returns `InvalidRequest` for a zero extent or no cube array layers, an image count that
+    /// does not match the shape and mips, a level whose size does not match its extent or float
+    /// components outside binary16's finite range (each naming the layer, face and level), a
+    /// block-compressed texture asking for generated mips, or overflow. Returns `Unsupported`
+    /// when the device cannot sample the format, the cube array, or linearly filterable
+    /// `RGBA16Float`, cannot blit the format with linear filtering for generated mips, or for
+    /// combinations not implemented: generated mips are 2D only, and a cube array takes
+    /// `RGBA16Float` data with a supplied chain.
+    pub fn create_texture(
         &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
+        descriptor: &TextureDescriptor<'_>,
     ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture(width, height, texels, SampledTextureFormat::Srgb)
-    }
-
-    /// Uploads a tightly packed RGBA8 sRGB texture with an application-supplied mip chain.
-    ///
-    /// `levels[0]` holds the base image; each following level halves both dimensions (flooring at
-    /// one texel), and the chain must run to its final 1×1 level. The application owns mip
-    /// content, including its downsampling filter and color-space handling.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty dimensions, a chain that does not run from the base level to
-    /// 1×1, a level whose byte count does not match its dimensions, overflow, or native upload
-    /// failure.
-    pub fn create_rgba8_srgb_texture_with_mips(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[u8]],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_mips(width, height, levels, SampledTextureFormat::Srgb)
-    }
-
-    /// Uploads a tightly packed RGBA8 UNORM texture without sRGB transfer-function decoding.
-    ///
-    /// This format is suitable for linearly interpreted data such as tangent-space normal maps.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty dimensions, a mismatched byte count, overflow, or native upload
-    /// failure.
-    pub fn create_rgba8_unorm_texture(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture(width, height, texels, SampledTextureFormat::Unorm)
-    }
-
-    /// Uploads a tightly packed RGBA8 UNORM texture with an application-supplied mip chain.
-    ///
-    /// `levels[0]` holds the base image; each following level halves both dimensions (flooring at
-    /// one texel), and the chain must run to its final 1×1 level. The application owns mip
-    /// content, including its downsampling filter. Sampling does not apply the sRGB transfer
-    /// function, making this format suitable for linearly interpreted data such as normal maps.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty dimensions, a chain that does not run from the base level to
-    /// 1×1, a level whose byte count does not match its dimensions, overflow, or native upload
-    /// failure.
-    pub fn create_rgba8_unorm_texture_with_mips(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[u8]],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_mips(width, height, levels, SampledTextureFormat::Unorm)
-    }
-
-    /// Uploads one level of an already block-compressed texture.
-    ///
-    /// `blocks` holds the base level's 4×4 blocks in row-major order, tightly packed, exactly
-    /// as an encoder writes them. Mulciber never encodes or decodes: it uploads the blocks as
-    /// they are and the GPU samples them directly, so the payload is a quarter of its RGBA8
-    /// equivalent in video memory as well as on disk. Dimensions need not be multiples of four;
-    /// a partial edge block still carries sixteen bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
-    /// for empty dimensions, a byte count that is not the level's block count times the block
-    /// size, or overflow.
-    pub fn create_block_compressed_texture(
-        &self,
-        compression: BlockCompression,
-        width: u32,
-        height: u32,
-        blocks: &[u8],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture(width, height, blocks, compression.sampled())
-    }
-
-    /// Uploads a block-compressed texture with an application-supplied mip chain.
-    ///
-    /// `levels[0]` holds the base level's blocks; each following level halves both dimensions
-    /// (flooring at one texel) and holds the blocks covering that extent, so the 2×2 and 1×1
-    /// tail levels are each one sixteen-byte block. The chain must run to 1×1. The application
-    /// owns mip content: it filters the RGBA8 chain first and encodes every level, because a
-    /// block cannot be downsampled without decoding it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
-    /// for empty dimensions, a chain that does not run from the base level to 1×1, a level
-    /// whose byte count does not match its block count, or overflow.
-    pub fn create_block_compressed_texture_with_mips(
-        &self,
-        compression: BlockCompression,
-        width: u32,
-        height: u32,
-        levels: &[&[u8]],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_mips(width, height, levels, compression.sampled())
-    }
-
-    /// Uploads a block-compressed texture from a parsed KTX 2.0 file: its base level alone, or the
-    /// complete chain it stores, as [`create_block_compressed_texture`] and
-    /// [`create_block_compressed_texture_with_mips`] would. The blocks go to the GPU as they are
-    /// stored; nothing is decoded or transcoded.
-    ///
-    /// [`create_block_compressed_texture`]: Self::create_block_compressed_texture
-    /// [`create_block_compressed_texture_with_mips`]: Self::create_block_compressed_texture_with_mips
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the adapter cannot sample the file's encoding, and the errors of
-    /// the block-compressed uploads otherwise.
-    pub fn create_ktx2_texture(&self, texture: &Ktx2Texture<'_>) -> Result<Texture, GraphicsError> {
-        let levels = texture.levels();
-        if let [base] = levels {
-            return self.create_block_compressed_texture(
-                texture.compression(),
-                texture.width(),
-                texture.height(),
-                base,
-            );
+        let TextureDescriptor { shape, mips, data } = *descriptor;
+        let levels = validate_texture_request(descriptor)?;
+        if matches!(shape, TextureShape::CubeArray { .. }) {
+            // Refuse before packing on a device that could never sample the result.
+            session_ref(&self.shared)?.require_cube_arrays()?;
         }
-        self.create_block_compressed_texture_with_mips(
-            texture.compression(),
-            texture.width(),
-            texture.height(),
-            levels,
-        )
-    }
-
-    /// Uploads linear `RGBA16Float` data from row-major RGBA f32 texels (eight GPU bytes/texel).
-    ///
-    /// Conversion rounds to IEEE binary16, nearest with ties to even. Signed zero and half
-    /// subnormals are preserved in uploaded storage; values below half precision underflow to
-    /// signed zero. GPU sampling/arithmetic may flush subnormals on some hardware. No color
-    /// transform or 0–1 clamp is applied. NaN, infinity, and magnitudes above 65504 are rejected.
-    /// The texture has only level zero; explicit LOD sampling clamps to that level.
-    /// Bind using `MaterialBinding::Texture` and WGSL `texture_2d<f32>` in either shader stage.
-    ///
-    /// # Errors
-    /// Returns an error for zero dimensions, mismatched texel counts, size overflow, invalid
-    /// components, allocation/upload failure, or unsupported linearly filterable native storage.
-    pub fn create_rgba16_float_texture(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[[f32; 4]],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float(width, height, &[texels], false)
-    }
-
-    /// Uploads a complete application-authored `RGBA16Float` mip chain.
-    ///
-    /// Level zero has the supplied dimensions; subsequent levels halve each axis, flooring at
-    /// one, through 1×1. No mip generation or color transform is performed. Component conversion
-    /// and errors follow [`Self::create_rgba16_float_texture`]. Use a material sampler with
-    /// linear mip filtering to interpolate explicit fractional LODs.
-    ///
-    /// # Errors
-    /// Also rejects incomplete/extra mip levels and mismatched per-level texel counts.
-    pub fn create_rgba16_float_texture_with_mips(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[[f32; 4]]],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float(width, height, levels, true)
-    }
-
-    /// Uploads linear `RGBA16Float` data from IEEE binary16 bit patterns, four per texel in
-    /// RGBA order, as the `half` crate's `f16::to_bits` gives them.
-    ///
-    /// The bits upload unchanged, with no conversion pass, so data already in half precision
-    /// (an HDR image decoded to `f16`, say) costs one copy. Infinity and NaN (an all-ones
-    /// exponent) are rejected, as [`Self::create_rgba16_float_texture`] rejects them. Otherwise
-    /// it behaves as that function.
-    ///
-    /// # Errors
-    /// Returns an error for zero dimensions, mismatched texel counts, size overflow, a non-finite
-    /// component, allocation/upload failure, or unsupported linearly filterable native storage.
-    pub fn create_rgba16_float_texture_from_bits(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[[u16; 4]],
-    ) -> Result<Texture, GraphicsError> {
-        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
-        self.upload_packed_float(width, height, &packed, false)
-    }
-
-    /// Uploads a complete application-authored `RGBA16Float` mip chain of binary16 bit patterns,
-    /// laid out as [`Self::create_rgba16_float_texture_with_mips`] takes it.
-    ///
-    /// # Errors
-    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], plus incomplete or
-    /// extra mip levels and mismatched per-level texel counts.
-    pub fn create_rgba16_float_texture_with_mips_from_bits(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[[u16; 4]]],
-    ) -> Result<Texture, GraphicsError> {
-        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
-        self.upload_packed_float(width, height, &packed, false)
-    }
-
-    /// Uploads level 0 of an `RGBA16Float` texture and generates the rest of its full mip chain
-    /// on the GPU.
-    ///
-    /// Each level is a linear-filtered half-size copy of the one above (a 2×2 box filter for
-    /// even extents, as Vulkan blits and Metal's `generateMipmapsForTexture:` compute it),
-    /// through 1×1. Values and errors follow [`Self::create_rgba16_float_texture`]; the texture
-    /// can be replaced with [`Self::update_rgba16_float_texture_with_generated_mips`] or
-    /// [`Self::update_rgba16_float_texture_with_mips`]. Sample it with a material sampler whose
-    /// filter interpolates between mips.
-    ///
-    /// # Errors
-    /// Reports the errors of [`Self::create_rgba16_float_texture`], and `Unsupported` when the
-    /// adapter cannot blit the format with linear filtering.
-    pub fn create_rgba16_float_texture_with_generated_mips(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[[f32; 4]],
-    ) -> Result<Texture, GraphicsError> {
-        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
-        self.upload_packed_float(width, height, &packed, true)
-    }
-
-    /// [`Self::create_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
-    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
-    ///
-    /// # Errors
-    /// Reports the errors of [`Self::create_rgba16_float_texture_from_bits`], and `Unsupported`
-    /// when the adapter cannot blit the format with linear filtering.
-    pub fn create_rgba16_float_texture_with_generated_mips_from_bits(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[[u16; 4]],
-    ) -> Result<Texture, GraphicsError> {
-        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
-        self.upload_packed_float(width, height, &packed, true)
-    }
-
-    /// Uploads a tightly packed RGBA8 sRGB base level and generates the rest of its full mip
-    /// chain on the GPU.
-    ///
-    /// Filtering happens on linear values: the GPU decodes sRGB before averaging and encodes the
-    /// result, as an sRGB blit or Metal mip generation does.
-    ///
-    /// # Errors
-    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
-    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
-    pub fn create_rgba8_srgb_texture_with_generated_mips(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_generated_mips(
-            width,
-            height,
-            texels,
-            SampledTextureFormat::Srgb,
-        )
-    }
-
-    /// Uploads a tightly packed RGBA8 UNORM base level and generates the rest of its full mip
-    /// chain on the GPU, averaging the stored values directly.
-    ///
-    /// # Errors
-    /// Returns an error for empty dimensions, a mismatched byte count, overflow, `Unsupported`
-    /// when the adapter cannot blit the format with linear filtering, or native upload failure.
-    pub fn create_rgba8_unorm_texture_with_generated_mips(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_rgba8_texture_with_generated_mips(
-            width,
-            height,
-            texels,
-            SampledTextureFormat::Unorm,
-        )
-    }
-
-    fn create_rgba8_texture_with_generated_mips(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
-        format: SampledTextureFormat,
-    ) -> Result<Texture, GraphicsError> {
-        validate_mip_level(format, width, height, 0, texels)?;
-        let id = session_mut(&self.shared)?
-            .create_texture_with_generated_mips(width, height, texels, format)?;
+        let (width, height) = shape.extent();
+        let mut packed = Vec::new();
+        let (format, bytes) = data.byte_images(shape, mips == MipChain::Supplied, &mut packed)?;
+        let id = match shape {
+            TextureShape::D2 { width, height } => {
+                for (level, texels) in (0_u32..).zip(&bytes) {
+                    validate_mip_level(format, width, height, level, texels)?;
+                }
+                let mut session = session_mut(&self.shared)?;
+                if mips == MipChain::Generated {
+                    session.create_texture_with_generated_mips(width, height, bytes[0], format)?
+                } else {
+                    session.create_texture(width, height, &bytes, format)?
+                }
+            }
+            TextureShape::Cube { size } => {
+                let faces = split_faces(&bytes, levels);
+                cube_texture::validate_faces(format, size, &faces, mips == MipChain::Supplied)?;
+                session_mut(&self.shared)?.create_cube_texture(size, &faces, format)?
+            }
+            TextureShape::CubeArray { size, .. } => {
+                let cubes: Vec<[&[&[u8]]; 6]> = bytes
+                    .chunks_exact(6 * levels)
+                    .map(|cube| split_faces(cube, levels))
+                    .collect();
+                cube_texture::validate_layers(format, size, &cubes, true)?;
+                session_mut(&self.shared)?.create_cube_array_texture(size, &cubes, format)?
+            }
+        };
         Ok(Texture {
             render_target: false,
             lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::D2,
-        })
-    }
-
-    /// Uploads a tightly packed RGBA8 sRGB cube texture of six `size`×`size` faces.
-    ///
-    /// `faces` is in the standard cube layer order +X, -X, +Y, -Y, +Z, -Z, each face's texels
-    /// row-major as for [`Self::create_rgba8_srgb_texture`]. The texture has only level zero
-    /// and binds through [`MaterialBinding::CubeTexture`] and WGSL `texture_cube<f32>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero extent, a face whose byte count does not match it (naming
-    /// the face), overflow, or native upload failure.
-    pub fn create_rgba8_srgb_cube_texture(
-        &self,
-        size: u32,
-        faces: [&[u8]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(
-            size,
-            single_level_faces(&faces),
-            SampledTextureFormat::Srgb,
-            false,
-        )
-    }
-
-    /// Uploads an RGBA8 sRGB cube texture with an application-supplied mip chain per face.
-    ///
-    /// Each of the six faces (+X, -X, +Y, -Y, +Z, -Z) supplies the complete chain from its
-    /// `size`×`size` base to 1×1, halving each level as
-    /// [`Self::create_rgba8_srgb_texture_with_mips`] does. The application owns mip content,
-    /// including any filtering across face edges.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero extent, a face whose chain does not run from the base level
-    /// to 1×1, a level whose byte count does not match its extent (naming the face and level),
-    /// overflow, or native upload failure.
-    pub fn create_rgba8_srgb_cube_texture_with_mips(
-        &self,
-        size: u32,
-        faces: [&[&[u8]]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(size, faces, SampledTextureFormat::Srgb, true)
-    }
-
-    /// Uploads a tightly packed RGBA8 UNORM cube texture of six `size`×`size` faces, sampled
-    /// without sRGB transfer-function decoding.
-    ///
-    /// Face order and binding follow [`Self::create_rgba8_srgb_cube_texture`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero extent, a face whose byte count does not match it (naming
-    /// the face), overflow, or native upload failure.
-    pub fn create_rgba8_unorm_cube_texture(
-        &self,
-        size: u32,
-        faces: [&[u8]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(
-            size,
-            single_level_faces(&faces),
-            SampledTextureFormat::Unorm,
-            false,
-        )
-    }
-
-    /// Uploads an RGBA8 UNORM cube texture with an application-supplied mip chain per face.
-    ///
-    /// Face order and chain rules follow [`Self::create_rgba8_srgb_cube_texture_with_mips`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero extent, a face whose chain does not run from the base level
-    /// to 1×1, a level whose byte count does not match its extent (naming the face and level),
-    /// overflow, or native upload failure.
-    pub fn create_rgba8_unorm_cube_texture_with_mips(
-        &self,
-        size: u32,
-        faces: [&[&[u8]]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(size, faces, SampledTextureFormat::Unorm, true)
-    }
-
-    /// Uploads one level of an already block-compressed cube texture.
-    ///
-    /// Each of the six faces (+X, -X, +Y, -Y, +Z, -Z) holds its `size`×`size` level as
-    /// [`Self::create_block_compressed_texture`] takes a 2D level: whole 4×4 blocks, row-major
-    /// and tightly packed, never encoded or decoded by Mulciber.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
-    /// for a zero extent, a face whose byte count is not its block count times the block size
-    /// (naming the face), or overflow.
-    pub fn create_block_compressed_cube_texture(
-        &self,
-        compression: BlockCompression,
-        size: u32,
-        faces: [&[u8]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(
-            size,
-            single_level_faces(&faces),
-            compression.sampled(),
-            false,
-        )
-    }
-
-    /// Uploads a block-compressed cube texture with an application-supplied mip chain per face.
-    ///
-    /// Each face supplies the complete chain to 1×1 as
-    /// [`Self::create_block_compressed_texture_with_mips`] takes a 2D chain, so every face's
-    /// 2×2 and 1×1 tail levels are each one block.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the adapter cannot sample the encoding, and `InvalidRequest`
-    /// for a zero extent, a face whose chain does not run from the base level to 1×1, a level
-    /// whose byte count does not match its block count (naming the face and level), or
-    /// overflow.
-    pub fn create_block_compressed_cube_texture_with_mips(
-        &self,
-        compression: BlockCompression,
-        size: u32,
-        faces: [&[&[u8]]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.create_cube_texture(size, faces, compression.sampled(), true)
-    }
-
-    /// Uploads a linear `RGBA16Float` cube texture of six `size`×`size` faces from row-major
-    /// RGBA f32 texels.
-    ///
-    /// Face order follows [`Self::create_rgba8_srgb_cube_texture`]; component conversion and
-    /// limits follow [`Self::create_rgba16_float_texture`]. The texture has only level zero and
-    /// cannot be replaced with [`Self::update_rgba16_float_texture`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero extent, a face whose texel count does not match it, invalid
-    /// components (each naming the face), size overflow, allocation/upload failure, or
-    /// unsupported linearly filterable native storage.
-    pub fn create_rgba16_float_cube_texture(
-        &self,
-        size: u32,
-        faces: [&[[f32; 4]]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float_cube(size, single_level_faces(&faces), false)
-    }
-
-    /// Uploads a linear `RGBA16Float` cube texture with an application-authored mip chain per
-    /// face.
-    ///
-    /// Each face (+X, -X, +Y, -Y, +Z, -Z) supplies the complete chain from `size`×`size` to
-    /// 1×1, as [`Self::create_rgba16_float_texture_with_mips`] takes a 2D chain.
-    ///
-    /// # Errors
-    ///
-    /// Also rejects incomplete/extra mip levels and mismatched per-level texel counts, naming
-    /// the face.
-    pub fn create_rgba16_float_cube_texture_with_mips(
-        &self,
-        size: u32,
-        faces: [&[&[[f32; 4]]]; 6],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float_cube(size, faces, true)
-    }
-
-    fn upload_rgba16_float_cube(
-        &self,
-        size: u32,
-        faces: [&[&[[f32; 4]]]; 6],
-        complete: bool,
-    ) -> Result<Texture, GraphicsError> {
-        let mut packed: [Vec<Vec<u8>>; 6] = Default::default();
-        for ((name, levels), packed) in cube_texture::FACE_NAMES.iter().zip(faces).zip(&mut packed)
-        {
-            *packed = sampled_texture::pack_float_levels(size, size, levels, complete)
-                .map_err(|error| cube_texture::name_face(name, &error))?;
-        }
-        let slices: [Vec<&[u8]>; 6] = packed
-            .each_ref()
-            .map(|levels| levels.iter().map(Vec::as_slice).collect());
-        self.create_cube_texture(
-            size,
-            slices.each_ref().map(Vec::as_slice),
-            SampledTextureFormat::Float16,
-            complete,
-        )
-    }
-
-    fn create_cube_texture(
-        &self,
-        size: u32,
-        faces: [&[&[u8]]; 6],
-        format: SampledTextureFormat,
-        complete: bool,
-    ) -> Result<Texture, GraphicsError> {
-        cube_texture::validate_faces(format, size, &faces, complete)?;
-        let id = session_mut(&self.shared)?.create_cube_texture(size, &faces, format)?;
-        Ok(Texture {
-            render_target: false,
-            lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::Cube,
-        })
-    }
-
-    /// Uploads a linear `RGBA16Float` cube texture array: one or more cubes of one `size`, each
-    /// with an application-authored mip chain per face, sampled as a whole through
-    /// [`MaterialBinding::CubeTextureArray`] and WGSL `texture_cube_array<f32>`.
-    ///
-    /// `layers[i]` is cube `i`, which the shader selects with the array index of
-    /// `textureSampleLevel(map, sampler, direction, i, lod)`. Each cube's six faces are in the
-    /// order and orientation of [`Self::create_rgba16_float_cube_texture`], and every face supplies
-    /// the complete chain from `size`×`size` to 1×1, as
-    /// [`Self::create_rgba16_float_cube_texture_with_mips`] takes it. Component conversion and
-    /// limits follow [`Self::create_rgba16_float_texture`]. The texture cannot be replaced with
-    /// the float texture updates.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Unsupported` when the device cannot sample cube arrays (Vulkan's
-    /// `imageCubeArray` feature, Metal's Metal 3 family), cannot allocate `6 × layers.len()`
-    /// array layers at this extent, or has no linearly filterable `RGBA16Float` storage; and
-    /// `InvalidRequest` for no layers, a zero extent, or a face whose chain is incomplete, whose
-    /// texel count does not match its extent or whose components are invalid, naming the layer
-    /// and face, or for staging-size overflow.
-    pub fn create_rgba16_float_cube_array_texture_with_mips(
-        &self,
-        size: u32,
-        layers: &[[&[&[[f32; 4]]]; 6]],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float_cube_array(size, layers, |levels| {
-            sampled_texture::pack_float_levels(size, size, levels, true)
-        })
-    }
-
-    /// [`Self::create_rgba16_float_cube_array_texture_with_mips`] from binary16 bit patterns, as
-    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
-    ///
-    /// # Errors
-    ///
-    /// Reports the errors of [`Self::create_rgba16_float_cube_array_texture_with_mips`], with
-    /// non-finite bits as the invalid components.
-    pub fn create_rgba16_float_cube_array_texture_with_mips_from_bits(
-        &self,
-        size: u32,
-        layers: &[[&[&[[u16; 4]]]; 6]],
-    ) -> Result<Texture, GraphicsError> {
-        self.upload_rgba16_float_cube_array(size, layers, |levels| {
-            sampled_texture::pack_half_levels(size, size, levels, true)
-        })
-    }
-
-    fn upload_rgba16_float_cube_array<T>(
-        &self,
-        size: u32,
-        layers: &[[&[&[T]]; 6]],
-        pack: impl Fn(&[&[T]]) -> Result<Vec<Vec<u8>>, GraphicsError>,
-    ) -> Result<Texture, GraphicsError> {
-        cube_texture::require_layers(size, layers.len())?;
-        // Refuse before packing on a device that could never sample the result.
-        session_ref(&self.shared)?.require_cube_arrays()?;
-        let packed = cube_texture::pack_layers(layers, pack)?;
-        let slices: Vec<[Vec<&[u8]>; 6]> = packed
-            .iter()
-            .map(|cube| {
-                cube.each_ref()
-                    .map(|levels| levels.iter().map(Vec::as_slice).collect())
-            })
-            .collect();
-        let cubes: Vec<[&[&[u8]]; 6]> = slices
-            .iter()
-            .map(|cube| cube.each_ref().map(Vec::as_slice))
-            .collect();
-        cube_texture::validate_layers(SampledTextureFormat::Float16, size, &cubes, true)?;
-        let id = session_mut(&self.shared)?.create_cube_array_texture(
-            size,
-            &cubes,
-            SampledTextureFormat::Float16,
-        )?;
-        Ok(Texture {
-            render_target: false,
-            lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::CubeArray,
-        })
-    }
-
-    /// Queues a full replacement of a single-level `RGBA16Float` 2D texture.
-    ///
-    /// The texture must belong to this device and retain its original dimensions.
-    /// Values follow `create_rgba16_float_texture`. The bytes are copied now;
-    /// the next textured/material scene submission uploads them before any draws.
-    /// Earlier submitted frames keep their original contents. Multiple writes
-    /// before that submission coalesce to the last write. No device-idle wait or
-    /// texture/descriptor recreation is required. Dropping a texture before the
-    /// next scene cancels its pending replacement.
-    ///
-    /// # Errors
-    /// Returns an error for a foreign or stale texture, incompatible format or
-    /// dimensions, a texture with a mip chain (use
-    /// [`Self::update_rgba16_float_texture_with_mips`]), invalid texels, or an
-    /// unavailable graphics session.
-    pub fn update_rgba16_float_texture(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        texels: &[[f32; 4]],
-    ) -> Result<(), GraphicsError> {
-        self.update_rgba16_float(texture, width, height, &[texels], false)
-    }
-
-    /// Queues a full replacement of every level of an `RGBA16Float` texture created by
-    /// [`Self::create_rgba16_float_texture_with_mips`].
-    ///
-    /// `levels` is the complete chain from `width`×`height` to 1×1, laid out as
-    /// [`Self::create_rgba16_float_texture_with_mips`] takes it, and must match the texture's
-    /// dimensions and mip count. No level is generated or kept from the previous contents.
-    /// Values, queuing, coalescing and cancellation follow
-    /// [`Self::update_rgba16_float_texture`]: every level of the last write is uploaded before
-    /// any draw of the next textured/material scene submission, and earlier submitted frames
-    /// keep their original contents.
-    ///
-    /// # Errors
-    /// Returns an error for a foreign or stale texture, incompatible format, dimensions or mip
-    /// count (including a single-level texture larger than 1×1), an incomplete/extra chain or
-    /// mismatched per-level texel count, invalid texels, or an unavailable graphics session.
-    pub fn update_rgba16_float_texture_with_mips(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        levels: &[&[[f32; 4]]],
-    ) -> Result<(), GraphicsError> {
-        self.update_rgba16_float(texture, width, height, levels, true)
-    }
-
-    /// [`Self::update_rgba16_float_texture`] from binary16 bit patterns, as
-    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
-    ///
-    /// # Errors
-    /// Reports the errors of [`Self::update_rgba16_float_texture`], with non-finite bits as the
-    /// invalid texels.
-    pub fn update_rgba16_float_texture_from_bits(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        texels: &[[u16; 4]],
-    ) -> Result<(), GraphicsError> {
-        self.check_float_update(texture)?;
-        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
-        session_mut(&self.shared)?.update_float_texture(
-            texture.lease.id,
+            dimension: shape.dimension(),
             width,
             height,
-            packed,
-            false,
-        )
+            mips,
+        })
     }
 
-    /// [`Self::update_rgba16_float_texture_with_mips`] from binary16 bit patterns, as
-    /// [`Self::create_rgba16_float_texture_with_mips_from_bits`] takes them.
+    /// Queues a full replacement of a 2D `RGBA16Float` texture's contents.
+    ///
+    /// `data` is `RGBA16Float` texels at the texture's extent: its single level, its complete
+    /// chain, or for a texture created with [`MipChain::Generated`] either its complete chain
+    /// or its base level alone, from which the GPU regenerates every other level. The bytes are
+    /// copied now; the next textured or material scene submission uploads them (and blits a
+    /// generated chain) before any draw, in its own command buffer. Earlier submitted frames
+    /// keep their original contents, and several updates before that submission coalesce to
+    /// the last. No device-idle wait or texture recreation is needed, so a texture rewritten
+    /// every frame (an animated height field, say) costs one upload. Dropping the texture
+    /// before the next submission cancels its pending replacement.
     ///
     /// # Errors
-    /// Reports the errors of [`Self::update_rgba16_float_texture_with_mips`], with non-finite
-    /// bits as the invalid texels.
-    pub fn update_rgba16_float_texture_with_mips_from_bits(
+    ///
+    /// Returns `Unsupported` for data in another format, and `InvalidRequest` for a foreign or
+    /// stale texture, a cube texture, cube array or render texture, a texture not created as
+    /// `RGBA16Float`, a chain that does not match the texture's extent and mips, invalid
+    /// components, or an unavailable graphics session.
+    pub fn update_texture(
         &self,
         texture: &Texture,
-        width: u32,
-        height: u32,
-        levels: &[&[[u16; 4]]],
+        data: TexelData<'_>,
     ) -> Result<(), GraphicsError> {
-        self.check_float_update(texture)?;
-        let packed = sampled_texture::pack_half_levels(width, height, levels, true)?;
-        session_mut(&self.shared)?.update_float_texture(
-            texture.lease.id,
-            width,
-            height,
-            packed,
-            false,
-        )
-    }
-
-    /// Queues a replacement of level 0 of a texture created by
-    /// [`Self::create_rgba16_float_texture_with_generated_mips`] (or its `_from_bits` form),
-    /// and regenerates every other level from it on the GPU.
-    ///
-    /// The next textured/material scene submission copies level 0 and blits the chain before
-    /// any draw, in its own command buffer, so a texture rewritten every frame (an animated
-    /// height field, say) needs no CPU downsampling. Values, queuing, coalescing and
-    /// cancellation follow [`Self::update_rgba16_float_texture`].
-    ///
-    /// # Errors
-    /// Returns an error for a foreign or stale texture, a texture not created with generated
-    /// mips, incompatible format or dimensions, invalid texels, or an unavailable session.
-    pub fn update_rgba16_float_texture_with_generated_mips(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        texels: &[[f32; 4]],
-    ) -> Result<(), GraphicsError> {
-        self.check_float_update(texture)?;
-        let packed = sampled_texture::pack_float_levels(width, height, &[texels], false)?;
-        session_mut(&self.shared)?.update_float_texture(
-            texture.lease.id,
-            width,
-            height,
-            packed,
-            true,
-        )
-    }
-
-    /// [`Self::update_rgba16_float_texture_with_generated_mips`] from binary16 bit patterns, as
-    /// [`Self::create_rgba16_float_texture_from_bits`] takes them.
-    ///
-    /// # Errors
-    /// Reports the errors of [`Self::update_rgba16_float_texture_with_generated_mips`], with
-    /// non-finite bits as the invalid texels.
-    pub fn update_rgba16_float_texture_with_generated_mips_from_bits(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        texels: &[[u16; 4]],
-    ) -> Result<(), GraphicsError> {
-        self.check_float_update(texture)?;
-        let packed = sampled_texture::pack_half_levels(width, height, &[texels], false)?;
-        session_mut(&self.shared)?.update_float_texture(
-            texture.lease.id,
-            width,
-            height,
-            packed,
-            true,
-        )
-    }
-
-    fn check_float_update(&self, texture: &Texture) -> Result<(), GraphicsError> {
         if texture.lease.session != self.shared.id {
             return Err(GraphicsError::invalid_request(
                 "texture belongs to another graphics session",
@@ -1111,122 +438,39 @@ impl Device<'_> {
         }
         if texture.dimension != TextureDimension::D2 {
             return Err(GraphicsError::invalid_request(format!(
-                "float texture updates replace 2D textures only, not a {}",
+                "texture updates replace 2D textures only, not a {}",
                 texture.dimension.label()
             )));
         }
         if texture.render_target {
             return Err(GraphicsError::invalid_request(
-                "a render texture is written by offscreen passes, not float texture updates",
+                "a render texture is written by offscreen passes, not texture updates",
             ));
         }
-        Ok(())
-    }
-
-    fn update_rgba16_float(
-        &self,
-        texture: &Texture,
-        width: u32,
-        height: u32,
-        levels: &[&[[f32; 4]]],
-        complete: bool,
-    ) -> Result<(), GraphicsError> {
-        self.check_float_update(texture)?;
-        let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
+        let (width, height) = (texture.width, texture.height);
+        let generate = texture.mips == MipChain::Generated && data.len() == 1;
+        let complete = !generate && texture.mips != MipChain::Single;
+        let packed = match data {
+            TexelData::Rgba16Float(levels) => {
+                sampled_texture::pack_float_levels(width, height, levels, complete)?
+            }
+            TexelData::Rgba16FloatBits(levels) => {
+                sampled_texture::pack_half_levels(width, height, levels, complete)?
+            }
+            TexelData::Rgba8Srgb(_) | TexelData::Rgba8Unorm(_) | TexelData::BlockCompressed(..) => {
+                return Err(GraphicsError::with_kind(
+                    GraphicsErrorKind::Unsupported,
+                    "texture updates take RGBA16Float data",
+                ));
+            }
+        };
         session_mut(&self.shared)?.update_float_texture(
             texture.lease.id,
             width,
             height,
             packed,
-            false,
+            generate,
         )
-    }
-
-    fn upload_rgba16_float(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[[f32; 4]]],
-        complete: bool,
-    ) -> Result<Texture, GraphicsError> {
-        let packed = sampled_texture::pack_float_levels(width, height, levels, complete)?;
-        self.upload_packed_float(width, height, &packed, false)
-    }
-
-    /// Creates an `RGBA16Float` texture from packed levels; with `generate_mips`, `packed`
-    /// holds level 0 alone and the GPU fills the rest of the full chain.
-    fn upload_packed_float(
-        &self,
-        width: u32,
-        height: u32,
-        packed: &[Vec<u8>],
-        generate_mips: bool,
-    ) -> Result<Texture, GraphicsError> {
-        let mut session = session_mut(&self.shared)?;
-        let id = if generate_mips {
-            session.create_texture_with_generated_mips(
-                width,
-                height,
-                &packed[0],
-                SampledTextureFormat::Float16,
-            )?
-        } else {
-            let slices: Vec<&[u8]> = packed.iter().map(Vec::as_slice).collect();
-            session.create_texture(width, height, &slices, SampledTextureFormat::Float16)?
-        };
-        drop(session);
-        Ok(Texture {
-            render_target: false,
-            lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::D2,
-        })
-    }
-
-    fn create_rgba8_texture(
-        &self,
-        width: u32,
-        height: u32,
-        texels: &[u8],
-        format: SampledTextureFormat,
-    ) -> Result<Texture, GraphicsError> {
-        validate_mip_level(format, width, height, 0, texels)?;
-        let id = session_mut(&self.shared)?.create_texture(width, height, &[texels], format)?;
-        Ok(Texture {
-            render_target: false,
-            lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::D2,
-        })
-    }
-
-    fn create_rgba8_texture_with_mips(
-        &self,
-        width: u32,
-        height: u32,
-        levels: &[&[u8]],
-        format: SampledTextureFormat,
-    ) -> Result<Texture, GraphicsError> {
-        if width == 0 || height == 0 {
-            return Err(GraphicsError::invalid_request(
-                "texture byte count does not match its dimensions",
-            ));
-        }
-        let expected_levels = full_mip_chain_len(width, height);
-        if levels.len() != expected_levels {
-            return Err(GraphicsError::invalid_request(format!(
-                "texture mip chain supplies {} levels but {width}x{height} needs {expected_levels} \
-                 levels to reach 1x1",
-                levels.len()
-            )));
-        }
-        for (level, texels) in (0_u32..).zip(levels) {
-            validate_mip_level(format, width, height, level, texels)?;
-        }
-        let id = session_mut(&self.shared)?.create_texture(width, height, levels, format)?;
-        Ok(Texture {
-            render_target: false,
-            lease: self.lease(id, ResourceKind::Texture),
-            dimension: TextureDimension::D2,
-        })
     }
 
     /// Changes the samples per pixel that pipelines and targets created from now on are built
@@ -1599,6 +843,9 @@ impl Device<'_> {
                 lease: self.lease(id, ResourceKind::Texture),
                 dimension: TextureDimension::D2,
                 render_target: true,
+                width,
+                height,
+                mips: MipChain::Single,
             },
             width,
             height,
@@ -1974,11 +1221,11 @@ impl Queue<'_> {
         Ok(session_mut(&self.shared)?.take_gpu_timings())
     }
 
-    /// Renders one explicitly selected scene recipe, presents the frame, and consumes it.
+    /// Renders one scene recipe, presents the frame, and consumes it.
     ///
-    /// This stable verb prevents each experimentally extracted workload from growing another
-    /// queue-method name. `SceneContent` and `SceneOutput` compose the narrow axes supported by the
-    /// current slice; they are not a general command encoder.
+    /// This one verb takes every workload: [`Scene`] selects textured draws, instance batches,
+    /// or material records with the passes that compose with them, and where each goes. It is
+    /// not a general command encoder.
     ///
     /// # Errors
     ///
@@ -1989,210 +1236,117 @@ impl Queue<'_> {
         frame: Frame<'_>,
         submission: SceneSubmission<'_>,
     ) -> Result<FrameDisposition, GraphicsError> {
-        let foreground_start = validate_scene_recipe(&submission)?;
-        match (submission.content, submission.output) {
-            (SceneContent::Textured(draws), SceneOutput::Direct(targets)) => self
-                .draw_textured_scene_and_present(
-                    frame,
-                    TexturedScene {
-                        draws,
-                        targets,
-                        clear: submission.clear,
-                    },
-                ),
-            (
-                SceneContent::Textured(draws),
-                SceneOutput::Postprocessed {
-                    pipeline,
-                    targets,
-                    uniform,
-                },
-            ) => self.draw_textured_scene_postprocessed_and_present(
+        let SceneSubmission { scene, clear } = submission;
+        match scene {
+            Scene::Textured {
+                draws,
+                output: SceneOutput::Direct(targets),
+            } => self.draw_textured_scene_and_present(frame, draws, targets, clear),
+            Scene::Textured {
+                draws,
+                output: SceneOutput::Postprocessed(postprocess),
+            } => self.draw_textured_scene_postprocessed_and_present(
                 frame,
-                PostprocessedScene {
-                    draws,
-                    postprocess_pipeline: pipeline,
-                    targets,
-                    uniform,
-                    clear: submission.clear,
-                },
+                draws,
+                &postprocess,
+                clear,
             ),
-            (SceneContent::Instanced(batches), SceneOutput::Direct(targets)) => self
-                .draw_instanced_textured_scene_and_present(
-                    frame,
-                    batches,
-                    targets,
-                    submission.clear,
-                ),
-            (
-                SceneContent::Instanced(batches),
-                SceneOutput::Postprocessed {
-                    pipeline,
-                    targets,
-                    uniform,
-                },
-            ) => self.draw_instanced_textured_scene_postprocessed_and_present(
+            Scene::Instanced {
+                batches,
+                output: SceneOutput::Direct(targets),
+            } => self.draw_instanced_textured_scene_and_present(frame, batches, targets, clear),
+            Scene::Instanced {
+                batches,
+                output: SceneOutput::Postprocessed(postprocess),
+            } => self.draw_instanced_textured_scene_postprocessed_and_present(
                 frame,
                 batches,
-                pipeline,
-                targets,
-                uniform,
-                submission.clear,
+                &postprocess,
+                clear,
             ),
-            (SceneContent::MaterialWithForeground { .. }, SceneOutput::Direct(_)) => {
-                Err(GraphicsError::with_kind(
-                    GraphicsErrorKind::Unsupported,
-                    "foreground material content requires postprocessed output",
-                ))
+            Scene::Material(material) => {
+                validate_material_scene_recipe(&material)?;
+                match material.output {
+                    MaterialOutput::Direct(targets) => self.draw_material_scene_and_present(
+                        frame,
+                        material.records,
+                        material.shadow,
+                        targets,
+                        clear,
+                    ),
+                    MaterialOutput::Postprocessed {
+                        postprocess,
+                        foreground_start,
+                        offscreen,
+                        overlay,
+                    } => self.draw_material_scene_postprocessed_and_present(
+                        frame,
+                        &material,
+                        &postprocess,
+                        PostprocessedMaterialPasses {
+                            foreground_start,
+                            offscreen,
+                            overlay,
+                        },
+                        clear,
+                    ),
+                }
             }
-            (SceneContent::Material(records), SceneOutput::Direct(targets)) => self
-                .draw_material_scene_and_present(
-                    frame,
-                    records,
-                    submission.shadow,
-                    targets,
-                    submission.clear,
-                ),
-            (
-                SceneContent::Material(records)
-                | SceneContent::MaterialWithForeground { records, .. },
-                SceneOutput::Postprocessed {
-                    pipeline,
-                    targets,
-                    uniform,
-                },
-            ) => self.draw_material_scene_postprocessed_and_present(
-                frame,
-                records,
-                submission.shadow,
-                submission.overlay,
-                submission.offscreen,
-                foreground_start,
-                pipeline,
-                targets,
-                uniform,
-                submission.clear,
-            ),
         }
-    }
-
-    /// Draws one indexed textured mesh, presents the frame, and consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for mixed-session or stale handles, a non-finite transform, or native
-    /// encoding, submission, validation, or presentation failure.
-    pub fn draw_textured_and_present(
-        &mut self,
-        frame: Frame<'_>,
-        draw: TexturedDraw<'_>,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let scene_draw = TexturedSceneDraw {
-            mesh: draw.mesh,
-            texture: draw.texture,
-            pipeline: draw.pipeline,
-            model_view_projection: draw.model_view_projection,
-        };
-        self.draw_textured_scene_and_present(
-            frame,
-            TexturedScene {
-                draws: core::slice::from_ref(&scene_draw),
-                targets: draw.targets,
-                clear: draw.clear,
-            },
-        )
     }
 
     /// Draws a non-empty sequence of textured objects in one depth-tested render pass, presents
     /// the frame, and consumes it.
-    ///
-    /// Each object independently selects its mesh, texture, pipeline, and transform. The targets
-    /// and clear operation belong to the scene pass rather than being repeated per object.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty scene, mixed-session or stale handles, a non-finite transform,
-    /// or native encoding, submission, validation, or presentation failure.
-    pub fn draw_textured_scene_and_present(
+    fn draw_textured_scene_and_present(
         &mut self,
         mut frame: Frame<'_>,
-        scene: TexturedScene<'_>,
+        draws: &[TexturedSceneDraw<'_>],
+        targets: &RenderTargets,
+        clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
+        self.validate_scene(frame.shared.id, frame.info, draws, targets)?;
         let token = frame
             .token
             .take()
             .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
-        session_mut(&self.shared)?.draw_scene_and_present(
-            token,
-            scene.draws,
-            scene.targets.lease.id,
-            scene.clear,
-        )
-    }
-
-    /// Draws one indexed textured mesh into sampled offscreen color, runs one fullscreen
-    /// post-processing pass, presents the frame, and consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for mixed-session or stale handles, a non-finite transform, or native
-    /// encoding, synchronization, submission, validation, or presentation failure.
-    pub fn draw_textured_postprocessed_and_present(
-        &mut self,
-        frame: Frame<'_>,
-        draw: PostprocessedDraw<'_>,
-    ) -> Result<FrameDisposition, GraphicsError> {
-        let scene_draw = TexturedSceneDraw {
-            mesh: draw.mesh,
-            texture: draw.texture,
-            pipeline: draw.scene_pipeline,
-            model_view_projection: draw.model_view_projection,
-        };
-        self.draw_textured_scene_postprocessed_and_present(
-            frame,
-            PostprocessedScene {
-                draws: core::slice::from_ref(&scene_draw),
-                postprocess_pipeline: draw.postprocess_pipeline,
-                targets: draw.targets,
-                uniform: draw.uniform,
-                clear: draw.clear,
-            },
-        )
+        session_mut(&self.shared)?.draw_scene_and_present(token, draws, targets.lease.id, clear)
     }
 
     /// Draws a non-empty sequence of textured objects into resolved scene color, runs one
     /// fullscreen post-processing pass, presents the frame, and consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty scene, mixed-session or stale handles, a non-finite transform,
-    /// or native encoding, synchronization, submission, validation, or presentation failure.
-    pub fn draw_textured_scene_postprocessed_and_present(
+    fn draw_textured_scene_postprocessed_and_present(
         &mut self,
         mut frame: Frame<'_>,
-        scene: PostprocessedScene<'_>,
+        draws: &[TexturedSceneDraw<'_>],
+        postprocess: &Postprocess<'_>,
+        clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_scene(frame.shared.id, frame.info, scene.draws, scene.targets)?;
-        if scene.postprocess_pipeline.lease.session != self.shared.id {
-            return Err(GraphicsError::invalid_request(
-                "postprocess pipeline belongs to a different graphics session than the queue",
-            ));
-        }
-        validate_hdr_pair(scene.postprocess_pipeline.hdr, scene.targets.hdr)?;
-        validate_postprocess_uniform(scene.postprocess_pipeline, scene.uniform)?;
+        self.validate_scene(frame.shared.id, frame.info, draws, postprocess.targets)?;
+        self.validate_postprocess(postprocess)?;
         let token = frame
             .token
             .take()
             .ok_or_else(|| GraphicsError::lifecycle("frame is already disposed"))?;
         session_mut(&self.shared)?.draw_scene_postprocessed_and_present(
             token,
-            scene.draws,
-            scene.postprocess_pipeline.lease.id,
-            scene.targets.lease.id,
-            scene.uniform,
-            scene.clear,
+            draws,
+            postprocess.pipeline.lease.id,
+            postprocess.targets.lease.id,
+            postprocess.uniform,
+            clear,
         )
+    }
+
+    /// Checks that the postprocess pipeline belongs to this queue's session, matches the
+    /// targets' HDR-ness, and receives the uniform it declares.
+    fn validate_postprocess(&self, postprocess: &Postprocess<'_>) -> Result<(), GraphicsError> {
+        if postprocess.pipeline.lease.session != self.shared.id {
+            return Err(GraphicsError::invalid_request(
+                "postprocess pipeline belongs to a different graphics session than the queue",
+            ));
+        }
+        validate_hdr_pair(postprocess.pipeline.hdr, postprocess.targets.hdr)?;
+        validate_postprocess_uniform(postprocess.pipeline, postprocess.uniform)
     }
 
     /// Draws a non-empty sequence of non-empty textured instance batches in one depth-tested
@@ -2235,19 +1389,11 @@ impl Queue<'_> {
         &mut self,
         mut frame: Frame<'_>,
         batches: &[TexturedInstanceBatch<'_>],
-        postprocess_pipeline: &PostprocessPipeline,
-        targets: &PostprocessTargets,
-        uniform: &[u8],
+        postprocess: &Postprocess<'_>,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_instanced_scene(frame.shared.id, frame.info, batches, targets)?;
-        if postprocess_pipeline.lease.session != self.shared.id {
-            return Err(GraphicsError::invalid_request(
-                "postprocess pipeline belongs to a different graphics session than the queue",
-            ));
-        }
-        validate_hdr_pair(postprocess_pipeline.hdr, targets.hdr)?;
-        validate_postprocess_uniform(postprocess_pipeline, uniform)?;
+        self.validate_instanced_scene(frame.shared.id, frame.info, batches, postprocess.targets)?;
+        self.validate_postprocess(postprocess)?;
         let token = frame
             .token
             .take()
@@ -2255,9 +1401,9 @@ impl Queue<'_> {
         session_mut(&self.shared)?.draw_instanced_scene_postprocessed_and_present(
             token,
             batches,
-            postprocess_pipeline.lease.id,
-            targets.lease.id,
-            uniform,
+            postprocess.pipeline.lease.id,
+            postprocess.targets.lease.id,
+            postprocess.uniform,
             clear,
         )
     }
@@ -2295,40 +1441,33 @@ impl Queue<'_> {
     /// application-authored material records into resolved scene color, runs one fullscreen
     /// post-processing pass, draws any overlay records into the presentable target at native
     /// extent, presents the frame, and consumes it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_material_scene_postprocessed_and_present(
         &mut self,
         mut frame: Frame<'_>,
-        records: &[MaterialRecord<'_>],
-        shadow: Option<ShadowPrepass<'_>>,
-        overlay: Option<&[MaterialRecord<'_>]>,
-        offscreen: &[OffscreenPass<'_>],
-        foreground_start: Option<usize>,
-        postprocess_pipeline: &PostprocessPipeline,
-        targets: &PostprocessTargets,
-        uniform: &[u8],
+        material: &MaterialScene<'_>,
+        postprocess: &Postprocess<'_>,
+        passes: PostprocessedMaterialPasses<'_>,
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
-        self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
+        let MaterialScene {
+            records, shadow, ..
+        } = *material;
+        let PostprocessedMaterialPasses {
+            foreground_start,
+            offscreen,
+            overlay,
+        } = passes;
+        self.validate_material_scene(frame.shared.id, frame.info, records, postprocess.targets)?;
         let depth_clear = material_scene_depth_clear(records)?;
         self.validate_shadow_pass(frame.shared.id, shadow.as_ref())?;
         session_ref(&self.shared)?.validate_shadow_sampling(records, shadow.as_ref())?;
-        if let Some(overlay) = overlay {
+        if !overlay.is_empty() {
             self.validate_overlay_records(frame.shared.id, overlay)?;
         }
         let offscreen_depth_clears =
             self.validate_offscreen_passes(frame.shared.id, offscreen, shadow.as_ref())?;
-        self.validate_render_texture_sampling(
-            records.iter().chain(overlay.unwrap_or(&[])),
-            offscreen,
-        )?;
-        if postprocess_pipeline.lease.session != self.shared.id {
-            return Err(GraphicsError::invalid_request(
-                "postprocess pipeline belongs to a different graphics session than the queue",
-            ));
-        }
-        validate_hdr_pair(postprocess_pipeline.hdr, targets.hdr)?;
-        validate_postprocess_uniform(postprocess_pipeline, uniform)?;
+        self.validate_render_texture_sampling(records.iter().chain(overlay), offscreen)?;
+        self.validate_postprocess(postprocess)?;
         let token = frame
             .token
             .take()
@@ -2337,13 +1476,13 @@ impl Queue<'_> {
             token,
             records,
             shadow.as_ref(),
-            overlay.unwrap_or(&[]),
+            overlay,
             offscreen,
             &offscreen_depth_clears,
             foreground_start,
-            postprocess_pipeline.lease.id,
-            targets.lease.id,
-            uniform,
+            postprocess.pipeline.lease.id,
+            postprocess.targets.lease.id,
+            postprocess.uniform,
             clear,
             depth_clear,
         )
@@ -2480,11 +1619,6 @@ impl Queue<'_> {
         frame_session: u64,
         overlay: &[MaterialRecord<'_>],
     ) -> Result<(), GraphicsError> {
-        if overlay.is_empty() {
-            return Err(GraphicsError::invalid_request(
-                "overlay pass must contain at least one record",
-            ));
-        }
         self.validate_material_records(frame_session, overlay)?;
         for record in overlay {
             validate_hdr_pair(record.pipeline.hdr, false)?;
@@ -3712,7 +2846,7 @@ impl<'resources> MeshSource<'resources> {
 }
 
 /// Uploaded sampled texture: RGBA8 sRGB, RGBA8 UNORM, block-compressed, or linear
-/// `RGBA16Float`, according to its creation API, and one 2D image, a cube of six square faces,
+/// `RGBA16Float`, according to its [`TexelData`], and one 2D image, a cube of six square faces,
 /// or an array of such cubes ([`Texture::dimension`]).
 #[derive(Debug, Eq, PartialEq)]
 pub struct Texture {
@@ -3721,6 +2855,273 @@ pub struct Texture {
     /// Whether the texture is a [`RenderTexture`]'s color, written by offscreen passes rather
     /// than uploads.
     render_target: bool,
+    /// Base level extent, which [`Device::update_texture`] replaces at.
+    width: u32,
+    height: u32,
+    /// Whether an update may supply the base level alone and regenerate the rest.
+    mips: MipChain,
+}
+
+/// What [`Device::create_texture`] uploads: the texture's shape, how it gets its mip levels,
+/// and its texels.
+///
+/// `data` holds one tightly packed image per layer, face and level, ordered by layer, then
+/// face (+X, -X, +Y, -Y, +Z, -Z), then level, the order KTX 2.0 and both native APIs use.
+/// Level zero has the shape's extent and each following level halves both dimensions,
+/// flooring at one texel, through 1×1. A 2D texture with [`MipChain::Single`] takes one image;
+/// a cube with [`MipChain::Supplied`] takes six complete chains, face after face; a cube array
+/// of two layers takes twelve.
+#[derive(Clone, Copy, Debug)]
+pub struct TextureDescriptor<'data> {
+    /// Dimension and extent.
+    pub shape: TextureShape,
+    /// Where levels below the base come from.
+    pub mips: MipChain,
+    /// Format and texels, one slice per image.
+    pub data: TexelData<'data>,
+}
+
+/// The dimension and extent of a [`TextureDescriptor`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum TextureShape {
+    /// One `width`×`height` image.
+    D2 {
+        /// Base level width in texels.
+        width: u32,
+        /// Base level height in texels.
+        height: u32,
+    },
+    /// Six square `size`×`size` faces.
+    Cube {
+        /// Base level face extent in texels.
+        size: u32,
+    },
+    /// `layers` cubes of one `size`, the shader choosing a cube by its array index, as in
+    /// `textureSampleLevel(map, sampler, direction, layer, lod)`.
+    CubeArray {
+        /// Base level face extent in texels.
+        size: u32,
+        /// Number of cubes, at least one.
+        layers: u32,
+    },
+}
+
+impl TextureShape {
+    /// The [`TextureDimension`] a texture of this shape has.
+    #[must_use]
+    pub const fn dimension(self) -> TextureDimension {
+        match self {
+            Self::D2 { .. } => TextureDimension::D2,
+            Self::Cube { .. } => TextureDimension::Cube,
+            Self::CubeArray { .. } => TextureDimension::CubeArray,
+        }
+    }
+
+    const fn extent(self) -> (u32, u32) {
+        match self {
+            Self::D2 { width, height } => (width, height),
+            Self::Cube { size } | Self::CubeArray { size, .. } => (size, size),
+        }
+    }
+
+    /// Images at each level: one, six faces, or six faces per layer.
+    fn images(self) -> usize {
+        match self {
+            Self::D2 { .. } => 1,
+            Self::Cube { .. } => 6,
+            Self::CubeArray { layers, .. } => 6 * layers as usize,
+        }
+    }
+}
+
+/// Where a texture's levels below the base come from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum MipChain {
+    /// Level zero alone; explicit LOD sampling clamps to it.
+    Single,
+    /// The complete chain to 1×1, supplied by the application, which owns its filtering,
+    /// color-space handling and, for a cube, any filtering across face edges. A block cannot
+    /// be filtered without decoding it, so block-compressed data supplies every level encoded.
+    Supplied,
+    /// Level zero, from which the GPU generates the rest of the chain: each level a
+    /// linear-filtered half-size copy of the one above (a 2×2 box filter for even extents, as
+    /// Vulkan blits and Metal's `generateMipmapsForTexture:` compute it). sRGB data is decoded
+    /// before averaging and encoded after. 2D only, not for block-compressed data, and
+    /// `Unsupported` when the adapter cannot blit the format with linear filtering.
+    Generated,
+}
+
+impl MipChain {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Single => "a single level",
+            Self::Supplied => "a supplied mip chain",
+            Self::Generated => "generated mips",
+        }
+    }
+}
+
+/// Texels in their format, one slice per image, laid out as [`TextureDescriptor`] describes.
+#[derive(Clone, Copy, Debug)]
+pub enum TexelData<'data> {
+    /// Tightly packed row-major RGBA8, decoded through the sRGB transfer function when sampled.
+    Rgba8Srgb(&'data [&'data [u8]]),
+    /// Tightly packed row-major RGBA8 sampled as stored, for linearly interpreted data such as
+    /// tangent-space normals.
+    Rgba8Unorm(&'data [&'data [u8]]),
+    /// Already-encoded 4×4 blocks, row-major and tightly packed exactly as an encoder writes
+    /// them. Mulciber uploads them as they are and the GPU samples them directly, so the
+    /// payload is a quarter (BC1 an eighth) of its RGBA8 equivalent in video memory as well as
+    /// on disk. Extents need not be multiples of four: a partial edge block is still a whole
+    /// block, so the 2×2 and 1×1 tail levels are one block each. `Unsupported` when the adapter
+    /// cannot sample the encoding.
+    BlockCompressed(BlockCompression, &'data [&'data [u8]]),
+    /// Linear `RGBA16Float` from row-major RGBA f32 texels, eight GPU bytes each.
+    ///
+    /// Conversion rounds to IEEE binary16, nearest with ties to even. Signed zero and half
+    /// subnormals are preserved in storage; smaller magnitudes underflow to signed zero, and
+    /// GPU sampling may flush subnormals on some hardware. No color transform or 0–1 clamp is
+    /// applied; NaN, infinity and magnitudes above 65504 are rejected. `Unsupported` when the
+    /// adapter has no linearly filterable `RGBA16Float` storage.
+    Rgba16Float(&'data [&'data [[f32; 4]]]),
+    /// [`TexelData::Rgba16Float`] from IEEE binary16 bit patterns, four per texel in RGBA
+    /// order, as the `half` crate's `f16::to_bits` gives them. They upload unchanged with no
+    /// conversion pass, so data already in half precision costs one copy. Infinity and NaN (an
+    /// all-ones exponent) are rejected.
+    Rgba16FloatBits(&'data [&'data [[u16; 4]]]),
+}
+
+impl<'data> TexelData<'data> {
+    /// Number of images supplied.
+    const fn len(self) -> usize {
+        match self {
+            Self::Rgba8Srgb(images)
+            | Self::Rgba8Unorm(images)
+            | Self::BlockCompressed(_, images) => images.len(),
+            Self::Rgba16Float(images) => images.len(),
+            Self::Rgba16FloatBits(images) => images.len(),
+        }
+    }
+
+    const fn is_float(self) -> bool {
+        matches!(self, Self::Rgba16Float(_) | Self::Rgba16FloatBits(_))
+    }
+
+    const fn is_block_compressed(self) -> bool {
+        matches!(self, Self::BlockCompressed(..))
+    }
+
+    /// The images as tightly packed bytes in their sampled format: byte formats as supplied,
+    /// float formats converted into `packed`, each diagnostic naming the cube layer and face.
+    /// The image count must already match `shape`.
+    fn byte_images<'out>(
+        self,
+        shape: TextureShape,
+        complete: bool,
+        packed: &'out mut Vec<Vec<u8>>,
+    ) -> Result<(SampledTextureFormat, Vec<&'out [u8]>), GraphicsError>
+    where
+        'data: 'out,
+    {
+        let (width, height) = shape.extent();
+        let (format, images) = match self {
+            Self::Rgba8Srgb(images) => (SampledTextureFormat::Srgb, images),
+            Self::Rgba8Unorm(images) => (SampledTextureFormat::Unorm, images),
+            Self::BlockCompressed(compression, images) => (compression.sampled(), images),
+            Self::Rgba16Float(images) => {
+                *packed = pack_images(shape, images, |chain| {
+                    sampled_texture::pack_float_levels(width, height, chain, complete)
+                })?;
+                return Ok((SampledTextureFormat::Float16, borrow_all(packed)));
+            }
+            Self::Rgba16FloatBits(images) => {
+                *packed = pack_images(shape, images, |chain| {
+                    sampled_texture::pack_half_levels(width, height, chain, complete)
+                })?;
+                return Ok((SampledTextureFormat::Float16, borrow_all(packed)));
+            }
+        };
+        Ok((format, images.to_vec()))
+    }
+}
+
+/// The device-independent checks of [`Device::create_texture`], returning the number of levels
+/// each face (or the 2D image) has.
+fn validate_texture_request(descriptor: &TextureDescriptor<'_>) -> Result<usize, GraphicsError> {
+    let TextureDescriptor { shape, mips, data } = *descriptor;
+    let (width, height) = shape.extent();
+    let label = shape.dimension().label();
+    if width == 0 || height == 0 {
+        return Err(GraphicsError::invalid_request(format!(
+            "{label} extent must be nonzero"
+        )));
+    }
+    if let TextureShape::CubeArray { size, layers } = shape {
+        cube_texture::require_layers(size, layers as usize)?;
+    }
+    if mips == MipChain::Generated && data.is_block_compressed() {
+        return Err(GraphicsError::invalid_request(
+            "a block-compressed texture cannot generate mips, because a block is not filtered \
+             without decoding it; supply the encoded chain",
+        ));
+    }
+    if mips == MipChain::Generated && shape.dimension() != TextureDimension::D2 {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            format!("generated mips are 2D only; supply the {label}'s chain"),
+        ));
+    }
+    if matches!(shape, TextureShape::CubeArray { .. })
+        && (!data.is_float() || mips != MipChain::Supplied)
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "a cube texture array takes RGBA16Float data with a supplied mip chain",
+        ));
+    }
+    let levels = match mips {
+        MipChain::Supplied => full_mip_chain_len(width, height),
+        MipChain::Single | MipChain::Generated => 1,
+    };
+    let expected = shape.images() * levels;
+    if data.len() != expected {
+        return Err(GraphicsError::invalid_request(format!(
+            "a {width}x{height} {label} with {} takes {expected} images, ordered by layer, face \
+             then level, but {} were supplied",
+            mips.label(),
+            data.len()
+        )));
+    }
+    Ok(levels)
+}
+
+fn borrow_all(packed: &[Vec<u8>]) -> Vec<&[u8]> {
+    packed.iter().map(Vec::as_slice).collect()
+}
+
+/// Packs each face's (or the 2D image's) chain of `images` with `pack`, naming the cube layer
+/// and face of the first failure.
+fn pack_images<T>(
+    shape: TextureShape,
+    images: &[&[T]],
+    pack: impl Fn(&[&[T]]) -> Result<Vec<Vec<u8>>, GraphicsError>,
+) -> Result<Vec<Vec<u8>>, GraphicsError> {
+    let per_image = images.len() / shape.images();
+    let mut packed = Vec::with_capacity(images.len());
+    for (index, chain) in images.chunks_exact(per_image).enumerate() {
+        let levels = pack(chain).map_err(|error| match shape {
+            TextureShape::D2 { .. } => error,
+            TextureShape::Cube { .. } => cube_texture::name_image(false, index, &error),
+            TextureShape::CubeArray { .. } => cube_texture::name_image(true, index, &error),
+        })?;
+        packed.extend(levels);
+    }
+    Ok(packed)
+}
+
+/// Splits one cube's images, face after face, into each face's `levels`-long chain.
+fn split_faces<T>(cube: &[T], levels: usize) -> [&[T]; 6] {
+    core::array::from_fn(|face| &cube[face * levels..(face + 1) * levels])
 }
 
 /// The shape of an uploaded [`Texture`], which decides the material slot it can feed.
@@ -3877,7 +3278,7 @@ impl Texture {
     }
 
     /// Whether this is a 2D texture, a cube texture or a cube texture array, fixed by its
-    /// creation API.
+    /// [`TextureShape`].
     #[must_use]
     pub const fn dimension(&self) -> TextureDimension {
         self.dimension
@@ -4847,23 +4248,6 @@ impl RenderTargets {
     }
 }
 
-/// Resources and dynamic data for one textured indexed draw.
-#[derive(Clone, Copy)]
-pub struct TexturedDraw<'resources> {
-    /// Geometry to draw.
-    pub mesh: &'resources Mesh,
-    /// Sampled color texture.
-    pub texture: &'resources Texture,
-    /// Pipeline compatible with the session's selected sample count and surface format.
-    pub pipeline: &'resources TexturedPipeline,
-    /// Targets matching the acquired surface generation.
-    pub targets: &'resources RenderTargets,
-    /// Column-major model-view-projection matrix.
-    pub model_view_projection: [[f32; 4]; 4],
-    /// Linear clear color.
-    pub clear: ClearColor,
-}
-
 /// Resources and dynamic data for one object in a textured scene pass.
 #[derive(Clone, Copy)]
 pub struct TexturedSceneDraw<'resources> {
@@ -4875,17 +4259,6 @@ pub struct TexturedSceneDraw<'resources> {
     pub pipeline: &'resources TexturedPipeline,
     /// Column-major model-view-projection matrix for this object.
     pub model_view_projection: [[f32; 4]; 4],
-}
-
-/// A sequence of textured objects rendered directly into one presentable frame.
-#[derive(Clone, Copy)]
-pub struct TexturedScene<'resources> {
-    /// Non-empty object sequence, encoded in slice order.
-    pub draws: &'resources [TexturedSceneDraw<'resources>],
-    /// Targets matching the acquired surface generation.
-    pub targets: &'resources RenderTargets,
-    /// Linear color used to clear the scene before its first object.
-    pub clear: ClearColor,
 }
 
 /// One homogeneous instance batch inside a textured scene pass.
@@ -4929,115 +4302,115 @@ pub struct MaterialRecord<'resources> {
     pub instances: &'resources [u8],
 }
 
-/// Resources and dynamic data for one offscreen textured draw followed by a fullscreen pass.
-#[derive(Clone, Copy)]
-pub struct PostprocessedDraw<'resources> {
-    /// Geometry to draw into the offscreen scene color.
-    pub mesh: &'resources Mesh,
-    /// Texture sampled by the scene pass.
-    pub texture: &'resources Texture,
-    /// Depth-tested scene pipeline compatible with the selected sample count.
-    pub scene_pipeline: &'resources TexturedPipeline,
-    /// Single-sample fullscreen pipeline that samples the resolved scene color.
-    pub postprocess_pipeline: &'resources PostprocessPipeline,
-    /// Offscreen, depth, and optional multisample targets matching the acquired frame.
-    pub targets: &'resources PostprocessTargets,
-    /// Uniform data copied for this submission; its length must exactly match the postprocess
-    /// pipeline declaration, and it must be empty when the pipeline declares no uniform.
-    pub uniform: &'resources [u8],
-    /// Column-major model-view-projection matrix for the scene draw.
-    pub model_view_projection: [[f32; 4]; 4],
-    /// Linear scene-pass clear color.
-    pub clear: ClearColor,
-}
-
-/// A sequence of textured objects followed by one fullscreen post-processing pass.
-#[derive(Clone, Copy)]
-pub struct PostprocessedScene<'resources> {
-    /// Non-empty object sequence, encoded in slice order into offscreen scene color.
-    pub draws: &'resources [TexturedSceneDraw<'resources>],
-    /// Single-sample fullscreen pipeline that samples the resolved scene color.
-    pub postprocess_pipeline: &'resources PostprocessPipeline,
-    /// Offscreen, depth, and optional multisample targets matching the acquired frame.
-    pub targets: &'resources PostprocessTargets,
-    /// Uniform data copied for this submission; its length must exactly match the postprocess
-    /// pipeline declaration, and it must be empty when the pipeline declares no uniform.
-    pub uniform: &'resources [u8],
-    /// Linear color used to clear the scene before its first object.
-    pub clear: ClearColor,
-}
-
-/// One narrow scene recipe accepted by [`Queue::render_and_present`].
+/// One scene recipe accepted by [`Queue::render_and_present`].
 #[derive(Clone, Copy)]
 pub struct SceneSubmission<'resources> {
-    /// Geometry records and their submission grouping.
-    pub content: SceneContent<'resources>,
-    /// Direct or postprocessed destination for the scene pass.
-    pub output: SceneOutput<'resources>,
-    /// Optional depth-only pre-pass work — a single map or one pass per cascade layer —
-    /// rendered before the scene pass; composes with material content only.
-    pub shadow: Option<ShadowPrepass<'resources>>,
-    /// Optional non-empty material records drawn into the presentable target after the
-    /// fullscreen postprocess draw, at the surface's native extent.
-    ///
-    /// The overlay keeps record-based text and UI sharp while a below-native [`RenderScale`]
-    /// shrinks the scene pass: overlay records never touch the scaled offscreen storage. It
-    /// composes with material content and postprocessed output only. The presentable pass
-    /// carries no depth target, so every overlay record's pipeline must declare
-    /// [`DepthMode::Off`] and no depth-texture slot; painter's order is the record order.
-    /// Overlay pipelines rasterize at one sample, so [`BlendMode::Cutout`] degrades to a hard
-    /// alpha threshold here.
-    pub overlay: Option<&'resources [MaterialRecord<'resources>]>,
-    /// Offscreen passes into [`RenderTexture`]s, encoded in slice order after any shadow
-    /// prepass (whose map their records may sample) and before the scene pass, so the scene
-    /// and overlay records may sample what they rendered. Empty for none; any composes with
-    /// material content and postprocessed output only.
-    pub offscreen: &'resources [OffscreenPass<'resources>],
-    /// Linear color used to clear the scene before its first draw or batch.
+    /// What the scene pass draws, the passes composed with it, and where it goes.
+    pub scene: Scene<'resources>,
+    /// Linear color used to clear the scene before its first draw, batch or record.
     pub clear: ClearColor,
 }
 
-/// Geometry content for one [`SceneSubmission`].
+/// The content and destination of one [`SceneSubmission`].
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub enum SceneContent<'resources> {
+pub enum Scene<'resources> {
     /// Non-empty heterogeneous textured records encoded in slice order.
-    Textured(&'resources [TexturedSceneDraw<'resources>]),
-    /// Non-empty homogeneous instance batches encoded in slice order.
-    Instanced(&'resources [TexturedInstanceBatch<'resources>]),
-    /// Non-empty application-authored material records encoded in slice order.
-    Material(&'resources [MaterialRecord<'resources>]),
-    /// Ordered world and foreground records, separated by a fresh depth clear.
-    ///
-    /// Records before `foreground_start` draw the world. The remaining records draw
-    /// over its color with independent depth, before postprocessing and the HUD overlay.
-    /// Both groups must be non-empty and use the same depth comparison direction.
-    /// The foreground retains scene resolution, MSAA, material bindings and shadow sampling.
-    /// Requires [`SceneOutput::Postprocessed`].
-    MaterialWithForeground {
-        /// World records followed by foreground records; staged once in this order.
-        records: &'resources [MaterialRecord<'resources>],
-        /// Index of the first foreground record, strictly inside `records`.
-        foreground_start: usize,
+    Textured {
+        /// Objects, each selecting its mesh, texture, pipeline and transform.
+        draws: &'resources [TexturedSceneDraw<'resources>],
+        /// Direct or postprocessed destination.
+        output: SceneOutput<'resources>,
     },
+    /// Non-empty homogeneous instance batches encoded in slice order.
+    Instanced {
+        /// Batches, each drawing one mesh once per transform.
+        batches: &'resources [TexturedInstanceBatch<'resources>],
+        /// Direct or postprocessed destination.
+        output: SceneOutput<'resources>,
+    },
+    /// Application-authored material records with the shadow, offscreen, foreground and
+    /// overlay passes that compose with them.
+    Material(MaterialScene<'resources>),
 }
 
-/// Output path for one [`SceneSubmission`].
+/// Destination of a textured or instanced [`Scene`].
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub enum SceneOutput<'resources> {
     /// Render directly into generation-matched presentable targets.
     Direct(&'resources RenderTargets),
     /// Resolve into sampled scene color, then run one fullscreen postprocess pass.
+    Postprocessed(Postprocess<'resources>),
+}
+
+/// The fullscreen pass that samples resolved scene color and writes the presentable target.
+#[derive(Clone, Copy)]
+pub struct Postprocess<'resources> {
+    /// Fullscreen pipeline that samples the resolved scene color.
+    pub pipeline: &'resources PostprocessPipeline,
+    /// Generation-matched offscreen, depth, and optional multisample targets.
+    pub targets: &'resources PostprocessTargets,
+    /// Uniform data copied for this submission; its length must exactly match the pipeline
+    /// declaration, and it must be empty when the pipeline declares no uniform.
+    pub uniform: &'resources [u8],
+}
+
+/// Material records drawn in one depth-tested scene pass, after an optional shadow prepass.
+#[derive(Clone, Copy)]
+pub struct MaterialScene<'resources> {
+    /// Non-empty records encoded in slice order.
+    pub records: &'resources [MaterialRecord<'resources>],
+    /// Optional depth-only pre-pass work — a single map or one pass per cascade layer —
+    /// rendered before any offscreen pass and the scene pass.
+    pub shadow: Option<ShadowPrepass<'resources>>,
+    /// Direct or postprocessed destination, and the passes postprocessing makes available.
+    pub output: MaterialOutput<'resources>,
+}
+
+/// Destination of a [`MaterialScene`].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum MaterialOutput<'resources> {
+    /// Render directly into generation-matched presentable targets.
+    Direct(&'resources RenderTargets),
+    /// Resolve into sampled scene color and run one fullscreen postprocess pass, with the
+    /// passes that need that resolve.
     Postprocessed {
-        /// Fullscreen pipeline that samples the resolved scene color.
-        pipeline: &'resources PostprocessPipeline,
-        /// Generation-matched offscreen, depth, and optional multisample targets.
-        targets: &'resources PostprocessTargets,
-        /// Uniform data copied for this submission; its length must exactly match the pipeline
-        /// declaration, and it must be empty when the pipeline declares no uniform.
-        uniform: &'resources [u8],
+        /// The fullscreen pass.
+        postprocess: Postprocess<'resources>,
+        /// Index of the first foreground record, strictly inside the scene's records, or
+        /// `None` for a world alone.
+        ///
+        /// Records before it draw the world. The rest draw over its color with independent
+        /// depth, after a fresh depth clear and before postprocessing and the overlay. Both
+        /// groups must use the same depth comparison direction. The foreground retains scene
+        /// resolution, MSAA, material bindings and shadow sampling, and cannot sample scene
+        /// depth.
+        foreground_start: Option<usize>,
+        /// Offscreen passes into [`RenderTexture`]s, encoded in slice order after any shadow
+        /// prepass (whose map their records may sample) and before the scene pass, so the
+        /// scene and overlay records may sample what they rendered. Empty for none.
+        offscreen: &'resources [OffscreenPass<'resources>],
+        /// Material records drawn into the presentable target after the fullscreen
+        /// postprocess draw, at the surface's native extent. Empty for none.
+        ///
+        /// The overlay keeps record-based text and UI sharp while a below-native
+        /// [`RenderScale`] shrinks the scene pass: overlay records never touch the scaled
+        /// offscreen storage. The presentable pass carries no depth target, so every overlay
+        /// record's pipeline must declare [`DepthMode::Off`] and no depth-texture slot;
+        /// painter's order is the record order. Overlay pipelines rasterize at one sample, so
+        /// [`BlendMode::Cutout`] degrades to a hard alpha threshold here.
+        overlay: &'resources [MaterialRecord<'resources>],
     },
+}
+
+/// The passes of [`MaterialOutput::Postprocessed`] besides the postprocess itself.
+#[derive(Clone, Copy)]
+struct PostprocessedMaterialPasses<'resources> {
+    foreground_start: Option<usize>,
+    offscreen: &'resources [OffscreenPass<'resources>],
+    overlay: &'resources [MaterialRecord<'resources>],
 }
 
 /// Validated postprocess creation inputs handed to the native backends.
@@ -5138,11 +4511,6 @@ impl Drop for Frame<'_> {
 pub(crate) fn full_mip_chain_len(width: u32, height: u32) -> usize {
     let largest = width.max(height);
     usize::try_from(32 - largest.leading_zeros()).expect("level count fits usize")
-}
-
-/// Presents six single-level faces as six one-level chains, borrowing each face in place.
-fn single_level_faces<T>(faces: &[T; 6]) -> [&[T]; 6] {
-    faces.each_ref().map(core::slice::from_ref)
 }
 
 /// Extent of one mip level along one axis, flooring at one texel.
@@ -5982,75 +5350,28 @@ fn reclaim_lazy_resources(shared: &Shared<'_>) -> Result<(), GraphicsError> {
     Ok(())
 }
 
-fn validate_scene_recipe(submission: &SceneSubmission<'_>) -> Result<Option<usize>, GraphicsError> {
-    let (records, foreground) = match submission.content {
-        SceneContent::Material(records) => (records, None),
-        SceneContent::MaterialWithForeground {
-            records,
+/// Checks a material scene's foreground split and that scene-depth sampling and the depth
+/// comparison direction suit its world and foreground records.
+fn validate_material_scene_recipe(material: &MaterialScene<'_>) -> Result<(), GraphicsError> {
+    let (foreground, hdr_postprocessed) = match material.output {
+        MaterialOutput::Direct(_) => (None, false),
+        MaterialOutput::Postprocessed {
+            postprocess,
             foreground_start,
-        } => {
-            validate_foreground_start(records.len(), foreground_start)?;
-            (records, Some(foreground_start))
-        }
-        _ => (&[][..], None),
+            ..
+        } => (foreground_start, postprocess.targets.hdr),
     };
+    if let Some(start) = foreground {
+        validate_foreground_start(material.records.len(), start)?;
+    }
     validate_scene_depth_order(
-        records
+        material
+            .records
             .iter()
             .map(|record| (record.pipeline.scene_depth, record.pipeline.depth)),
         foreground,
-        matches!(submission.output, SceneOutput::Postprocessed { targets, .. } if targets.hdr),
-    )?;
-    if submission.shadow.is_some()
-        && !matches!(
-            submission.content,
-            SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. }
-        )
-    {
-        return Err(GraphicsError::with_kind(
-            GraphicsErrorKind::Unsupported,
-            "the shadow pass composes with material scene content only",
-        ));
-    }
-    if !submission.offscreen.is_empty()
-        && !matches!(
-            (submission.content, submission.output),
-            (
-                SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. },
-                SceneOutput::Postprocessed { .. }
-            )
-        )
-    {
-        return Err(GraphicsError::with_kind(
-            GraphicsErrorKind::Unsupported,
-            "offscreen passes compose with material scene content and postprocessed output only",
-        ));
-    }
-    if submission.overlay.is_some()
-        && !matches!(
-            (submission.content, submission.output),
-            (
-                SceneContent::Material(_) | SceneContent::MaterialWithForeground { .. },
-                SceneOutput::Postprocessed { .. }
-            )
-        )
-    {
-        return Err(GraphicsError::with_kind(
-            GraphicsErrorKind::Unsupported,
-            "the overlay pass composes with material scene content and postprocessed output \
-                 only",
-        ));
-    }
-    match submission.content {
-        SceneContent::MaterialWithForeground {
-            records,
-            foreground_start,
-        } => {
-            validate_foreground_start(records.len(), foreground_start)?;
-            Ok(Some(foreground_start))
-        }
-        _ => Ok(None),
-    }
+        hdr_postprocessed,
+    )
 }
 
 fn validate_foreground_start(
@@ -6092,66 +5413,6 @@ mod foreground_tests {
         assert!(validate_foreground_start(10, 9).is_ok());
         for (count, split) in [(0, 0), (1, 0), (1, 1), (3, 0), (3, 3), (3, usize::MAX)] {
             assert!(validate_foreground_start(count, split).is_err());
-        }
-    }
-}
-
-#[cfg(test)]
-mod offscreen_tests {
-    use super::{
-        ClearColor, DropQueue, GraphicsErrorKind, OffscreenPass, RenderTargets, RenderTexture,
-        ResourceKind, ResourceLease, SceneContent, SceneOutput, SceneSubmission, Texture,
-        TextureDimension, validate_scene_recipe,
-    };
-    use crate::resource::Arena;
-    use crate::{SurfaceExtent, SurfaceInfo};
-    use std::rc::Rc;
-
-    fn lease(arena: &mut Arena<()>, kind: ResourceKind) -> ResourceLease {
-        let mut lease = ResourceLease::new(
-            1,
-            arena.insert(()).expect("test identity"),
-            kind,
-            Rc::new(DropQueue::default()),
-        );
-        lease.disarm();
-        lease
-    }
-
-    #[test]
-    fn offscreen_passes_need_material_content_and_postprocessed_output() {
-        let mut arena = Arena::new("resource");
-        let target = RenderTexture {
-            texture: Texture {
-                lease: lease(&mut arena, ResourceKind::Texture),
-                dimension: TextureDimension::D2,
-                render_target: true,
-            },
-            width: 4,
-            height: 4,
-        };
-        let targets = RenderTargets {
-            lease: lease(&mut arena, ResourceKind::RenderTargets),
-            info: SurfaceInfo::initial(SurfaceExtent::new(4, 4)).expect("non-empty extent"),
-        };
-        let passes = [OffscreenPass {
-            target: &target,
-            records: &[],
-            clear: ClearColor::BLACK,
-        }];
-        let submission = |content, offscreen| SceneSubmission {
-            content,
-            output: SceneOutput::Direct(&targets),
-            shadow: None,
-            overlay: None,
-            offscreen,
-            clear: ClearColor::BLACK,
-        };
-        for content in [SceneContent::Material(&[]), SceneContent::Textured(&[])] {
-            let refused = validate_scene_recipe(&submission(content, &passes))
-                .expect_err("offscreen passes need postprocessed material scenes");
-            assert_eq!(refused.kind(), GraphicsErrorKind::Unsupported);
-            assert!(validate_scene_recipe(&submission(content, &[])).is_ok());
         }
     }
 }
@@ -6400,7 +5661,7 @@ mod cube_texture_slot_tests {
     use std::vec;
 
     use super::{
-        MATERIAL_TEXTURE_COUNT_LIMIT, MaterialBinding, Texture, TextureDimension,
+        MATERIAL_TEXTURE_COUNT_LIMIT, MaterialBinding, MipChain, Texture, TextureDimension,
         validate_bindings_against_interface, validate_fixed_pipeline_texture,
         validate_record_textures,
     };
@@ -6438,6 +5699,9 @@ mod cube_texture_slot_tests {
             lease,
             dimension,
             render_target: false,
+            width: 1,
+            height: 1,
+            mips: MipChain::Single,
         }
     }
 

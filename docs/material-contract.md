@@ -58,16 +58,17 @@ a lease-free borrow, `GeometrySource::MeshPart` selects it for a material record
 `MeshSource::MeshPart` selects it for a shadow record. Part zero remains the whole/default mesh.
 Every part inherits the parent's layout, session, generation, and destruction boundary.
 
-`Device::create_rgba8_srgb_texture_with_mips` and
-`Device::create_rgba8_unorm_texture_with_mips` upload application-supplied mip chains: the base
-level through 1x1, each level halving and flooring at one texel, every level's byte count validated
-against its extent. Their non-mip peers upload one base level. sRGB textures apply the native sRGB
+`Device::create_texture` with `TexelData::Rgba8Srgb` or `TexelData::Rgba8Unorm` and
+`MipChain::Supplied` uploads an application-supplied mip chain: the base level through 1x1, each
+level halving and flooring at one texel, every level's byte count validated against its extent.
+`MipChain::Single` uploads one base level. sRGB textures apply the native sRGB
 transfer-function decode while UNORM textures expose normalized linear values, allowing color maps
 and data maps such as tangent-space normals to share the existing `Texture` binding type. Sampler
 slots follow their declared filter across levels — `Linear` interpolates between them, `Nearest`
 picks one — so mip behavior costs no new declaration axis, and single-level textures sample exactly
-as before. Mip content (downsampling filter, color-space handling) is application policy; native
-generation is not part of the vocabulary.
+as before. Supplied mip content (downsampling filter, color-space handling) is application policy;
+`MipChain::Generated` later added native generation of 2D chains as a separate, opt-in choice (see
+[float texture uploads](float-texture-uploads.md#binary16-bit-uploads-and-gpu-generated-mips-unreleased)).
 
 `MaterialBinding::Sampler` applies one `SamplerAddress` to every axis.
 `MaterialBinding::SamplerPerAxis` takes a `SamplerAddressPerAxis { u, v, w }` instead, for textures
@@ -84,10 +85,11 @@ outgrow the 512-byte uniform stride. Shadow pipelines accept the same slot
 (`ShadowRecord.storage`), so a skinned caster shadows with the same palette as its material
 record. No persistent application-owned buffer handle is part of the vocabulary.
 
-`SceneContent` grows one form: `Material(&[MaterialRecord])`, each record selecting a material
-pipeline, a layout-matching mesh, one texture per declared texture slot in ascending binding
-order, and its uniform bytes. Each sampler slot declares its filter (`Nearest`/`Linear`) and
-address mode (`Repeat`/`ClampToEdge`); the pipeline owns one native sampler per declared slot.
+`Scene::Material(MaterialScene { records, shadow, output })` carries `records`, a non-empty
+`&[MaterialRecord]`, each record selecting a material pipeline, a layout-matching mesh, one
+texture per declared texture slot in ascending binding order, and its uniform bytes. Each
+sampler slot declares its filter (`Nearest`/`Linear`) and address mode (`Repeat`/`ClampToEdge`);
+the pipeline owns one native sampler per declared slot.
 The descriptor also declares the pipeline's `BlendMode` — `Opaque`, alpha-to-coverage `Cutout`,
 or `PremultipliedTranslucent` source-over — and `DepthMode` (`TestWrite`, `TestOnly`,
 `TestWriteGreater`, `TestOnlyGreater`, `Off`), a fixed mode set baked into the native pipeline
@@ -105,21 +107,21 @@ mixed-session diagnostics name the new handle kind.
 The shadow recipe adds two resources and one submission axis. `Device::create_shadow_map`
 creates a square sampleable depth target; `Device::create_shadow_pipeline` builds a depth-only
 pipeline from a vertex entry point with at most one uniform binding, consuming any subset of
-its declared vertex layout. `SceneSubmission` optionally carries one `ShadowPass` — the map
-plus depth-only `ShadowRecord`s — rendered before the scene pass, and material pipelines may
-declare one `DepthTexture` slot (supplied per record from a shadow map) plus one
-`ComparisonSampler` slot whose native state is fixed: linear filtering, clamp-to-edge, and a
-less-or-equal comparison, so `textureSampleCompare` returns one where the reference depth is
-at most the stored depth. Depth bias is application policy in the authored shader. A record
-must supply a map exactly when its pipeline declares the slot, and sampling a map no shadow
-pass has rendered — this frame or earlier — is rejected by name before the frame is consumed.
-`ShadowMap` and `ShadowPipeline` join the explicit-destroy and drop-reclamation paths.
+its declared vertex layout. `MaterialScene.shadow` optionally carries one `ShadowPass`
+(`ShadowPrepass::Single`) — the map plus depth-only `ShadowRecord`s — rendered before the scene
+pass, and material pipelines may declare one `DepthTexture` slot (supplied per record from a
+shadow map) plus one `ComparisonSampler` slot whose native state is fixed: linear filtering,
+clamp-to-edge, and a less-or-equal comparison, so `textureSampleCompare` returns one where the
+reference depth is at most the stored depth. Depth bias is application policy in the authored
+shader. A record must supply a map exactly when its pipeline declares the slot, and sampling a
+map no shadow pass has rendered — this frame or earlier — is rejected by name before the frame
+is consumed. `ShadowMap` and `ShadowPipeline` join the explicit-destroy and drop-reclamation paths.
 
 The cascaded extension generalizes both ends of that recipe while keeping cascade policy
 application-owned. `Device::create_shadow_map_array` creates a square layered depth target
-(one through eight layers, one cascade per layer), and `SceneSubmission.shadow` becomes a
-`ShadowPrepass`: `Single` wraps the existing one-map `ShadowPass`, while `Cascaded` carries a
-`CascadedShadowPass` — the layered map plus one depth-only record list per layer, in layer
+(one through eight layers, one cascade per layer), and `MaterialScene.shadow` is an
+`Option<ShadowPrepass>`: `Single` wraps the existing one-map `ShadowPass`, while `Cascaded`
+carries a `CascadedShadowPass` — the layered map plus one depth-only record list per layer, in layer
 order, with the list count validated against the map's layer count. Each cascade renders with
 its own record list because every cascade carries its own light matrix in its record uniforms
 and the application may cull casters per cascade; a cascade with no records still clears its
@@ -311,11 +313,12 @@ remains outstanding, per the [macOS runbook](macos-validation.md).
 
 ## Depth-isolated foreground checkpoint
 
-`SceneContent::MaterialWithForeground` splits one ordered material record list into
-non-empty world and foreground groups. The engine preserves world color, clears depth,
-and draws the foreground before postprocessing and the native-resolution HUD overlay.
-Both groups retain the scene's resolution, sample count, material/shadow bindings and
-must use the same depth comparison direction. Direct output is not supported by this recipe.
+`MaterialOutput::Postprocessed { foreground_start: Some(split), .. }` splits the scene's
+ordered material records at `split` into non-empty world and foreground groups. The engine
+preserves world color, clears depth, and draws the foreground before postprocessing and the
+native-resolution HUD overlay. Both groups retain the scene's resolution, sample count,
+material/shadow bindings and must use the same depth comparison direction.
+`MaterialOutput::Direct` has no split, so direct output is unrepresentable for this recipe.
 
 Vulkan uses a second dynamic-rendering scope with color LOAD, depth CLEAR, and explicit
 attachment reuse barriers. Metal uses a second render encoder; postprocessed MSAA color

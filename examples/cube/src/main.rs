@@ -6,8 +6,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, SampleCount, ShaderArtifact,
-    TexturedDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, SampleCount, Scene,
+    SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
+    TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -38,9 +39,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
-    let texture = graphics
-        .device
-        .create_rgba8_srgb_texture(8, 8, &checkerboard())?;
+    let texture = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard()]),
+    })?;
     let pipeline = graphics
         .device
         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -61,17 +67,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                         targets = graphics.device.create_render_targets(info)?;
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
-                    graphics.queue.draw_textured_and_present(
+                    graphics.queue.render_and_present(
                         frame,
-                        TexturedDraw {
-                            mesh: &mesh,
-                            texture: &texture,
-                            pipeline: &pipeline,
-                            targets: &targets,
-                            model_view_projection: transform(
-                                started.elapsed().as_secs_f32(),
-                                aspect,
-                            ),
+                        SceneSubmission {
+                            scene: Scene::Textured {
+                                draws: &[TexturedSceneDraw {
+                                    mesh: &mesh,
+                                    texture: &texture,
+                                    pipeline: &pipeline,
+                                    model_view_projection: transform(
+                                        started.elapsed().as_secs_f32(),
+                                        aspect,
+                                    ),
+                                }],
+                                output: SceneOutput::Direct(&targets),
+                            },
                             clear: CLEAR,
                         },
                     )?;

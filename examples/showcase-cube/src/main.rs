@@ -7,8 +7,9 @@ use std::time::Instant;
 
 use glam::Quat;
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessedDraw, SampleCount,
-    ShaderArtifact,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, SampleCount,
+    Scene, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor,
+    TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{
     Application, ButtonState, InputEvent, KeyCode, LogicalPosition, LogicalSize, PointerButton,
@@ -140,9 +141,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
-    let texture = graphics
-        .device
-        .create_rgba8_srgb_texture(8, 8, &checkerboard())?;
+    let texture = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard()]),
+    })?;
     let scene_pipeline = graphics
         .device
         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -174,21 +180,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                     let animation_seconds =
                         interaction.animation_time(started.elapsed().as_secs_f32());
-                    graphics.queue.draw_textured_postprocessed_and_present(
+                    graphics.queue.render_and_present(
                         frame,
-                        PostprocessedDraw {
-                            mesh: &mesh,
-                            texture: &texture,
-                            scene_pipeline: &scene_pipeline,
-                            postprocess_pipeline: &postprocess_pipeline,
-                            targets: &targets,
-                            uniform: &[],
-                            model_view_projection: interactive_transform(
-                                animation_seconds,
-                                aspect,
-                                interaction.orientation,
-                                4.0 + interaction.distance_offset,
-                            ),
+                        SceneSubmission {
+                            scene: Scene::Textured {
+                                draws: &[TexturedSceneDraw {
+                                    mesh: &mesh,
+                                    texture: &texture,
+                                    pipeline: &scene_pipeline,
+                                    model_view_projection: interactive_transform(
+                                        animation_seconds,
+                                        aspect,
+                                        interaction.orientation,
+                                        4.0 + interaction.distance_offset,
+                                    ),
+                                }],
+                                output: SceneOutput::Postprocessed(Postprocess {
+                                    pipeline: &postprocess_pipeline,
+                                    targets: &targets,
+                                    uniform: &[],
+                                }),
+                            },
                             clear: CLEAR,
                         },
                     )?;

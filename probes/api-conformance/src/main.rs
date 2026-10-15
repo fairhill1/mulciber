@@ -13,13 +13,13 @@ use std::time::Instant;
 
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialRecord, Mesh, MeshIndices,
-    MeshSource, OpenedGraphics, PostprocessPipelineDescriptor, PostprocessedDraw,
-    PostprocessedScene, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
+    GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialRecord,
+    MaterialScene, Mesh, MeshIndices, MeshSource, MipChain, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
     SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord,
-    ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexturedDraw, TexturedInstanceBatch,
-    TexturedScene, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute, VertexFormat,
-    VertexLayout,
+    ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, TextureDescriptor, TextureShape,
+    TexturedInstanceBatch, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute,
+    VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -433,21 +433,15 @@ impl<'window> Cases<'window> {
                         "out-of-range mesh part index rejected",
                     )?;
                     expect_error(
-                        graphics
-                            .device
-                            .create_rgba8_srgb_texture(4, 4, &[0_u8; 4])
-                            .map(|_| ()),
+                        rgba8_srgb(&graphics.device, 4, 4, &[0_u8; 4]).map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "does not match",
                         "texture byte mismatch rejected",
                     )?;
                     expect_error(
-                        graphics
-                            .device
-                            .create_rgba8_srgb_texture(0, 4, &[])
-                            .map(|_| ()),
+                        rgba8_srgb(&graphics.device, 0, 4, &[]).map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
-                        "does not match",
+                        "extent must be nonzero",
                         "zero-dimension texture rejected",
                     )?;
                 }
@@ -469,9 +463,7 @@ impl<'window> Cases<'window> {
                     "part index 1",
                     "invalid mesh part selection rejected before acquisition",
                 )?;
-                let texture = graphics
-                    .device
-                    .create_rgba8_srgb_texture(2, 2, &[255_u8; 16])?;
+                let texture = rgba8_srgb(&graphics.device, 2, 2, &[255_u8; 16])?;
                 let pipeline = graphics
                     .device
                     .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -499,18 +491,19 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let mut transform = IDENTITY;
                 transform[3][3] = f32::NAN;
-                let draw = TexturedDraw {
+                let draws = [TexturedSceneDraw {
                     mesh: self.mesh.as_ref().expect("mesh exists"),
                     texture: self.texture.as_ref().expect("texture exists"),
                     pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                    targets: self.targets.as_ref().expect("targets exist"),
                     model_view_projection: transform,
-                    clear: ClearColor::BLACK,
-                };
+                }];
                 expect_error(
                     graphics
                         .queue
-                        .draw_textured_and_present(frame, draw)
+                        .render_and_present(
+                            frame,
+                            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+                        )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
                     "finite",
@@ -546,18 +539,22 @@ impl<'window> Cases<'window> {
                     self.step = 5;
                 } else {
                     let graphics = self.graphics.as_mut().expect("session A is open");
-                    let draw = TexturedDraw {
+                    let draws = [TexturedSceneDraw {
                         mesh: self.mesh.as_ref().expect("mesh exists"),
                         texture: self.texture.as_ref().expect("texture exists"),
                         pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                        targets: self.targets.as_ref().expect("targets exist"),
                         model_view_projection: IDENTITY,
-                        clear: ClearColor::BLACK,
-                    };
+                    }];
                     expect_error(
                         graphics
                             .queue
-                            .draw_textured_and_present(frame, draw)
+                            .render_and_present(
+                                frame,
+                                textured_scene(
+                                    &draws,
+                                    self.targets.as_ref().expect("targets exist"),
+                                ),
+                            )
                             .map(|_| ()),
                         GraphicsErrorKind::StaleResource,
                         "stale",
@@ -633,11 +630,7 @@ impl<'window> Cases<'window> {
                         .device
                         .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
                 );
-                self.texture = Some(graphics.device.create_rgba8_srgb_texture(
-                    2,
-                    2,
-                    &[255_u8; 16],
-                )?);
+                self.texture = Some(rgba8_srgb(&graphics.device, 2, 2, &[255_u8; 16])?);
                 self.pipeline = Some(
                     graphics
                         .device
@@ -686,13 +679,9 @@ impl<'window> Cases<'window> {
                     self.pipeline.as_ref().expect("pipeline exists"),
                 );
                 let graphics = self.graphics.as_mut().expect("session A is open");
-                let disposition = graphics.queue.draw_textured_scene_and_present(
+                let disposition = graphics.queue.render_and_present(
                     frame,
-                    TexturedScene {
-                        draws: &draws,
-                        targets: self.targets.as_ref().expect("targets exist"),
-                        clear: ClearColor::BLACK,
-                    },
+                    textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("multi-draw presentation after resource replacement");
@@ -711,24 +700,26 @@ impl<'window> Cases<'window> {
                     self.pipeline.as_ref().expect("pipeline exists"),
                 );
                 let graphics = self.graphics.as_mut().expect("session A is open");
-                let disposition = graphics
-                    .queue
-                    .draw_textured_scene_postprocessed_and_present(
-                        frame,
-                        PostprocessedScene {
+                let disposition = graphics.queue.render_and_present(
+                    frame,
+                    SceneSubmission {
+                        scene: Scene::Textured {
                             draws: &draws,
-                            postprocess_pipeline: self
-                                .postprocess_pipeline
-                                .as_ref()
-                                .expect("postprocess pipeline exists"),
-                            targets: self
-                                .postprocess_targets
-                                .as_ref()
-                                .expect("postprocess targets exist"),
-                            uniform: &[],
-                            clear: ClearColor::BLACK,
+                            output: SceneOutput::Postprocessed(Postprocess {
+                                pipeline: self
+                                    .postprocess_pipeline
+                                    .as_ref()
+                                    .expect("postprocess pipeline exists"),
+                                targets: self
+                                    .postprocess_targets
+                                    .as_ref()
+                                    .expect("postprocess targets exist"),
+                                uniform: &[],
+                            }),
                         },
-                    )?;
+                        clear: ClearColor::BLACK,
+                    },
+                )?;
                 assert_presented(disposition)?;
                 self.pass("postprocessed multi-draw presentation");
                 self.step = 8;
@@ -753,11 +744,12 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        content: SceneContent::Instanced(&batches),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
+                        scene: Scene::Instanced {
+                            batches: &batches,
+                            output: SceneOutput::Direct(
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
+                        },
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -785,21 +777,20 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        content: SceneContent::Instanced(&batches),
-                        output: SceneOutput::Postprocessed {
-                            pipeline: self
-                                .postprocess_pipeline
-                                .as_ref()
-                                .expect("postprocess pipeline exists"),
-                            targets: self
-                                .postprocess_targets
-                                .as_ref()
-                                .expect("postprocess targets exist"),
-                            uniform: &[],
+                        scene: Scene::Instanced {
+                            batches: &batches,
+                            output: SceneOutput::Postprocessed(Postprocess {
+                                pipeline: self
+                                    .postprocess_pipeline
+                                    .as_ref()
+                                    .expect("postprocess pipeline exists"),
+                                targets: self
+                                    .postprocess_targets
+                                    .as_ref()
+                                    .expect("postprocess targets exist"),
+                                uniform: &[],
+                            }),
                         },
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1026,16 +1017,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1070,16 +1056,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1118,16 +1099,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1252,14 +1228,11 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                    direct_material_scene(
+                        &records,
+                        None,
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("material presentation");
@@ -1366,14 +1339,11 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                    direct_material_scene(
+                        &records,
+                        None,
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 let graphics = self.graphics.as_ref().expect("session A is open");
@@ -1443,16 +1413,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1464,52 +1429,8 @@ impl<'window> Cases<'window> {
                     .device
                     .destroy_material_pipeline(greater_pipeline)?;
                 self.pass("mixed depth compare directions rejected");
-                self.step = 17;
-                Ok(false)
-            }
-            // The overlay pass composes with material content and postprocessed output only;
-            // pairing it with direct output is rejected by name.
-            17 => {
-                let Some(frame) = self.acquire(metrics)? else {
-                    return Ok(false);
-                };
-                let texture = self.texture.as_ref().expect("texture exists");
-                let textures = [texture, texture];
-                let uniform = material_uniform();
-                let records = [MaterialRecord {
-                    pipeline: self.material_pipeline.as_ref().expect("material pipeline"),
-                    geometry: GeometrySource::Mesh(
-                        self.material_mesh.as_ref().expect("material mesh"),
-                    ),
-                    textures: &textures,
-                    shadow_map: None,
-                    uniform: &uniform,
-                    storage: &[],
-                    instances: &[],
-                }];
-                let graphics = self.graphics.as_mut().expect("session A is open");
-                expect_error(
-                    graphics
-                        .queue
-                        .render_and_present(
-                            frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: Some(&records),
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
-                        )
-                        .map(|_| ()),
-                    GraphicsErrorKind::Unsupported,
-                    "overlay pass composes with material scene content and postprocessed",
-                    "overlay with direct output rejected",
-                )?;
-                self.pass("overlay with direct output rejected");
+                // Step 17 rejected an overlay paired with direct output; `MaterialOutput::Direct`
+                // now has no overlay to supply.
                 self.step = 18;
                 Ok(false)
             }
@@ -1540,21 +1461,26 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Postprocessed {
-                                    pipeline: self
-                                        .postprocess_pipeline
-                                        .as_ref()
-                                        .expect("postprocess pipeline exists"),
-                                    targets: self
-                                        .postprocess_targets
-                                        .as_ref()
-                                        .expect("postprocess targets exist"),
-                                    uniform: &[],
-                                },
-                                shadow: None,
-                                overlay: Some(&records),
-                                offscreen: &[],
+                                scene: Scene::Material(MaterialScene {
+                                    records: &records,
+                                    shadow: None,
+                                    output: MaterialOutput::Postprocessed {
+                                        postprocess: Postprocess {
+                                            pipeline: self
+                                                .postprocess_pipeline
+                                                .as_ref()
+                                                .expect("postprocess pipeline exists"),
+                                            targets: self
+                                                .postprocess_targets
+                                                .as_ref()
+                                                .expect("postprocess targets exist"),
+                                            uniform: &[],
+                                        },
+                                        foreground_start: None,
+                                        offscreen: &[],
+                                        overlay: &records,
+                                    },
+                                }),
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -1594,43 +1520,68 @@ impl<'window> Cases<'window> {
                     expect_error(
                         graphics
                             .device
-                            .create_rgba8_srgb_texture_with_mips(8, 8, &mip_refs[..2])
+                            .create_texture(&TextureDescriptor {
+                                shape: TextureShape::D2 {
+                                    width: 8,
+                                    height: 8,
+                                },
+                                mips: MipChain::Supplied,
+                                data: TexelData::Rgba8Srgb(&mip_refs[..2]),
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
-                        "needs 4 levels",
+                        "with a supplied mip chain takes 4 images",
                         "partial mip chain rejected",
                     )?;
                     expect_error(
                         graphics
                             .device
-                            .create_rgba8_srgb_texture_with_mips(
-                                8,
-                                8,
-                                &[
+                            .create_texture(&TextureDescriptor {
+                                shape: TextureShape::D2 {
+                                    width: 8,
+                                    height: 8,
+                                },
+                                mips: MipChain::Supplied,
+                                data: TexelData::Rgba8Srgb(&[
                                     &mip_levels[0],
                                     &mip_levels[1],
                                     &mip_levels[3],
                                     &mip_levels[3],
-                                ],
-                            )
+                                ]),
+                            })
                             .map(|_| ()),
                         GraphicsErrorKind::InvalidRequest,
                         "mip level 2",
                         "mip level byte mismatch rejected",
                     )?;
-                    graphics
-                        .device
-                        .create_rgba8_srgb_texture_with_mips(8, 8, &mip_refs)?
+                    graphics.device.create_texture(&TextureDescriptor {
+                        shape: TextureShape::D2 {
+                            width: 8,
+                            height: 8,
+                        },
+                        mips: MipChain::Supplied,
+                        data: TexelData::Rgba8Srgb(&mip_refs),
+                    })?
                 };
                 let (unorm_texture, unorm_mip_texture) = {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     (
-                        graphics
-                            .device
-                            .create_rgba8_unorm_texture(8, 8, &mip_levels[0])?,
-                        graphics
-                            .device
-                            .create_rgba8_unorm_texture_with_mips(8, 8, &mip_refs)?,
+                        graphics.device.create_texture(&TextureDescriptor {
+                            shape: TextureShape::D2 {
+                                width: 8,
+                                height: 8,
+                            },
+                            mips: MipChain::Single,
+                            data: TexelData::Rgba8Unorm(&[&mip_levels[0]]),
+                        })?,
+                        graphics.device.create_texture(&TextureDescriptor {
+                            shape: TextureShape::D2 {
+                                width: 8,
+                                height: 8,
+                            },
+                            mips: MipChain::Supplied,
+                            data: TexelData::Rgba8Unorm(&mip_refs),
+                        })?,
                     )
                 };
                 let overlay_pipeline = {
@@ -1681,24 +1632,26 @@ impl<'window> Cases<'window> {
                 let disposition = graphics.queue.render_and_present(
                     frame,
                     SceneSubmission {
-                        content: SceneContent::MaterialWithForeground {
+                        scene: Scene::Material(MaterialScene {
                             records: &records,
-                            foreground_start: 1,
-                        },
-                        output: SceneOutput::Postprocessed {
-                            pipeline: self
-                                .postprocess_pipeline
-                                .as_ref()
-                                .expect("postprocess pipeline exists"),
-                            targets: self
-                                .postprocess_targets
-                                .as_ref()
-                                .expect("postprocess targets exist"),
-                            uniform: &[],
-                        },
-                        shadow: None,
-                        overlay: Some(&overlay_records),
-                        offscreen: &[],
+                            shadow: None,
+                            output: MaterialOutput::Postprocessed {
+                                postprocess: Postprocess {
+                                    pipeline: self
+                                        .postprocess_pipeline
+                                        .as_ref()
+                                        .expect("postprocess pipeline exists"),
+                                    targets: self
+                                        .postprocess_targets
+                                        .as_ref()
+                                        .expect("postprocess targets exist"),
+                                    uniform: &[],
+                                },
+                                foreground_start: Some(1),
+                                offscreen: &[],
+                                overlay: &overlay_records,
+                            },
+                        }),
                         clear: ClearColor::BLACK,
                     },
                 )?;
@@ -1864,16 +1817,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1911,16 +1859,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -1957,16 +1900,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2004,16 +1942,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2059,19 +1992,14 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
+                            direct_material_scene(
+                                &records,
+                                Some(ShadowPrepass::Cascaded(CascadedShadowPass {
                                     map: self.shadow_map_array.as_ref().expect("shadow map array"),
                                     cascades: &cascades,
                                 })),
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2116,19 +2044,14 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: Some(ShadowPrepass::Single(ShadowPass {
+                            direct_material_scene(
+                                &records,
+                                Some(ShadowPrepass::Single(ShadowPass {
                                     map: self.shadow_map.as_ref().expect("shadow map"),
                                     records: &shadow_records,
                                 })),
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2316,16 +2239,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2371,19 +2289,14 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: Some(ShadowPrepass::Single(ShadowPass {
+                            direct_material_scene(
+                                &records,
+                                Some(ShadowPrepass::Single(ShadowPass {
                                     map: self.shadow_map.as_ref().expect("shadow map"),
                                     records: &shadow_records,
                                 })),
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2427,17 +2340,14 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: Some(ShadowPrepass::Single(ShadowPass {
+                    direct_material_scene(
+                        &records,
+                        Some(ShadowPrepass::Single(ShadowPass {
                             map: self.shadow_map.as_ref().expect("shadow map"),
                             records: &shadow_records,
                         })),
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("skinned material presentation");
@@ -2496,14 +2406,11 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                    direct_material_scene(
+                        &records,
+                        None,
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("transient geometry presentation");
@@ -2534,14 +2441,11 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: None,
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                    direct_material_scene(
+                        &records,
+                        None,
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("u32-indexed transient geometry presentation");
@@ -2576,16 +2480,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2623,16 +2522,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2670,16 +2564,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2719,16 +2608,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2828,17 +2712,14 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
+                    direct_material_scene(
+                        &records,
+                        Some(ShadowPrepass::Cascaded(CascadedShadowPass {
                             map: self.shadow_map_array.as_ref().expect("shadow map array"),
                             cascades: &cascades,
                         })),
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("shadowed material presentation");
@@ -2970,16 +2851,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -3016,16 +2892,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -3074,17 +2945,14 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_mut().expect("session A is open");
                 let disposition = graphics.queue.render_and_present(
                     frame,
-                    SceneSubmission {
-                        content: SceneContent::Material(&records),
-                        output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                        shadow: Some(ShadowPrepass::Single(ShadowPass {
+                    direct_material_scene(
+                        &records,
+                        Some(ShadowPrepass::Single(ShadowPass {
                             map: self.sprout_shadow_map.as_ref().expect("sprout shadow map"),
                             records: &shadow_records,
                         })),
-                        overlay: None,
-                        offscreen: &[],
-                        clear: ClearColor::BLACK,
-                    },
+                        self.targets.as_ref().expect("targets exist"),
+                    ),
                 )?;
                 assert_presented(disposition)?;
                 self.pass("instanced material and shadow records with selected mesh part");
@@ -3107,34 +2975,40 @@ impl<'window> Cases<'window> {
                 self.step = 43;
                 Ok(false)
             }
-            // The direct single-draw helper accepts exactly the declared postprocess uniform.
+            // A single-draw postprocessed scene accepts exactly the declared postprocess uniform.
             43 => {
                 let Some(frame) = self.acquire(metrics)? else {
                     return Ok(false);
                 };
                 let uniform = [0_u8; 64];
                 let graphics = self.graphics.as_mut().expect("session A is open");
-                let disposition = graphics.queue.draw_textured_postprocessed_and_present(
+                let disposition = graphics.queue.render_and_present(
                     frame,
-                    PostprocessedDraw {
-                        mesh: self.mesh.as_ref().expect("mesh exists"),
-                        texture: self.texture.as_ref().expect("texture exists"),
-                        scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                        postprocess_pipeline: self
-                            .postprocess_uniform_pipeline
-                            .as_ref()
-                            .expect("uniform postprocess pipeline exists"),
-                        targets: self
-                            .postprocess_targets
-                            .as_ref()
-                            .expect("postprocess targets exist"),
-                        uniform: &uniform,
-                        model_view_projection: IDENTITY,
+                    SceneSubmission {
+                        scene: Scene::Textured {
+                            draws: &[TexturedSceneDraw {
+                                mesh: self.mesh.as_ref().expect("mesh exists"),
+                                texture: self.texture.as_ref().expect("texture exists"),
+                                pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                                model_view_projection: IDENTITY,
+                            }],
+                            output: SceneOutput::Postprocessed(Postprocess {
+                                pipeline: self
+                                    .postprocess_uniform_pipeline
+                                    .as_ref()
+                                    .expect("uniform postprocess pipeline exists"),
+                                targets: self
+                                    .postprocess_targets
+                                    .as_ref()
+                                    .expect("postprocess targets exist"),
+                                uniform: &uniform,
+                            }),
+                        },
                         clear: ClearColor::BLACK,
                     },
                 )?;
                 assert_presented(disposition)?;
-                self.pass("exact-size postprocess uniform accepted by direct helper");
+                self.pass("exact-size postprocess uniform accepted by single-draw scene");
                 self.step = 44;
                 Ok(false)
             }
@@ -3147,22 +3021,28 @@ impl<'window> Cases<'window> {
                 expect_error(
                     graphics
                         .queue
-                        .draw_textured_postprocessed_and_present(
+                        .render_and_present(
                             frame,
-                            PostprocessedDraw {
-                                mesh: self.mesh.as_ref().expect("mesh exists"),
-                                texture: self.texture.as_ref().expect("texture exists"),
-                                scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                                postprocess_pipeline: self
-                                    .postprocess_uniform_pipeline
-                                    .as_ref()
-                                    .expect("uniform postprocess pipeline exists"),
-                                targets: self
-                                    .postprocess_targets
-                                    .as_ref()
-                                    .expect("postprocess targets exist"),
-                                uniform: &[],
-                                model_view_projection: IDENTITY,
+                            SceneSubmission {
+                                scene: Scene::Textured {
+                                    draws: &[TexturedSceneDraw {
+                                        mesh: self.mesh.as_ref().expect("mesh exists"),
+                                        texture: self.texture.as_ref().expect("texture exists"),
+                                        pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                                        model_view_projection: IDENTITY,
+                                    }],
+                                    output: SceneOutput::Postprocessed(Postprocess {
+                                        pipeline: self
+                                            .postprocess_uniform_pipeline
+                                            .as_ref()
+                                            .expect("uniform postprocess pipeline exists"),
+                                        targets: self
+                                            .postprocess_targets
+                                            .as_ref()
+                                            .expect("postprocess targets exist"),
+                                        uniform: &[],
+                                    }),
+                                },
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3192,21 +3072,20 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                content: SceneContent::Textured(&draws),
-                                output: SceneOutput::Postprocessed {
-                                    pipeline: self
-                                        .postprocess_pipeline
-                                        .as_ref()
-                                        .expect("postprocess pipeline exists"),
-                                    targets: self
-                                        .postprocess_targets
-                                        .as_ref()
-                                        .expect("postprocess targets exist"),
-                                    uniform: &[1],
+                                scene: Scene::Textured {
+                                    draws: &draws,
+                                    output: SceneOutput::Postprocessed(Postprocess {
+                                        pipeline: self
+                                            .postprocess_pipeline
+                                            .as_ref()
+                                            .expect("postprocess pipeline exists"),
+                                        targets: self
+                                            .postprocess_targets
+                                            .as_ref()
+                                            .expect("postprocess targets exist"),
+                                        uniform: &[1],
+                                    }),
                                 },
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3237,21 +3116,20 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                content: SceneContent::Textured(&draws),
-                                output: SceneOutput::Postprocessed {
-                                    pipeline: self
-                                        .postprocess_uniform_pipeline
-                                        .as_ref()
-                                        .expect("uniform postprocess pipeline exists"),
-                                    targets: self
-                                        .postprocess_targets
-                                        .as_ref()
-                                        .expect("postprocess targets exist"),
-                                    uniform: &uniform,
+                                scene: Scene::Textured {
+                                    draws: &draws,
+                                    output: SceneOutput::Postprocessed(Postprocess {
+                                        pipeline: self
+                                            .postprocess_uniform_pipeline
+                                            .as_ref()
+                                            .expect("uniform postprocess pipeline exists"),
+                                        targets: self
+                                            .postprocess_targets
+                                            .as_ref()
+                                            .expect("postprocess targets exist"),
+                                        uniform: &uniform,
+                                    }),
                                 },
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3274,22 +3152,28 @@ impl<'window> Cases<'window> {
                 expect_error(
                     graphics
                         .queue
-                        .draw_textured_postprocessed_and_present(
+                        .render_and_present(
                             frame,
-                            PostprocessedDraw {
-                                mesh: self.mesh.as_ref().expect("mesh exists"),
-                                texture: self.texture.as_ref().expect("texture exists"),
-                                scene_pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                                postprocess_pipeline: self
-                                    .postprocess_uniform_pipeline
-                                    .as_ref()
-                                    .expect("uniform postprocess pipeline exists"),
-                                targets: self
-                                    .postprocess_targets
-                                    .as_ref()
-                                    .expect("postprocess targets exist"),
-                                uniform: &oversized,
-                                model_view_projection: IDENTITY,
+                            SceneSubmission {
+                                scene: Scene::Textured {
+                                    draws: &[TexturedSceneDraw {
+                                        mesh: self.mesh.as_ref().expect("mesh exists"),
+                                        texture: self.texture.as_ref().expect("texture exists"),
+                                        pipeline: self.pipeline.as_ref().expect("pipeline exists"),
+                                        model_view_projection: IDENTITY,
+                                    }],
+                                    output: SceneOutput::Postprocessed(Postprocess {
+                                        pipeline: self
+                                            .postprocess_uniform_pipeline
+                                            .as_ref()
+                                            .expect("uniform postprocess pipeline exists"),
+                                        targets: self
+                                            .postprocess_targets
+                                            .as_ref()
+                                            .expect("postprocess targets exist"),
+                                        uniform: &oversized,
+                                    }),
+                                },
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3329,11 +3213,7 @@ impl<'window> Cases<'window> {
                         .device
                         .create_mesh(&TRIANGLE_VERTICES, &[0, 1, 2])?,
                 );
-                self.texture = Some(reopened.device.create_rgba8_srgb_texture(
-                    2,
-                    2,
-                    &[255_u8; 16],
-                )?);
+                self.texture = Some(rgba8_srgb(&reopened.device, 2, 2, &[255_u8; 16])?);
                 self.pipeline = Some(
                     reopened
                         .device
@@ -3371,18 +3251,19 @@ impl<'window> Cases<'window> {
                     return Ok(false);
                 };
                 let graphics = self.graphics.as_mut().expect("session B is open");
-                let draw = TexturedDraw {
+                let draws = [TexturedSceneDraw {
                     mesh: self.foreign_mesh.as_ref().expect("session A mesh kept"),
                     texture: self.texture.as_ref().expect("texture exists"),
                     pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-                    targets: self.targets.as_ref().expect("targets exist"),
                     model_view_projection: IDENTITY,
-                    clear: ClearColor::BLACK,
-                };
+                }];
                 expect_error(
                     graphics
                         .queue
-                        .draw_textured_and_present(frame, draw)
+                        .render_and_present(
+                            frame,
+                            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+                        )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
                     "mesh belongs to a different graphics session",
@@ -3423,16 +3304,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -3471,16 +3347,11 @@ impl<'window> Cases<'window> {
                         .queue
                         .render_and_present(
                             frame,
-                            SceneSubmission {
-                                content: SceneContent::Material(&records),
-                                output: SceneOutput::Direct(
-                                    self.targets.as_ref().expect("targets exist"),
-                                ),
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
-                                clear: ClearColor::BLACK,
-                            },
+                            direct_material_scene(
+                                &records,
+                                None,
+                                self.targets.as_ref().expect("targets exist"),
+                            ),
                         )
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -3508,21 +3379,20 @@ impl<'window> Cases<'window> {
                         .render_and_present(
                             frame,
                             SceneSubmission {
-                                content: SceneContent::Textured(&draws),
-                                output: SceneOutput::Postprocessed {
-                                    pipeline: self
-                                        .postprocess_pipeline
-                                        .as_ref()
-                                        .expect("session A postprocess pipeline kept"),
-                                    targets: self
-                                        .postprocess_targets
-                                        .as_ref()
-                                        .expect("session B postprocess targets exist"),
-                                    uniform: &[1],
+                                scene: Scene::Textured {
+                                    draws: &draws,
+                                    output: SceneOutput::Postprocessed(Postprocess {
+                                        pipeline: self
+                                            .postprocess_pipeline
+                                            .as_ref()
+                                            .expect("session A postprocess pipeline kept"),
+                                        targets: self
+                                            .postprocess_targets
+                                            .as_ref()
+                                            .expect("session B postprocess targets exist"),
+                                        uniform: &[1],
+                                    }),
                                 },
-                                shadow: None,
-                                overlay: None,
-                                offscreen: &[],
                                 clear: ClearColor::BLACK,
                             },
                         )
@@ -3658,14 +3528,7 @@ impl<'window> Cases<'window> {
             .collect();
         assert_presented(graphics.queue.render_and_present(
             frame,
-            SceneSubmission {
-                content: SceneContent::Textured(&draws),
-                output: SceneOutput::Direct(self.targets.as_ref().expect("targets exist")),
-                shadow: None,
-                overlay: None,
-                offscreen: &[],
-                clear: ClearColor::BLACK,
-            },
+            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
         )?)?;
         self.ring_submitted += 1;
         if let mulciber::GpuTimingFeedback::Reported(frames) = graphics.queue.take_gpu_timings()? {
@@ -3741,15 +3604,60 @@ impl<'window> Cases<'window> {
         transform: [[f32; 4]; 4],
     ) -> Result<mulciber::FrameDisposition, Box<dyn Error>> {
         let graphics = self.graphics.as_mut().expect("a session is open");
-        let draw = TexturedDraw {
+        let draws = [TexturedSceneDraw {
             mesh: self.mesh.as_ref().expect("mesh exists"),
             texture: self.texture.as_ref().expect("texture exists"),
             pipeline: self.pipeline.as_ref().expect("pipeline exists"),
-            targets: self.targets.as_ref().expect("targets exist"),
             model_view_projection: transform,
-            clear: ClearColor::BLACK,
-        };
-        Ok(graphics.queue.draw_textured_and_present(frame, draw)?)
+        }];
+        Ok(graphics.queue.render_and_present(
+            frame,
+            textured_scene(&draws, self.targets.as_ref().expect("targets exist")),
+        )?)
+    }
+}
+
+/// Uploads one tightly packed single-level RGBA8 sRGB image.
+fn rgba8_srgb(
+    device: &mulciber::Device,
+    width: u32,
+    height: u32,
+    texels: &[u8],
+) -> Result<mulciber::Texture, mulciber::GraphicsError> {
+    device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 { width, height },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[texels]),
+    })
+}
+
+/// Textured draws straight into `targets`.
+fn textured_scene<'resources>(
+    draws: &'resources [TexturedSceneDraw<'resources>],
+    targets: &'resources mulciber::RenderTargets,
+) -> SceneSubmission<'resources> {
+    SceneSubmission {
+        scene: Scene::Textured {
+            draws,
+            output: SceneOutput::Direct(targets),
+        },
+        clear: ClearColor::BLACK,
+    }
+}
+
+/// A material scene drawn straight into `targets`, after `shadow` when one is supplied.
+fn direct_material_scene<'resources>(
+    records: &'resources [MaterialRecord<'resources>],
+    shadow: Option<ShadowPrepass<'resources>>,
+    targets: &'resources mulciber::RenderTargets,
+) -> SceneSubmission<'resources> {
+    SceneSubmission {
+        scene: Scene::Material(MaterialScene {
+            records,
+            shadow,
+            output: MaterialOutput::Direct(targets),
+        }),
+        clear: ClearColor::BLACK,
     }
 }
 

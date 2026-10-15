@@ -56,7 +56,7 @@ impl DfgTable {
         self.texels[(y * self.size + x) as usize]
     }
 
-    /// RGBA texels for `Device::create_rgba16_float_texture`: (R, G, 0, 1).
+    /// RGBA texels for `TexelData::Rgba16Float` and `Device::create_texture`: (R, G, 0, 1).
     #[must_use]
     pub fn rgba(&self) -> Vec<[f32; 4]> {
         self.texels

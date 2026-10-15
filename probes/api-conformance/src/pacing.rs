@@ -1,7 +1,7 @@
 //! Native pacing transitions under repeatable light/CPU-bound workloads; no asset loading.
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PresentFeedback, PresentationMode,
-    TexturedDraw,
+    DeviceRequest, FrameAcquire, OpenedGraphics, PresentFeedback, PresentationMode,
+    TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{
@@ -23,9 +23,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let mesh = graphics
         .device
         .create_mesh(&super::TRIANGLE_VERTICES, &[0, 1, 2])?;
-    let texture = graphics
-        .device
-        .create_rgba8_srgb_texture(1, 1, &[255, 255, 255, 255])?;
+    let texture = super::rgba8_srgb(&graphics.device, 1, 1, &[255, 255, 255, 255])?;
     let shader = mulciber::ShaderArtifact::new(super::SHADER)?;
     let pipeline = graphics.device.create_textured_pipeline(shader)?;
     let mut targets = graphics
@@ -78,17 +76,15 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 if slow {
                     std::thread::sleep(Duration::from_millis(22));
                 }
-                graphics.queue.draw_textured_and_present(
-                    frame,
-                    TexturedDraw {
-                        mesh: &mesh,
-                        texture: &texture,
-                        pipeline: &pipeline,
-                        targets: &targets,
-                        model_view_projection: super::IDENTITY,
-                        clear: ClearColor::BLACK,
-                    },
-                )?;
+                let draws = [TexturedSceneDraw {
+                    mesh: &mesh,
+                    texture: &texture,
+                    pipeline: &pipeline,
+                    model_view_projection: super::IDENTITY,
+                }];
+                graphics
+                    .queue
+                    .render_and_present(frame, super::textured_scene(&draws, &targets))?;
                 let now = Instant::now();
                 println!(
                     "frame,{index},{name},{:.6},{:?}",

@@ -6,11 +6,11 @@
 //! Pass `--force-one-sample` to render without the multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
-    MeshIndices, OffscreenPass, OpenedGraphics, PostprocessPipeline, PostprocessTargets,
-    RenderScale, RenderTexture, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, SurfaceInfo, TransientGeometry, VertexAttribute,
-    VertexFormat, VertexLayout,
+    GeometrySource, MaterialBinding, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, MaterialScene, MeshIndices, OffscreenPass, OpenedGraphics, Postprocess,
+    PostprocessPipeline, PostprocessTargets, RenderScale, RenderTexture, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneSubmission, ShaderArtifact, SurfaceInfo, TexelData,
+    TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -352,15 +352,20 @@ fn render(
     graphics.queue.render_and_present(
         frame,
         SceneSubmission {
-            content: SceneContent::Material(&scene),
-            output: SceneOutput::Postprocessed {
-                pipeline: &pipelines.composite,
-                targets: targets.as_ref().expect("created"),
-                uniform: &[],
-            },
-            shadow: None,
-            overlay: None,
-            offscreen: &passes,
+            scene: Scene::Material(MaterialScene {
+                records: &scene,
+                shadow: None,
+                output: MaterialOutput::Postprocessed {
+                    postprocess: Postprocess {
+                        pipeline: &pipelines.composite,
+                        targets: targets.as_ref().expect("created"),
+                        uniform: &[],
+                    },
+                    foreground_start: None,
+                    offscreen: &passes,
+                    overlay: &[],
+                },
+            }),
             clear: ClearColor::BLACK,
         },
     )
@@ -431,11 +436,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err(format!("a {width}x{height} render texture was created").into());
         }
     }
-    let refused = graphics.device.update_rgba16_float_texture(
+    let refused = graphics.device.update_texture(
         render_texture.texture(),
-        48,
-        40,
-        &vec![[0.0; 4]; 48 * 40],
+        TexelData::Rgba16Float(&[&vec![[0.0; 4]; 48 * 40]]),
     );
     match refused {
         Err(error) if error.to_string().contains("offscreen passes") => {

@@ -4,18 +4,20 @@ A cube texture is six square faces of one extent, each with its own mip chain, s
 direction. Environment reflections are the motivating use: a game's baked environment cubemaps
 upload as stored and a material samples them along the reflected view vector.
 
-`Device` gains a cube constructor beside every 2D sampled upload, and each returns the existing
-owning `Texture`, whose `dimension()` is `TextureDimension::Cube`:
+`Device::create_texture` uploads a cube when its descriptor's shape is
+`TextureShape::Cube { size }`, and returns the existing owning `Texture`, whose `dimension()` is
+`TextureDimension::Cube`. Every `TexelData` format the 2D uploads take is accepted, and the
+descriptor expresses each combination the same way:
 
-| Format | Single level | Complete mip chain per face |
-|---|---|---|
-| RGBA8 sRGB | `create_rgba8_srgb_cube_texture(size, [&[u8]; 6])` | `create_rgba8_srgb_cube_texture_with_mips(size, [&[&[u8]]; 6])` |
-| RGBA8 UNORM | `create_rgba8_unorm_cube_texture(size, [&[u8]; 6])` | `create_rgba8_unorm_cube_texture_with_mips(size, [&[&[u8]]; 6])` |
-| Any `BlockCompression` (BC1, BC2, BC3, BC5, BC7) | `create_block_compressed_cube_texture(compression, size, [&[u8]; 6])` | `create_block_compressed_cube_texture_with_mips(compression, size, [&[&[u8]]; 6])` |
-| `RGBA16Float` | `create_rgba16_float_cube_texture(size, [&[[f32; 4]]; 6])` | `create_rgba16_float_cube_texture_with_mips(size, [&[&[[f32; 4]]]; 6])` |
+| Field | Cube value |
+|---|---|
+| `shape` | `TextureShape::Cube { size }` |
+| `mips` | `MipChain::Single` (six images, one per face) or `MipChain::Supplied` (six complete chains, face after face) |
+| `data` | `TexelData::Rgba8Srgb`, `Rgba8Unorm`, `BlockCompressed(compression, ..)` for any `BlockCompression` (BC1, BC2, BC3, BC5, BC7), `Rgba16Float` or `Rgba16FloatBits` |
 
-Every constructor returns `Result<Texture, GraphicsError>`, and `destroy_texture` and drop
-reclamation release a cube exactly as they release a 2D texture.
+`MipChain::Generated` on a cube is `Unsupported` (generated mips are 2D only), and
+block-compressed data with `MipChain::Generated` is `InvalidRequest` before that. `destroy_texture`
+and drop reclamation release a cube exactly as they release a 2D texture.
 
 ## Binding and WGSL
 
@@ -36,13 +38,19 @@ three-component direction, which need not be normalized:
 ```
 
 ```rust
-use mulciber::{BlockCompression, MaterialBinding, SamplerAddress, SamplerFilter};
+use mulciber::{
+    BlockCompression, MaterialBinding, MipChain, SamplerAddress, SamplerFilter, TexelData,
+    TextureDescriptor, TextureShape,
+};
 
-let environment = device.create_block_compressed_cube_texture_with_mips(
-    BlockCompression::Bc1Srgb,
-    64,
-    [&right, &left, &top, &bottom, &front, &back], // +X, -X, +Y, -Y, +Z, -Z level chains
-)?;
+// +X, -X, +Y, -Y, +Z, -Z, each face's complete chain from 64x64 to 1x1 in turn.
+let faces: [&[&[u8]]; 6] = [&right, &left, &top, &bottom, &front, &back];
+let images = faces.concat();
+let environment = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::Cube { size: 64 },
+    mips: MipChain::Supplied,
+    data: TexelData::BlockCompressed(BlockCompression::Bc1Srgb, &images),
+})?;
 let bindings = [
     MaterialBinding::Uniform { binding: 0, size: 128 },
     MaterialBinding::Texture { binding: 1 },
@@ -70,24 +78,26 @@ range and `MATERIAL_TEXTURE_COUNT_LIMIT` with 2D slots. Arrayed cubes (`texture_
 are [cube texture arrays](#cube-texture-arrays), below; depth cubes and integer cubes have no proven
 mapping and fail to compile.
 
-A cube texture feeds material pipelines only. The fixed textured pipelines (`TexturedDraw`,
-`TexturedSceneDraw`, `TexturedInstanceBatch`, `PostprocessedDraw`) refuse it, shadow pipelines
-refuse a cube slot and shadow records a cube texture, and `update_rgba16_float_texture` and
-`update_rgba16_float_texture_with_mips` replace 2D textures only.
+A cube texture feeds material pipelines only. The fixed textured pipelines (`TexturedSceneDraw`,
+`TexturedInstanceBatch`) refuse it, shadow pipelines refuse a cube slot and shadow records a cube
+texture, and `update_texture` replaces 2D textures only.
 
 ## Input contract
 
-`faces` is in the standard layer order +X, -X, +Y, -Y, +Z, -Z that Vulkan, Metal and Direct3D
-share, and each face is laid out as the 2D constructor of its format takes a level: row-major
-RGBA8 texels, whole 4×4 blocks (`ceil(w / 4) × ceil(h / 4)`, eight bytes for BC1 and sixteen for
-the rest), or RGBA f32 texels converted to binary16 exactly as the 2D float upload converts them.
-`size` is the edge of every face, so faces are square and equal by construction; it must be
-nonzero. A mip method needs every face to supply the complete chain from `size`×`size` to 1×1,
-halving and flooring at one as the 2D chains do. A face or level whose byte count does not match
-its extent is `InvalidRequest`, naming the face and level (`cube face -Z mip level 2 supplies 8
-bytes but its 2x2 extent needs 16`); the summed staging size is checked before any native
-allocation. Mulciber never generates mips or filters across face edges; that is the application's,
-as for 2D chains.
+`data` holds the faces in the standard layer order +X, -X, +Y, -Y, +Z, -Z that Vulkan, Metal and
+Direct3D share, each face's levels in turn, and each image is laid out as a 2D level of its format:
+row-major RGBA8 texels, whole 4×4 blocks (`ceil(w / 4) × ceil(h / 4)`, eight bytes for BC1 and
+sixteen for the rest), or RGBA f32 texels (or binary16 bit patterns) converted exactly as the 2D
+float upload converts them. `size` is the edge of every face, so faces are square and equal by
+construction; it must be nonzero. `MipChain::Supplied` needs every face to supply the complete
+chain from `size`×`size` to 1×1, halving and flooring at one as the 2D chains do. An image count
+that does not match six faces of one level or of the complete chain is `InvalidRequest`
+(`a 4x4 cube texture with a supplied mip chain takes 18 images, ordered by layer, face then
+level, but 17 were supplied`). A level whose byte count does not match its extent is
+`InvalidRequest`, naming the face and level (`cube face -Z mip level 2 supplies 8 bytes but its
+2x2 extent needs 16`); the summed staging size is checked before any native allocation. Mulciber
+never generates cube mips or filters across face edges; that is the application's, as for
+supplied 2D chains.
 
 Within a face, the first texel of the first row is where the native APIs put it: sampling
 direction `(x, y, z)` selects the face of its largest-magnitude axis and reads texel coordinates
@@ -200,24 +210,25 @@ binds every room's probe in one draw and picks and blends, per pixel, the probes
 fragment is in.
 
 ```rust
-Device::create_rgba16_float_cube_array_texture_with_mips(
-    &self,
-    size: u32,
-    layers: &[[&[&[[f32; 4]]]; 6]],
-) -> Result<Texture, GraphicsError>
-Device::create_rgba16_float_cube_array_texture_with_mips_from_bits(
-    &self,
-    size: u32,
-    layers: &[[&[&[[u16; 4]]]; 6]],
-) -> Result<Texture, GraphicsError>
+// cubes: &[[&[&[[f32; 4]]]; 6]], each cube's +X, -X, +Y, -Y, +Z, -Z complete chains.
+let images: Vec<&[[f32; 4]]> = cubes
+    .iter()
+    .flatten()
+    .flat_map(|face| face.iter().copied())
+    .collect();
+let probes = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::CubeArray { size, layers: cubes.len() as u32 },
+    mips: MipChain::Supplied,
+    data: TexelData::Rgba16Float(&images), // or Rgba16FloatBits from binary16 patterns
+})?;
 ```
 
-`layers[i]` is cube `i`: six faces in the order and orientation of the single cube (the table
-above), each the complete chain from `size`×`size` to 1×1 as
-`create_rgba16_float_cube_texture_with_mips` takes it, converted to binary16 as the 2D float upload
-converts (or, from bits, taken as binary16 patterns with non-finite values refused). Only
-`RGBA16Float` with a complete chain is offered; other formats and single-level arrays wait for a
-consumer. The returned `Texture` has `dimension() == TextureDimension::CubeArray`.
+`data` is cube after cube, each six faces in the order and orientation of the single cube (the
+table above), each face the complete chain from `size`×`size` to 1×1, converted to binary16 as the
+2D float upload converts (or, from bits, taken as binary16 patterns with non-finite values
+refused). Only `RGBA16Float` with a supplied chain is implemented: any other `TexelData` format,
+`MipChain::Single` or `MipChain::Generated` is `Unsupported`, waiting for a consumer. The returned
+`Texture` has `dimension() == TextureDimension::CubeArray`.
 
 ```wgsl
 @group(0) @binding(12) var probes: texture_cube_array<f32>;
@@ -243,11 +254,12 @@ outside `0..layers` reads undefined values on both backends; the shader owns the
 
 ### Input contract
 
-`layers` must hold at least one cube and `size` must be nonzero; either is `InvalidRequest`
-(`cube texture array needs at least one layer`). A face whose chain is not complete, whose level
-texel count does not match its extent, or whose components are not finite in `-65504..=65504` is
-`InvalidRequest`, naming the layer and face (`cube array layer 1: cube face -Z: float texture mip
-chain supplies 0 levels but needs 1`). The staging size summed over every layer is checked before any
+`size` must be nonzero (`cube texture array extent must be nonzero`) and `layers` at least one
+(`cube texture array needs at least one layer`); either is `InvalidRequest`. An image count other
+than `6 × layers` complete chains is `InvalidRequest`. A level whose texel count does not match
+its extent, or whose components are not finite in `-65504..=65504`, is `InvalidRequest`, naming
+the layer and face (`cube array layer 1: cube face -Z: float texture mip level 2 texel count does
+not match its dimensions`). The staging size summed over every layer is checked before any
 native allocation.
 
 ### Capability

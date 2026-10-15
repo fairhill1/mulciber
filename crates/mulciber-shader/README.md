@@ -315,7 +315,11 @@ let texels: Vec<[f32; 4]> = include_bytes!(concat!(env!("OUT_DIR"), "/dfg.bin"))
         [r, g, 0.0, 1.0]
     })
     .collect();
-let dfg = device.create_rgba16_float_texture(128, 128, &texels)?;
+let dfg = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width: 128, height: 128 },
+    mips: MipChain::Single,
+    data: TexelData::Rgba16Float(&[texels.as_slice()]),
+})?;
 ```
 
 Sample it with a linear, clamp-to-edge sampler. `DfgTable::rgba()` gives the same texels directly

@@ -1,21 +1,29 @@
 # Sampled RGBA16Float uploads (0.13.13)
 
-`Device::create_rgba16_float_texture` uploads one linear sampled 2D image and returns the existing
-owning `Texture`. `create_rgba16_float_texture_with_mips` uploads a complete application-authored
-chain. Both use the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in vertex
-and fragment stages. RGBA8 sRGB/UNORM APIs keep their interpretation and sampling behavior.
+`Device::create_texture` with `TexelData::Rgba16Float` uploads a linear sampled 2D image and returns
+the existing owning `Texture`: one level with `MipChain::Single`, or a complete
+application-authored chain with `MipChain::Supplied`. Both use the existing material
+texture/sampler bindings and WGSL `texture_2d<f32>` in vertex and fragment stages. RGBA8
+sRGB/UNORM data keeps its interpretation and sampling behavior.
 
 ## Input and conversion contract
 
 ```rust
-let coefficients: mulciber::Texture =
-    device.create_rgba16_float_texture(atlas_width, atlas_height, &decoded_rgba)?;
+use mulciber::{MipChain, TexelData, TextureDescriptor, TextureShape};
+
+let coefficients: mulciber::Texture = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width: atlas_width, height: atlas_height },
+    mips: MipChain::Single,
+    data: TexelData::Rgba16Float(&[&decoded_rgba]),
+})?;
 // decoded_rgba: Vec<[f32; 4]>, row-major RGBA coefficients and application-defined alpha.
 
 // Alternatively, complete levels with dimensions halved independently, flooring at one:
-let coefficients = device.create_rgba16_float_texture_with_mips(
-    atlas_width, atlas_height, &level_slices,
-)?;
+let coefficients = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width: atlas_width, height: atlas_height },
+    mips: MipChain::Supplied,
+    data: TexelData::Rgba16Float(&level_slices),
+})?;
 // level_slices: Vec<&[[f32; 4]]>, base through the final 1x1 level.
 ```
 
@@ -28,7 +36,7 @@ transformation. GPU filtering/arithmetic can flush subnormals on some hardware; 
 uploaded storage does not promise identical arithmetic behavior on every GPU.
 
 Dimensions must be nonzero. Each level has exactly `width * height` RGBA texels at its own extent.
-The base-only method creates one mip level; explicit LODs clamp to level zero. The mip method
+`MipChain::Single` creates one mip level; explicit LODs clamp to level zero. `MipChain::Supplied`
 requires the complete chain, including for non-square/odd dimensions; 1x1 requires one level.
 Mulciber never generates, filters, or color-transforms supplied mip content. Input byte ranges,
 eight-byte native texel sizes, rows, and summed staging capacity are checked before native upload.
@@ -142,12 +150,13 @@ Release version: **0.13.13**. The native Vulkan validation boundary above also a
 
 ## Queue-ordered replacement
 
-`Device::update_rgba16_float_texture(&texture, width, height, &texels)` replaces a
-single-level float texture without changing its handle or material bindings. It
-uses the same checked binary16 conversion as creation. Foreign/stale handles,
-changed dimensions, other formats, and mipped textures are rejected before replacing
-any pending write; [mip chain replacement](#mip-chain-replacement) covers the last. The caller may
-release its input immediately.
+`Device::update_texture(&texture, TexelData::Rgba16Float(&[&texels]))` replaces a single-level
+float texture without changing its handle or material bindings. It uses the same checked binary16
+conversion as creation, and takes the extent from the texture, so a replacement cannot resize it.
+Foreign/stale handles, cube and render textures, texels that do not match the texture's extent,
+textures not created as `RGBA16Float` and data in another format are rejected before replacing
+any pending write; RGBA8 and block-compressed data are `Unsupported`, the rest `InvalidRequest`.
+The caller may release its input immediately.
 
 Writes are consumed before draws in the next textured/material submission;
 multiple pending writes coalesce to the last one. Earlier submitted frames see
@@ -169,15 +178,14 @@ replacement/lifetime validation remains outstanding.
 
 ### Mip chain replacement
 
-`Device::update_rgba16_float_texture_with_mips(&texture, width, height, &levels)` replaces every
-level of a texture made by `create_rgba16_float_texture_with_mips`. `levels` is the complete chain
-from `width`×`height` to 1×1, in the creation call's layout, checked by the same conversion and
-per-level validation; nothing is generated or kept from the old contents. The texture's
-dimensions and mip count must match, so the single-level call refuses a mipped texture and the
-chain call refuses a single-level texture larger than 1×1. Queuing, coalescing, cancellation and
-frame isolation are those above: the whole chain is one pending write, consumed before draws in
-the next textured/material submission. Both calls share this path; a single-level texture is a
-chain of one.
+`Device::update_texture` on a texture created with `MipChain::Supplied` replaces every level.
+The data is the complete chain from the texture's extent to 1×1, in the creation call's layout,
+checked by the same conversion and per-level validation; nothing is generated or kept from the old
+contents. The texture's mips decide the expected image count, so a single-level texture takes one
+image and a mipped texture its whole chain. Queuing, coalescing, cancellation and frame isolation
+are those above: the whole chain is one pending write, consumed before draws in the next
+textured/material submission. Single-level and chain updates share this path; a single-level
+texture is a chain of one.
 
 Vulkan sizes each frame slot's staging buffer to the whole chain on first use and packs the levels
 back to back. One `vkCmdCopyBufferToImage2` records a region per level at its packed offset; every
@@ -200,27 +208,30 @@ run; physical Metal validation remains outstanding.
 
 ## Binary16 bit uploads and GPU-generated mips (unreleased)
 
-Data already in half precision skips the conversion pass. Every `RGBA16Float` creation and update
-function has a `_from_bits` form taking `[u16; 4]` texels of IEEE binary16 bit patterns, as the
-`half` crate's `f16::to_bits` produces them (Mulciber itself does not depend on `half`). The bits
-upload unchanged; an all-ones exponent (infinity or NaN) is `InvalidRequest`, matching the `f32`
-contract.
+Data already in half precision skips the conversion pass. `TexelData::Rgba16FloatBits` takes
+`[u16; 4]` texels of IEEE binary16 bit patterns, as the `half` crate's `f16::to_bits` produces them
+(Mulciber itself does not depend on `half`), wherever `TexelData::Rgba16Float` is accepted, in
+creation and in `update_texture`. The bits upload unchanged; an all-ones exponent (infinity or NaN)
+is `InvalidRequest`, matching the `f32` contract.
 
 ```rust
-let sky = device.create_rgba16_float_texture_with_generated_mips_from_bits(width, height, &bits)?;
+let sky = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width, height },
+    mips: MipChain::Generated,
+    data: TexelData::Rgba16FloatBits(&[&bits]),
+})?;
 // bits: Vec<[u16; 4]>, e.g. f16::from_f32(value).to_bits() per component.
-device.update_rgba16_float_texture_with_generated_mips(&waves, size, size, &level_zero)?;
+device.update_texture(&waves, TexelData::Rgba16Float(&[&level_zero]))?;
 ```
 
-`create_rgba16_float_texture_with_generated_mips` (and `_from_bits`),
-`create_rgba8_srgb_texture_with_generated_mips` and `create_rgba8_unorm_texture_with_generated_mips`
-upload level 0 and fill the full chain on the GPU, each level a linear-filtered half-size copy of
-the one above (a 2×2 box for even extents). sRGB levels are averaged in linear space.
-`update_rgba16_float_texture_with_generated_mips` (and `_from_bits`) queues a level 0 replacement
-that the next scene submission copies and then regenerates the chain from, in the frame's command
-buffer before any draw, with the coalescing and cancellation of the other updates. It requires a
-texture created with generated mips; `update_rgba16_float_texture_with_mips` still replaces such a
-texture's whole chain with authored levels.
+`MipChain::Generated` with RGBA8 sRGB, RGBA8 UNORM or either `RGBA16Float` form uploads level 0
+and fills the full chain on the GPU, each level a linear-filtered half-size copy of the one above
+(a 2×2 box for even extents). sRGB levels are averaged in linear space. It is 2D only (a cube or
+cube array is `Unsupported`) and refused for block-compressed data (`InvalidRequest`).
+`update_texture` on a texture created with generated mips takes either level 0 alone, which it
+queues as a replacement that the next scene submission copies and then regenerates the chain
+from, in the frame's command buffer before any draw, with the coalescing and cancellation of the
+other updates; or the whole chain of authored levels, which replaces every level as above.
 
 Vulkan records a `vkCmdBlitImage2` chain with per-level barriers and requires the format's
 `BLIT_SRC`, `BLIT_DST` and linear-filter features (otherwise `Unsupported`); the image also gains

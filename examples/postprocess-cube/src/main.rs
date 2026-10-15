@@ -7,8 +7,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, PostprocessPipelineDescriptor,
-    PostprocessedDraw, RenderScale, SampleCount, ShaderArtifact,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -42,9 +43,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mesh = graphics.device.create_mesh(&CUBE_VERTICES, &CUBE_INDICES)?;
-    let texture = graphics
-        .device
-        .create_rgba8_srgb_texture(8, 8, &checkerboard())?;
+    let texture = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard()]),
+    })?;
     let scene_pipeline = graphics
         .device
         .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -78,16 +84,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                     let elapsed = started.elapsed().as_secs_f32();
                     let postprocess_uniform = animated_postprocess_uniform(elapsed);
-                    graphics.queue.draw_textured_postprocessed_and_present(
+                    graphics.queue.render_and_present(
                         frame,
-                        PostprocessedDraw {
-                            mesh: &mesh,
-                            texture: &texture,
-                            scene_pipeline: &scene_pipeline,
-                            postprocess_pipeline: &postprocess_pipeline,
-                            targets: &targets,
-                            uniform: &postprocess_uniform,
-                            model_view_projection: transform(elapsed, aspect),
+                        SceneSubmission {
+                            scene: Scene::Textured {
+                                draws: &[TexturedSceneDraw {
+                                    mesh: &mesh,
+                                    texture: &texture,
+                                    pipeline: &scene_pipeline,
+                                    model_view_projection: transform(elapsed, aspect),
+                                }],
+                                output: SceneOutput::Postprocessed(Postprocess {
+                                    pipeline: &postprocess_pipeline,
+                                    targets: &targets,
+                                    uniform: &postprocess_uniform,
+                                }),
+                            },
                             clear: CLEAR,
                         },
                     )?;

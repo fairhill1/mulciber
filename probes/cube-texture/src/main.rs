@@ -3,10 +3,10 @@
 //! through `MaterialBinding::CubeTexture` and read back from an HDR target.
 use mulciber::{
     BlendMode, BlockCompression, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
-    OpenedGraphics, RenderScale, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, Texture, TextureDimension, VertexAttribute,
-    VertexFormat, VertexLayout,
+    GeometrySource, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
+    MaterialScene, MeshIndices, MipChain, OpenedGraphics, Postprocess, RenderScale, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneSubmission, ShaderArtifact, TexelData, Texture,
+    TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -145,10 +145,12 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
                 .collect()
         })
         .collect();
-    textures.push(device.create_rgba8_unorm_cube_texture(
-        2,
-        std::array::from_fn(|face| oriented[face].as_slice()),
-    )?);
+    let oriented: Vec<&[u8]> = oriented.iter().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::Cube { size: 2 },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Unorm(&oriented),
+    })?);
     for (face, name) in FACES.iter().enumerate() {
         for (column, row) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
             let centre = |index: usize| if index == 0 { 0.25 } else { 0.75 };
@@ -171,14 +173,12 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
                 .collect()
         })
         .collect();
-    let srgb_levels: Vec<Vec<&[u8]>> = srgb
-        .iter()
-        .map(|levels| levels.iter().map(Vec::as_slice).collect())
-        .collect();
-    textures.push(device.create_rgba8_srgb_cube_texture_with_mips(
-        4,
-        std::array::from_fn(|face| srgb_levels[face].as_slice()),
-    )?);
+    let srgb_levels: Vec<&[u8]> = srgb.iter().flatten().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::Cube { size: 4 },
+        mips: MipChain::Supplied,
+        data: TexelData::Rgba8Srgb(&srgb_levels),
+    })?);
     // 2: BC1 UNORM, 8x8 faces with four levels each, the tail levels one block apiece.
     let bc1: Vec<Vec<Vec<u8>>> = (0..6)
         .map(|face| {
@@ -187,15 +187,12 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
                 .collect()
         })
         .collect();
-    let bc1_levels: Vec<Vec<&[u8]>> = bc1
-        .iter()
-        .map(|levels| levels.iter().map(Vec::as_slice).collect())
-        .collect();
-    textures.push(device.create_block_compressed_cube_texture_with_mips(
-        BlockCompression::Bc1Unorm,
-        8,
-        std::array::from_fn(|face| bc1_levels[face].as_slice()),
-    )?);
+    let bc1_levels: Vec<&[u8]> = bc1.iter().flatten().map(Vec::as_slice).collect();
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::Cube { size: 8 },
+        mips: MipChain::Supplied,
+        data: TexelData::BlockCompressed(BlockCompression::Bc1Unorm, &bc1_levels),
+    })?);
     for (texture, label, levels) in [(1, "rgba8 srgb 4x4", 3), (2, "bc1 unorm 8x8", 4)] {
         for (face, name) in FACES.iter().enumerate() {
             for level in 0..levels {
@@ -216,9 +213,11 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
         [face + 0.5, -0.25 * face, 4.0 - face, 1.0]
     };
     let float_faces: [[[f32; 4]; 1]; 6] = std::array::from_fn(|face| [float_texel(face)]);
-    textures.push(
-        device.create_rgba16_float_cube_texture(1, float_faces.each_ref().map(|face| &face[..]))?,
-    );
+    textures.push(device.create_texture(&TextureDescriptor {
+        shape: TextureShape::Cube { size: 1 },
+        mips: MipChain::Single,
+        data: TexelData::Rgba16Float(&float_faces.each_ref().map(|face| &face[..])),
+    })?);
     for (face, name) in FACES.iter().enumerate() {
         cases.push(Case {
             texture: 3,
@@ -235,7 +234,7 @@ fn upload(device: &mulciber::Device<'_>) -> Result<Uploads, Box<dyn Error>> {
     Ok(Uploads { textures, cases })
 }
 
-/// Input that every cube constructor and the float update must refuse.
+/// Input that cube creation and the float update must refuse.
 fn check_rejections(
     device: &mulciber::Device<'_>,
     float_cube: &Texture,
@@ -245,17 +244,25 @@ fn check_rejections(
     let mut faces = [&face[..]; 6];
     faces[4] = &short;
     let refused = device
-        .create_rgba8_unorm_cube_texture(2, faces)
+        .create_texture(&TextureDescriptor {
+            shape: TextureShape::Cube { size: 2 },
+            mips: MipChain::Single,
+            data: TexelData::Rgba8Unorm(&faces),
+        })
         .err()
         .ok_or("a short +Z face was accepted")?;
     println!("cube-texture: short face refused: {refused}");
     let refused = device
-        .create_block_compressed_cube_texture(BlockCompression::Bc3Srgb, 4, [&face[..8]; 6])
+        .create_texture(&TextureDescriptor {
+            shape: TextureShape::Cube { size: 4 },
+            mips: MipChain::Single,
+            data: TexelData::BlockCompressed(BlockCompression::Bc3Srgb, &[&face[..8]; 6]),
+        })
         .err()
         .ok_or("eight-byte BC3 faces were accepted")?;
     println!("cube-texture: BC3 sizing refused: {refused}");
     let refused = device
-        .update_rgba16_float_texture(float_cube, 1, 1, &[[0.0; 4]])
+        .update_texture(float_cube, TexelData::Rgba16Float(&[&[[0.0; 4]]]))
         .err()
         .ok_or("a float cube accepted a 2D replacement")?;
     println!("cube-texture: float update refused: {refused}");
@@ -288,9 +295,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cube-texture: {:?}", graphics.selection);
     let Uploads { textures, cases } = upload(&graphics.device)?;
     check_rejections(&graphics.device, &textures[3])?;
-    let flat = graphics
-        .device
-        .create_rgba8_unorm_texture(1, 1, &[255, 255, 255, 255])?;
+    let flat = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 1,
+            height: 1,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Unorm(&[&[255, 255, 255, 255]]),
+    })?;
     let vertices: Vec<u8> = [-1.0_f32, -1.0, 3.0, -1.0, -1.0, 3.0]
         .iter()
         .flat_map(|v| v.to_ne_bytes())
@@ -385,23 +397,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             let rendered = graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    content: SceneContent::Material(&[MaterialRecord {
-                        pipeline: &pipeline,
-                        geometry: GeometrySource::Mesh(&mesh),
-                        textures: &[texture],
-                        shadow_map: None,
-                        uniform: &uniform,
-                        storage: &[],
-                        instances: &[],
-                    }]),
-                    output: SceneOutput::Postprocessed {
-                        pipeline: &composite,
-                        targets: target,
-                        uniform: &[],
-                    },
-                    shadow: None,
-                    overlay: None,
-                    offscreen: &[],
+                    scene: Scene::Material(MaterialScene {
+                        records: &[MaterialRecord {
+                            pipeline: &pipeline,
+                            geometry: GeometrySource::Mesh(&mesh),
+                            textures: &[texture],
+                            shadow_map: None,
+                            uniform: &uniform,
+                            storage: &[],
+                            instances: &[],
+                        }],
+                        shadow: None,
+                        output: MaterialOutput::Postprocessed {
+                            postprocess: Postprocess {
+                                pipeline: &composite,
+                                targets: target,
+                                uniform: &[],
+                            },
+                            foreground_start: None,
+                            offscreen: &[],
+                            overlay: &[],
+                        },
+                    }),
                     clear: ClearColor::BLACK,
                 },
             );

@@ -1,35 +1,43 @@
 # Block-compressed sampled uploads (0.13.15)
 
-`Device::create_block_compressed_texture(compression, width, height, &blocks)` uploads one
-level of an already encoded BC1, BC2, BC3, BC5 or BC7 image and returns the existing owning `Texture`.
-`create_block_compressed_texture_with_mips` uploads a complete application-encoded chain. Both
-bind through the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in either
-stage, exactly as an RGBA8 upload does; nothing in a shader changes when a texture moves from RGBA8
-to BC7.
+`Device::create_texture` with `TexelData::BlockCompressed(compression, &blocks)` uploads an already
+encoded BC1, BC2, BC3, BC5 or BC7 image and returns the existing owning `Texture`: one level with
+`MipChain::Single`, or a complete application-encoded chain with `MipChain::Supplied`. Both bind
+through the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in either stage,
+exactly as an RGBA8 upload does; nothing in a shader changes when a texture moves from RGBA8 to
+BC7. The same data uploads a cube with `TextureShape::Cube` (see [cube textures](cube-textures.md));
+a cube array takes `RGBA16Float` only.
 
 ## What Mulciber does and does not do
 
 Mulciber uploads blocks. It never encodes, decodes, transcodes, or filters them: the application
 runs an encoder over each level of a mip chain it has already filtered in RGBA8 and hands the
 resulting blocks over, and the GPU samples the blocks directly. That is what makes the upload a
-quarter of its RGBA8 equivalent in video memory as well as on disk, and it is why there is no
-"generate mips" option: a block cannot be downsampled without decoding it first.
+quarter of its RGBA8 equivalent in video memory as well as on disk, and it is why
+`MipChain::Generated` is refused with `InvalidRequest`: a block cannot be downsampled without
+decoding it first.
 
 ```rust
-use mulciber::BlockCompression;
+use mulciber::{BlockCompression, MipChain, TexelData, TextureDescriptor, TextureShape};
 
-let albedo = device.create_block_compressed_texture_with_mips(
-    BlockCompression::Bc7Srgb, width, height, &level_slices,
-)?;
-let normal = device.create_block_compressed_texture_with_mips(
-    BlockCompression::Bc7Unorm, width, height, &normal_level_slices,
-)?;
+let shape = TextureShape::D2 { width, height };
+let albedo = device.create_texture(&TextureDescriptor {
+    shape,
+    mips: MipChain::Supplied,
+    data: TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &level_slices),
+})?;
+let normal = device.create_texture(&TextureDescriptor {
+    shape,
+    mips: MipChain::Supplied,
+    data: TexelData::BlockCompressed(BlockCompression::Bc7Unorm, &normal_level_slices),
+})?;
 ```
 
 ## KTX 2.0 files
 
-`Ktx2Texture::parse(&bytes)` reads a KTX 2.0 file in place and `Device::create_ktx2_texture`
-uploads it through the two methods above: its base level alone, or the complete chain it stores. The
+`Ktx2Texture::parse(&bytes)` reads a KTX 2.0 file in place and `descriptor()` describes its upload,
+so `device.create_texture(&ktx.descriptor())` uploads it as above: its base level alone
+(`MipChain::Single`), or the complete chain it stores (`MipChain::Supplied`). The
 [`ktx2`](https://crates.io/crates/ktx2) crate (0.5.0) parses the container and checks its section
 bounds and data format descriptor. Mulciber then accepts only what the GPU samples directly and
 refuses the rest by name:
@@ -66,9 +74,9 @@ uploaded as it is stored (BC1, BC2 and BC3 added in 0.13.32):
 
 A level `w`×`h` texels in extent carries `ceil(w / 4) × ceil(h / 4)` blocks, row-major and tightly
 packed, so a level narrower or shorter than a block (the 2×2 and 1×1 tail of every chain) is one
-block. Dimensions must be nonzero and need not be multiples of four. The mip method
+block. Dimensions must be nonzero and need not be multiples of four. `MipChain::Supplied`
 requires the complete chain from the base level to 1×1, halving each axis and flooring at one,
-the same rule the RGBA8 mip methods apply. A level whose byte count is not its block count times
+the same rule supplied RGBA8 chains follow. A level whose byte count is not its block count times
 the block size is `InvalidRequest`, naming the level and both numbers. Input byte ranges and summed
 staging capacity are checked before native upload.
 

@@ -26,9 +26,12 @@ pub struct OffscreenPass<'resources> {
     pub clear: ClearColor,
 }
 
-pub struct SceneSubmission<'resources> {
+pub enum MaterialOutput<'resources> {
     // ...
-    pub offscreen: &'resources [OffscreenPass<'resources>], // empty for none
+    Postprocessed {
+        // ...
+        offscreen: &'resources [OffscreenPass<'resources>], // empty for none
+    },
 }
 ```
 
@@ -36,7 +39,14 @@ pub struct SceneSubmission<'resources> {
 let portrait = device.create_hdr_render_texture(128, 128)?;
 // Once, the frame the portrait is needed:
 let passes = [OffscreenPass { target: &portrait, records: &head, clear: backdrop }];
-queue.render_and_present(frame, SceneSubmission { offscreen: &passes, /* ... */ })?;
+let output = MaterialOutput::Postprocessed {
+    postprocess,
+    foreground_start: None,
+    offscreen: &passes,
+    overlay: &[],
+};
+let scene = Scene::Material(MaterialScene { records: &world, shadow: None, output });
+queue.render_and_present(frame, SceneSubmission { scene, clear })?;
 // That frame and every later one, until the head changes:
 let hud = MaterialRecord { textures: &[portrait.texture()], /* ... */ };
 ```
@@ -62,9 +72,9 @@ let hud = MaterialRecord { textures: &[portrait.texture()], /* ... */ };
   earlier one.
 - **Refusals.** Before the frame is consumed, a submission is refused when a record samples a
   render texture nothing has rendered yet, when an offscreen record samples its own pass's target
-  or scene depth, when two passes target the same texture, when a pass has no records, or when
-  passes accompany anything but material content with postprocessed output. Render textures are
-  never updated from the CPU: `update_rgba16_float_texture*` refuses them.
+  or scene depth, when two passes target the same texture, or when a pass has no records. Passes
+  exist only in `MaterialOutput::Postprocessed`, so passes with any other content or output are
+  unrepresentable. Render textures are never updated from the CPU: `update_texture` refuses them.
 - **Lifetime.** A render texture holds its last render until the next pass into it, so sampling it
   every frame costs only the sample. Rendering it again while earlier frames in flight still
   sample it is ordered after those reads. Destroying it, or dropping it, frees its color, depth and

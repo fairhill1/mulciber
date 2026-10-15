@@ -6,8 +6,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, OpenedGraphics, SceneContent, SceneOutput,
-    SceneSubmission, ShaderArtifact, TexturedInstanceBatch,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, Scene,
+    SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
+    TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -42,16 +43,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pyramid = graphics
         .device
         .create_mesh(&PYRAMID_VERTICES, &PYRAMID_INDICES)?;
-    let amber = graphics.device.create_rgba8_srgb_texture(
-        8,
-        8,
-        &checkerboard([245, 165, 40], [35, 90, 210]),
-    )?;
-    let violet = graphics.device.create_rgba8_srgb_texture(
-        8,
-        8,
-        &checkerboard([175, 70, 235], [25, 180, 145]),
-    )?;
+    let amber = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard([245, 165, 40], [35, 90, 210])]),
+    })?;
+    let violet = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&checkerboard([175, 70, 235], [25, 180, 145])]),
+    })?;
     let scene_pipeline = graphics
         .device
         .create_instanced_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
@@ -106,15 +113,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    content: SceneContent::Instanced(&batches),
-                    output: SceneOutput::Postprocessed {
-                        pipeline: &postprocess_pipeline,
-                        targets: &targets,
-                        uniform: &[],
+                    scene: Scene::Instanced {
+                        batches: &batches,
+                        output: SceneOutput::Postprocessed(Postprocess {
+                            pipeline: &postprocess_pipeline,
+                            targets: &targets,
+                            uniform: &[],
+                        }),
                     },
-                    shadow: None,
-                    overlay: None,
-                    offscreen: &[],
                     clear: CLEAR,
                 },
             )?;

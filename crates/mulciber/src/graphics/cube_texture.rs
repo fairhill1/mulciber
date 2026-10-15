@@ -1,6 +1,6 @@
 //! Cube texture and cube texture array input validation, independent of the native backend.
 use super::sampled_texture::checked_staging_size;
-use super::{GraphicsError, SampledTextureFormat, Vec, format, full_mip_chain_len, mip_extent};
+use super::{GraphicsError, SampledTextureFormat, format, full_mip_chain_len, mip_extent};
 
 /// Face names in the standard cube layer order, which both native APIs share: +X, -X, +Y, -Y,
 /// +Z, -Z.
@@ -102,20 +102,16 @@ pub(super) fn validate_layers(
     Ok(())
 }
 
-/// Packs every face of every cube with `pack`, naming the layer and face of the first failure.
-pub(super) fn pack_layers<T>(
-    layers: &[[&[&[T]]; 6]],
-    pack: impl Fn(&[&[T]]) -> Result<Vec<Vec<u8>>, GraphicsError>,
-) -> Result<Vec<[Vec<Vec<u8>>; 6]>, GraphicsError> {
-    let mut packed = Vec::with_capacity(layers.len());
-    for (layer, faces) in layers.iter().enumerate() {
-        let mut cube: [Vec<Vec<u8>>; 6] = Default::default();
-        for ((name, levels), packed) in FACE_NAMES.iter().zip(faces).zip(&mut cube) {
-            *packed = pack(levels).map_err(|error| name_layer_face(layer, name, &error))?;
-        }
-        packed.push(cube);
+/// Prefixes a packing diagnostic for the `index`th image of a cube, or with `array` of a cube
+/// array, counted face after face and layer after layer, with the layer and face it came from,
+/// keeping its kind.
+pub(super) fn name_image(array: bool, index: usize, error: &GraphicsError) -> GraphicsError {
+    let face = name_face(FACE_NAMES[index % 6], error);
+    if array {
+        name_layer(index / 6, &face)
+    } else {
+        face
     }
-    Ok(packed)
 }
 
 /// Prefixes a per-layer diagnostic with the layer it came from, keeping its kind.
@@ -126,18 +122,15 @@ fn name_layer(layer: usize, error: &GraphicsError) -> GraphicsError {
     )
 }
 
-/// Prefixes a per-face packing diagnostic with the layer and face it came from, keeping its
-/// kind.
-fn name_layer_face(layer: usize, name: &str, error: &GraphicsError) -> GraphicsError {
-    name_layer(layer, &name_face(name, error))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{FACE_NAMES, pack_layers, require_layers, validate_faces, validate_layers};
+    use super::{FACE_NAMES, require_layers, validate_faces, validate_layers};
     use crate::GraphicsErrorKind;
-    use crate::graphics::sampled_texture::{pack_float_levels, pack_half_levels};
-    use crate::graphics::{BlockCompression, SampledTextureFormat};
+    use crate::graphics::{
+        BlockCompression, MipChain, SampledTextureFormat, TexelData, TextureDescriptor,
+        TextureShape, validate_texture_request,
+    };
+    use std::vec::Vec;
 
     fn faces<'a>(levels: &'a [&'a [u8]]) -> [&'a [&'a [u8]]; 6] {
         [levels; 6]
@@ -256,28 +249,31 @@ mod tests {
         );
     }
 
+    fn cubes<'a>(chains: &[[&'a [[f32; 4]]; 2]]) -> Vec<&'a [[f32; 4]]> {
+        chains.iter().flatten().copied().collect()
+    }
+
     #[test]
     fn cube_array_packing_names_the_layer_and_face_of_invalid_texels() {
         // 2x2 faces with a complete chain: four texels, then one.
         let base = [[0.5_f32, 1.0, 2.0, 1.0]; 4];
         let tail = [[0.25_f32; 4]; 1];
         let chain: [&[[f32; 4]]; 2] = [&base, &tail];
-        let pack = |levels: &[&[[f32; 4]]]| pack_float_levels(2, 2, levels, true);
-        let packed = pack_layers(&[[&chain[..]; 6]; 2], pack).expect("two valid cubes pack");
-        assert_eq!(packed.len(), 2);
+        let shape = |layers| TextureShape::CubeArray { size: 2, layers };
+        let pack = |layers, images: &[&[[f32; 4]]]| {
+            let mut packed = Vec::new();
+            TexelData::Rgba16Float(images)
+                .byte_images(shape(layers), true, &mut packed)
+                .map(|(_, bytes)| bytes.iter().map(|level| level.len()).collect::<Vec<_>>())
+        };
+        let packed = pack(2, &cubes(&[chain; 12])).expect("two valid cubes pack");
         // Eight bytes per binary16 texel: 32 at 2x2, 8 at 1x1, on every face of every cube.
-        assert!(
-            packed
-                .iter()
-                .flatten()
-                .all(|levels| levels[0].len() == 32 && levels[1].len() == 8)
-        );
+        assert_eq!(packed, [32, 8].repeat(12));
         let mut bad = [[0.0_f32; 4]; 1];
         bad[0][2] = f32::NAN;
-        let broken_chain: [&[[f32; 4]]; 2] = [&base, &bad];
-        let mut broken = [&chain[..]; 6];
-        broken[4] = &broken_chain;
-        let error = pack_layers(&[[&chain[..]; 6], broken], pack).expect_err("NaN is refused");
+        let mut broken = [chain; 12];
+        broken[6 + 4] = [&base, &bad];
+        let error = pack(2, &cubes(&broken)).expect_err("NaN is refused");
         assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
         assert!(
             error
@@ -286,28 +282,78 @@ mod tests {
             "{}",
             error.message()
         );
-        // A face that skips its tail level is refused by the chain rule, named the same way.
-        let short: [&[[f32; 4]]; 1] = [&base];
-        let mut truncated = [&chain[..]; 6];
-        truncated[1] = &short;
-        let error = pack_layers(&[truncated], pack).expect_err("a short chain is refused");
-        assert!(
-            error
-                .message()
-                .starts_with("cube array layer 0: cube face -X: ")
-        );
-        // Half bits with an all-ones exponent are refused as non-finite.
+        // Half bits with an all-ones exponent are refused as non-finite, named the same way.
         let infinite = [[0x7c00_u16, 0, 0, 0x3c00]; 1];
         let half_base = [[0x3c00_u16; 4]; 4];
-        let half_chain: [&[[u16; 4]]; 2] = [&half_base, &infinite];
-        let error = pack_layers(&[[&half_chain[..]; 6]], |levels: &[&[[u16; 4]]]| {
-            pack_half_levels(2, 2, levels, true)
-        })
-        .expect_err("infinite half bits are refused");
+        let mut half: Vec<&[[u16; 4]]> = [&half_base[..], &half_base[..1]].repeat(6);
+        half[3] = &infinite;
+        let error = TexelData::Rgba16FloatBits(&half)
+            .byte_images(shape(1), true, &mut Vec::new())
+            .expect_err("infinite half bits are refused");
         assert!(
             error
                 .message()
-                .starts_with("cube array layer 0: cube face +X: ")
+                .starts_with("cube array layer 0: cube face -X: "),
+            "{}",
+            error.message()
         );
+    }
+
+    #[test]
+    fn a_texture_request_supplies_every_image_its_shape_and_mips_take() {
+        let level = [0_u8; 4 * 4 * 4];
+        let images = [&level[..]; 7];
+        let request = |shape, mips, count: usize| {
+            validate_texture_request(&TextureDescriptor {
+                shape,
+                mips,
+                data: TexelData::Rgba8Srgb(&images[..count]),
+            })
+        };
+        let d2 = TextureShape::D2 {
+            width: 4,
+            height: 4,
+        };
+        let cube = TextureShape::Cube { size: 4 };
+        assert_eq!(request(d2, MipChain::Single, 1).ok(), Some(1));
+        assert_eq!(request(d2, MipChain::Generated, 1).ok(), Some(1));
+        assert_eq!(request(cube, MipChain::Single, 6).ok(), Some(1));
+        // A 4x4 chain is three levels, so a cube with mips takes eighteen images.
+        let error = request(cube, MipChain::Supplied, 7).expect_err("a short cube chain");
+        assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+        assert!(
+            error.message().contains("takes 18 images"),
+            "{}",
+            error.message()
+        );
+        assert!(request(d2, MipChain::Single, 2).is_err());
+        assert!(
+            request(
+                TextureShape::D2 {
+                    width: 0,
+                    height: 4
+                },
+                MipChain::Single,
+                1
+            )
+            .is_err()
+        );
+        // Generated mips are 2D only; a cube array takes float data with a supplied chain.
+        let error = request(cube, MipChain::Generated, 6).expect_err("generated cube mips");
+        assert_eq!(error.kind(), GraphicsErrorKind::Unsupported);
+        let array = TextureShape::CubeArray { size: 4, layers: 1 };
+        let error = request(array, MipChain::Supplied, 7).expect_err("an RGBA8 cube array");
+        assert_eq!(error.kind(), GraphicsErrorKind::Unsupported);
+        let empty = TextureShape::CubeArray { size: 4, layers: 0 };
+        let error = request(empty, MipChain::Supplied, 0).expect_err("no layers");
+        assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+        // A block cannot be filtered without decoding it.
+        let error = validate_texture_request(&TextureDescriptor {
+            shape: d2,
+            mips: MipChain::Generated,
+            data: TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &images[..1]),
+        })
+        .expect_err("generated block-compressed mips");
+        assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
     }
 }

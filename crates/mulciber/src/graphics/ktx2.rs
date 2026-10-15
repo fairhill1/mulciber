@@ -10,7 +10,10 @@
 use std::format;
 use std::vec::Vec;
 
-use super::{BlockCompression, GraphicsError, GraphicsErrorKind, full_mip_chain_len, mip_extent};
+use super::{
+    BlockCompression, GraphicsError, GraphicsErrorKind, MipChain, TexelData, TextureDescriptor,
+    TextureShape, full_mip_chain_len, mip_extent,
+};
 
 /// The `VkFormat` a KTX 2.0 header records for each encoding.
 #[must_use]
@@ -46,8 +49,8 @@ const fn compression_of(vk_format: u32) -> Option<BlockCompression> {
 /// A KTX 2.0 file holding a block-compressed 2D texture, validated and borrowed in place.
 ///
 /// [`parse`](Self::parse) checks the container, every level's byte count against its extent in
-/// blocks, and the shape, so [`Device::create_ktx2_texture`](super::Device::create_ktx2_texture)
-/// uploads the levels as they are.
+/// blocks, and the shape, so [`Device::create_texture`](super::Device::create_texture) uploads
+/// the levels of its [`descriptor`](Self::descriptor) as they are.
 #[derive(Clone)]
 pub struct Ktx2Texture<'a> {
     compression: BlockCompression,
@@ -195,6 +198,25 @@ impl<'a> Ktx2Texture<'a> {
     #[must_use]
     pub fn levels(&self) -> &[&'a [u8]] {
         &self.levels
+    }
+
+    /// The upload [`Device::create_texture`](super::Device::create_texture) takes for this file:
+    /// a 2D texture of its base level alone, or of the complete chain it stores. The blocks go
+    /// to the GPU as they are stored; nothing is decoded or transcoded.
+    #[must_use]
+    pub fn descriptor(&self) -> TextureDescriptor<'_> {
+        TextureDescriptor {
+            shape: TextureShape::D2 {
+                width: self.width,
+                height: self.height,
+            },
+            mips: if self.levels.len() == 1 {
+                MipChain::Single
+            } else {
+                MipChain::Supplied
+            },
+            data: TexelData::BlockCompressed(self.compression, &self.levels),
+        }
     }
 
     /// The value stored under `key` in the key/value data, without its trailing NUL, or `None`.

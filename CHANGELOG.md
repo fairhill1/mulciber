@@ -2,6 +2,64 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## One texture upload, one scene verb (graphics 0.17.0, texture 0.5.0)
+
+Breaking. `Device` had a method per combination of format, shape, mip source and input type,
+`create_rgba16_float_cube_array_texture_with_mips_from_bits` among them: 25 constructors and six
+updates, with holes where a combination had no method. They are replaced by one call taking what
+the texture is:
+
+```rust
+let texture = device.create_texture(&TextureDescriptor {
+    shape: TextureShape::D2 { width, height }, // or Cube { size }, CubeArray { size, layers }
+    mips: MipChain::Generated,                 // or Single, Supplied
+    data: TexelData::Rgba8Srgb(&[&texels]),    // Rgba8Unorm, BlockCompressed, Rgba16Float(Bits)
+})?;
+device.update_texture(&heights, TexelData::Rgba16Float(&[&level_zero]))?;
+```
+
+`data` holds one image per layer, face and level, in that order, as KTX 2.0 and both native APIs
+lay them out, so a cube with its chain is its six faces' chains one after another.
+`Ktx2Texture::descriptor` gives a parsed file's upload, replacing `create_ktx2_texture`.
+`update_texture` takes the extent and mip mode from the texture: one image for a single-level
+texture, the complete chain for one created with a supplied chain, and for one created with
+generated mips either its base level (the GPU regenerates the rest) or the complete chain.
+Validation and conversion are unchanged and diagnostics still name the layer, face and level; a
+wrong number of images is reported as one count for the whole texture, and a few messages are
+reworded for the new call. Combinations
+that never had a method are refused by name: generated mips are 2D only and a cube array takes
+`RGBA16Float` with a supplied chain (both `Unsupported`), and block-compressed data cannot generate
+mips (`InvalidRequest`). Cube textures can now take binary16 bits (`Rgba16FloatBits`), which had no
+method; the bytes reach the backend exactly as `RGBA16Float` cubes' do.
+
+`Queue::render_and_present` is now the only way to draw a frame. `draw_textured_and_present`,
+`draw_textured_scene_and_present`, `draw_textured_postprocessed_and_present` and
+`draw_textured_scene_postprocessed_and_present` are removed with `TexturedDraw`, `TexturedScene`,
+`PostprocessedDraw` and `PostprocessedScene`; a single draw is a one-element `Scene::Textured`.
+`SceneSubmission` is now `{ scene, clear }`, and the parts that only compose with material
+records live under `Scene::Material(MaterialScene { records, shadow, output })`: the shadow
+prepass on `MaterialScene`, and the foreground split, offscreen passes and overlay on
+`MaterialOutput::Postprocessed`. Submissions that `render_and_present` used to refuse at run time
+(a shadow, offscreen pass or overlay on textured or instanced content, offscreen passes or an
+overlay or a foreground without postprocessing) can no longer be written. `SceneContent` and
+`MaterialWithForeground` are gone; `foreground_start: Option<usize>` replaces the latter, and
+`overlay` is a slice, empty for none, where `Some(&[])` was an error. The postprocess pipeline,
+targets and uniform travel together as `Postprocess`, in `SceneOutput::Postprocessed` and
+`MaterialOutput::Postprocessed` alike.
+
+`mulciber-texture` 0.5.0 moves to `mulciber` 0.17.0 and uploads through `create_texture`.
+
+The examples, probes and docs move to the new calls. Probe checks that the types now make
+unwritable are gone: `mulciber-api-conformance` step 17 (an overlay with direct output), and in
+`mulciber-float-texture` the updates at a wrong extent, which `update_texture` cannot be given,
+became updates whose levels are the wrong size; `mulciber-cube-array-texture`'s face without
+levels is now a short image list (refused by count) and an empty face (refused naming layer 1, -Z).
+Nothing was run on a GPU: the workspace builds and passes Clippy for Linux, Windows and macOS
+(Metal type-checked with placeholder shaders) apart from the `float_cmp` findings in
+`mulciber-model` and `mulciber-shader` tests that predate this change, and the unit tests pass,
+including new ones for the image count, refused combinations and per-face naming. The native
+upload and draw calls behind the new API are the ones the old methods made.
+
 ## Khronos PBR Neutral, and the shoulder's path to white (shader 0.5.6)
 
 `mulciber::tonemap` adds `pbr_neutral`, Khronos's PBR Neutral as Bevy 0.20 ships it, beside

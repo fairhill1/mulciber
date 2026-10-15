@@ -1,9 +1,10 @@
 //! Native numerical evidence for `RGBA16Float` uploads through public material bindings.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, MaterialBinding,
-    MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OpenedGraphics, RenderScale,
-    SampleCount, SamplerAddress, SamplerFilter, SceneContent, SceneOutput, SceneSubmission,
-    ShaderArtifact, VertexAttribute, VertexFormat, VertexLayout,
+    MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices,
+    MipChain, OpenedGraphics, Postprocess, RenderScale, SampleCount, SamplerAddress, SamplerFilter,
+    Scene, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -106,11 +107,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
     println!("float-texture: {:?}", graphics.selection);
+    let shape = TextureShape::D2 {
+        width: 2,
+        height: 2,
+    };
     let textures = [
-        graphics.device.create_rgba16_float_texture(2, 2, &BASE)?,
-        graphics
-            .device
-            .create_rgba16_float_texture_with_mips(2, 2, &[&BASE, &MIP])?,
+        graphics.device.create_texture(&TextureDescriptor {
+            shape,
+            mips: MipChain::Single,
+            data: TexelData::Rgba16Float(&[&BASE]),
+        })?,
+        graphics.device.create_texture(&TextureDescriptor {
+            shape,
+            mips: MipChain::Supplied,
+            data: TexelData::Rgba16Float(&[&BASE, &MIP]),
+        })?,
     ];
     let vertices: Vec<u8> = [-1.0_f32, -1.0, 3.0, -1.0, -1.0, 3.0]
         .iter()
@@ -171,31 +182,37 @@ fn main() -> Result<(), Box<dyn Error>> {
             // The level-one texel alternates too, so a chain replacement that skipped a level
             // fails every LOD > 0 query.
             let mip = if odd { MIP_ALT } else { MIP };
+            let device = &graphics.device;
             if mips {
-                let device = &graphics.device;
-                assert!(device.update_rgba16_float_texture(&textures[1], 2, 2, &updated).is_err());
-                device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&[[1.0;4];4], &[[1.0;4]]])?;
-                device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated, &mip])?;
+                device.update_texture(&textures[1], TexelData::Rgba16Float(&[&[[1.0;4];4], &[[1.0;4]]]))?;
+                device.update_texture(&textures[1], TexelData::Rgba16Float(&[&updated, &mip]))?;
                 // Incomplete, extra and wrongly sized chains, and a chain for a single-level
                 // texture, are refused without disturbing the pending replacement.
-                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated]).is_err());
-                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 2, 2, &[&updated, &mip, &mip]).is_err());
-                assert!(device.update_rgba16_float_texture_with_mips(&textures[1], 1, 4, &[&updated, &mip, &mip]).is_err());
-                assert!(device.update_rgba16_float_texture_with_mips(&textures[0], 2, 2, &[&updated, &mip]).is_err());
+                assert!(device.update_texture(&textures[1], TexelData::Rgba16Float(&[&updated])).is_err());
+                assert!(device.update_texture(&textures[1], TexelData::Rgba16Float(&[&updated, &mip, &mip])).is_err());
+                assert!(device.update_texture(&textures[1], TexelData::Rgba16Float(&[&updated, &updated])).is_err());
+                assert!(device.update_texture(&textures[0], TexelData::Rgba16Float(&[&updated, &mip])).is_err());
             } else {
-                graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &[[1.0;4];4])?;
-                graphics.device.update_rgba16_float_texture(&textures[0], 2, 2, &updated)?;
-                assert!(graphics.device.update_rgba16_float_texture(&textures[0], 1, 4, &updated).is_err());
+                device.update_texture(&textures[0], TexelData::Rgba16Float(&[&[[1.0;4];4]]))?;
+                device.update_texture(&textures[0], TexelData::Rgba16Float(&[&updated]))?;
+                // A wrongly sized level is refused without disturbing the pending replacement.
+                assert!(device.update_texture(&textures[0], TexelData::Rgba16Float(&[&updated[..2]])).is_err());
             }
             let uniform: Vec<u8> = [query[0], query[1], query[2], f32::from(fragment)].iter().flat_map(|v| v.to_ne_bytes()).collect();
             graphics.queue.render_and_present(frame, SceneSubmission {
-                content: SceneContent::Material(&[MaterialRecord {
-                    pipeline: &pipeline, geometry: GeometrySource::Mesh(&mesh),
-                    textures: &[&textures[usize::from(mips)]], shadow_map: None, uniform: &uniform,
-                    storage: &[], instances: &[],
-                }]),
-                output: SceneOutput::Postprocessed { pipeline: &composite, targets: target, uniform: &[] },
-                shadow: None, overlay: None, offscreen: &[], clear: ClearColor::BLACK,
+                scene: Scene::Material(MaterialScene {
+                    records: &[MaterialRecord {
+                        pipeline: &pipeline, geometry: GeometrySource::Mesh(&mesh),
+                        textures: &[&textures[usize::from(mips)]], shadow_map: None, uniform: &uniform,
+                        storage: &[], instances: &[],
+                    }],
+                    shadow: None,
+                    output: MaterialOutput::Postprocessed {
+                        postprocess: Postprocess { pipeline: &composite, targets: target, uniform: &[] },
+                        foreground_start: None, offscreen: &[], overlay: &[],
+                    },
+                }),
+                clear: ClearColor::BLACK,
             })?;
             // Exercise more submissions than the frame ring without a readback wait.
             if queued_frames < 8 { queued_frames += 1; return Ok(()); }

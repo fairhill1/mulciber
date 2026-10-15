@@ -11,15 +11,15 @@ first small-game-shaped submission rather than replacing those narrower comparis
 ## Public checkpoint vocabulary
 
 `TexturedSceneDraw` borrows one mesh, texture, and textured pipeline and carries one column-major
-model-view-projection matrix. `TexturedScene` submits a non-empty borrowed slice of those records
-directly to generation-matched render targets. `PostprocessedScene` submits the same ordered slice
-to generation-matched offscreen targets, followed by one postprocess pipeline.
+model-view-projection matrix. `Scene::Textured { draws, output }` submits a non-empty borrowed slice
+of those records: `SceneOutput::Direct(&targets)` draws directly into generation-matched render
+targets, and `SceneOutput::Postprocessed(Postprocess { pipeline, targets, uniform })` draws the same
+ordered slice into generation-matched offscreen targets, followed by one postprocess pipeline.
 
-`Queue::draw_textured_scene_and_present` and
-`Queue::draw_textured_scene_postprocessed_and_present` validate every resource session, the target
-generation, a non-empty draw list, and finite transforms before consuming the acquired frame. The
-existing single-object queue methods are compatibility conveniences over a one-element scene, so
-the earlier examples retain their source and behavior.
+`Queue::render_and_present(frame, SceneSubmission { scene, clear })` validates every resource
+session, the target generation, a non-empty draw list, and finite transforms before consuming the
+acquired frame. A single object is a one-element `draws` slice; there is no separate single-object
+queue method.
 
 This is ordered multi-draw, not GPU instancing. The application provides 100 records and each
 backend emits 100 indexed draws in one scene pass. That deliberately establishes a heterogeneous

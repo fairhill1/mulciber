@@ -22,10 +22,10 @@ use std::time::Instant;
 use glam::Vec3;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshIndices,
-    MeshSource, OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter, SceneContent,
-    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass,
-    ShadowRecord, ShadowSource, TransientGeometry,
+    GeometrySource, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
+    MaterialScene, MeshIndices, MeshSource, MipChain, OpenedGraphics, SampleCount, SamplerAddress,
+    SamplerFilter, Scene, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass,
+    ShadowRecord, ShadowSource, TexelData, TextureDescriptor, TextureShape, TransientGeometry,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -77,17 +77,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         &scene::floor_vertices(),
         MeshIndices::U16(&scene::FLOOR_INDICES),
     )?;
-    let crystal_base =
-        graphics
-            .device
-            .create_rgba8_srgb_texture(8, 8, &scene::crystal_base_texture())?;
-    let crystal_glow =
-        graphics
-            .device
-            .create_rgba8_srgb_texture(8, 8, &scene::crystal_glow_texture())?;
-    let lava = graphics
-        .device
-        .create_rgba8_srgb_texture(16, 16, &scene::lava_texture())?;
+    let crystal_base = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&scene::crystal_base_texture()]),
+    })?;
+    let crystal_glow = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 8,
+            height: 8,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&scene::crystal_glow_texture()]),
+    })?;
+    let lava = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 16,
+            height: 16,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&scene::lava_texture()]),
+    })?;
     let crystal_pipeline =
         graphics
             .device
@@ -219,10 +232,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         &scene::sprout_vertices(),
         MeshIndices::U16(&scene::SPROUT_INDICES),
     )?;
-    let sprout_texture =
-        graphics
-            .device
-            .create_rgba8_srgb_texture(16, 16, &scene::sprout_texture())?;
+    let sprout_texture = graphics.device.create_texture(&TextureDescriptor {
+        shape: TextureShape::D2 {
+            width: 16,
+            height: 16,
+        },
+        mips: MipChain::Single,
+        data: TexelData::Rgba8Srgb(&[&scene::sprout_texture()]),
+    })?;
     // One instanced record scatters every sprout: the pipeline declares an instance layout,
     // the record supplies packed model matrices, and the cutout blend carves the leaf shape.
     let sprout_pipeline = graphics
@@ -436,14 +453,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     graphics.queue.render_and_present(
                         frame,
                         SceneSubmission {
-                            content: SceneContent::Material(&records),
-                            output: SceneOutput::Direct(&targets),
-                            shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
-                                map: &shadow_map,
-                                cascades: &cascade_lists,
-                            })),
-                            overlay: None,
-                            offscreen: &[],
+                            scene: Scene::Material(MaterialScene {
+                                records: &records,
+                                shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
+                                    map: &shadow_map,
+                                    cascades: &cascade_lists,
+                                })),
+                                output: MaterialOutput::Direct(&targets),
+                            }),
                             clear: CLEAR,
                         },
                     )?;

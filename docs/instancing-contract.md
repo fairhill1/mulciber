@@ -16,12 +16,13 @@ requires four instance-rate matrix columns at shader locations 3 through 6. A
 `TexturedInstanceBatch` borrows one mesh, texture, instanced pipeline, and a non-empty slice of
 finite column-major model-view-projection matrices.
 
-The public entry point is `Queue::render_and_present(frame, SceneSubmission { ... })`.
-`SceneContent` independently selects heterogeneous textured records or homogeneous instance
-batches; `SceneOutput` independently selects direct or postprocessed output. Splitting those proven
-axes prevents method or variant names from growing as their cross-product while deliberately
-stopping short of a general command encoder or frame graph. The older focused queue methods remain
-available so the earlier comparison sources and recorded counts do not churn.
+The public entry point is `Queue::render_and_present(frame, SceneSubmission { scene, clear })`.
+`Scene::Textured { draws, output }` selects heterogeneous textured records and
+`Scene::Instanced { batches, output }` homogeneous instance batches; in both, `SceneOutput`
+independently selects direct or postprocessed output. Splitting those proven axes prevents method
+or variant names from growing as their cross-product while deliberately stopping short of a
+general command encoder or frame graph. The submission is the only scene verb; the earlier focused
+queue methods have been removed.
 
 Validation rejects empty scenes, empty batches, non-finite matrices, mixed-session resources,
 stale generation-bound targets, and native count/size overflow before encoding where practical.

@@ -10,8 +10,9 @@ use game::Game;
 use mulciber::{
     ClearColor, Device, DeviceRequest, Frame, FrameAcquire, GpuTimingFeedback,
     InstancedTexturedPipeline, Mesh, MipChain, OpenedGraphics, Postprocess, PostprocessPipeline,
-    PostprocessTargets, PresentFeedback, Queue, Scene, SceneOutput, SceneSubmission,
-    ShaderArtifact, TexelData, Texture, TextureDescriptor, TextureShape, TexturedInstanceBatch,
+    PostprocessTargets, PresentFeedback, Queue, RenderScale, Scene, SceneColor, SceneOutput,
+    SceneSubmission, ShaderArtifact, TexelData, Texture, TextureDescriptor, TextureShape,
+    TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
@@ -54,9 +55,11 @@ impl Resources {
             postprocess_pipeline: graphics
                 .device
                 .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?,
-            targets: graphics
-                .device
-                .create_postprocess_targets(graphics.surface.info()?)?,
+            targets: graphics.device.create_postprocess_targets(
+                graphics.surface.info()?,
+                RenderScale::NATIVE,
+                SceneColor::Surface,
+            )?,
         })
     }
 
@@ -71,7 +74,11 @@ impl Resources {
     ) -> Result<(), Box<dyn Error>> {
         let info = frame.surface_info();
         if info != self.targets.info() {
-            self.targets = device.create_postprocess_targets(info)?;
+            self.targets = device.create_postprocess_targets(
+                info,
+                RenderScale::NATIVE,
+                SceneColor::Surface,
+            )?;
         }
         let aspect = info.extent().width() as f32 / info.extent().height() as f32;
         let scene = transforms(game, aspect, interpolation);

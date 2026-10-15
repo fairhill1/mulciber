@@ -7,9 +7,9 @@ use std::time::Instant;
 
 use glam::Quat;
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, SampleCount,
-    Scene, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor,
-    TextureShape, TexturedSceneDraw,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, RenderScale,
+    SampleCount, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
+    TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{
     Application, ButtonState, InputEvent, KeyCode, LogicalPosition, LogicalSize, PointerButton,
@@ -116,7 +116,7 @@ impl Interaction {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn Error>> {
     let mut application = Application::new()?;
     let window = application.create_window(&WindowDescriptor::new(
@@ -155,9 +155,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let postprocess_pipeline = graphics
         .device
         .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
-    let mut targets = graphics
-        .device
-        .create_postprocess_targets(graphics.surface.info()?)?;
+    let mut targets = graphics.device.create_postprocess_targets(
+        graphics.surface.info()?,
+        RenderScale::NATIVE,
+        SceneColor::Surface,
+    )?;
     let started = Instant::now();
     let mut interaction = Interaction::default();
 
@@ -175,7 +177,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 FrameAcquire::Ready(frame) => {
                     let info = frame.surface_info();
                     if info != targets.info() {
-                        targets = graphics.device.create_postprocess_targets(info)?;
+                        targets = graphics.device.create_postprocess_targets(
+                            info,
+                            RenderScale::NATIVE,
+                            SceneColor::Surface,
+                        )?;
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                     let animation_seconds =

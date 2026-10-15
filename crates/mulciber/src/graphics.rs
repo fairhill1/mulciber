@@ -525,135 +525,75 @@ impl Device<'_> {
         })
     }
 
-    /// Creates the single-sample fullscreen pipeline for the post-processing checkpoint.
+    /// Creates the single-sample fullscreen pipeline that reads resolved scene color and writes
+    /// the presentable target.
     ///
     /// The shader module must contain `post_vertex` and `post_fragment` entry points. The
     /// fragment stage samples the resolved scene color through group-0 bindings 1 and 2. Pass a
-    /// [`ShaderArtifact`] directly for the no-uniform convenience form, or a
+    /// [`ShaderArtifact`] directly for a surface-format pipeline without a uniform, or a
     /// [`PostprocessPipelineDescriptor`] to declare an exact-size group-0/binding-0 uniform of at
-    /// most [`POSTPROCESS_UNIFORM_SIZE_LIMIT`] bytes.
+    /// most [`POSTPROCESS_UNIFORM_SIZE_LIMIT`] bytes or read HDR scene color
+    /// ([`PostprocessPipelineDescriptor::hdr`]).
+    ///
+    /// An HDR composite reads linear `RGBA16Float` scene color and must tone-map to the sRGB
+    /// surface. Its bloom and scattering are independently optional: absent effects create no
+    /// child pipelines and execute no filter, scattering or upscale passes, so applications can
+    /// cache the combinations they want and select a pipeline per frame. Without bloom, the
+    /// composite must declare no bindings beyond its ordinary 0/1/2 inputs; with bloom, all six
+    /// half-resolution levels at bindings 3 through 8, or with an upsample filter
+    /// ([`BloomShaders::upsample`]) the one accumulated level at binding 3 alone. The bloom
+    /// filters use the ordinary no-uniform postprocess interface. HDR targets serve every
+    /// combination and may be shared; their allocated bloom storage is retained. Scattering
+    /// requires material content with a cascaded shadow prepass on every submission; world depth
+    /// is stored and read at its native sample count before the foreground depth clear.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid uniform declaration, a declaration that disagrees with the
-    /// artifact's recorded interface, or native shader loading, sampler creation, and pipeline
-    /// creation failure.
+    /// Returns an error for an invalid uniform declaration, a stage whose interface disagrees
+    /// with the artifact's recorded interface or the effects declared, or native shader loading,
+    /// sampler creation, and pipeline creation failure, including resources the device does not
+    /// support.
     pub fn create_postprocess_pipeline<'inputs>(
         &self,
         descriptor: impl Into<PostprocessPipelineDescriptor<'inputs>>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
         let descriptor = descriptor.into();
         validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
-        let uniform_size = descriptor.uniform_size.unwrap_or(0);
-        let config = PostprocessPipelineConfig {
-            volume: None,
-            volume_stage: crate::graphics::VolumeStage::None,
-            samples: 1,
-            uniform_size,
-            bloom: None,
-            additive: false,
-            hdr_output: false,
+        let (bloom, volume) = match descriptor.hdr {
+            None => (None, None),
+            Some(HdrComposite { bloom, volume }) => {
+                hdr::validate_optional_bloom_interface(
+                    descriptor.shader,
+                    descriptor.uniform_size,
+                    bloom.map(|filters| filters.upsample.is_some()),
+                )?;
+                if let Some(filters) = bloom {
+                    for shader in [filters.prefilter, filters.downsample]
+                        .into_iter()
+                        .chain(filters.upsample)
+                    {
+                        validate_postprocess_interface(shader, None)?;
+                        validate_bloom_filter_interface(shader)?;
+                    }
+                }
+                if let Some(volume) = volume {
+                    for (shader, msaa, composite) in [
+                        (volume.scatter, false, false),
+                        (volume.scatter_msaa, true, false),
+                        (volume.composite, false, true),
+                        (volume.composite_msaa, true, true),
+                    ] {
+                        hdr::validate_volume_interface(
+                            shader,
+                            descriptor.uniform_size,
+                            msaa,
+                            composite,
+                        )?;
+                    }
+                }
+                (bloom, volume)
+            }
         };
-        let id =
-            session_mut(&self.shared)?.create_postprocess_pipeline(descriptor.shader, &config)?;
-        Ok(PostprocessPipeline {
-            lease: self.lease(id, ResourceKind::PostprocessPipeline),
-            uniform_size,
-            hdr: false,
-        })
-    }
-
-    /// Creates an HDR composite with six half-resolution bloom levels at bindings 3 through 8.
-    /// The prefilter and downsample shaders use the ordinary no-uniform postprocess interface.
-    /// Scene color is linear `RGBA16Float`; the composite must tone-map to the sRGB surface.
-    ///
-    /// # Errors
-    /// Rejects invalid shader interfaces or unsupported native pipeline creation.
-    pub fn create_hdr_postprocess_pipeline(
-        &self,
-        descriptor: PostprocessPipelineDescriptor<'_>,
-        prefilter: ShaderArtifact<'_>,
-        downsample: ShaderArtifact<'_>,
-    ) -> Result<PostprocessPipeline, GraphicsError> {
-        self.create_hdr_composite_pipeline(
-            descriptor,
-            Some(BloomShaders {
-                prefilter,
-                downsample,
-                upsample: None,
-            }),
-            None,
-        )
-    }
-
-    /// Adds application-authored scattering and additive depth-aware upscaling to HDR.
-    /// Requires a cascaded shadow prepass on every submission. World depth is stored
-    /// and read at its native sample count before the foreground depth clear.
-    ///
-    /// # Errors
-    /// Rejects mismatched shader bindings, uniform sizes or unsupported native resources.
-    pub fn create_volumetric_hdr_postprocess_pipeline(
-        &self,
-        descriptor: PostprocessPipelineDescriptor<'_>,
-        prefilter: ShaderArtifact<'_>,
-        downsample: ShaderArtifact<'_>,
-        volume: VolumetricShaders<'_>,
-    ) -> Result<PostprocessPipeline, GraphicsError> {
-        self.create_hdr_composite_pipeline(
-            descriptor,
-            Some(BloomShaders {
-                prefilter,
-                downsample,
-                upsample: None,
-            }),
-            Some(volume),
-        )
-    }
-
-    /// Creates an HDR tone-map composite with independently optional bloom and scattering.
-    ///
-    /// Absent effects create no child pipelines and execute no filter, scattering or upscale
-    /// passes. Applications can cache the desired combinations and select a pipeline per frame.
-    /// Without bloom, the composite must declare no bindings beyond its ordinary 0/1/2 inputs;
-    /// with bloom, it must declare all six textures at bindings 3 through 8, or with an upsample
-    /// filter ([`BloomShaders::upsample`]) the one accumulated level at binding 3 alone. Targets
-    /// remain HDR in every combination and may be shared; their allocated bloom storage is
-    /// retained.
-    /// Scattering retains its material-content and cascaded-shadow submission requirements.
-    ///
-    /// # Errors
-    /// Rejects mismatched stage interfaces, uniform sizes or unsupported native resources.
-    pub fn create_hdr_composite_pipeline(
-        &self,
-        descriptor: PostprocessPipelineDescriptor<'_>,
-        bloom: Option<BloomShaders<'_>>,
-        volume: Option<VolumetricShaders<'_>>,
-    ) -> Result<PostprocessPipeline, GraphicsError> {
-        validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
-        hdr::validate_optional_bloom_interface(
-            descriptor.shader,
-            descriptor.uniform_size,
-            bloom.map(|filters| filters.upsample.is_some()),
-        )?;
-        if let Some(filters) = bloom {
-            for shader in [filters.prefilter, filters.downsample]
-                .into_iter()
-                .chain(filters.upsample)
-            {
-                validate_postprocess_interface(shader, None)?;
-                validate_bloom_filter_interface(shader)?;
-            }
-        }
-        if let Some(volume) = volume {
-            for (shader, msaa, composite) in [
-                (volume.scatter, false, false),
-                (volume.scatter_msaa, true, false),
-                (volume.composite, false, true),
-                (volume.composite_msaa, true, true),
-            ] {
-                hdr::validate_volume_interface(shader, descriptor.uniform_size, msaa, composite)?;
-            }
-        }
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
         let config = PostprocessPipelineConfig {
             volume,
@@ -669,7 +609,7 @@ impl Device<'_> {
         Ok(PostprocessPipeline {
             lease: self.lease(id, ResourceKind::PostprocessPipeline),
             uniform_size,
-            hdr: true,
+            hdr: descriptor.hdr.is_some(),
         })
     }
 
@@ -689,26 +629,8 @@ impl Device<'_> {
         &self,
         descriptor: MaterialPipelineDescriptor<'_>,
     ) -> Result<MaterialPipeline, GraphicsError> {
-        self.create_material_pipeline_with_format(descriptor, false)
-    }
-
-    /// Creates a material pipeline for linear `RGBA16Float` HDR scene targets.
-    ///
-    /// # Errors
-    /// Reports the same declaration errors as `create_material_pipeline`, plus native format errors.
-    pub fn create_hdr_material_pipeline(
-        &self,
-        descriptor: MaterialPipelineDescriptor<'_>,
-    ) -> Result<MaterialPipeline, GraphicsError> {
-        self.create_material_pipeline_with_format(descriptor, true)
-    }
-
-    fn create_material_pipeline_with_format(
-        &self,
-        descriptor: MaterialPipelineDescriptor<'_>,
-        hdr: bool,
-    ) -> Result<MaterialPipeline, GraphicsError> {
-        let (layout, instance_layout, declaration) = check_material_descriptor(descriptor, hdr)?;
+        let hdr = descriptor.scene_color == SceneColor::Hdr;
+        let (layout, instance_layout, declaration) = check_material_descriptor(descriptor)?;
         if declaration
             .texture_dimensions
             .contains(&TextureDimension::CubeArray)
@@ -973,69 +895,37 @@ impl Device<'_> {
     }
 
     /// Creates depth, resolved scene color, and optional multisample color storage for one surface
-    /// generation, rendered at the surface's native extent.
+    /// generation.
     ///
     /// The resolved scene color is both a render target and the sampled input to the fullscreen
-    /// post-processing pass.
+    /// post-processing pass. Its extent is `scale` of the presentable extent: the scene pass
+    /// renders into the scaled storage, and the fullscreen pass resamples it to the surface's
+    /// native extent through its linear sampler, so a scale below native trades scene-pass fill
+    /// cost for sharpness while text or overlays drawn by the postprocess stage stay native.
+    /// Scales above native supersample. Both dimensions floor at one texel. [`SceneColor::Hdr`]
+    /// targets also hold six bloom levels.
     ///
     /// # Errors
     ///
-    /// Returns an error for an empty extent or native image allocation failure.
+    /// Returns an error for an empty extent, unsupported HDR attachment, filter or sample-count
+    /// combinations, or native image allocation failure.
     pub fn create_postprocess_targets(
         &self,
         info: SurfaceInfo,
-    ) -> Result<PostprocessTargets, GraphicsError> {
-        self.create_scaled_postprocess_targets(info, RenderScale::NATIVE)
-    }
-
-    /// Creates postprocess targets whose offscreen scene extent is scaled relative to the
-    /// presentable extent.
-    ///
-    /// The scene pass renders into the scaled offscreen storage, and the fullscreen
-    /// post-processing pass resamples it to the surface's native extent through its linear
-    /// sampler, so a scale below native trades scene-pass fill cost for sharpness while text
-    /// or overlays drawn by the postprocess stage stay native. Scales above native
-    /// supersample. Both dimensions floor at one texel.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty extent or native image allocation failure.
-    pub fn create_scaled_postprocess_targets(
-        &self,
-        info: SurfaceInfo,
         scale: RenderScale,
+        scene_color: SceneColor,
     ) -> Result<PostprocessTargets, GraphicsError> {
-        let scene_extent = scale.scene_extent(info.extent());
-        let id =
-            session_mut(&self.shared)?.create_postprocess_targets(info, scene_extent, false)?;
-        Ok(PostprocessTargets {
-            lease: self.lease(id, ResourceKind::PostprocessTargets),
-            info,
-            scale,
-            hdr: false,
-        })
-    }
-
-    /// Creates scaled linear `RGBA16Float` scene targets and six bloom levels.
-    /// Existing surface-format targets remain available through `create_scaled_postprocess_targets`.
-    ///
-    /// # Errors
-    /// Rejects unsupported HDR attachment/filter/sample-count combinations or allocation failure.
-    pub fn create_scaled_hdr_postprocess_targets(
-        &self,
-        info: SurfaceInfo,
-        scale: RenderScale,
-    ) -> Result<PostprocessTargets, GraphicsError> {
+        let hdr = scene_color == SceneColor::Hdr;
         let id = session_mut(&self.shared)?.create_postprocess_targets(
             info,
             scale.scene_extent(info.extent()),
-            true,
+            hdr,
         )?;
         Ok(PostprocessTargets {
             lease: self.lease(id, ResourceKind::PostprocessTargets),
             info,
             scale,
-            hdr: true,
+            hdr,
         })
     }
 
@@ -3384,6 +3274,9 @@ pub struct PostprocessPipelineDescriptor<'inputs> {
     /// Exact byte size of the optional group-0/binding-0 uniform, from 1 through
     /// [`POSTPROCESS_UNIFORM_SIZE_LIMIT`]; `None` declares no postprocess uniform.
     pub uniform_size: Option<u32>,
+    /// `None` reads [`SceneColor::Surface`] scene color; an HDR composite reads
+    /// [`SceneColor::Hdr`] and adds its optional bloom and scattering.
+    pub hdr: Option<HdrComposite<'inputs>>,
 }
 
 impl<'inputs> From<ShaderArtifact<'inputs>> for PostprocessPipelineDescriptor<'inputs> {
@@ -3391,8 +3284,19 @@ impl<'inputs> From<ShaderArtifact<'inputs>> for PostprocessPipelineDescriptor<'i
         Self {
             shader,
             uniform_size: None,
+            hdr: None,
         }
     }
+}
+
+/// The effects of an HDR composite, each optional, as
+/// [`Device::create_postprocess_pipeline`] describes.
+#[derive(Clone, Copy, Default)]
+pub struct HdrComposite<'inputs> {
+    /// Bloom filters, or `None` for no bloom.
+    pub bloom: Option<BloomShaders<'inputs>>,
+    /// Scattering and its depth-aware upscale, or `None` for none.
+    pub volume: Option<VolumetricShaders<'inputs>>,
 }
 
 /// Largest supported material uniform declaration in bytes.
@@ -3765,6 +3669,21 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub blend: BlendMode,
     /// How the pipeline interacts with the scene depth target.
     pub depth: DepthMode,
+    /// The scene color it renders into. Only an HDR pipeline may declare a
+    /// [`MaterialBinding::SceneDepth`] slot, and only an HDR pipeline draws into
+    /// [`RenderTexture`]s.
+    pub scene_color: SceneColor,
+}
+
+/// The format of a scene pass's color, which a material pipeline is built for and postprocess
+/// targets hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SceneColor {
+    /// The surface's own format, ready to present after a direct pass or a plain postprocess.
+    Surface,
+    /// Linear `RGBA16Float`, for an HDR composite to tone-map, with storage for its bloom
+    /// levels in postprocess targets; also the format of every [`RenderTexture`].
+    Hdr,
 }
 
 impl MaterialPipelineDescriptor<'_> {
@@ -3779,17 +3698,7 @@ impl MaterialPipelineDescriptor<'_> {
     ///
     /// Returns the declaration errors [`Device::create_material_pipeline`] reports.
     pub fn validate(&self) -> Result<(), GraphicsError> {
-        check_material_descriptor(*self, false).map(drop)
-    }
-
-    /// Checks the declaration as [`Device::create_hdr_material_pipeline`] does, without a
-    /// device; unlike [`Self::validate`] it accepts a [`MaterialBinding::SceneDepth`] slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns the declaration errors [`Device::create_hdr_material_pipeline`] reports.
-    pub fn validate_hdr(&self) -> Result<(), GraphicsError> {
-        check_material_descriptor(*self, true).map(drop)
+        check_material_descriptor(*self).map(drop)
     }
 }
 
@@ -3797,7 +3706,6 @@ impl MaterialPipelineDescriptor<'_> {
 /// the artifact's recorded interface.
 fn check_material_descriptor(
     descriptor: MaterialPipelineDescriptor<'_>,
-    hdr: bool,
 ) -> Result<
     (
         OwnedVertexLayout,
@@ -3806,6 +3714,7 @@ fn check_material_descriptor(
     ),
     GraphicsError,
 > {
+    let hdr = descriptor.scene_color == SceneColor::Hdr;
     let layout = validate_vertex_layout(descriptor.vertex_layout)?;
     let instance_layout = descriptor
         .instance_layout

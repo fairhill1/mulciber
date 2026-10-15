@@ -6,9 +6,9 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, Scene,
-    SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
-    TexturedInstanceBatch,
+    ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess, RenderScale,
+    Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor,
+    TextureShape, TexturedInstanceBatch,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -65,9 +65,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let postprocess_pipeline = graphics
         .device
         .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
-    let mut targets = graphics
-        .device
-        .create_postprocess_targets(graphics.surface.info()?)?;
+    let mut targets = graphics.device.create_postprocess_targets(
+        graphics.surface.info()?,
+        RenderScale::NATIVE,
+        SceneColor::Surface,
+    )?;
     let started = Instant::now();
 
     loop {
@@ -80,7 +82,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             };
             let info = frame.surface_info();
             if info != targets.info() {
-                targets = graphics.device.create_postprocess_targets(info)?;
+                targets = graphics.device.create_postprocess_targets(
+                    info,
+                    RenderScale::NATIVE,
+                    SceneColor::Surface,
+                )?;
             }
             let aspect = info.extent().width() as f32 / info.extent().height() as f32;
             let transforms = instance_transforms(started.elapsed().as_secs_f32(), aspect);

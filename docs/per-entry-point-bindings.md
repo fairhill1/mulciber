@@ -28,22 +28,24 @@ let shared = [
     MaterialBinding::Texture { binding: 1 },
     MaterialBinding::Sampler { binding: 2, filter: SamplerFilter::Linear, address: SamplerAddress::Repeat },
 ];
-let props = device.create_hdr_material_pipeline(MaterialPipelineDescriptor {
+let props = device.create_material_pipeline(MaterialPipelineDescriptor {
     shader,
     vertex_entry: "prop_vertex",
     fragment_entry: "prop_fragment",
     vertex_layout: PROP_LAYOUT,
     bindings: &shared, // no storage slot
+    scene_color: SceneColor::Hdr,
     ..
 })?;
 let mut skinned_bindings = shared.to_vec();
 skinned_bindings.push(MaterialBinding::Storage { binding: 3, size: 128 * 64 });
-let skinned = device.create_hdr_material_pipeline(MaterialPipelineDescriptor {
+let skinned = device.create_material_pipeline(MaterialPipelineDescriptor {
     shader,
     vertex_entry: "skinned_vertex",
     fragment_entry: "prop_fragment",
     vertex_layout: SKINNED_LAYOUT, // e.g. Uint8x4 bone indices and Unorm8x4 weights
     bindings: &skinned_bindings,
+    scene_color: SceneColor::Hdr,
     ..
 })?;
 ```
@@ -58,7 +60,7 @@ when Naga's analysis finds the global reachable from the entry point, in its own
 function it calls; the SPIR-V and MSL writers emit an entry point's resources from the same
 analysis, so the record is exactly the set its native code binds.
 
-`create_material_pipeline` and `create_hdr_material_pipeline` validate the declaration against the
+`create_material_pipeline` validates the declaration, for either `SceneColor`, against the
 union of the vertex and fragment entry points' bindings, and `create_shadow_pipeline` against the
 vertex entry point's plus the fragment entry point's when one is given. The rules inside that set
 are the existing ones: every used binding must be declared with its recorded kind and size, and

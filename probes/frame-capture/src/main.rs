@@ -4,10 +4,11 @@
 //! Pass `--force-one-sample` to render the direct path without a multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
-    MaterialScene, MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline,
-    PostprocessTargets, RenderScale, RenderTargets, SampleCount, Scene, SceneSubmission,
-    ShaderArtifact, SurfaceInfo, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, HdrComposite, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, MaterialScene, MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline,
+    PostprocessPipelineDescriptor, PostprocessTargets, RenderScale, RenderTargets, SampleCount,
+    Scene, SceneColor, SceneSubmission, ShaderArtifact, SurfaceInfo, TransientGeometry,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -257,11 +258,11 @@ fn render(
         )?
     } else {
         if targets.hdr.as_ref().is_none_or(|t| t.info() != info) {
-            targets.hdr = Some(
-                graphics
-                    .device
-                    .create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?,
-            );
+            targets.hdr = Some(graphics.device.create_postprocess_targets(
+                info,
+                RenderScale::NATIVE,
+                SceneColor::Hdr,
+            )?);
         }
         let overlay = [record(
             &pipelines.direct,
@@ -319,7 +320,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
     println!("frame-capture: {:?}", graphics.selection);
-    let descriptor = || -> Result<MaterialPipelineDescriptor<'static>, Box<dyn Error>> {
+    let descriptor = |scene_color| -> Result<MaterialPipelineDescriptor<'static>, Box<dyn Error>> {
         Ok(MaterialPipelineDescriptor {
             shader: ShaderArtifact::new(HUD_SHADER)?,
             vertex_entry: "hud_vertex",
@@ -329,18 +330,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             blend: BlendMode::Opaque,
             depth: DepthMode::Off,
             instance_layout: None,
+            scene_color,
         })
     };
     let pipelines = Pipelines {
-        direct: graphics.device.create_material_pipeline(descriptor()?)?,
+        direct: graphics
+            .device
+            .create_material_pipeline(descriptor(SceneColor::Surface)?)?,
         hdr: graphics
             .device
-            .create_hdr_material_pipeline(descriptor()?)?,
-        composite: graphics.device.create_hdr_composite_pipeline(
-            ShaderArtifact::new(COMPOSITE_SHADER)?.into(),
-            None,
-            None,
-        )?,
+            .create_material_pipeline(descriptor(SceneColor::Hdr)?)?,
+        composite: graphics
+            .device
+            .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                shader: ShaderArtifact::new(COMPOSITE_SHADER)?,
+                uniform_size: None,
+                hdr: Some(HdrComposite::default()),
+            })?,
     };
     let mut targets = Targets::default();
     if graphics.surface.take_frame_capture()?.is_some() {

@@ -6,11 +6,12 @@
 //! Pass `--force-one-sample` to render without the multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, MaterialBinding, MaterialOutput, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, MaterialScene, MeshIndices, OffscreenPass, OpenedGraphics, Postprocess,
-    PostprocessPipeline, PostprocessTargets, RenderScale, RenderTexture, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneSubmission, ShaderArtifact, SurfaceInfo, TexelData,
-    TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    GeometrySource, HdrComposite, MaterialBinding, MaterialOutput, MaterialPipeline,
+    MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices, OffscreenPass,
+    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor,
+    PostprocessTargets, RenderScale, RenderTexture, SampleCount, SamplerAddress, SamplerFilter,
+    Scene, SceneColor, SceneSubmission, ShaderArtifact, SurfaceInfo, TexelData, TransientGeometry,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -302,11 +303,11 @@ fn render(
 ) -> Result<FrameDisposition, mulciber::GraphicsError> {
     let info = frame.surface_info();
     if targets.as_ref().is_none_or(|t| t.info() != info) {
-        *targets = Some(
-            graphics
-                .device
-                .create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?,
-        );
+        *targets = Some(graphics.device.create_postprocess_targets(
+            info,
+            RenderScale::NATIVE,
+            SceneColor::Hdr,
+        )?);
     }
     let pattern = match step {
         Step::Render(pattern) => pattern,
@@ -392,7 +393,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
     println!("render-texture: {:?}", graphics.selection);
-    let hud = || -> Result<MaterialPipelineDescriptor<'static>, Box<dyn Error>> {
+    let hud = |scene_color| -> Result<MaterialPipelineDescriptor<'static>, Box<dyn Error>> {
         Ok(MaterialPipelineDescriptor {
             shader: ShaderArtifact::new(HUD_SHADER)?,
             vertex_entry: "hud_vertex",
@@ -402,14 +403,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
             instance_layout: None,
+            scene_color,
         })
     };
     let pipelines = Pipelines {
-        hud: graphics.device.create_hdr_material_pipeline(hud()?)?,
-        surface_hud: graphics.device.create_material_pipeline(hud()?)?,
+        hud: graphics
+            .device
+            .create_material_pipeline(hud(SceneColor::Hdr)?)?,
+        surface_hud: graphics
+            .device
+            .create_material_pipeline(hud(SceneColor::Surface)?)?,
         sample: graphics
             .device
-            .create_hdr_material_pipeline(MaterialPipelineDescriptor {
+            .create_material_pipeline(MaterialPipelineDescriptor {
                 shader: ShaderArtifact::new(SAMPLE_SHADER)?,
                 vertex_entry: "sample_vertex",
                 fragment_entry: "sample_fragment",
@@ -418,12 +424,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 blend: BlendMode::Opaque,
                 depth: DepthMode::Off,
                 instance_layout: None,
+                scene_color: SceneColor::Hdr,
             })?,
-        composite: graphics.device.create_hdr_composite_pipeline(
-            ShaderArtifact::new(COMPOSITE_SHADER)?.into(),
-            None,
-            None,
-        )?,
+        composite: graphics
+            .device
+            .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                shader: ShaderArtifact::new(COMPOSITE_SHADER)?,
+                uniform_size: None,
+                hdr: Some(HdrComposite::default()),
+            })?,
     };
     // An odd extent, so a texture-coordinate slip shows as a wrong quadrant.
     let render_texture = graphics.device.create_hdr_render_texture(48, 40)?;

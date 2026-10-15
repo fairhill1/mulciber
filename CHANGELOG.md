@@ -2,7 +2,31 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## One texture upload, one scene verb (graphics 0.17.0, texture 0.5.0)
+## One way to play a clip (audio 0.3.0)
+
+Breaking. `Controls` had a method per combination of bus, placement, handle and looping (`play`,
+`play_tracked`, `play_bed`, `play_spatial`, `play_spatial_tracked`, `play_spatial_music` and
+`start_music`), each taking up to five positional arguments and each missing some: a tracked
+spatial voice could not have an emitter, music in the world had no rate, a bed no pitch. They are
+one call taking how to play:
+
+```rust
+let waterfall = controls.play(&sound, Play {
+    bus: Bus::Ambience,
+    placement: Placement::World { position, emitter: Some(rock) }, // or Placement::Flat, Placement::at(p)
+    fade_in: 2.0,
+    looping: true,
+    ..Play::default() // 0 dB, rate 1, effects bus, unpositioned, once
+});
+```
+
+`play` always returns the `VoiceId`, which a one-shot ignores. The reverb send is the rule it was:
+effects, and anything placed in the world, sound in the room; unpositioned music and ambience
+don't. `stop_music` fades every unpositioned voice on the music bus, as it faded `start_music`'s.
+`play_spatial_stream` stays as it was, since it returns the stream to feed. New combinations fall out
+of the fields, such as the placed, fading, looping ambience above, which a new test plays.
+
+## One texture upload, one scene verb, HDR as a setting (graphics 0.17.0, texture 0.5.0)
 
 Breaking. `Device` had a method per combination of format, shape, mip source and input type,
 `create_rgba16_float_cube_array_texture_with_mips_from_bits` among them: 25 constructors and six
@@ -46,6 +70,16 @@ overlay or a foreground without postprocessing) can no longer be written. `Scene
 `overlay` is a slice, empty for none, where `Some(&[])` was an error. The postprocess pipeline,
 targets and uniform travel together as `Postprocess`, in `SceneOutput::Postprocessed` and
 `MaterialOutput::Postprocessed` alike.
+
+HDR is a setting rather than part of a method name. `MaterialPipelineDescriptor::scene_color`
+(`SceneColor::Surface` or `SceneColor::Hdr`) replaces `create_hdr_material_pipeline` and
+`validate_hdr`. `PostprocessPipelineDescriptor::hdr: Option<HdrComposite { bloom, volume }>`
+replaces `create_hdr_postprocess_pipeline`, `create_volumetric_hdr_postprocess_pipeline` and
+`create_hdr_composite_pipeline`, so `create_postprocess_pipeline` makes every postprocess pipeline,
+and bloom and scattering can only be asked of an HDR composite. `create_postprocess_targets(info,
+scale, scene_color)` replaces itself, `create_scaled_postprocess_targets` and
+`create_scaled_hdr_postprocess_targets`, which had no unscaled HDR form. Each was a thin wrapper
+over the same code, so behaviour and errors are unchanged.
 
 `mulciber-texture` 0.5.0 moves to `mulciber` 0.17.0 and uploads through `create_texture`.
 

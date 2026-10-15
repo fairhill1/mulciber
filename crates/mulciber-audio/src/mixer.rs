@@ -26,17 +26,17 @@ pub struct VoiceId(pub(crate) u64);
 
 /// Volume per bus, each 0..1. Every voice is scaled by `master` and by its own bus.
 ///
-/// Effects are one-shots and spatial voices, music is [`Controls::start_music`], and ambience is
-/// the looping beds of [`Controls::play_bed`].
+/// A voice follows the volume of the [`Bus`] it was played on; live streams follow `master`
+/// alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Volumes {
     /// Scales everything.
     pub master: f32,
-    /// One-shots and spatial voices.
+    /// [`Bus::Effects`].
     pub effects: f32,
-    /// Music tracks.
+    /// [`Bus::Music`].
     pub music: f32,
-    /// Ambience beds.
+    /// [`Bus::Ambience`].
     pub ambience: f32,
 }
 
@@ -98,45 +98,116 @@ impl Rolloff {
     }
 }
 
+/// The volume a played clip follows, one of [`Volumes`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Bus {
+    /// Sound effects, which sound in the room's reverb.
+    #[default]
+    Effects,
+    /// Music, kept out of the reverb unless it plays from a place in the world.
+    Music,
+    /// Ambience beds such as a recorded forest, on the effects side of the world but on their
+    /// own volume, and kept out of the reverb unless placed in the world: a recording of a forest
+    /// already has the forest's reverb in it.
+    Ambience,
+}
+
+/// Where a played clip sounds from.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Placement {
+    /// Unpositioned, as recorded: stereo stays stereo.
+    #[default]
+    Flat,
+    /// At a world position: downmixed to mono, attenuated by distance ([`Rolloff`]), spatialized
+    /// through the HRTF or the stereo pan, sounding in the room's reverb whatever its bus, and
+    /// anchored in the world as the listener moves.
+    World {
+        /// Position in world space.
+        position: [f32; 3],
+        /// The source it belongs to, which [`Controls::move_emitter`] moves and
+        /// [`Controls::stop_emitter`] stops.
+        emitter: Option<EmitterId>,
+    },
+}
+
+impl Placement {
+    /// At `position`, belonging to no emitter.
+    #[must_use]
+    pub fn at(position: impl Into<[f32; 3]>) -> Self {
+        Self::World {
+            position: position.into(),
+            emitter: None,
+        }
+    }
+}
+
+/// How [`Controls::play`] plays a clip. The default plays it once on the effects bus,
+/// unpositioned, at its own gain and pitch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Play {
+    /// Gain in decibels.
+    pub gain_db: f32,
+    /// Playback-rate (pitch) multiplier, 1 being the clip's own.
+    pub rate: f64,
+    /// The volume it follows.
+    pub bus: Bus,
+    /// Unpositioned, or at a place in the world.
+    pub placement: Placement,
+    /// Seconds to fade in over; 0 starts at full gain.
+    pub fade_in: f32,
+    /// Whether it loops until stopped rather than ending with its clip.
+    pub looping: bool,
+}
+
+impl Default for Play {
+    fn default() -> Self {
+        Self {
+            gain_db: 0.0,
+            rate: 1.0,
+            bus: Bus::Effects,
+            placement: Placement::Flat,
+            fade_in: 0.0,
+            looping: false,
+        }
+    }
+}
+
+/// The bus a voice mixes on: a played clip's [`Bus`], or the live speech of a stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bus {
+enum MixBus {
     Effects,
     Music,
-    /// On the effects side of the world but on its own volume, and kept out of the reverb send:
-    /// a recording of a forest already has the forest's reverb in it.
     Ambience,
     /// Live speech, on the master's volume alone: the game sets each stream's own.
     Voice,
 }
 
+impl From<Bus> for MixBus {
+    fn from(bus: Bus) -> Self {
+        match bus {
+            Bus::Effects => Self::Effects,
+            Bus::Music => Self::Music,
+            Bus::Ambience => Self::Ambience,
+        }
+    }
+}
+
 enum Command {
     Play {
-        id: Option<VoiceId>,
-        samples: Arc<[f32]>,
-        channels: u8,
-        gain: f32,
-        rate: f64,
-    },
-    PlayBed {
         id: VoiceId,
         samples: Arc<[f32]>,
         channels: u8,
         gain: f32,
+        rate: f64,
+        bus: MixBus,
+        /// The world position and emitter of a placed voice.
+        world: Option<(Vec3, Option<EmitterId>)>,
         fade_samples: usize,
+        looping: bool,
     },
     StopVoice {
         id: VoiceId,
         fade_samples: usize,
-    },
-    PlaySpatial {
-        id: Option<VoiceId>,
-        samples: Arc<[f32]>,
-        channels: u8,
-        gain: f32,
-        rate: f64,
-        position: Vec3,
-        emitter: Option<EmitterId>,
-        bus: Bus,
     },
     PlayStream {
         id: VoiceId,
@@ -157,13 +228,6 @@ enum Command {
     StopEmitter {
         emitter: EmitterId,
         fade_samples: usize,
-    },
-    StartMusic {
-        samples: Arc<[f32]>,
-        channels: u8,
-        gain: f32,
-        fade_samples: usize,
-        looping: bool,
     },
     StopMusic {
         fade_samples: usize,
@@ -202,7 +266,7 @@ struct Voice {
     /// Gain before distance attenuation.
     base_gain: f32,
     looping: bool,
-    bus: Bus,
+    bus: MixBus,
     spatial: bool,
     position: Vec3,
     emitter: Option<EmitterId>,
@@ -238,7 +302,7 @@ impl Voice {
             gain,
             base_gain: gain,
             looping: false,
-            bus: Bus::Effects,
+            bus: MixBus::Effects,
             spatial: false,
             position: [0.0; 3],
             emitter: None,
@@ -560,10 +624,10 @@ impl Mixer {
             let voice = &mut self.voices[index];
             let bus = self.volumes.master
                 * match voice.bus {
-                    Bus::Effects => self.volumes.effects,
-                    Bus::Music => self.volumes.music,
-                    Bus::Ambience => self.volumes.ambience,
-                    Bus::Voice => 1.0,
+                    MixBus::Effects => self.volumes.effects,
+                    MixBus::Music => self.volumes.music,
+                    MixBus::Ambience => self.volumes.ambience,
+                    MixBus::Voice => 1.0,
                 };
             let mut ended = false;
             for frame in 0..frames {
@@ -586,7 +650,7 @@ impl Mixer {
                 let (left, right) = (left * bus, right * bus);
                 // Post-gain send: distance and the user's volume carry into the tail. Music and
                 // ambience stay out of the room, unless they sound in it, from a place in the world.
-                if voice.bus == Bus::Effects || voice.spatial {
+                if voice.bus == MixBus::Effects || voice.spatial {
                     self.reverb_send[frame] += f32::midpoint(left, right);
                 }
                 if channels >= 2 {
@@ -658,24 +722,28 @@ impl Mixer {
                 channels,
                 gain,
                 rate,
+                bus,
+                world,
+                fade_samples,
+                looping,
             } => {
                 let mut voice = Voice::new(samples, channels, gain, rate);
-                voice.id = id;
-                self.voices.push(voice);
-            }
-            Command::PlayBed {
-                id,
-                samples,
-                channels,
-                gain,
-                fade_samples,
-            } => {
-                let mut voice = Voice::new(samples, channels, gain, 1.0);
                 voice.id = Some(id);
-                voice.looping = true;
-                voice.bus = Bus::Ambience;
+                voice.bus = bus;
+                voice.looping = looping;
                 if fade_samples > 0 {
                     voice.fade_in = Some(Fade::over(fade_samples));
+                }
+                if let Some((position, emitter)) = world {
+                    voice.spatial = true;
+                    voice.position = position;
+                    voice.emitter = emitter;
+                    voice.relocate(&self.listener, self.rolloff);
+                    #[cfg(feature = "hrtf")]
+                    {
+                        voice.hrtf.previous_direction = voice.direction;
+                        voice.hrtf.previous_gain = voice.gain;
+                    }
                 }
                 self.voices.push(voice);
             }
@@ -685,30 +753,6 @@ impl Mixer {
                         voice.fade_out(fade_samples);
                     }
                 }
-            }
-            Command::PlaySpatial {
-                id,
-                samples,
-                channels,
-                gain,
-                rate,
-                position,
-                emitter,
-                bus,
-            } => {
-                let mut voice = Voice::new(samples, channels, gain, rate);
-                voice.id = id;
-                voice.bus = bus;
-                voice.spatial = true;
-                voice.position = position;
-                voice.emitter = emitter;
-                voice.relocate(&self.listener, self.rolloff);
-                #[cfg(feature = "hrtf")]
-                {
-                    voice.hrtf.previous_direction = voice.direction;
-                    voice.hrtf.previous_gain = voice.gain;
-                }
-                self.voices.push(voice);
             }
             Command::PlayStream {
                 id,
@@ -720,7 +764,7 @@ impl Mixer {
                 let mut voice = Voice::new(Arc::from([]), 1, gain, 1.0);
                 voice.id = Some(id);
                 voice.stream = Some(reader);
-                voice.bus = Bus::Voice;
+                voice.bus = MixBus::Voice;
                 voice.spatial = true;
                 voice.position = position;
                 voice.emitter = emitter;
@@ -766,24 +810,9 @@ impl Mixer {
                     }
                 }
             }
-            Command::StartMusic {
-                samples,
-                channels,
-                gain,
-                fade_samples,
-                looping,
-            } => {
-                let mut voice = Voice::new(samples, channels, gain, 1.0);
-                voice.bus = Bus::Music;
-                voice.looping = looping;
-                if fade_samples > 0 {
-                    voice.fade_in = Some(Fade::over(fade_samples));
-                }
-                self.voices.push(voice);
-            }
             Command::StopMusic { fade_samples } => {
                 for voice in &mut self.voices {
-                    if voice.bus == Bus::Music && !voice.spatial {
+                    if voice.bus == MixBus::Music && !voice.spatial {
                         voice.fade_out(fade_samples);
                     }
                 }
@@ -851,44 +880,30 @@ impl Controls {
         samples
     }
 
-    /// Plays a clip once on the effects bus, unpositioned.
-    pub fn play(&self, sound: &Sound, gain_db: f32, rate: f64) {
-        self.send(Command::Play {
-            id: None,
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            rate,
-        });
-    }
-
-    /// Plays a clip once on the effects bus, unpositioned, returning a handle that
-    /// [`Self::stop_voice`] can fade.
-    #[must_use = "the handle is the only way to stop the voice; use `play` otherwise"]
-    pub fn play_tracked(&self, sound: &Sound, gain_db: f32, rate: f64) -> VoiceId {
-        let id = self.next_id();
-        self.send(Command::Play {
-            id: Some(id),
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            rate,
-        });
-        id
-    }
-
-    /// Starts a looping, unpositioned bed on the ambience bus that fades in over `fade_seconds`.
-    /// Beds skip the reverb send. Fading one out with [`Self::stop_voice`] while starting the
+    /// Plays a clip as `play` says: once or looping, on a bus, unpositioned or at a place in
+    /// the world, fading in or not. Returns a handle that [`Self::stop_voice`] fades and
+    /// [`Self::set_voice_gain`] turns; it can be ignored for a one-shot.
+    ///
+    /// A looping voice plays until [`Self::stop_voice`], [`Self::stop_emitter`] for its
+    /// emitter, or for unpositioned music [`Self::stop_music`]. Fading one out while playing the
     /// next is a crossfade.
-    #[must_use = "a looping bed plays until stopped through its handle"]
-    pub fn play_bed(&self, sound: &Sound, gain_db: f32, fade_seconds: f32) -> VoiceId {
+    // Not `must_use`: a one-shot's handle is routinely ignored.
+    #[allow(clippy::must_use_candidate)]
+    pub fn play(&self, sound: &Sound, play: Play) -> VoiceId {
         let id = self.next_id();
-        self.send(Command::PlayBed {
+        self.send(Command::Play {
             id,
             samples: Arc::clone(&sound.samples),
             channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            fade_samples: self.fade_samples(fade_seconds),
+            gain: db_to_amplitude(play.gain_db),
+            rate: play.rate,
+            bus: play.bus.into(),
+            world: match play.placement {
+                Placement::Flat => None,
+                Placement::World { position, emitter } => Some((position, emitter)),
+            },
+            fade_samples: self.fade_samples(play.fade_in),
+            looping: play.looping,
         });
         id
     }
@@ -902,81 +917,9 @@ impl Controls {
         });
     }
 
-    /// Plays a clip once at a world position on the effects bus. The voice is downmixed to mono,
-    /// attenuated by distance and spatialized, and stays anchored in the world as the listener
-    /// moves. With an emitter it follows [`Self::move_emitter`].
-    pub fn play_spatial(
-        &self,
-        sound: &Sound,
-        gain_db: f32,
-        rate: f64,
-        position: impl Into<[f32; 3]>,
-        emitter: Option<EmitterId>,
-    ) {
-        self.send(Command::PlaySpatial {
-            id: None,
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            rate,
-            position: position.into(),
-            emitter,
-            bus: Bus::Effects,
-        });
-    }
-
-    /// Like [`Self::play_spatial`] without an emitter, returning a handle that
-    /// [`Self::stop_voice`] can fade.
-    #[must_use = "the handle is the only way to stop the voice; use `play_spatial` otherwise"]
-    pub fn play_spatial_tracked(
-        &self,
-        sound: &Sound,
-        gain_db: f32,
-        rate: f64,
-        position: impl Into<[f32; 3]>,
-    ) -> VoiceId {
-        let id = self.next_id();
-        self.send(Command::PlaySpatial {
-            id: Some(id),
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            rate,
-            position: position.into(),
-            emitter: None,
-            bus: Bus::Effects,
-        });
-        id
-    }
-
-    /// Plays a clip once at a world position on the music bus: music heard from a thing in the
-    /// world, a radio or a gramophone, that follows the music volume as it changes. It's spatial
-    /// as [`Self::play_spatial`]'s voices are, and in the room's reverb with them;
-    /// [`Self::stop_music`] leaves it be, and [`Self::stop_voice`] fades it.
-    #[must_use = "the handle is the only way to stop the voice before its clip ends"]
-    pub fn play_spatial_music(
-        &self,
-        sound: &Sound,
-        gain_db: f32,
-        position: impl Into<[f32; 3]>,
-    ) -> VoiceId {
-        let id = self.next_id();
-        self.send(Command::PlaySpatial {
-            id: Some(id),
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            rate: 1.0,
-            position: position.into(),
-            emitter: None,
-            bus: Bus::Music,
-        });
-        id
-    }
-
     /// Starts a live voice at a world position, a player's speech, and returns the
-    /// [`VoiceStream`] to push its samples into as they arrive. It's spatial as
-    /// [`Self::play_spatial`]'s voices are, follows `emitter` with [`Self::move_emitter`], and
+    /// [`VoiceStream`] to push its samples into as they arrive. It's spatial as a clip played at
+    /// [`Placement::World`] is, follows `emitter` with [`Self::move_emitter`], and
     /// sounds in the room's reverb; it's on the master volume alone, so set its own with
     /// [`Self::set_voice_gain`]. It plays what's pushed [`StreamConfig::latency`] late, and keeps
     /// to that through bunched packets and a sender whose clock runs fast or slow.
@@ -1048,21 +991,8 @@ impl Controls {
         });
     }
 
-    /// Starts a track on the music bus, fading in over `fade_seconds`. A looping track plays
-    /// until [`Self::stop_music`]; otherwise it ends with its clip. Music skips the reverb.
-    /// Stopping the old track while starting a new one is a crossfade.
-    pub fn start_music(&self, sound: &Sound, gain_db: f32, fade_seconds: f32, looping: bool) {
-        self.send(Command::StartMusic {
-            samples: Arc::clone(&sound.samples),
-            channels: sound.channels,
-            gain: db_to_amplitude(gain_db),
-            fade_samples: self.fade_samples(fade_seconds),
-            looping,
-        });
-    }
-
-    /// Fades out every music track over `fade_seconds`: [`Self::start_music`]'s, not the music
-    /// playing in the world ([`Self::play_spatial_music`]).
+    /// Fades out every unpositioned voice on [`Bus::Music`] over `fade_seconds`, leaving music
+    /// playing from a place in the world (a radio, a gramophone) be.
     pub fn stop_music(&self, fade_seconds: f32) {
         self.send(Command::StopMusic {
             fade_samples: self.fade_samples(fade_seconds),
@@ -1116,7 +1046,7 @@ mod tests {
     #[test]
     fn a_voice_plays_and_ends() {
         let (mut mixer, controls) = Mixer::new(RATE);
-        controls.play(&constant(0.5, 100, 1), 0.0, 1.0);
+        controls.play(&constant(0.5, 100, 1), Play::default());
         let buffer = render(&mut mixer, 256);
         let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2;
         assert!((buffer[0] - expected).abs() < 1.0e-6);
@@ -1128,7 +1058,13 @@ mod tests {
     #[test]
     fn a_doubled_rate_plays_in_half_the_time() {
         let (mut mixer, controls) = Mixer::new(RATE);
-        controls.play(&constant(0.5, 100, 1), 0.0, 2.0);
+        controls.play(
+            &constant(0.5, 100, 1),
+            Play {
+                rate: 2.0,
+                ..Play::default()
+            },
+        );
         let buffer = render(&mut mixer, 256);
         assert!(buffer[2 * 49] > 0.0);
         assert!(buffer[2 * 50..].iter().all(|&sample| sample == 0.0));
@@ -1138,7 +1074,13 @@ mod tests {
     fn gain_and_buses_scale_their_own_voices() {
         let (mut mixer, controls) = Mixer::new(RATE);
         let sound = constant(0.5, 4_800, 2);
-        controls.play(&sound, -6.0, 1.0);
+        controls.play(
+            &sound,
+            Play {
+                gain_db: -6.0,
+                ..Play::default()
+            },
+        );
         let effect = render(&mut mixer, 64)[0];
         assert!((effect - 0.5 * db_to_amplitude(-6.0)).abs() < 1.0e-6);
 
@@ -1152,7 +1094,14 @@ mod tests {
         assert!((quieter - effect * 0.25).abs() < 1.0e-6);
 
         // Music ignores the effects bus but not the master.
-        controls.start_music(&sound, 0.0, 0.0, true);
+        controls.play(
+            &sound,
+            Play {
+                bus: Bus::Music,
+                looping: true,
+                ..Play::default()
+            },
+        );
         let with_music = render(&mut mixer, 64)[0];
         assert!((with_music - quieter - 0.25).abs() < 1.0e-6);
 
@@ -1173,7 +1122,14 @@ mod tests {
         let (mut mixer, controls) = Mixer::new(RATE);
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
         let sound = constant(0.5, RATE as usize, 1);
-        let radio = controls.play_spatial_music(&sound, 0.0, [0.0, 0.0, -1.0]);
+        let radio = controls.play(
+            &sound,
+            Play {
+                bus: Bus::Music,
+                placement: Placement::at([0.0, 0.0, -1.0]),
+                ..Play::default()
+            },
+        );
         let full = render(&mut mixer, 64)[0];
         assert!(full > 0.3, "{full}");
         controls.set_volumes(Volumes {
@@ -1204,7 +1160,15 @@ mod tests {
     #[test]
     fn music_fades_in_and_out() {
         let (mut mixer, controls) = Mixer::new(RATE);
-        controls.start_music(&constant(0.5, RATE as usize, 2), 0.0, 0.01, true);
+        controls.play(
+            &constant(0.5, RATE as usize, 2),
+            Play {
+                bus: Bus::Music,
+                fade_in: 0.01,
+                looping: true,
+                ..Play::default()
+            },
+        );
         let fade_in = render(&mut mixer, 960);
         assert!(fade_in[0].abs() < 1.0e-3);
         assert!((fade_in[2 * 240] - 0.25).abs() < 1.0e-3);
@@ -1222,10 +1186,51 @@ mod tests {
     #[test]
     fn looping_beds_keep_playing_until_stopped() {
         let (mut mixer, controls) = Mixer::new(RATE);
-        let bed = controls.play_bed(&constant(0.25, 100, 1), 0.0, 0.0);
+        let bed = controls.play(
+            &constant(0.25, 100, 1),
+            Play {
+                bus: Bus::Ambience,
+                looping: true,
+                ..Play::default()
+            },
+        );
         let buffer = render(&mut mixer, 1_000);
         assert!(buffer.iter().all(|&sample| sample > 0.0));
         controls.stop_voice(bed, 0.0);
+        render(&mut mixer, 8);
+        assert_eq!(mixer.active_voices(), 0);
+    }
+
+    /// Any clip can fade in and loop wherever it plays: a waterfall's ambience placed in the
+    /// world rises over its fade, outlasts its clip, and stops with its emitter.
+    #[test]
+    fn a_placed_ambience_fades_in_loops_and_stops_with_its_emitter() {
+        let (mut mixer, controls) = Mixer::new(RATE);
+        controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        let waterfall = EmitterId(7);
+        controls.play(
+            &constant(0.5, 100, 1),
+            Play {
+                bus: Bus::Ambience,
+                placement: Placement::World {
+                    position: [0.0, 0.0, -1.0],
+                    emitter: Some(waterfall),
+                },
+                fade_in: 0.01,
+                looping: true,
+                ..Play::default()
+            },
+        );
+        let rising = render(&mut mixer, 960);
+        assert!(rising[0].abs() < 1.0e-3, "{}", rising[0]);
+        assert!(rising[2 * 959] > rising[2 * 240] && rising[2 * 240] > 0.0);
+        render(&mut mixer, 1_000);
+        assert_eq!(
+            mixer.active_voices(),
+            1,
+            "a looping voice outlasts its clip"
+        );
+        controls.stop_emitter(waterfall, 0.0);
         render(&mut mixer, 8);
         assert_eq!(mixer.active_voices(), 0);
     }
@@ -1235,14 +1240,26 @@ mod tests {
         let (mut mixer, controls) = Mixer::new(RATE);
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
         let sound = constant(0.5, 4_800, 1);
-        controls.play_spatial(&sound, 0.0, 1.0, [3.0, 0.0, 0.0], None);
+        controls.play(
+            &sound,
+            Play {
+                placement: Placement::at([3.0, 0.0, 0.0]),
+                ..Play::default()
+            },
+        );
         let right = render(&mut mixer, 64);
         assert!(right[1] > 0.49, "hard right: {right:?}");
         assert!(right[0].abs() < 1.0e-6);
 
         let (mut mixer, controls) = Mixer::new(RATE);
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
-        controls.play_spatial(&sound, 0.0, 1.0, [0.0, 0.0, -3.0], None);
+        controls.play(
+            &sound,
+            Play {
+                placement: Placement::at([0.0, 0.0, -3.0]),
+                ..Play::default()
+            },
+        );
         let ahead = render(&mut mixer, 64);
         assert!((ahead[0] - ahead[1]).abs() < 1.0e-6);
         assert!((ahead[0] - 0.5 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1.0e-5);
@@ -1250,7 +1267,13 @@ mod tests {
         // Turning to face the source re-pans the live voice to the centre.
         let (mut mixer, controls) = Mixer::new(RATE);
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
-        controls.play_spatial(&sound, 0.0, 1.0, [3.0, 0.0, 0.0], None);
+        controls.play(
+            &sound,
+            Play {
+                placement: Placement::at([3.0, 0.0, 0.0]),
+                ..Play::default()
+            },
+        );
         render(&mut mixer, 64);
         controls.set_listener([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
         let turned = render(&mut mixer, 64);
@@ -1310,7 +1333,13 @@ mod tests {
         let (mut mixer, controls) = Mixer::with_hrtf(RATE, ear_sphere());
         assert!(controls.hrtf_enabled());
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
-        controls.play_spatial(&constant(0.5, 3_000, 1), 0.0, 1.0, [3.0, 0.0, 0.0], None);
+        controls.play(
+            &constant(0.5, 3_000, 1),
+            Play {
+                placement: Placement::at([3.0, 0.0, 0.0]),
+                ..Play::default()
+            },
+        );
         let buffer = render(&mut mixer, 2_048);
         let (left, right) = buffer
             .as_chunks::<2>()
@@ -1334,7 +1363,13 @@ mod tests {
         let energy_from = |position: [f32; 3]| {
             let (mut mixer, controls) = Mixer::with_hrtf(RATE, ear_sphere());
             controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
-            controls.play_spatial(&constant(0.5, 2_048, 1), 0.0, 1.0, position, None);
+            controls.play(
+                &constant(0.5, 2_048, 1),
+                Play {
+                    placement: Placement::at(position),
+                    ..Play::default()
+                },
+            );
             render(&mut mixer, 2_048)
                 .iter()
                 .map(|sample| sample * sample)
@@ -1350,12 +1385,15 @@ mod tests {
         let (mut mixer, controls) = Mixer::new(RATE);
         controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
         let walker = EmitterId(7);
-        controls.play_spatial(
+        controls.play(
             &constant(0.5, RATE as usize, 1),
-            0.0,
-            1.0,
-            [0.0, 0.0, -3.0],
-            Some(walker),
+            Play {
+                placement: Placement::World {
+                    position: [0.0, 0.0, -3.0],
+                    emitter: Some(walker),
+                },
+                ..Play::default()
+            },
         );
         let near = render(&mut mixer, 16)[0];
         controls.move_emitter(walker, [0.0, 0.0, -12.0]);
@@ -1372,8 +1410,20 @@ mod tests {
     fn a_tracked_spatial_voice_fades_without_stopping_its_neighbours() {
         let (mut mixer, controls) = Mixer::new(RATE);
         let sound = constant(0.1, RATE as usize, 1);
-        let tracked = controls.play_spatial_tracked(&sound, 0.0, 1.0, [1.0, 0.0, 0.0]);
-        controls.play_spatial(&sound, 0.0, 1.0, [1.0, 0.0, 0.0], None);
+        let tracked = controls.play(
+            &sound,
+            Play {
+                placement: Placement::at([1.0, 0.0, 0.0]),
+                ..Play::default()
+            },
+        );
+        controls.play(
+            &sound,
+            Play {
+                placement: Placement::at([1.0, 0.0, 0.0]),
+                ..Play::default()
+            },
+        );
         controls.stop_voice(tracked, 0.16);
         mixer.drain_commands();
         assert!(mixer.voices[0].spatial);
@@ -1391,9 +1441,15 @@ mod tests {
             controls.set_room(room);
             render(&mut mixer, 4_800);
             if music {
-                controls.start_music(&click, 0.0, 0.0, false);
+                controls.play(
+                    &click,
+                    Play {
+                        bus: Bus::Music,
+                        ..Play::default()
+                    },
+                );
             } else {
-                controls.play(&click, 0.0, 1.0);
+                controls.play(&click, Play::default());
             }
             render(&mut mixer, 4_800);
             peak(&render(&mut mixer, 4_800))
@@ -1411,7 +1467,7 @@ mod tests {
     #[test]
     fn surround_and_mono_devices_get_a_sensible_mix() {
         let (mut mixer, controls) = Mixer::new(RATE);
-        controls.play(&constant(0.5, 64, 2), 0.0, 1.0);
+        controls.play(&constant(0.5, 64, 2), Play::default());
         let mut surround = vec![0.0; 6 * 32];
         mixer.render(&mut surround, 6);
         assert!(
@@ -1421,7 +1477,7 @@ mod tests {
         );
 
         let (mut mixer, controls) = Mixer::new(RATE);
-        controls.play(&constant(0.5, 64, 2), 0.0, 1.0);
+        controls.play(&constant(0.5, 64, 2), Play::default());
         let mut mono = vec![0.0; 32];
         mixer.render(&mut mono, 1);
         assert!(mono.iter().all(|&sample| (sample - 0.5).abs() < 1.0e-6));
@@ -1503,7 +1559,7 @@ mod tests {
     fn controls_outlive_the_mixer_quietly() {
         let (mixer, controls) = Mixer::new(RATE);
         drop(mixer);
-        controls.play(&constant(0.5, 64, 1), 0.0, 1.0);
+        controls.play(&constant(0.5, 64, 1), Play::default());
         controls.set_room(RoomAcoustics::DRY);
     }
 }

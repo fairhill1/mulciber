@@ -3,10 +3,11 @@
 //! created from it, the plain one declaring no storage slot and the skinned one declaring the bone
 //! palette it reads. Each draw is read back from an HDR target.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, MaterialBinding,
-    MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices,
-    OpenedGraphics, Postprocess, RenderScale, SampleCount, Scene, SceneSubmission, ShaderArtifact,
-    VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
+    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
+    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
+    SampleCount, Scene, SceneColor, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -170,27 +171,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
         instance_layout: None,
+        scene_color: SceneColor::Hdr,
     };
     // The plain pair never reads the palette, so declaring it is refused, as is leaving it out
     // of the skinned pair that does.
     let refused = graphics
         .device
-        .create_hdr_material_pipeline(descriptor("prop_vertex", prop_layout, &[UNIFORM, PALETTE]))
+        .create_material_pipeline(descriptor("prop_vertex", prop_layout, &[UNIFORM, PALETTE]))
         .err()
         .ok_or("the plain pipeline accepted a storage slot its entry points never use")?;
     println!("entry-bindings: unused storage refused: {refused}");
     let refused = graphics
         .device
-        .create_hdr_material_pipeline(descriptor("skinned_vertex", skinned_layout, &[UNIFORM]))
+        .create_material_pipeline(descriptor("skinned_vertex", skinned_layout, &[UNIFORM]))
         .err()
         .ok_or("the skinned pipeline was created without the bone palette it reads")?;
     println!("entry-bindings: missing storage refused: {refused}");
-    let plain = graphics.device.create_hdr_material_pipeline(descriptor(
+    let plain = graphics.device.create_material_pipeline(descriptor(
         "prop_vertex",
         prop_layout,
         &[UNIFORM],
     ))?;
-    let skinned = graphics.device.create_hdr_material_pipeline(descriptor(
+    let skinned = graphics.device.create_material_pipeline(descriptor(
         "skinned_vertex",
         skinned_layout,
         &[UNIFORM, PALETTE],
@@ -205,15 +207,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         &triangle(true),
         MeshIndices::U16(&[0, 1, 2]),
     )?;
-    let composite = graphics.device.create_hdr_composite_pipeline(
-        ShaderArtifact::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/composite.shaderbin"
-        )))?
-        .into(),
-        None,
-        None,
-    )?;
+    let composite = graphics
+        .device
+        .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+            shader: ShaderArtifact::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/composite.shaderbin"
+            )))?,
+            uniform_size: None,
+            hdr: Some(HdrComposite::default()),
+        })?;
     let uniform = bytes(&TINT);
     let palettes = PALETTES.map(|palette| bytes(palette.as_flattened()));
     let cases = 3;
@@ -239,11 +242,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .is_none_or(|target: &mulciber::PostprocessTargets| target.info() != info)
             {
-                targets = Some(
-                    graphics
-                        .device
-                        .create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?,
-                );
+                targets = Some(graphics.device.create_postprocess_targets(
+                    info,
+                    RenderScale::NATIVE,
+                    SceneColor::Hdr,
+                )?);
             }
             let target = targets.as_ref().expect("targets were just created");
             let record = if completed == 0 {

@@ -7,16 +7,20 @@ surface-format material pipelines and postprocessing keep their original behavio
 
 ## Application contract
 
-- `Device::create_hdr_material_pipeline` takes the existing material descriptor. Its output must
-  target HDR scene storage; it cannot be used for a direct surface pass or a HUD overlay.
-- `Device::create_scaled_hdr_postprocess_targets` creates generation-bound scene color, scene depth,
-  optional MSAA color, and six single-sample HDR textures. Each bloom level halves the preceding
-  width and height, with a one-texel minimum. Recreate the bundle on resize or render-scale changes.
-- `Device::create_hdr_postprocess_pipeline` takes the composite descriptor and two application
-  shader artifacts: prefilter and downsample. All use `post_vertex` and `post_fragment`. Filters
-  declare only texture binding 1 and sampler binding 2. Composite binding 1 is the resolved HDR
-  scene, binding 2 is its linear clamp sampler, and bindings 3 through 8 are the six bloom levels.
-  The existing optional, exact-size uniform at binding 0 belongs only to the composite.
+- `Device::create_material_pipeline` with `scene_color: SceneColor::Hdr` in the material
+  descriptor builds an HDR material pipeline. Its output must target HDR scene storage; it cannot
+  be used for a direct surface pass or a HUD overlay.
+- `Device::create_postprocess_targets(info, scale, SceneColor::Hdr)` creates generation-bound scene
+  color, scene depth, optional MSAA color, and six single-sample HDR textures. Each bloom level
+  halves the preceding width and height, with a one-texel minimum. Recreate the bundle on resize or
+  render-scale changes.
+- `Device::create_postprocess_pipeline` takes a composite descriptor whose `hdr` is
+  `Some(HdrComposite { bloom: Some(BloomShaders { prefilter, downsample, upsample: None }), .. })`:
+  two application filter artifacts, prefilter and downsample. All use `post_vertex` and
+  `post_fragment`. Filters declare only texture binding 1 and sampler binding 2. Composite binding
+  1 is the resolved HDR scene, binding 2 is its linear clamp sampler, and bindings 3 through 8 are
+  the six bloom levels. The existing optional, exact-size uniform at binding 0 belongs only to the
+  composite.
 - `Scene::Material` with `MaterialOutput::Postprocessed` submits the path. The HDR pipeline and
   targets must agree. Scene and foreground materials must also agree with the target format. HUD
   overlays use surface-format, depth-off material pipelines and execute after the composite at
@@ -55,17 +59,16 @@ round its lamps. It has not yet run under validation layers; that evidence remai
 
 ## Independently optional effects
 
-`Device::create_hdr_composite_pipeline` accepts optional `BloomShaders` and `VolumetricShaders`.
-Applications can create all four combinations ahead of time and select one per frame. A disabled
-stage has no child pipelines, descriptors or render passes. The final tone-map and underwater
-composite still runs against the same HDR scene targets. Target-owned bloom storage remains
-allocated for instant re-enabling; optional stages control GPU work, not target allocation.
+`HdrComposite` holds optional `BloomShaders` and `VolumetricShaders`; `HdrComposite::default()`
+has neither. Applications can create all four combinations ahead of time and select one per
+frame. A disabled stage has no child pipelines, descriptors or render passes. The final tone-map
+and underwater composite still runs against the same HDR scene targets. Target-owned bloom storage
+remains allocated for instant re-enabling; optional stages control GPU work, not target allocation.
 
 Without bloom the final shader must omit bindings 3 through 8. Validation rejects a composite
 that would sample unwritten bloom levels. With bloom the complete six-texture contract remains
-required. Existing constructors delegate to this path with their previous effect sets intact.
-Headless interface tests and the consuming game's pipeline-selection/uniform tests cover this
-addition; new native visual or performance evidence is not claimed.
+required. Headless interface tests and the consuming game's pipeline-selection/uniform tests cover
+this addition; new native visual or performance evidence is not claimed.
 
 ## Native implementation
 

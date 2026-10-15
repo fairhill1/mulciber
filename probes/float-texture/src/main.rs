@@ -1,10 +1,10 @@
 //! Native numerical evidence for `RGBA16Float` uploads through public material bindings.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, MaterialBinding,
-    MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices,
-    MipChain, OpenedGraphics, Postprocess, RenderScale, SampleCount, SamplerAddress, SamplerFilter,
-    Scene, SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape,
-    VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
+    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
+    MeshIndices, MipChain, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
+    SampleCount, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneSubmission, ShaderArtifact,
+    TexelData, TextureDescriptor, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let pipeline = graphics
         .device
-        .create_hdr_material_pipeline(MaterialPipelineDescriptor {
+        .create_material_pipeline(MaterialPipelineDescriptor {
             shader: ShaderArtifact::new(include_bytes!(concat!(
                 env!("OUT_DIR"),
                 "/sample.shaderbin"
@@ -146,16 +146,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             blend: BlendMode::Opaque,
             depth: DepthMode::Off,
             instance_layout: None,
+            scene_color: SceneColor::Hdr,
         })?;
-    let composite = graphics.device.create_hdr_composite_pipeline(
-        ShaderArtifact::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/composite.shaderbin"
-        )))?
-        .into(),
-        None,
-        None,
-    )?;
+    let composite = graphics
+        .device
+        .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+            shader: ShaderArtifact::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/composite.shaderbin"
+            )))?,
+            uniform_size: None,
+            hdr: Some(HdrComposite::default()),
+        })?;
     let mut targets = None;
     let mut completed = 0;
     let mut queued_frames = 0;
@@ -170,7 +172,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let FrameAcquire::Ready(frame) = graphics.surface.acquire(metrics)? else { return Ok(()); };
             let info = frame.surface_info();
             if targets.as_ref().is_none_or(|target: &mulciber::PostprocessTargets| target.info() != info) {
-                targets = Some(graphics.device.create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?);
+                targets = Some(graphics.device.create_postprocess_targets(info, RenderScale::NATIVE, SceneColor::Hdr)?);
             }
             let target = targets.as_ref().unwrap();
             let mips = completed / (QUERIES.len() * 2) != 0;

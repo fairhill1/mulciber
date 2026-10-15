@@ -4,10 +4,11 @@
 //! and read back from an HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
-    GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
-    MaterialScene, MeshIndices, MipChain, OpenedGraphics, Postprocess, RenderScale, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneSubmission, ShaderArtifact, TexelData, Texture,
-    TextureDescriptor, TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
+    GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor,
+    MaterialRecord, MaterialScene, MeshIndices, MipChain, OpenedGraphics, Postprocess,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
+    SceneColor, SceneSubmission, ShaderArtifact, TexelData, Texture, TextureDescriptor,
+    TextureDimension, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -361,6 +362,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
         instance_layout: None,
+        scene_color: SceneColor::Hdr,
     };
     // The artifact records `texture_cube_array<f32>` at binding 1, so a cube declaration is refused.
     let as_cube = [
@@ -370,22 +372,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
     let refused = graphics
         .device
-        .create_hdr_material_pipeline(descriptor(&as_cube))
+        .create_material_pipeline(descriptor(&as_cube))
         .err()
         .ok_or("a cube declaration of a cube array binding was accepted")?;
     println!("cube-array-texture: cube declaration refused: {refused}");
     let pipeline = graphics
         .device
-        .create_hdr_material_pipeline(descriptor(&BINDINGS))?;
-    let composite = graphics.device.create_hdr_composite_pipeline(
-        ShaderArtifact::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/composite.shaderbin"
-        )))?
-        .into(),
-        None,
-        None,
-    )?;
+        .create_material_pipeline(descriptor(&BINDINGS))?;
+    let composite = graphics
+        .device
+        .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+            shader: ShaderArtifact::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/composite.shaderbin"
+            )))?,
+            uniform_size: None,
+            hdr: Some(HdrComposite::default()),
+        })?;
     let mut targets = None;
     let mut completed = 0;
     let mut refused_cube_record = false;
@@ -409,11 +412,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .is_none_or(|target: &mulciber::PostprocessTargets| target.info() != info)
             {
-                targets = Some(
-                    graphics
-                        .device
-                        .create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?,
-                );
+                targets = Some(graphics.device.create_postprocess_targets(
+                    info,
+                    RenderScale::NATIVE,
+                    SceneColor::Hdr,
+                )?);
             }
             let target = targets.as_ref().expect("targets were just created");
             let case = &cases[completed];

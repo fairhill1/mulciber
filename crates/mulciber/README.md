@@ -88,12 +88,14 @@ boundaries and submit multiple records using the same mesh and pipeline.
 
 ## HDR scenes and bloom
 
-`Device::create_hdr_material_pipeline` renders linear radiance into the RGBA16Float
-bundle created by `Device::create_scaled_hdr_postprocess_targets`.
-`Device::create_hdr_postprocess_pipeline` accepts application-authored prefilter,
-downsample and composite shaders. Six bloom levels feed the final sRGB composite;
+HDR is a setting, not a separate constructor. A material pipeline whose descriptor has
+`scene_color: SceneColor::Hdr` renders linear radiance into the RGBA16Float bundle created by
+`Device::create_postprocess_targets(info, scale, SceneColor::Hdr)`.
+`Device::create_postprocess_pipeline` with `hdr: Some(HdrComposite { bloom, volume })` accepts
+application-authored composite shaders plus optional `BloomShaders` (prefilter, downsample and
+optional upsample) and `VolumetricShaders`. Six bloom levels feed the final sRGB composite;
 foreground geometry participates in HDR and bloom, while HUD overlays remain sharp.
-Existing surface-format pipelines and targets remain available. HDR scene storage
+`SceneColor::Surface` and `hdr: None` keep the surface-format path. HDR scene storage
 is independent of HDR monitor output.
 
 Vulkan validates HDR format roles, sample counts and extent limits. Both native

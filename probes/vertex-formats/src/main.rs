@@ -2,10 +2,11 @@
 //! normalized attributes fetched from a mesh, forwarded by the vertex stage, and read back from an
 //! HDR target.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, MaterialBinding,
-    MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene, MeshIndices,
-    OpenedGraphics, Postprocess, RenderScale, SampleCount, Scene, SceneSubmission, ShaderArtifact,
-    VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
+    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
+    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
+    SampleCount, Scene, SceneColor, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -137,13 +138,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
         instance_layout: None,
+        scene_color: SceneColor::Hdr,
     };
     // Bone indices declared as normalized bytes do not satisfy the recorded vec4<u32>.
     let mut as_unorm = ATTRIBUTES;
     as_unorm[1].format = VertexFormat::Unorm8x4;
     let refused = graphics
         .device
-        .create_hdr_material_pipeline(descriptor(VertexLayout {
+        .create_material_pipeline(descriptor(VertexLayout {
             stride: 40,
             attributes: &as_unorm,
         }))
@@ -167,16 +169,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("vertex-formats: unaligned offset refused: {refused}");
     let pipeline = graphics
         .device
-        .create_hdr_material_pipeline(descriptor(LAYOUT))?;
-    let composite = graphics.device.create_hdr_composite_pipeline(
-        ShaderArtifact::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/composite.shaderbin"
-        )))?
-        .into(),
-        None,
-        None,
-    )?;
+        .create_material_pipeline(descriptor(LAYOUT))?;
+    let composite = graphics
+        .device
+        .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+            shader: ShaderArtifact::new(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/composite.shaderbin"
+            )))?,
+            uniform_size: None,
+            hdr: Some(HdrComposite::default()),
+        })?;
     let cases = 6;
     let mut targets = None;
     let mut completed = 0;
@@ -200,11 +203,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .is_none_or(|target: &mulciber::PostprocessTargets| target.info() != info)
             {
-                targets = Some(
-                    graphics
-                        .device
-                        .create_scaled_hdr_postprocess_targets(info, RenderScale::NATIVE)?,
-                );
+                targets = Some(graphics.device.create_postprocess_targets(
+                    info,
+                    RenderScale::NATIVE,
+                    SceneColor::Hdr,
+                )?);
             }
             let target = targets.as_ref().expect("targets were just created");
             let selector = f32::from(u8::try_from(completed).expect("fits u8"));

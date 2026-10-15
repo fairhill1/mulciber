@@ -24,8 +24,9 @@ use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
     MaterialScene, MeshIndices, MeshSource, MipChain, OpenedGraphics, SampleCount, SamplerAddress,
-    SamplerFilter, Scene, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor, ShadowPrepass,
-    ShadowRecord, ShadowSource, TexelData, TextureDescriptor, TextureShape, TransientGeometry,
+    SamplerFilter, Scene, SceneColor, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor,
+    ShadowPrepass, ShadowRecord, ShadowSource, TexelData, TextureDescriptor, TextureShape,
+    TransientGeometry,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -124,6 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ],
                 blend: BlendMode::Opaque,
                 depth: DepthMode::TestWrite,
+                scene_color: SceneColor::Surface,
                 instance_layout: None,
             })?;
     let lava_pipeline = graphics
@@ -153,6 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            scene_color: SceneColor::Surface,
             instance_layout: None,
         })?;
     let hud_pipeline = graphics
@@ -165,6 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[],
             blend: BlendMode::PremultipliedTranslucent,
             depth: DepthMode::Off,
+            scene_color: SceneColor::Surface,
             instance_layout: None,
         })?;
     let shadow_pipeline = graphics
@@ -205,6 +209,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ],
                 blend: BlendMode::Opaque,
                 depth: DepthMode::TestWrite,
+                scene_color: SceneColor::Surface,
                 instance_layout: None,
             })?;
     let skinned_shadow_pipeline =
@@ -264,6 +269,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Cutout,
             depth: DepthMode::TestWrite,
+            scene_color: SceneColor::Surface,
         })?;
     // The sprouts' shadow caster runs a declared fragment stage that alpha-tests the same
     // leaf texture, carving the cutout into the depth-only cascade instead of a solid card.

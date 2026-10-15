@@ -13,11 +13,11 @@
 //! [`Mixer::render`] on a buffer to mix offline.
 //!
 //! ```
-//! use mulciber_audio::{Mixer, Sound};
+//! use mulciber_audio::{Mixer, Play, Sound};
 //!
 //! let (mut mixer, controls) = Mixer::new(48_000);
 //! let click = Sound::from_interleaved(vec![0.5; 480], 1, 48_000, 48_000);
-//! controls.play(&click, -6.0, 1.0);
+//! controls.play(&click, Play { gain_db: -6.0, ..Play::default() });
 //!
 //! let mut buffer = vec![0.0; 2 * 512];
 //! mixer.render(&mut buffer, 2);
@@ -53,7 +53,7 @@ mod stream;
 pub use acoustics::{ProbeSettings, RayHit, RoomAcoustics, RoomTracker, probe_room};
 #[cfg(feature = "input")]
 pub use input::{InputError, Microphone};
-pub use mixer::{Controls, EmitterId, Mixer, Rolloff, VoiceId, Volumes};
+pub use mixer::{Bus, Controls, EmitterId, Mixer, Placement, Play, Rolloff, VoiceId, Volumes};
 #[cfg(feature = "output")]
 pub use output::{AudioEngine, OutputError};
 #[cfg(any(feature = "wav", feature = "ogg"))]

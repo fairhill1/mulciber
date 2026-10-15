@@ -1,9 +1,9 @@
 # Shadowed HDR scattering checkpoint
 
-`Device::create_volumetric_hdr_postprocess_pipeline` extends the opt-in HDR path with
-application-authored scattering and additive upscaling. It consumes the same
-`PostprocessPipelineDescriptor`, bloom prefilter/downsample, and a `VolumetricShaders` bundle.
-The existing HDR and surface-format pipeline APIs retain their pass ordering.
+`HdrComposite::volume` extends the opt-in HDR path with application-authored scattering and
+additive upscaling. `Device::create_postprocess_pipeline` takes a `PostprocessPipelineDescriptor`
+whose `hdr` is `Some(HdrComposite { bloom, volume: Some(volume) })`, where `volume` is a
+`VolumetricShaders` bundle. Pipelines without a volume retain their pass ordering.
 
 ## Application contract
 

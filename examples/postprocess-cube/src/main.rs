@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use mulciber::{
     ClearColor, DeviceRequest, FrameAcquire, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneOutput, SceneSubmission,
-    ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
+    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneOutput,
+    SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -60,12 +60,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .create_postprocess_pipeline(PostprocessPipelineDescriptor {
                 shader: ShaderArtifact::new(SHADER)?,
                 uniform_size: Some(64),
+                hdr: None,
             })?;
     let render_scale = RenderScale::percent(RENDER_SCALE_PERCENT)?;
     println!("render scale: {} percent", render_scale.as_percent());
-    let mut targets = graphics
-        .device
-        .create_scaled_postprocess_targets(graphics.surface.info()?, render_scale)?;
+    let mut targets = graphics.device.create_postprocess_targets(
+        graphics.surface.info()?,
+        render_scale,
+        SceneColor::Surface,
+    )?;
     let started = Instant::now();
 
     loop {
@@ -77,9 +80,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 FrameAcquire::Ready(frame) => {
                     let info = frame.surface_info();
                     if info != targets.info() {
-                        targets = graphics
-                            .device
-                            .create_scaled_postprocess_targets(info, render_scale)?;
+                        targets = graphics.device.create_postprocess_targets(
+                            info,
+                            render_scale,
+                            SceneColor::Surface,
+                        )?;
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
                     let elapsed = started.elapsed().as_secs_f32();

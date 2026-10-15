@@ -16,10 +16,10 @@ use mulciber::{
     GeometrySource, GraphicsErrorKind, MaterialBinding, MaterialOutput, MaterialRecord,
     MaterialScene, Mesh, MeshIndices, MeshSource, MipChain, OpenedGraphics, Postprocess,
     PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
-    SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass, ShadowRecord,
-    ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, TextureDescriptor, TextureShape,
-    TexturedInstanceBatch, TexturedSceneDraw, TransientGeometry, Vertex, VertexAttribute,
-    VertexFormat, VertexLayout,
+    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPass, ShadowPrepass,
+    ShadowRecord, ShadowSource, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, TextureDescriptor,
+    TextureShape, TexturedInstanceBatch, TexturedSceneDraw, TransientGeometry, Vertex,
+    VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{
     Application, LogicalSize, PumpStatus, Window, WindowDescriptor, WindowEvent, WindowMetrics,
@@ -585,9 +585,11 @@ impl<'window> Cases<'window> {
                 let postprocess_pipeline = graphics
                     .device
                     .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?;
-                let postprocess_targets = graphics
-                    .device
-                    .create_postprocess_targets(graphics.surface.info()?)?;
+                let postprocess_targets = graphics.device.create_postprocess_targets(
+                    graphics.surface.info()?,
+                    RenderScale::NATIVE,
+                    SceneColor::Surface,
+                )?;
 
                 graphics
                     .device
@@ -653,15 +655,16 @@ impl<'window> Cases<'window> {
                 self.postprocess_uniform_pipeline =
                     Some(graphics.device.create_postprocess_pipeline(
                         PostprocessPipelineDescriptor {
+                            hdr: None,
                             shader: ShaderArtifact::new(SHADER)?,
                             uniform_size: Some(64),
                         },
                     )?);
-                self.postprocess_targets = Some(
-                    graphics
-                        .device
-                        .create_postprocess_targets(graphics.surface.info()?)?,
-                );
+                self.postprocess_targets = Some(graphics.device.create_postprocess_targets(
+                    graphics.surface.info()?,
+                    RenderScale::NATIVE,
+                    SceneColor::Surface,
+                )?);
                 self.pass("explicit destruction for every resource kind");
                 self.pass("drop-driven shared-vertex mesh-part resource churn");
                 self.step = 6;
@@ -810,6 +813,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                                hdr: None,
                                 shader: ShaderArtifact::new(SHADER)?,
                                 uniform_size: Some(32),
                             })
@@ -822,6 +826,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_postprocess_pipeline(PostprocessPipelineDescriptor {
+                                hdr: None,
                                 shader: ShaderArtifact::new(SHADER)?,
                                 uniform_size: Some(mulciber::POSTPROCESS_UNIFORM_SIZE_LIMIT + 1),
                             })
@@ -837,6 +842,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                                scene_color: SceneColor::Surface,
                                 shader,
                                 vertex_entry: "crystal_vertex",
                                 fragment_entry: "crystal_fragment",
@@ -867,6 +873,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                                scene_color: SceneColor::Surface,
                                 shader,
                                 vertex_entry: "missing_vertex",
                                 fragment_entry: "crystal_fragment",
@@ -885,6 +892,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                                scene_color: SceneColor::Surface,
                                 shader,
                                 vertex_entry: "crystal_vertex",
                                 fragment_entry: "crystal_fragment",
@@ -906,6 +914,7 @@ impl<'window> Cases<'window> {
                         graphics
                             .device
                             .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                                scene_color: SceneColor::Surface,
                                 shader,
                                 vertex_entry: "crystal_vertex",
                                 fragment_entry: "crystal_fragment",
@@ -960,6 +969,7 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 self.material_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader,
                         vertex_entry: "crystal_vertex",
                         fragment_entry: "crystal_fragment",
@@ -972,6 +982,7 @@ impl<'window> Cases<'window> {
                 )?);
                 self.foreign_material_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader,
                         vertex_entry: "crystal_vertex",
                         fragment_entry: "crystal_fragment",
@@ -1128,6 +1139,7 @@ impl<'window> Cases<'window> {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     let nearest = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1152,6 +1164,7 @@ impl<'window> Cases<'window> {
                     )?;
                     let cutout = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1164,6 +1177,7 @@ impl<'window> Cases<'window> {
                     )?;
                     let translucent = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1262,6 +1276,7 @@ impl<'window> Cases<'window> {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     let greater_write = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1274,6 +1289,7 @@ impl<'window> Cases<'window> {
                     )?;
                     let greater_only = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1286,6 +1302,7 @@ impl<'window> Cases<'window> {
                     )?;
                     let off = graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1369,6 +1386,7 @@ impl<'window> Cases<'window> {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1588,6 +1606,7 @@ impl<'window> Cases<'window> {
                     let graphics = self.graphics.as_ref().expect("session A is open");
                     graphics.device.create_material_pipeline(
                         mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                             vertex_entry: "crystal_vertex",
                             fragment_entry: "crystal_fragment",
@@ -1682,6 +1701,7 @@ impl<'window> Cases<'window> {
                     .destroy_mesh(self.material_mesh.take().expect("material mesh exists"))?;
                 drop(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                         vertex_entry: "crystal_vertex",
                         fragment_entry: "crystal_fragment",
@@ -1754,6 +1774,7 @@ impl<'window> Cases<'window> {
                 )?);
                 self.shadowed_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(LAVA_SHADER)?,
                         vertex_entry: "lava_vertex",
                         fragment_entry: "lava_fragment",
@@ -1771,6 +1792,7 @@ impl<'window> Cases<'window> {
                 )?);
                 self.material_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                         vertex_entry: "crystal_vertex",
                         fragment_entry: "crystal_fragment",
@@ -2080,9 +2102,11 @@ impl<'window> Cases<'window> {
                     "out-of-range render scale rejected",
                 )?;
                 let half_scale = RenderScale::percent(50)?;
-                let scaled_targets = graphics
-                    .device
-                    .create_scaled_postprocess_targets(graphics.surface.info()?, half_scale)?;
+                let scaled_targets = graphics.device.create_postprocess_targets(
+                    graphics.surface.info()?,
+                    half_scale,
+                    SceneColor::Surface,
+                )?;
                 graphics
                     .device
                     .destroy_postprocess_targets(scaled_targets)?;
@@ -2101,6 +2125,7 @@ impl<'window> Cases<'window> {
                     graphics
                         .device
                         .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(SKINNED_SHADER)?,
                             vertex_entry: "skinned_vertex",
                             fragment_entry: "skinned_fragment",
@@ -2132,6 +2157,7 @@ impl<'window> Cases<'window> {
                     graphics
                         .device
                         .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(SKINNED_SHADER)?,
                             vertex_entry: "skinned_vertex",
                             fragment_entry: "skinned_fragment",
@@ -2159,6 +2185,7 @@ impl<'window> Cases<'window> {
                     graphics
                         .device
                         .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(SKINNED_SHADER)?,
                             vertex_entry: "skinned_vertex",
                             fragment_entry: "skinned_fragment",
@@ -2184,6 +2211,7 @@ impl<'window> Cases<'window> {
                 )?;
                 self.skinned_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(SKINNED_SHADER)?,
                         vertex_entry: "skinned_vertex",
                         fragment_entry: "skinned_fragment",
@@ -2777,6 +2805,7 @@ impl<'window> Cases<'window> {
                         .expect("session A is open")
                         .device
                         .create_material_pipeline(mulciber::MaterialPipelineDescriptor {
+                            scene_color: SceneColor::Surface,
                             shader: ShaderArtifact::new(SPROUT_SHADER)?,
                             vertex_entry: "sprout_vertex",
                             fragment_entry: "sprout_fragment",
@@ -2795,6 +2824,7 @@ impl<'window> Cases<'window> {
                 let graphics = self.graphics.as_ref().expect("session A is open");
                 self.sprout_pipeline = Some(graphics.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(SPROUT_SHADER)?,
                         vertex_entry: "sprout_vertex",
                         fragment_entry: "sprout_fragment",
@@ -3226,6 +3256,7 @@ impl<'window> Cases<'window> {
                 );
                 self.material_pipeline = Some(reopened.device.create_material_pipeline(
                     mulciber::MaterialPipelineDescriptor {
+                        scene_color: SceneColor::Surface,
                         shader: ShaderArtifact::new(MATERIAL_SHADER)?,
                         vertex_entry: "crystal_vertex",
                         fragment_entry: "crystal_fragment",
@@ -3236,11 +3267,11 @@ impl<'window> Cases<'window> {
                         instance_layout: None,
                     },
                 )?);
-                self.postprocess_targets = Some(
-                    reopened
-                        .device
-                        .create_postprocess_targets(reopened.surface.info()?)?,
-                );
+                self.postprocess_targets = Some(reopened.device.create_postprocess_targets(
+                    reopened.surface.info()?,
+                    RenderScale::NATIVE,
+                    SceneColor::Surface,
+                )?);
                 self.graphics = Some(reopened);
                 self.step = 49;
                 Ok(false)
@@ -3585,11 +3616,12 @@ impl<'window> Cases<'window> {
                     if let Some(postprocess_targets) = self.postprocess_targets.as_ref()
                         && frame.surface_info() != postprocess_targets.info()
                     {
-                        self.postprocess_targets = Some(
-                            graphics
-                                .device
-                                .create_postprocess_targets(frame.surface_info())?,
-                        );
+                        self.postprocess_targets =
+                            Some(graphics.device.create_postprocess_targets(
+                                frame.surface_info(),
+                                RenderScale::NATIVE,
+                                SceneColor::Surface,
+                            )?);
                     }
                 }
                 Ok(Some(frame))

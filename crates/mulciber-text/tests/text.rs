@@ -93,6 +93,19 @@ fn a_face_or_image_that_cannot_fit_is_refused_by_name() {
 }
 
 #[test]
+fn a_refused_face_leaves_nothing_for_the_next() {
+    let font = Font::from_bytes(FONT).unwrap();
+    let mut builder = AtlasBuilder::new(128).unwrap();
+    // The i packs at 200 px before the W, wider than the atlas, refuses the face.
+    assert!(builder.face(&font, 200.0, ['i', 'W']).is_err());
+    let small = builder.face(&font, 12.0, ['i', 'W']).unwrap();
+    let mut fresh = AtlasBuilder::new(128).unwrap();
+    let alone = fresh.face(&font, 12.0, ['i', 'W']).unwrap();
+    let (atlas, fresh) = (builder.build(), fresh.build());
+    assert!((atlas.measure(small, "iW") - fresh.measure(alone, "iW")).abs() < 1.0e-3);
+}
+
+#[test]
 fn images_and_masks_pack_beside_the_glyphs() {
     let font = Font::from_bytes(FONT).unwrap();
     let mut builder = AtlasBuilder::new(64).unwrap();
@@ -100,6 +113,8 @@ fn images_and_masks_pack_beside_the_glyphs() {
     let red = [200, 10, 20, 255].repeat(9);
     let picture = builder.image(3, 3, &red).unwrap();
     let mask = builder.coverage(2, 1, &[128, 64]).unwrap();
+    // An image's transparent texels keep their colour.
+    let clear = builder.image(1, 1, &[10, 20, 30, 0]).unwrap();
     let atlas = builder.build();
     assert!(atlas.has_glyph(face, 'g'));
     let texel = |x: u32, y: u32| {
@@ -109,6 +124,7 @@ fn images_and_masks_pack_beside_the_glyphs() {
     assert_eq!(texel(picture.x + 2, picture.y + 2), [200, 10, 20, 255]);
     assert_eq!(texel(mask.x, mask.y), [255, 255, 255, 128]);
     assert_eq!(texel(mask.x + 1, mask.y), [255, 255, 255, 64]);
+    assert_eq!(texel(clear.x, clear.y), [10, 20, 30, 0]);
     let [u0, v0, u1, v1] = atlas.uv(picture);
     assert!(u0 < u1 && v0 < v1 && u1 <= 1.0 && v1 <= 1.0);
 }
@@ -132,6 +148,23 @@ fn text_measures_by_advance_tracking_and_scale() {
     // A character the face lacks takes a space's room.
     assert!((atlas.measure(text, "aЖb") - atlas.measure(text, "a b")).abs() < 1.0e-3);
     assert!(atlas.measure(text, "").abs() < f32::EPSILON);
+}
+
+#[test]
+fn measuring_agrees_with_the_pen_in_a_face_without_a_space() {
+    let font = Font::from_bytes(FONT).unwrap();
+    let mut builder = AtlasBuilder::new(128).unwrap();
+    let digits = builder.face(&font, 16.0, '0'..='9').unwrap();
+    let atlas = builder.build();
+    let tracked = Style {
+        tracking: 3.0,
+        ..Style::new(digits)
+    };
+    // The space is set as nothing, with no tracking either side of it.
+    assert!((atlas.measure(tracked, "1 2") - atlas.measure(tracked, "12")).abs() < 1.0e-3);
+    let mut batch = Batch::new(&atlas, 64, 32);
+    let pen = batch.text(tracked, "1 2", 4.0, 20.0, [1.0; 4]);
+    assert!((pen - 4.0 - atlas.measure(tracked, "1 2")).abs() < 1.0e-3);
 }
 
 #[test]
@@ -240,7 +273,10 @@ fn text_lands_on_whole_pixels_and_returns_its_pen() {
     let surface = [200.0_f32, 100.0];
     for index in 0..batch.vertices().len() as u32 / 32 {
         let [x, y] = clip(&batch, index);
-        let pixels = [(x + 1.0) * 0.5 * surface[0], (1.0 - y) * 0.5 * surface[1]];
+        let pixels = [
+            f32::midpoint(x, 1.0) * surface[0],
+            (1.0 - y) * 0.5 * surface[1],
+        ];
         for value in pixels {
             assert!(
                 (value - value.round()).abs() < 1.0e-3,

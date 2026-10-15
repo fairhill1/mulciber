@@ -194,8 +194,11 @@ impl AtlasBuilder {
             )));
         }
         let id = FaceId(u32::try_from(self.faces.len()).expect("fewer faces than u32 counts"));
+        // Kept aside until every glyph is packed, so a face that fails leaves none behind for the
+        // next face, which takes its id.
+        let mut glyphs = HashMap::new();
         for character in characters {
-            if self.glyphs.contains_key(&(id, character)) || !font.has(character) {
+            if glyphs.contains_key(&character) || !font.has(character) {
                 continue;
             }
             let (metrics, coverage) = font.inner.rasterize(character, px);
@@ -205,8 +208,8 @@ impl AtlasBuilder {
                 TextError::new(format!("{character:?} at {px} px: {}", error.message))
             })?;
             #[allow(clippy::cast_precision_loss)]
-            self.glyphs.insert(
-                (id, character),
+            glyphs.insert(
+                character,
                 Glyph {
                     region,
                     xmin: metrics.xmin as f32,
@@ -215,6 +218,11 @@ impl AtlasBuilder {
                 },
             );
         }
+        self.glyphs.extend(
+            glyphs
+                .into_iter()
+                .map(|(character, glyph)| ((id, character), glyph)),
+        );
         let line = font.inner.horizontal_line_metrics(px);
         #[allow(clippy::cast_precision_loss)]
         let cap_height = if font.has('H') {
@@ -288,13 +296,10 @@ impl AtlasBuilder {
     pub fn build(self) -> Atlas {
         let rows = self.pen_y + self.row_height + PADDING;
         let mut texels = self.texels;
-        texels.resize(rows as usize * self.width as usize * 4, 0);
-        // Rows added only for the bottom padding are white like the rest.
-        for pixel in texels.as_chunks_mut::<4>().0 {
-            if pixel[3] == 0 {
-                *pixel = [u8::MAX, u8::MAX, u8::MAX, 0];
-            }
-        }
+        // Rows added only for the bottom padding are white and transparent like the rest; packed
+        // images keep their own transparent texels.
+        let added = (rows as usize * self.width as usize).saturating_sub(texels.len() / 4);
+        texels.extend(std::iter::repeat_n([u8::MAX, u8::MAX, u8::MAX, 0], added).flatten());
         Atlas {
             width: self.width,
             height: rows,
@@ -425,7 +430,7 @@ impl Atlas {
     /// Where flat shapes sample: the middle of the solid block, opaque white.
     pub(crate) fn solid_uv(&self) -> [f32; 2] {
         let [left, top, right, bottom] = self.uv(self.solid);
-        [(left + right) * 0.5, (top + bottom) * 0.5]
+        [f32::midpoint(left, right), f32::midpoint(top, bottom)]
     }
 
     /// The glyph `character` draws with in `face`: its own, or the space's in its place.

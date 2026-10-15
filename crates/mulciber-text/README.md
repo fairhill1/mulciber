@@ -103,7 +103,7 @@ let overlay = batch.geometry().map(|geometry| MaterialRecord {
 });
 ```
 
-The record goes in a `MaterialOutput::Postprocessed` submission's `overlay`, drawn at the surface's
+The record goes in a `SceneOutput::Postprocessed` submission's `overlay`, drawn at the surface's
 native extent after the postprocess pass.
 
 ## Licence

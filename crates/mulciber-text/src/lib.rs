@@ -17,7 +17,7 @@
 //!   tested or previewed with no GPU.
 //!
 //! The shader is `mulciber-shader`'s `mulciber::overlay` WGSL module: a game's overlay shader
-//! declares the atlas texture and sampler and calls `overlay_vertex_position` and `overlay_shade`.
+//! declares the atlas texture and sampler and calls `overlay_raster` and `overlay_shade`.
 //! See the README for the pipeline and a frame.
 
 mod atlas;

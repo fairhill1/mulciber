@@ -185,7 +185,10 @@ impl<'a> Batch<'a> {
         for (k, &point) in points.iter().enumerate() {
             // Out along both edges' normals at once, as far as half a pixel from each.
             let (before, after) = (outward((k + n - 1) % n), outward(k));
-            let mut out = [(before[0] + after[0]) * 0.5, (before[1] + after[1]) * 0.5];
+            let mut out = [
+                f32::midpoint(before[0], after[0]),
+                f32::midpoint(before[1], after[1]),
+            ];
             let square = out[0] * out[0] + out[1] * out[1];
             if square > 1.0e-6 {
                 let scale = 1.0 / square.max(0.25);

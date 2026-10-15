@@ -36,18 +36,21 @@ impl From<FaceId> for Style {
 }
 
 impl Atlas {
-    /// The width of `text` set in `style`, in pixels: each character's advance, a character the
-    /// face lacks as a space, plus tracking between characters.
+    /// The width of `text` set in `style`, in pixels, as [`Batch::text`](crate::Batch::text)
+    /// advances its pen: each character's advance, a character the face lacks as a space (or
+    /// nothing, in a face without one), plus tracking between the characters set.
     #[must_use]
     pub fn measure(&self, style: impl Into<Style>, text: &str) -> f32 {
         let style = style.into();
-        let mut count = 0_u16;
-        let advances: f32 = text
+        let (advances, count) = text
             .chars()
-            .inspect(|_| count = count.saturating_add(1))
-            .map(|character| self.glyph(style.face, character).map_or(0.0, |g| g.advance))
-            .sum();
-        advances * style.scale + style.tracking * f32::from(count.saturating_sub(1))
+            .filter_map(|character| self.glyph(style.face, character))
+            .fold((0.0_f32, 0_u32), |(sum, count), glyph| {
+                (sum + glyph.advance, count + 1)
+            });
+        #[allow(clippy::cast_precision_loss)]
+        let gaps = count.saturating_sub(1) as f32;
+        advances * style.scale + style.tracking * gaps
     }
 
     /// `text` broken into lines no wider than `width` pixels in `style`, at spaces, and at every

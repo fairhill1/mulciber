@@ -8,10 +8,13 @@ impl Batch<'_> {
     /// one sample a pixel, and returns the surface as RGBA8 sRGB, row by row: for tests and
     /// previews on a machine with no GPU.
     ///
-    /// It samples the atlas bilinearly with clamped edges, premultiplies and blends source-over in
-    /// linear light, and fills a pixel whose centre lies inside a triangle or on its top or left
-    /// edge, as GPUs do, so neighbouring triangles never cover a pixel twice. GPUs round
-    /// differently in the last bit or so: compare its output with a tolerance.
+    /// It samples the atlas bilinearly with clamped edges, as a linear, clamped sampler does: the
+    /// same as the README's nearest sampler for flat shapes and for text at its baked size on
+    /// whole pixels, but smoother than it for scaled text and stretched images. It premultiplies
+    /// and blends source-over in linear light, and fills a pixel whose centre lies inside a
+    /// triangle or on its top or left edge, as GPUs do, so neighbouring triangles never cover a
+    /// pixel twice. GPUs round differently in the last bit or so: compare its output with a
+    /// tolerance.
     #[must_use]
     pub fn rasterise(&self, background: [f32; 4]) -> Vec<u8> {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -103,7 +106,7 @@ impl Batch<'_> {
         let [width, height] = self.surface();
         RasterVertex {
             position: [
-                (float(0) + 1.0) * 0.5 * width,
+                f32::midpoint(float(0), 1.0) * width,
                 (1.0 - float(1)) * 0.5 * height,
             ],
             uv: [float(2), float(3)],

@@ -385,6 +385,84 @@ mod tests {
         modifiers_type_text, printable_characters,
     };
     use crate::{KeyCode, Modifiers};
+    use std::ffi::{c_char, c_int};
+
+    const XKB_COMPOSE_FORMAT_TEXT_V1: c_int = 1;
+
+    #[link(name = "xkbcommon")]
+    unsafe extern "C" {
+        fn xkb_compose_table_new_from_buffer(
+            context: *mut super::XkbContext,
+            buffer: *const c_char,
+            length: usize,
+            locale: *const c_char,
+            format: c_int,
+            flags: c_int,
+        ) -> *mut super::XkbComposeTable;
+    }
+
+    /// A composer over a Compose table written here, so the sequences tested do not depend on the
+    /// host's locale or Compose data.
+    fn composer_with_table(table: &str) -> TextComposer {
+        let mut composer = TextComposer::new();
+        assert!(!composer.context.is_null(), "xkbcommon creates a context");
+        // SAFETY: The composer holds the only references to its table and state, released here
+        // before being replaced by ones built from the buffer, which xkbcommon does not retain.
+        unsafe {
+            if !composer.state.is_null() {
+                super::xkb_compose_state_unref(composer.state);
+            }
+            if !composer.table.is_null() {
+                super::xkb_compose_table_unref(composer.table);
+            }
+            composer.table = xkb_compose_table_new_from_buffer(
+                composer.context,
+                table.as_ptr().cast(),
+                table.len(),
+                c"C".as_ptr(),
+                XKB_COMPOSE_FORMAT_TEXT_V1,
+                super::XKB_COMPOSE_COMPILE_NO_FLAGS,
+            );
+            assert!(!composer.table.is_null(), "the test Compose table compiles");
+            composer.state =
+                super::xkb_compose_state_new(composer.table, super::XKB_COMPOSE_STATE_NO_FLAGS);
+        }
+        assert!(!composer.state.is_null());
+        composer
+    }
+
+    #[test]
+    fn dead_keys_and_the_compose_key_compose_through_a_compose_table() {
+        let composer = composer_with_table(concat!(
+            "<dead_circumflex> <e> : \"\u{ea}\" ecircumflex\n",
+            "<dead_circumflex> <dead_circumflex> : \"^\" asciicircum\n",
+            "<Multi_key> <o> <c> : \"\u{a9}\" copyright\n",
+        ));
+        let type_keysyms = |keysyms: &[u32]| -> Vec<String> {
+            keysyms
+                .iter()
+                .filter_map(|&keysym| match composer.feed(keysym) {
+                    Composition::Unchanged => None,
+                    Composition::Absorbed => Some(String::new()),
+                    Composition::Composed(text) => Some(text.characters().collect()),
+                })
+                .collect()
+        };
+        assert!(matches!(composer.feed(0x0061), Composition::Unchanged)); // a
+        // dead_circumflex, Shift_L (ignored mid-sequence), e
+        assert_eq!(type_keysyms(&[0xfe52, 0xffe1, 0x0065]), ["", "\u{ea}"]);
+        // dead_circumflex twice types the circumflex itself.
+        assert_eq!(type_keysyms(&[0xfe52, 0xfe52]), ["", "^"]);
+        // Multi_key o c
+        assert_eq!(type_keysyms(&[0xff20, 0x006f, 0x0063]), ["", "", "\u{a9}"]);
+        // A key that breaks a sequence is absorbed with it, and the next key types itself.
+        assert_eq!(type_keysyms(&[0xfe52, 0x0078]), ["", ""]);
+        assert!(matches!(composer.feed(0x0065), Composition::Unchanged));
+        // Focus loss abandons a pending sequence.
+        assert!(matches!(composer.feed(0xfe52), Composition::Absorbed));
+        composer.reset();
+        assert!(matches!(composer.feed(0x0065), Composition::Unchanged));
+    }
 
     #[test]
     fn keysyms_type_printable_characters_only() {

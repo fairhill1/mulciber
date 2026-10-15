@@ -53,8 +53,9 @@ The runtime uses `std::time::Instant` and has no third-party dependency beyond
 `InputSnapshot` preserves held state across frames and exposes pressed/released membership accumulated
 since the last simulation-bearing frame. Key-repeat events do not manufacture new presses. Pointer
 position, held and transitional pointer buttons, modifiers, and ordered precise/coarse scroll samples
-are also retained.
-Dropping a `RuntimeFrame` with at least one fixed update clears transitions and scroll samples while
+are also retained, and `typed_text` holds the characters typed (`InputEvent::Character`) in order.
+Dropping a `RuntimeFrame` with at least one fixed update clears transitions, scroll samples and typed
+text while
 preserving held controls. Dropping a zero-update frame deliberately leaves them latched. This prevents
 a one-shot press from being lost when display cadence exceeds the fixed simulation rate, such as a
 75 Hz display driving a 60 Hz simulation.

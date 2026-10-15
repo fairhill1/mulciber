@@ -36,6 +36,8 @@ Shift, Caps Lock and AltGr (Option on macOS), so the AZERTY `Q` key types `a`, a
 Backspace, Tab, Escape, the arrows and function keys are `Keyboard` events alone, and a key held with
 Control (or Command on macOS) types nothing. `KeyCode::name` and `KeyCode::from_name` give each key a
 stable token (its variant name) for saving bindings; `Unidentified` keys have none.
+`mulciber-runtime`'s `InputSnapshot::typed_text` collects the characters for a frame, latched like
+key presses until a frame with fixed updates consumes them.
 
 Per platform:
 
@@ -53,7 +55,10 @@ Per platform:
   tables, and the backend's client-side repeat.
 - On X11 and Wayland, Alt alone does not stop typing.
 
-Input-method composition (Chinese, Japanese, Korean) is not delivered on any platform yet.
+Input-method composition (Chinese, Japanese, Korean) is not delivered on any platform yet: no backend
+handles composition messages or a text-input protocol. On Windows the default window procedure may
+still turn an input method's committed text into `WM_CHAR`, so it may arrive as characters there;
+that has not been checked.
 
 ## Event delivery and ownership
 

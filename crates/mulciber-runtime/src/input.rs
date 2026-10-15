@@ -36,6 +36,7 @@ pub struct InputSnapshot {
     pressed_pointer_buttons: Vec<PointerButton>,
     released_pointer_buttons: Vec<PointerButton>,
     scroll: Vec<ScrollSample>,
+    typed_text: String,
 }
 
 impl Default for InputSnapshot {
@@ -51,6 +52,7 @@ impl Default for InputSnapshot {
             pressed_pointer_buttons: Vec::new(),
             released_pointer_buttons: Vec::new(),
             scroll: Vec::new(),
+            typed_text: String::new(),
         }
     }
 }
@@ -116,6 +118,13 @@ impl InputSnapshot {
         &self.scroll
     }
 
+    /// Returns the text typed since transient input was last consumed, in order: each
+    /// [`InputEvent::Character`] the platform delivered, for chat, consoles and names.
+    #[must_use]
+    pub fn typed_text(&self) -> &str {
+        &self.typed_text
+    }
+
     pub(crate) fn handle_event(&mut self, event: InputEvent) {
         match event {
             InputEvent::FocusChanged { focused } => self.set_focus(focused),
@@ -167,6 +176,7 @@ impl InputSnapshot {
                 self.modifiers = modifiers;
                 self.scroll.push(ScrollSample { delta, position });
             }
+            InputEvent::Character(character) => self.typed_text.push(character),
             _ => {}
         }
     }
@@ -191,6 +201,7 @@ impl InputSnapshot {
         self.pressed_pointer_buttons.clear();
         self.released_pointer_buttons.clear();
         self.scroll.clear();
+        self.typed_text.clear();
     }
 }
 
@@ -277,6 +288,17 @@ mod tests {
         assert!(input.key_released(KeyCode::KeyW));
         assert!(!input.pointer_button_held(PointerButton::Primary));
         assert!(input.pointer_button_released(PointerButton::Primary));
+    }
+
+    #[test]
+    fn typed_text_keeps_order_for_one_frame() {
+        let mut input = InputSnapshot::default();
+        for character in ['h', '\u{e9}', ' ', '\u{1f600}'] {
+            input.handle_event(InputEvent::Character(character));
+        }
+        assert_eq!(input.typed_text(), "h\u{e9} \u{1f600}");
+        input.end_frame();
+        assert_eq!(input.typed_text(), "");
     }
 
     #[test]

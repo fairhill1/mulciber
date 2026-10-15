@@ -2,7 +2,7 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
-## Typed text and key tokens (platform 0.5.7)
+## Typed text and key tokens (platform 0.5.7, runtime 0.6.1)
 
 `InputEvent::Character(char)` delivers what the keyboard types, for chat, consoles and names: the
 native layout's character after Shift, Caps Lock and AltGr (Option on macOS), so the AZERTY Q key
@@ -13,14 +13,20 @@ surrogate pairs; AppKit the key-down's `characters`; X11 `XLookupString` with xk
 conversion; Wayland an `xkb_state` kept from the compositor's keymap. X11 and Wayland compose dead
 keys and the Compose key through xkbcommon's Compose tables, and Win32 through `WM_CHAR`; AppKit
 bypasses the text input system, so dead keys are not expected to compose there. IME composition is
-not delivered yet.
+not delivered yet (on Windows an input method's committed text may still arrive through `WM_CHAR`,
+unchecked).
+
+`InputSnapshot::typed_text` (runtime 0.6.1) collects the characters typed for a frame, latched and
+cleared like key presses, for games that read input through the runtime.
 
 `KeyCode::name` and `KeyCode::from_name` give every key a stable token, its variant's name, for
 saving bindings in settings; both games kept their own, incompatible tables.
 
 X11 and Wayland passed layout, AltGr, dead-key, Compose, repeat and Control checks under Xvfb and
 headless sway ([evidence](docs/linux-validation.md#typed-text-platform-057)). Windows and macOS are
-compile- and Clippy-checked only. See [text entry](docs/input-contract.md#text-entry).
+compile- and Clippy-checked only. A unit test composes dead keys and the Compose key through a
+Compose table of its own, independent of the host's. See
+[text entry](docs/input-contract.md#text-entry).
 ## The material path is the only path (graphics 0.18.0, texture 0.6.0)
 
 Breaking. The fixed textured and instanced pipelines are removed with everything only they used:

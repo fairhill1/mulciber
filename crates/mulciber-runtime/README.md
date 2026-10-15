@@ -23,8 +23,9 @@ are bounded so a hitch cannot create an unbounded simulation spiral; discarded t
 
 ## Input semantics
 
-`InputSnapshot` exposes held controls and pressed/released transitions with focus-loss clearing.
-Transient presses, releases, and scroll samples remain latched through render-only frames and are
+`InputSnapshot` exposes held controls and pressed/released transitions with focus-loss clearing,
+and `typed_text` the characters typed, for chat and consoles. Transient presses, releases, scroll
+samples and typed text remain latched through render-only frames and are
 consumed after a frame schedules fixed simulation work. This prevents one-shot input from being
 lost when the display rate exceeds the fixed simulation rate.
 

@@ -1700,15 +1700,27 @@ mod tests {
         assert_eq!(typed_characters(&utf16("\u{F6FF}"), 0), ['\u{F6FF}']);
         assert_eq!(typed_characters(&[0xD800], 0), [] as [char; 0]);
         // A dead key reports no characters and types nothing.
-        assert!(typed_characters(&[], MODIFIER_OPTION).is_empty());
+        assert_eq!(typed_characters(&[], MODIFIER_OPTION), [] as [char; 0]);
     }
 
     #[test]
     fn typed_characters_ignore_control_and_command_chords() {
-        assert!(typed_characters(&utf16("\u{1}"), MODIFIER_CONTROL).is_empty());
-        assert!(typed_characters(&utf16("c"), MODIFIER_COMMAND).is_empty());
-        assert!(typed_characters(&utf16("c"), MODIFIER_COMMAND | MODIFIER_SHIFT).is_empty());
-        assert!(typed_characters(&utf16("\u{E7}"), MODIFIER_CONTROL | MODIFIER_OPTION).is_empty());
+        assert_eq!(
+            typed_characters(&utf16("\u{1}"), MODIFIER_CONTROL),
+            [] as [char; 0]
+        );
+        assert_eq!(
+            typed_characters(&utf16("c"), MODIFIER_COMMAND),
+            [] as [char; 0]
+        );
+        assert_eq!(
+            typed_characters(&utf16("c"), MODIFIER_COMMAND | MODIFIER_SHIFT),
+            [] as [char; 0]
+        );
+        assert_eq!(
+            typed_characters(&utf16("\u{E7}"), MODIFIER_CONTROL | MODIFIER_OPTION),
+            [] as [char; 0]
+        );
     }
 
     fn metrics(revision: WindowRevision) -> WindowMetrics {

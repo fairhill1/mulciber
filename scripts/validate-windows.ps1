@@ -354,17 +354,17 @@ try {
     Invoke-NativeLogged "cargo" @(
         "test",
         "-p",
-        "mulciber-postprocess-cube"
-    ) "cargo-test-postprocess-cube.log"
+        "mulciber-game-slice"
+    ) "cargo-test-game-slice.log"
     Invoke-NativeLogged "cargo" @(
         "build",
         "-p",
-        "mulciber-postprocess-cube"
-    ) "cargo-build-postprocess-cube.log"
-    $PostprocessExample = Join-Path $RepositoryRoot "target\debug\mulciber-postprocess-cube.exe"
+        "mulciber-game-slice"
+    ) "cargo-build-game-slice.log"
+    $GameSliceExample = Join-Path $RepositoryRoot "target\debug\mulciber-game-slice.exe"
     Invoke-AutomatedResizeSmoke `
-        -Probe $PostprocessExample `
-        -LogPrefix "postprocess-cube-resize" `
+        -Probe $GameSliceExample `
+        -LogPrefix "game-slice-resize" `
         -ResizeCycles 25 `
         -ResizeDelayMilliseconds 10
 
@@ -580,8 +580,8 @@ try {
         Join-Path $ArtifactDirectory "clear-resize.stderr.log"
         Join-Path $ArtifactDirectory "cube-resize.log"
         Join-Path $ArtifactDirectory "cube-resize.stderr.log"
-        Join-Path $ArtifactDirectory "postprocess-cube-resize.log"
-        Join-Path $ArtifactDirectory "postprocess-cube-resize.stderr.log"
+        Join-Path $ArtifactDirectory "game-slice-resize.log"
+        Join-Path $ArtifactDirectory "game-slice-resize.stderr.log"
         Join-Path $ArtifactDirectory "msaa-1x-fallback.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame.log"
         Join-Path $ArtifactDirectory "abandon-acquired-frame-fallback.log"

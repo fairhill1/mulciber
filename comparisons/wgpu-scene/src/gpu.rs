@@ -9,7 +9,7 @@ use winit::window::Window;
 
 use crate::scene;
 
-const SHADER: &str = include_str!("../../../examples/postprocess-cube/src/postprocess.wgsl");
+const SHADER: &str = include_str!("../../../probes/api-conformance/shaders/postprocess.wgsl");
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const OBJECT_COUNT: usize = 100;
 

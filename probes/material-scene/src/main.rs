@@ -22,11 +22,11 @@ use std::time::Instant;
 use glam::Vec3;
 use mulciber::{
     BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
-    GeometrySource, MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord,
-    MaterialScene, MeshDescriptor, MeshIndices, MeshSource, MeshVertices, MipChain, OpenedGraphics,
-    SampleCount, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneSubmission, ShaderArtifact,
-    ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, TexelData,
-    TextureDescriptor, TextureShape, TransientGeometry,
+    GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor,
+    MeshIndices, MeshSource, MipChain, OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter,
+    Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor,
+    ShadowPrepass, ShadowRecord, ShadowSource, TexelData, TextureDescriptor, TextureShape,
+    TransientGeometry,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -69,17 +69,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let crystal_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: scene::CRYSTAL_LAYOUT,
-            bytes: &scene::crystal_vertices(),
-        },
+        layout: scene::CRYSTAL_LAYOUT,
+        vertices: &scene::crystal_vertices(),
         parts: &[MeshIndices::U16(&scene::CUBE_INDICES)],
     })?;
     let floor_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: scene::LAVA_LAYOUT,
-            bytes: &scene::floor_vertices(),
-        },
+        layout: scene::LAVA_LAYOUT,
+        vertices: &scene::floor_vertices(),
         parts: &[MeshIndices::U16(&scene::FLOOR_INDICES)],
     })?;
     let crystal_base = graphics.device.create_texture(&TextureDescriptor {
@@ -189,10 +185,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             instance_layout: None,
         })?;
     let kelp_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: scene::SKINNED_LAYOUT,
-            bytes: &scene::kelp_vertices(),
-        },
+        layout: scene::SKINNED_LAYOUT,
+        vertices: &scene::kelp_vertices(),
         parts: &[MeshIndices::U16(&scene::kelp_indices())],
     })?;
     let skinned_pipeline =
@@ -239,10 +233,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 instance_layout: None,
             })?;
     let sprout_mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: scene::SPROUT_LAYOUT,
-            bytes: &scene::sprout_vertices(),
-        },
+        layout: scene::SPROUT_LAYOUT,
+        vertices: &scene::sprout_vertices(),
         parts: &[MeshIndices::U16(&scene::SPROUT_INDICES)],
     })?;
     let sprout_texture = graphics.device.create_texture(&TextureDescriptor {
@@ -467,14 +459,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     graphics.queue.render_and_present(
                         frame,
                         SceneSubmission {
-                            scene: Scene::Material(MaterialScene {
+                            scene: Scene {
                                 records: &records,
                                 shadow: Some(ShadowPrepass::Cascaded(CascadedShadowPass {
                                     map: &shadow_map,
                                     cascades: &cascade_lists,
                                 })),
-                                output: MaterialOutput::Direct(&targets),
-                            }),
+                                output: SceneOutput::Direct(&targets),
+                            },
                             clear: CLEAR,
                         },
                     )?;

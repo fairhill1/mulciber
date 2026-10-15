@@ -36,15 +36,15 @@ fn main() {
         panic!("the conformance probe supports macOS, Windows, and Linux targets");
     };
     let artifacts = [
-        format!("../../examples/postprocess-cube/artifacts/postprocess.{flavor}.shaderbin"),
-        format!("../../examples/instanced-scene/artifacts/instanced.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/crystal.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/lava.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/shadow.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/skinned.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/skinned-shadow.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/sprout.{flavor}.shaderbin"),
-        format!("../../examples/material-scene/artifacts/sprout-shadow.{flavor}.shaderbin"),
+        format!("artifacts/postprocess.{flavor}.shaderbin"),
+        format!("artifacts/instanced.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/crystal.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/lava.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/shadow.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/skinned.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/skinned-shadow.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/sprout.{flavor}.shaderbin"),
+        format!("../material-scene/artifacts/sprout-shadow.{flavor}.shaderbin"),
     ];
     let output = std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR");
     for (artifact, name) in artifacts.iter().zip(names) {

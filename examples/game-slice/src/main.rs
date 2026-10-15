@@ -1,4 +1,6 @@
-//! A small playable collect-and-avoid loop using the extracted platform and graphics slices.
+//! Forge Run, a small playable collect-and-avoid game: the fixed-step loop of `mulciber-runtime`,
+//! one instanced material for every shape, and a postprocess grade, with its WGSL compiled by
+//! `build.rs` from shaders that import a shared module and one of Mulciber's own.
 
 mod game;
 mod scene;
@@ -8,19 +10,22 @@ use std::time::Instant;
 
 use game::Game;
 use mulciber::{
-    ClearColor, Device, DeviceRequest, Frame, FrameAcquire, GpuTimingFeedback,
-    InstancedTexturedPipeline, Mesh, MeshDescriptor, MeshIndices, MeshVertices, MipChain,
-    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue,
-    RenderScale, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
-    Texture, TextureDescriptor, TextureShape, TexturedInstanceBatch,
+    BlendMode, ClearColor, DepthMode, Device, DeviceRequest, Frame, FrameAcquire, GeometrySource,
+    GpuTimingFeedback, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, Mesh, MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
+    PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue, RenderScale, SamplerAddress,
+    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
+    Texture, TextureDescriptor, TextureShape,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
 use scene::{
-    CUBE_INDICES, CUBE_VERTICES, PYRAMID_INDICES, PYRAMID_VERTICES, checkerboard, transforms,
+    CUBE_INDICES, INSTANCE_LAYOUT, PYRAMID_INDICES, VERTEX_LAYOUT, checkerboard, cube_vertices,
+    pyramid_vertices, transforms,
 };
 
-const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/game.shaderbin"));
+const FORGE_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/forge.shaderbin"));
+const GRADE_SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grade.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.008, 0.014, 0.026);
 const GPU_HITCH_SECONDS: f64 = 0.020;
 
@@ -32,7 +37,7 @@ struct Resources {
     player_texture: Texture,
     pickup_texture: Texture,
     hazard_texture: Texture,
-    scene_pipeline: InstancedTexturedPipeline,
+    scene_pipeline: MaterialPipeline,
     postprocess_pipeline: PostprocessPipeline,
     targets: PostprocessTargets,
 }
@@ -41,11 +46,13 @@ impl Resources {
     fn new(graphics: &OpenedGraphics<'_>) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             cube: graphics.device.create_mesh(&MeshDescriptor {
-                vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+                layout: VERTEX_LAYOUT,
+                vertices: &cube_vertices(),
                 parts: &[MeshIndices::U16(&CUBE_INDICES)],
             })?,
             pyramid: graphics.device.create_mesh(&MeshDescriptor {
-                vertices: MeshVertices::Fixed(&PYRAMID_VERTICES),
+                layout: VERTEX_LAYOUT,
+                vertices: &pyramid_vertices(),
                 parts: &[MeshIndices::U16(&PYRAMID_INDICES)],
             })?,
             ground_texture: texture(&graphics.device, [30, 42, 58], [55, 72, 82], 1)?,
@@ -53,12 +60,10 @@ impl Resources {
             player_texture: texture(&graphics.device, [35, 230, 190], [20, 90, 145], 2)?,
             pickup_texture: texture(&graphics.device, [255, 195, 45], [245, 80, 30], 1)?,
             hazard_texture: texture(&graphics.device, [245, 45, 85], [100, 20, 135], 2)?,
-            scene_pipeline: graphics
-                .device
-                .create_instanced_textured_pipeline(ShaderArtifact::new(SHADER)?)?,
+            scene_pipeline: forge_pipeline(&graphics.device)?,
             postprocess_pipeline: graphics
                 .device
-                .create_postprocess_pipeline(ShaderArtifact::new(SHADER)?)?,
+                .create_postprocess_pipeline(ShaderArtifact::new(GRADE_SHADER)?)?,
             targets: graphics.device.create_postprocess_targets(
                 graphics.surface.info()?,
                 RenderScale::NATIVE,
@@ -86,50 +91,44 @@ impl Resources {
         }
         let aspect = info.extent().width() as f32 / info.extent().height() as f32;
         let scene = transforms(game, aspect, interpolation);
-        let mut batches = vec![
-            TexturedInstanceBatch {
-                mesh: &self.cube,
-                texture: &self.ground_texture,
-                pipeline: &self.scene_pipeline,
-                model_view_projections: &scene.ground,
-            },
-            TexturedInstanceBatch {
-                mesh: &self.cube,
-                texture: &self.obstacle_texture,
-                pipeline: &self.scene_pipeline,
-                model_view_projections: &scene.obstacles,
-            },
-            TexturedInstanceBatch {
-                mesh: &self.cube,
-                texture: &self.player_texture,
-                pipeline: &self.scene_pipeline,
-                model_view_projections: &scene.player,
-            },
+        // A record per kind of shape, drawn once per instance it supplies; the pickups' is left
+        // out once the last one is collected, as a record must supply at least one instance.
+        let shapes: [(&Mesh, [&Texture; 1], &[u8]); 5] = [
+            (&self.cube, [&self.ground_texture], &scene.ground),
+            (&self.cube, [&self.obstacle_texture], &scene.obstacles),
+            (&self.cube, [&self.player_texture], &scene.player),
+            (&self.pyramid, [&self.pickup_texture], &scene.pickups),
+            (&self.pyramid, [&self.hazard_texture], &scene.hazards),
         ];
-        if !scene.pickups.is_empty() {
-            batches.push(TexturedInstanceBatch {
-                mesh: &self.pyramid,
-                texture: &self.pickup_texture,
+        let records: Vec<MaterialRecord<'_>> = shapes
+            .iter()
+            .filter(|(_, _, instances)| !instances.is_empty())
+            .map(|(mesh, textures, instances)| MaterialRecord {
                 pipeline: &self.scene_pipeline,
-                model_view_projections: &scene.pickups,
-            });
-        }
-        batches.push(TexturedInstanceBatch {
-            mesh: &self.pyramid,
-            texture: &self.hazard_texture,
-            pipeline: &self.scene_pipeline,
-            model_view_projections: &scene.hazards,
-        });
+                geometry: GeometrySource::Mesh(mesh),
+                textures,
+                shadow_map: None,
+                uniform: &[],
+                storage: &[],
+                instances,
+            })
+            .collect();
         queue.render_and_present(
             frame,
             SceneSubmission {
-                scene: Scene::Instanced {
-                    batches: &batches,
-                    output: SceneOutput::Postprocessed(Postprocess {
-                        pipeline: &self.postprocess_pipeline,
-                        targets: &self.targets,
-                        uniform: &[],
-                    }),
+                scene: Scene {
+                    records: &records,
+                    shadow: None,
+                    output: SceneOutput::Postprocessed {
+                        postprocess: Postprocess {
+                            pipeline: &self.postprocess_pipeline,
+                            targets: &self.targets,
+                            uniform: &[],
+                        },
+                        foreground_start: None,
+                        offscreen: &[],
+                        overlay: &[],
+                    },
                 },
                 clear: CLEAR,
             },
@@ -244,5 +243,28 @@ fn texture(
         },
         mips: MipChain::Single,
         data: TexelData::Rgba8Srgb(&[&checkerboard(first, second, scale)]),
+    })?)
+}
+
+/// The material every shape is drawn with: `forge.wgsl`, a vertex buffer of shape vertices and an
+/// instance buffer of transforms.
+fn forge_pipeline(device: &Device<'_>) -> Result<MaterialPipeline, Box<dyn Error>> {
+    Ok(device.create_material_pipeline(MaterialPipelineDescriptor {
+        shader: ShaderArtifact::new(FORGE_SHADER)?,
+        vertex_entry: "forge_vertex",
+        fragment_entry: "forge_fragment",
+        vertex_layout: VERTEX_LAYOUT,
+        instance_layout: Some(INSTANCE_LAYOUT),
+        bindings: &[
+            MaterialBinding::Texture { binding: 1 },
+            MaterialBinding::Sampler {
+                binding: 2,
+                filter: SamplerFilter::Nearest,
+                address: SamplerAddress::Repeat,
+            },
+        ],
+        blend: BlendMode::Opaque,
+        depth: DepthMode::TestWrite,
+        scene_color: SceneColor::Surface,
     })?)
 }

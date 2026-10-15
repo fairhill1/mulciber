@@ -153,7 +153,7 @@ operation; that pressure will determine which objects deserve independent public
 `PostprocessPipelineDescriptor` optionally declares one exact-size group-0/binding-0 uniform of at
 most 256 bytes. The shader-only conversion remains the no-uniform convenience path. Every
 postprocessed `SceneSubmission` borrows a byte slice for that submission in its `Postprocess`
-(`SceneOutput::Postprocessed` or `MaterialOutput::Postprocessed`); its length is validated
+(`SceneOutput::Postprocessed`); its length is validated
 exactly before the acquired frame is consumed, while group-0 bindings 1 and 2 remain the resolved
 scene-color texture and fixed sampler. The application owns byte layout and animation
 policy. Vulkan uses storage independent from the scene/material uniform region and rewrites it only
@@ -215,7 +215,7 @@ without transfer-source swapchain usage answers `Unsupported`. See the
 
 `Device::create_hdr_render_texture(width, height)` creates a linear `RGBA16Float` color texture with
 depth and multisample storage of its own at the session's sample count. The `offscreen` passes of
-`MaterialOutput::Postprocessed`, each a target, HDR material records and a clear, render into render
+`SceneOutput::Postprocessed`, each a target, HDR material records and a clear, render into render
 textures after any shadow prepass and before the scene pass; `RenderTexture::texture()` then feeds
 any material record's texture slot, that frame or later. Sampling one nothing has rendered, an
 offscreen record sampling its own target, and two passes on one target are refused before the frame

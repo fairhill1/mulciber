@@ -2,6 +2,57 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## The material path is the only path (graphics 0.18.0, texture 0.6.0)
+
+Breaking. The fixed textured and instanced pipelines are removed with everything only they used:
+`create_textured_pipeline`, `create_instanced_textured_pipeline` and their `destroy_*`,
+`TexturedPipeline`, `InstancedTexturedPipeline`, `TexturedSceneDraw`, `TexturedInstanceBatch`,
+`Scene::Textured`, `Scene::Instanced`, `Vertex`, `VertexLayout::VERTEX` and `MeshVertices`. A
+textured or instanced draw is a material record whose pipeline declares that shader, layout and
+bindings; `mulciber-cube` and `mulciber-game-slice` show both.
+
+With one kind of scene left, `Scene` is what `MaterialScene` was, and `SceneOutput` what
+`MaterialOutput` was; a mesh's layout sits beside its bytes:
+
+```rust
+// 0.17
+let scene = Scene::Material(MaterialScene { records: &records, shadow: None, output: MaterialOutput::Direct(&targets) });
+let mesh = device.create_mesh(&MeshDescriptor { vertices: MeshVertices::Bytes { layout, bytes }, parts })?;
+// 0.18
+let scene = Scene { records: &records, shadow: None, output: SceneOutput::Direct(&targets) };
+let mesh = device.create_mesh(&MeshDescriptor { layout, vertices: bytes, parts })?;
+```
+
+Vulkan meshes no longer store a `VkDrawIndexedIndirectCommand` per part, nor take indirect usage
+and the barrier for it: only the removed textured scene drew through them, material and shadow
+records having drawn with `vkCmdDrawIndexed` since 0.13.12. Metal keeps its per-part indirect
+arguments, which its material records draw through. The frame transform buffers both backends kept
+for the fixed pipelines are gone too.
+
+`mulciber-texture` 0.6.0 moves to `mulciber` 0.18.0, with no change of its own.
+
+The examples compile their WGSL in `build.rs` with `mulciber-shader` instead of embedding checked-in
+artifacts (`MULCIBER_METAL_TYPECHECK_ONLY=1` writes empty ones, to type-check a macOS build on
+another host). `mulciber-cube` and `mulciber-input-cube` draw through a material pipeline, and
+`mulciber-game-slice` through one instanced material pipeline, a fullscreen module its grade
+`#import`s, and a grade with a vignette. `mulciber-scene`, `mulciber-instanced-scene`,
+`mulciber-postprocess-cube` and `mulciber-showcase-cube` are deleted: each drew through the removed
+API. Their shaders and artifacts move to
+the probes that still use them (the cube's to `mulciber-api-cube`, the postprocess and instanced
+ones to `mulciber-api-conformance`), and the `comparisons/` wgpu peers include them from there. The
+postprocess-uniform shader, its artifact and its lock entry are gone. `mulciber-material-scene`
+moves to `probes/material-scene`. The probes build their cubes and instances as material records;
+`mulciber-api-conformance`'s first case, a non-finite transform, which a material record has no
+transform to carry, is now a record uniform shorter than its pipeline declares. The docs for the
+removed API are marked historical, with their dated evidence kept.
+
+On Linux (Vulkan, validation layer enabled), every remaining example and probe ran without a
+validation message, `mulciber-api-conformance` passing its 100 cases and its `--pacing` run. The
+workspace passes Clippy for Linux, Windows and macOS (Metal type-checked with placeholder shaders),
+its unit tests and its ignored tests. Nothing was run on Metal or on Windows, and
+`scripts/validate-windows.ps1`, whose resize smoke now runs `mulciber-game-slice` in place of the
+postprocess cube, has not been run since.
+
 ## Smaller API fixes (graphics 0.17.0, runtime 0.6.0, net 0.2.0, model 0.3.0, texture 0.5.0, audio 0.3.0)
 
 Breaking unless noted.

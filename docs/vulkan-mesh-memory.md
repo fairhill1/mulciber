@@ -2,7 +2,8 @@
 
 Mulciber 0.13.9 prefers device-local storage for immutable mesh vertices, indices and indirect
 arguments. This is backend policy; the public mesh/mesh-parts API, per-frame buffers and Metal
-storage are unchanged.
+storage are unchanged. Since graphics 0.18.0 the meshes carry no indirect arguments: only the removed
+fixed textured scene drew through them.
 
 ## Placement and ownership
 
@@ -15,7 +16,7 @@ and other native failures propagate. `MULCIBER_VULKAN_MESH_MEMORY=host` forces t
 validation/comparison. Normal selection needs no environment variable.
 
 Staged mesh creation retains packed CPU bytes until queue submission. The next rendered frame copies
-new ranges before consuming draws, with transfer-write to vertex/index/indirect-read barriers on the
+new ranges before consuming draws, with transfer-write to vertex/index-read barriers (indirect-read too before 0.18.0) on the
 same graphics queue. Each frame slot owns its coherent staging buffer until its fence completes.
 Small buffers are reused; buffers larger than 4 MiB are released on the next completed-slot reuse.
 At most 12 MiB of small staging capacity remains cached across three slots. Large queued/in-flight

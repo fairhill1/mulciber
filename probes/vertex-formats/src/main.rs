@@ -3,10 +3,10 @@
 //! HDR target.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
-    MaterialBinding, MaterialOutput, MaterialPipelineDescriptor, MaterialRecord, MaterialScene,
-    MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics, Postprocess,
-    PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene, SceneColor, SceneSubmission,
-    ShaderArtifact, VertexAttribute, VertexFormat, VertexLayout,
+    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor, MeshIndices,
+    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene,
+    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -125,10 +125,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("vertex-formats: {:?}", graphics.selection);
     let vertices = vertices();
     let mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Bytes {
-            layout: LAYOUT,
-            bytes: &vertices,
-        },
+        layout: LAYOUT,
+        vertices: &vertices,
         parts: &[MeshIndices::U16(&[0, 1, 2])],
     })?;
     let shader = ShaderArtifact::new(fetch_artifact)?;
@@ -160,13 +158,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let refused = graphics
         .device
         .create_mesh(&MeshDescriptor {
-            vertices: MeshVertices::Bytes {
-                layout: VertexLayout {
-                    stride: 40,
-                    attributes: &unaligned,
-                },
-                bytes: &vertices,
+            layout: VertexLayout {
+                stride: 40,
+                attributes: &unaligned,
             },
+            vertices: &vertices,
             parts: &[MeshIndices::U16(&[0, 1, 2])],
         })
         .err()
@@ -223,7 +219,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             graphics.queue.render_and_present(
                 frame,
                 SceneSubmission {
-                    scene: Scene::Material(MaterialScene {
+                    scene: Scene {
                         records: &[MaterialRecord {
                             pipeline: &pipeline,
                             geometry: GeometrySource::Mesh(&mesh),
@@ -234,7 +230,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             instances: &[],
                         }],
                         shadow: None,
-                        output: MaterialOutput::Postprocessed {
+                        output: SceneOutput::Postprocessed {
                             postprocess: Postprocess {
                                 pipeline: &composite,
                                 targets: target,
@@ -244,7 +240,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             offscreen: &[],
                             overlay: &[],
                         },
-                    }),
+                    },
                     clear: ClearColor::BLACK,
                 },
             )?;

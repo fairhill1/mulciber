@@ -1,7 +1,7 @@
 //! Native pacing transitions under repeatable light/CPU-bound workloads; no asset loading.
 use mulciber::{
-    DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, MeshVertices, OpenedGraphics,
-    PresentFeedback, PresentationMode, TexturedSceneDraw,
+    DeviceRequest, FrameAcquire, MeshDescriptor, MeshIndices, OpenedGraphics, PresentFeedback,
+    PresentationMode,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{
@@ -21,12 +21,12 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let mut graphics =
         OpenedGraphics::open(window.surface_target(), metrics, DeviceRequest::default())?;
     let mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Fixed(&super::TRIANGLE_VERTICES),
+        layout: super::CUBE_LAYOUT,
+        vertices: &super::triangle_vertices(),
         parts: &[MeshIndices::U16(&[0, 1, 2])],
     })?;
     let texture = super::rgba8_srgb(&graphics.device, 1, 1, &[255, 255, 255, 255])?;
-    let shader = mulciber::ShaderArtifact::new(super::SHADER)?;
-    let pipeline = graphics.device.create_textured_pipeline(shader)?;
+    let pipeline = super::cube_pipeline(&graphics.device)?;
     let mut targets = graphics
         .device
         .create_render_targets(graphics.surface.info()?)?;
@@ -77,15 +77,16 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
                 if slow {
                     std::thread::sleep(Duration::from_millis(22));
                 }
-                let draws = [TexturedSceneDraw {
-                    mesh: &mesh,
-                    texture: &texture,
-                    pipeline: &pipeline,
-                    model_view_projection: super::IDENTITY,
-                }];
-                graphics
-                    .queue
-                    .render_and_present(frame, super::textured_scene(&draws, &targets))?;
+                let draws = [super::CubeDraw::new(
+                    &mesh,
+                    &texture,
+                    &pipeline,
+                    super::IDENTITY,
+                )];
+                graphics.queue.render_and_present(
+                    frame,
+                    super::cube_scene(&super::cube_records(&draws), &targets),
+                )?;
                 let now = Instant::now();
                 println!(
                     "frame,{index},{name},{:.6},{:?}",

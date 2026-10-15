@@ -14,7 +14,7 @@ fn main() {
     for (name, source) in [
         (
             "hud",
-            format!("../../examples/material-scene/artifacts/hud.{flavor}.shaderbin"),
+            format!("../material-scene/artifacts/hud.{flavor}.shaderbin"),
         ),
         (
             "composite",

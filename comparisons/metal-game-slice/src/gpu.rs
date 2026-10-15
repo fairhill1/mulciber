@@ -11,7 +11,7 @@ use objc2_quartz_core::CALayer;
 use crate::{game::Game, scene};
 
 const SHADER: &[u8] =
-    include_bytes!("../../../examples/instanced-scene/artifacts/instanced.metal.shaderbin");
+    include_bytes!("../../../probes/api-conformance/artifacts/instanced.metal.shaderbin");
 const SHADER_HEADER_BYTES: usize = 16;
 const FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm_sRGB;
 const DEPTH_FORMAT: MTLPixelFormat = MTLPixelFormat::Depth32Float;

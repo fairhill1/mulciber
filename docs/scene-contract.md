@@ -1,5 +1,10 @@
 # Experimental multi-object scene contract
 
+Status: historical. Graphics 0.18.0 removed this vocabulary (`TexturedPipeline`,
+`TexturedSceneDraw`, `Scene::Textured`) and the `mulciber-scene` example; every frame is now a
+`Scene` of material records ([material contract](material-contract.md)). `wgpu-scene` remains in
+`comparisons/`. The record below is kept as it was run.
+
 This checkpoint extends the resource-backed graphics slice from one object to a non-empty ordered
 sequence of independently transformed objects. `mulciber-scene` and `wgpu-scene` render the same
 100-object field: two meshes, two textures, one scene pipeline, depth, capability-selected 4x/1x

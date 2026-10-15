@@ -7,7 +7,7 @@
 
 use super::{
     Buffer, ClearSurface, GraphicsError, MESH_ALLOCATION_ALIGNMENT, MESH_BUFFER_BLOCK_SIZE,
-    MeshAllocation, MeshIndexData, MeshPartResource, MeshResource, bytes_of_slice, create_buffer,
+    MeshAllocation, MeshIndexData, MeshPartResource, MeshResource, create_buffer,
     create_buffer_with_memory, destroy_buffer, destroy_buffer_device, error, insert_free_range,
     map_buffer, plan_mesh_storage, take_free_range, vk,
 };
@@ -20,10 +20,8 @@ const HOST_MEMORY: u32 = (vk::VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
     | vk::VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
     .cast_unsigned();
 const LOCAL_MEMORY: u32 = vk::VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT.cast_unsigned();
-const MESH_USAGE: u32 = (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-    | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT
-    | vk::VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)
-    .cast_unsigned();
+const MESH_USAGE: u32 =
+    (vk::VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | vk::VK_BUFFER_USAGE_INDEX_BUFFER_BIT).cast_unsigned();
 /// At most 4 MiB per frame slot remains cached after upload completion.
 const STAGING_RETAIN_LIMIT: u64 = 4 * 1024 * 1024;
 
@@ -78,8 +76,7 @@ impl MeshBufferArena {
         }
         for part in &mut parts {
             // The packing plan is within `size`, and allocation is within its block.
-            part.index_offset += allocation.offset;
-            part.indirect_offset += allocation.offset;
+            part.offset += allocation.offset;
         }
         Ok(MeshResource {
             buffer: self.blocks[allocation.block].buffer.handle,
@@ -123,24 +120,8 @@ impl MeshBufferArena {
             for (index, part) in indices.iter().zip(parts) {
                 ptr::copy_nonoverlapping(
                     index.bytes.as_ptr(),
-                    destination
-                        .add(usize::try_from(part.index_offset).expect("validated mesh offset")),
+                    destination.add(usize::try_from(part.offset).expect("validated mesh offset")),
                     index.bytes.len(),
-                );
-                let draw = vk::VkDrawIndexedIndirectCommand {
-                    indexCount: part.index_count,
-                    instanceCount: 1,
-                    firstIndex: 0,
-                    vertexOffset: 0,
-                    firstInstance: 0,
-                };
-                let draw_bytes = bytes_of_slice(core::slice::from_ref(&draw));
-                ptr::copy_nonoverlapping(
-                    draw_bytes.as_ptr(),
-                    destination.add(
-                        usize::try_from(part.indirect_offset).expect("validated indirect offset"),
-                    ),
-                    draw_bytes.len(),
                 );
             }
         }
@@ -326,11 +307,9 @@ impl MeshBufferArena {
                 sType: vk::VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                 srcStageMask: vk::VK_PIPELINE_STAGE_2_COPY_BIT,
                 srcAccessMask: vk::VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                dstStageMask: vk::VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT
-                    | vk::VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                dstStageMask: vk::VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT,
                 dstAccessMask: vk::VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
-                    | vk::VK_ACCESS_2_INDEX_READ_BIT
-                    | vk::VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
+                    | vk::VK_ACCESS_2_INDEX_READ_BIT,
                 srcQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
                 dstQueueFamilyIndex: vk::VK_QUEUE_FAMILY_IGNORED.cast_unsigned(),
                 buffer: destination,

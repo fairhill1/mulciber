@@ -537,10 +537,11 @@ RGBA8 through native 4x, forced 1x, and resize so a BC-capable adapter cannot hi
 regressions. It then guides two interactive runs: lifecycle testing closed through the title bar,
 followed by an Alt+F4 shutdown test.
 
-The automated matrix builds the ordinary same-source clear, cube, and postprocess-cube examples. It
-drives clear and cube through the four-size resize smoke, then drives postprocess through 25 cycles of
-those four extents at 10 ms spacing to exercise compatibility retirement pressure before closing each
-through `WM_CLOSE`. Separate public-API clear and cube probes own finite execution, acquired-frame
+The automated matrix builds the ordinary same-source clear, cube, and game-slice examples. It drives
+clear and cube through the four-size resize smoke, then drives the game slice, whose frames go through
+a postprocess grade, through 25 cycles of those four extents at 10 ms spacing to exercise
+compatibility retirement pressure before closing each through `WM_CLOSE`. The game slice replaced the
+postprocess-cube example, removed in graphics 0.18.0; the script has not yet run on Windows with it. Separate public-API clear and cube probes own finite execution, acquired-frame
 abandonment followed by presented recovery, and the cube's forced 1x path so validation controls do
 not leak into user-facing examples.
 

@@ -76,10 +76,10 @@ dependency graph. Repository examples and probes deliberately enable it for thei
 
 ## Depth-isolated first-person geometry
 
-`MaterialOutput::Postprocessed { foreground_start: Some(split), .. }` draws the world
+`SceneOutput::Postprocessed { foreground_start: Some(split), .. }` draws the world
 records before the split, preserves color, clears depth, and draws the foreground
 records before postprocessing and the HUD overlay. Both groups must be non-empty
-and use the same depth comparison direction. Only postprocessed material output carries a
+and use the same depth comparison direction. Only postprocessed output carries a
 split; it retains material lighting, shadow sampling, scene resolution and MSAA.
 
 Material and shadow records expose their per-record instance upload cap through

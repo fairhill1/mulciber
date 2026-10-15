@@ -14,9 +14,9 @@ fn main() {
             println!("cargo::warning=Metal cube artifact skipped for cross-host type checking");
             return;
         }
-        "../../examples/cube/artifacts/cube.metal.shaderbin"
+        "artifacts/cube.metal.shaderbin"
     } else if target_os == OsStr::new("windows") || target_os == OsStr::new("linux") {
-        "../../examples/cube/artifacts/cube.vulkan.shaderbin"
+        "artifacts/cube.vulkan.shaderbin"
     } else {
         panic!("the cube API probe supports macOS, Windows, and Linux targets");
     };

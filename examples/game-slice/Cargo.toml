@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-game-slice"
-description = "A small playable top-down game slice through Mulciber"
+description = "Forge Run, a small playable top-down game on the Mulciber runtime with build-time shaders"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,9 @@ glam = "=0.34.1"
 mulciber = { path = "../../crates/mulciber", features = ["vulkan-validation"] }
 mulciber-platform = { path = "../../crates/mulciber-platform" }
 mulciber-runtime = { path = "../../crates/mulciber-runtime" }
+
+[build-dependencies]
+mulciber-shader = { path = "../../crates/mulciber-shader" }
 
 [lints]
 workspace = true

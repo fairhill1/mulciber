@@ -1,5 +1,9 @@
 # Custom-material slice plan
 
+Status: historical. The material path this plan opened is now the only one: graphics 0.18.0
+removed the fixed textured and instanced pipelines it describes, and its working example is the
+`mulciber-material-scene` probe (`probes/material-scene`).
+
 The roadmap keeps one graphics-vocabulary item open: generalize the deliberately narrow
 scene-submission vocabulary into owned buffer, binding, command/pass-composition, and
 synchronization facilities **only as representative game slices force those concepts**. This

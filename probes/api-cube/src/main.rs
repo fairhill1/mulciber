@@ -1,6 +1,5 @@
-//! Exercises validation-only controls around the public textured-cube API.
+//! Exercises validation-only controls around a public-API textured cube.
 
-#[path = "../../../examples/cube/src/scene.rs"]
 mod scene;
 
 use std::env;
@@ -8,14 +7,16 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use mulciber::{
-    ClearColor, DeviceRequest, FrameAcquire, GpuTimingFeedback, GpuTimingScope, MeshDescriptor,
-    MeshIndices, MeshVertices, MipChain, OpenedGraphics, PresentFeedback, Scene, SceneOutput,
-    SceneSubmission, ShaderArtifact, TexelData, TextureDescriptor, TextureShape, TexturedSceneDraw,
+    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
+    GpuTimingFeedback, GpuTimingScope, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord,
+    MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, PresentFeedback, SamplerAddress,
+    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
+    TextureDescriptor, TextureShape,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::PacingDiagnostics;
 
-use scene::{CUBE_INDICES, CUBE_VERTICES, checkerboard, transform};
+use scene::{CUBE_INDICES, CUBE_LAYOUT, checkerboard, cube_vertices, transform};
 
 const SHADER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cube.shaderbin"));
 const CLEAR: ClearColor = ClearColor::opaque(0.025, 0.035, 0.055);
@@ -52,7 +53,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let mesh = graphics.device.create_mesh(&MeshDescriptor {
-        vertices: MeshVertices::Fixed(&CUBE_VERTICES),
+        layout: CUBE_LAYOUT,
+        vertices: &cube_vertices(),
         parts: &[MeshIndices::U16(&CUBE_INDICES)],
     })?;
     let texture = graphics.device.create_texture(&TextureDescriptor {
@@ -65,7 +67,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     let pipeline = graphics
         .device
-        .create_textured_pipeline(ShaderArtifact::new(SHADER)?)?;
+        .create_material_pipeline(MaterialPipelineDescriptor {
+            shader: ShaderArtifact::new(SHADER)?,
+            vertex_entry: "cube_vertex",
+            fragment_entry: "cube_fragment",
+            vertex_layout: CUBE_LAYOUT,
+            instance_layout: None,
+            bindings: &[
+                MaterialBinding::Uniform {
+                    binding: 0,
+                    size: 64,
+                },
+                MaterialBinding::Texture { binding: 1 },
+                MaterialBinding::Sampler {
+                    binding: 2,
+                    filter: SamplerFilter::Nearest,
+                    address: SamplerAddress::Repeat,
+                },
+            ],
+            blend: BlendMode::Opaque,
+            depth: DepthMode::TestWrite,
+            scene_color: SceneColor::Surface,
+        })?;
     let mut targets = graphics
         .device
         .create_render_targets(graphics.surface.info()?)?;
@@ -100,19 +123,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                         );
                     }
                     let aspect = info.extent().width() as f32 / info.extent().height() as f32;
+                    let uniform = transform(started.elapsed().as_secs_f32(), aspect);
                     graphics.queue.render_and_present(
                         frame,
                         SceneSubmission {
-                            scene: Scene::Textured {
-                                draws: &[TexturedSceneDraw {
-                                    mesh: &mesh,
-                                    texture: &texture,
+                            scene: Scene {
+                                records: &[MaterialRecord {
                                     pipeline: &pipeline,
-                                    model_view_projection: transform(
-                                        started.elapsed().as_secs_f32(),
-                                        aspect,
-                                    ),
+                                    geometry: GeometrySource::Mesh(&mesh),
+                                    textures: &[&texture],
+                                    shadow_map: None,
+                                    uniform: &uniform,
+                                    storage: &[],
+                                    instances: &[],
                                 }],
+                                shadow: None,
                                 output: SceneOutput::Direct(&targets),
                             },
                             clear: CLEAR,

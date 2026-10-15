@@ -1,6 +1,11 @@
 # Gate 2 textured-cube API contract
 
-Status: implementation contract for the first resource-backed shared graphics slice.
+Status: historical. Graphics 0.18.0 removed the fixed `TexturedPipeline` and one-element
+`Scene::Textured` this contract describes. `mulciber-cube` now draws the cube through a material
+pipeline with its shader compiled by its `build.rs`, and `mulciber-api-cube` exercises the
+validation-only controls around the same cube. The record below is kept as it was written.
+
+Original status: implementation contract for the first resource-backed shared graphics slice.
 
 This slice must run one application source on Metal/AppKit and Vulkan/Win32, Wayland, and X11. It
 is intentionally smaller than either native triangle probe. The probes remain the evidence bed for

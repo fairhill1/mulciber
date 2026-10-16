@@ -18,6 +18,10 @@ through a cloneable command handle.
   game supplies (voxels, heightfield, BSP, colliders) and works out its decay by Sabine's formula,
   open sides absorbing as open windows do, and `RoomTracker` re-probes on an interval and eases
   the result.
+- **Takes**: `Takes` holds several recordings of one sound (footsteps, knocks, swings) and picks
+  one at random each time, never the same one twice running, `pick_at_rate` with a playback rate
+  drawn from a range; `other_take` is the same choice for a game keeping its own random source,
+  per emitter or per set.
 - **Live voices**: `play_spatial_stream` plays audio pushed as it arrives, a player's speech
   from the network, through the spatial path and the room's reverb. A jitter buffer holds back
   `StreamConfig::latency` (60 ms by default) and leans the playback rate by at most 1% to keep it

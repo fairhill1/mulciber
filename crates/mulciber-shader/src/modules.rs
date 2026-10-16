@@ -46,6 +46,10 @@ pub(crate) const ENGINE_MODULES: &[(&str, &str)] = &[
         "mulciber-shader/wgsl/mulciber/overlay.wgsl",
         include_str!("../wgsl/mulciber/overlay.wgsl"),
     ),
+    (
+        "mulciber-shader/wgsl/mulciber/skin.wgsl",
+        include_str!("../wgsl/mulciber/skin.wgsl"),
+    ),
 ];
 
 /// A value for a shader def, tested by `#ifdef`, `#if` and `#else` and substituted for
@@ -249,6 +253,58 @@ impl ShaderModules {
             source: source.into(),
             defs: BTreeMap::new(),
         }
+    }
+
+    /// Compiles every top-level shader in `directory` against this set: each `.wgsl` file directly
+    /// in it that does not declare `#define_import_path`, into `output/<file stem>.shaderbin`. A
+    /// `build.rs` passes `OUT_DIR` and [`ShaderTarget::for_build`]; it prints
+    /// `cargo::rerun-if-changed` for the directory and each shader, so the build reruns when one
+    /// changes or the directory gains one. Subdirectories are left alone, so the modules can live
+    /// in one (given to [`add_dir`](Self::add_dir)). Returns the artifacts written, in path order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory or a file cannot be read, or the first shader's that
+    /// fails to compile, naming its file.
+    pub fn compile_dir(
+        &self,
+        directory: impl AsRef<Path>,
+        output: impl AsRef<Path>,
+        target: ShaderTarget,
+    ) -> Result<Vec<PathBuf>, ShaderBuildError> {
+        let (directory, output) = (directory.as_ref(), output.as_ref());
+        let entries = fs::read_dir(directory)
+            .map_err(|error| fail(format!("read {}: {error}", directory.display())))?;
+        let mut files = Vec::new();
+        for entry in entries {
+            let path = entry
+                .map_err(|error| fail(format!("read {}: {error}", directory.display())))?
+                .path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "wgsl")
+            {
+                files.push(path);
+            }
+        }
+        files.sort();
+        println!("cargo::rerun-if-changed={}", directory.display());
+        let mut artifacts = Vec::new();
+        for path in files {
+            let source = read(&path)?;
+            if declares_import_path(&source) {
+                continue;
+            }
+            println!("cargo::rerun-if-changed={}", path.display());
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let artifact = output.join(format!("{stem}.shaderbin"));
+            self.shader_source(path.display().to_string(), source)
+                .compile_wgsl(&artifact, target)
+                .map_err(|error| fail(format!("{}: {error}", path.display())))?;
+            artifacts.push(artifact);
+        }
+        Ok(artifacts)
     }
 
     /// Generates host evaluators for functions of registered modules, named by qualified path
@@ -712,7 +768,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{ShaderModules, WgslShader};
-    use crate::{metal_source, shader_interface};
+    use crate::{ShaderTarget, metal_source, shader_interface};
 
     const SHADOW: &str = "#define_import_path game::shadow
 
@@ -1191,6 +1247,49 @@ fn depth_at(p: vec2<i32>) -> f32 { return textureLoad(scene_depth, p, 0); }
             [directory.join("lighting/light.wgsl")]
         );
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_directorys_top_level_shaders_compile_and_its_modules_do_not() {
+        let directory = scratch("compile-dir");
+        std::fs::create_dir_all(directory.join("lighting")).unwrap();
+        std::fs::write(directory.join("lighting/shadow.wgsl"), SHADOW).unwrap();
+        std::fs::write(directory.join("lighting/light.wgsl"), LIGHT).unwrap();
+        std::fs::write(directory.join("scene.wgsl"), SCENE).unwrap();
+        std::fs::write(
+            directory.join("helpers.wgsl"),
+            "#define_import_path game::helpers\nfn one() -> f32 { return 1.0; }\n",
+        )
+        .unwrap();
+        let output = directory.join("out");
+        std::fs::create_dir_all(&output).unwrap();
+
+        let mut modules = ShaderModules::new();
+        modules.add_dir(directory.join("lighting")).unwrap();
+        let artifacts = modules
+            .compile_dir(&directory, &output, ShaderTarget::Vulkan)
+            .expect("the scene compiles (needs spirv-val on PATH)");
+        assert_eq!(artifacts, [output.join("scene.shaderbin")]);
+        assert!(std::fs::metadata(&artifacts[0]).unwrap().len() > 0);
+
+        // A shader that fails is named.
+        std::fs::write(directory.join("broken.wgsl"), "fn nope( {").unwrap();
+        let error = modules
+            .compile_dir(&directory, &output, ShaderTarget::Vulkan)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("broken.wgsl"), "{error}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn targets_follow_the_operating_system_cargo_builds_for() {
+        assert_eq!(ShaderTarget::for_os("macos"), Some(ShaderTarget::Metal));
+        assert_eq!(ShaderTarget::for_os("ios"), Some(ShaderTarget::Metal));
+        for os in ["linux", "windows", "android"] {
+            assert_eq!(ShaderTarget::for_os(os), Some(ShaderTarget::Vulkan));
+        }
+        assert_eq!(ShaderTarget::for_os("freebsd"), None);
     }
 
     #[test]

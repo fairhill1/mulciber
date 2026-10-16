@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-audio"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cpal",
  "hound",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-model"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.23.1",
  "bevy_mikktspace",

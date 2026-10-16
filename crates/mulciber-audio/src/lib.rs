@@ -30,6 +30,10 @@
 //! reverb, and [`RoomTracker`] re-probes on an interval and eases the result so walking through a
 //! door fades the tail instead of cutting it.
 //!
+//! A sound recorded several times (footsteps, knocks, a weapon's swings) plays as [`Takes`]: a
+//! take at random each time, never the same one twice running, at a playback rate varied within
+//! a range; [`other_take`] is the same choice for a game that keeps its own random source.
+//!
 //! Live audio, a player's speech, plays through [`Controls::play_spatial_stream`]: push samples
 //! into the [`VoiceStream`] it returns as they arrive, and a jitter buffer plays them a little
 //! late, in the world and the room as any spatial voice. With the `input` feature, `Microphone`
@@ -49,6 +53,7 @@ mod reverb;
 mod sound;
 mod spatial;
 mod stream;
+mod takes;
 
 pub use acoustics::{ProbeSettings, RayHit, RoomAcoustics, RoomTracker, probe_room};
 #[cfg(feature = "input")]
@@ -62,3 +67,4 @@ pub use sound::{Sound, db_to_amplitude, resample};
 #[cfg(feature = "hrtf")]
 pub use spatial::{Hrtf, HrtfLoadError};
 pub use stream::{StreamConfig, StreamResampler, VoiceStream};
+pub use takes::{Takes, other_take};

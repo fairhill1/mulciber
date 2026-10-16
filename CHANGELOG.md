@@ -2,6 +2,39 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Shared by both games: build scripts, sound takes, skin (shader 0.5.7, audio 0.3.1, model 0.3.1)
+
+Three things Deadly Voyage and Isle of Rán each wrote for themselves.
+
+- `ShaderTarget::for_build()` picks the shader target from a `build.rs`'s `CARGO_CFG_TARGET_OS`
+  (`for_os` from a name), and `ShaderModules::compile_dir(dir, out, target)` compiles every
+  top-level shader directly in a directory into `out/<name>.shaderbin`, printing
+  `cargo::rerun-if-changed` for it and each shader.
+- `mulciber-audio`'s `Takes` holds several recordings of one sound and picks one at random, never
+  the one picked last, `pick_at_rate` with a playback rate from a range; `other_take` is the choice
+  alone, for a game keeping its own random source.
+- Pre-integrated skin (Penner, SIGGRAPH 2011): `bake_skin_table(SKIN_SPREAD)` bakes the 128 × 64
+  table of how much light skin takes by n·l and curvature, the `mulciber::skin` WGSL module reads
+  it (`skin_diffuse`), and `mulciber-model`'s `vertex_curvature` gives each vertex its curvature.
+  The table and curvature are Deadly Voyage's, itself a copy of Isle of Rán's.
+
+## A refresh the driver learns later (graphics 0.18.0)
+
+Vulkan read the swapchain's refresh period once, when the swapchain was made. NVIDIA's Linux driver
+on Wayland reports zero then and learns the period from the presents that follow, so
+`Surface::refresh_interval` stayed `None` and a runtime fed from it never paced. The period is now
+read again whenever a past-timing report's `timingPropertiesCounter` differs from the one it was
+read at, and on every drain while it is still unknown. On that machine (KDE Wayland, 75 Hz)
+`mulciber-game-slice` now prints `Vulkan refresh interval: 13.338490 ms (refresh mode
+undetermined)` within its first seconds, and printed none before.
+
+## Fixed intervals (runtime 0.6.1)
+
+`RuntimeConfig::fixed_interval(Duration)` (additive) sets the fixed step directly, for a rate that is
+not a whole number per second: Source's 15 ms tick, 66.67 Hz, which `fixed_hz(u32)` could not give.
+`fixed_hz` is now built on it. A zero interval is refused as `UpdateRateTooHigh`, whose meaning
+widens to cover it, so the error enum gains no variant.
+
 ## BC6H light (graphics 0.18.0, texture 0.6.0)
 
 Breaking: `BlockCompression` gains `Bc6hUfloat`, so an exhaustive match on it needs an arm. BC6H holds
@@ -42,6 +75,11 @@ glyphs, colours and layout, and the crate ships no fonts.
   as `VERTEX_LAYOUT`.
 - `Batch::rasterise` draws it in software as the shader does (bilinear, premultiplied, the top-left
   fill rule), for tests and previews without a GPU.
+- For what a game draws beyond those: `Font::rasterise` gives a glyph's coverage alone, to alter
+  before packing it as a mask (Deadly Voyage cuts its mouse-wheel keycaps' chevrons out to draw them
+  in an accent); `Batch::mesh` adds triangles of the solid block coloured at each corner (rings,
+  arcs, gradients); `Batch::text_turned` sets text turned about its middle; `Batch::into_parts`
+  takes the geometry out, to keep past the atlas's borrow.
 
 `mulciber-shader` 0.5.7 adds the `mulciber::overlay` WGSL module the overlay pipeline imports. The
 README's overlay shader is compiled in a test and its pipeline declaration (`VERTEX_LAYOUT`, the atlas
@@ -50,7 +88,9 @@ creation makes.
 
 Tested in software only: the atlas, layout and geometry by unit tests against a subset of Fira Sans,
 and the rasteriser drawing a glyph texel for pixel, rectangles on whole pixels covering each pixel
-once, and polygons either way round. Nothing was drawn on a GPU, and neither game uses it yet.
+once, and polygons either way round. Deadly Voyage's HUD is built on it now, and its screens, drawn in
+software by its tests, match what its own atlas and batch drew to within two levels in 255, and it
+draws through `mulciber::overlay` on Vulkan (Linux); Metal hasn't drawn it yet.
 
 ## Typed text and key tokens (platform 0.5.7, runtime 0.6.1)
 

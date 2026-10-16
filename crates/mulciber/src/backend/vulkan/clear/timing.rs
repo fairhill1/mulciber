@@ -49,6 +49,9 @@ pub(super) struct PresentTiming {
     /// Whether the presentation engine says `refresh_interval` is a fixed period rather than the
     /// fastest a variable-refresh display allows.
     pub(super) fixed_refresh: bool,
+    /// The swapchain's timing-properties counter when `refresh_interval` was read. Past timing
+    /// reports carry the current one; a change means the refresh is read again.
+    timing_properties_counter: u64,
     /// Chained present ids paired with the session frame index they identify, oldest first.
     pending: Vec<(u64, u64)>,
     /// Drain instant and native time of this swapchain's first completed report; later native
@@ -150,7 +153,9 @@ pub(super) fn choose_present_timing(
 }
 
 impl ClearSurface<'_> {
-    fn native_refresh(&mut self) -> Result<(Option<Duration>, bool), GraphicsError> {
+    /// The refresh period, whether it's fixed, and the timing-properties counter they were
+    /// read at.
+    fn native_refresh(&mut self) -> Result<(Option<Duration>, bool, u64), GraphicsError> {
         let mut refresh = vk::VkSwapchainTimingPropertiesEXT {
             sType: vk::VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT,
             ..Default::default()
@@ -191,7 +196,7 @@ impl ClearSurface<'_> {
                 );
             }
         }
-        Ok((refresh_interval, fixed_refresh))
+        Ok((refresh_interval, fixed_refresh, counter))
     }
 
     /// Configures native present timing for the freshly created current swapchain. A swapchain
@@ -215,7 +220,7 @@ impl ClearSurface<'_> {
             },
             "vkSetSwapchainPresentTimingQueueSizeEXT",
         )?;
-        let (refresh_interval, fixed_refresh) = self.native_refresh()?;
+        let (refresh_interval, fixed_refresh, timing_properties_counter) = self.native_refresh()?;
         let function = self
             .device()
             .functions
@@ -273,6 +278,7 @@ impl ClearSurface<'_> {
                 next_present_id: 0,
                 refresh_interval,
                 fixed_refresh,
+                timing_properties_counter,
                 pending: Vec::new(),
                 anchor: None,
             });
@@ -468,6 +474,7 @@ impl ClearSurface<'_> {
             },
             "query past presentation timing",
         )?;
+        self.follow_refresh(properties.timingPropertiesCounter)?;
         let capacity = properties.presentationTimingCount as usize;
         if capacity == 0 {
             return Ok(());
@@ -522,6 +529,28 @@ impl ClearSurface<'_> {
                     .with_refresh_interval(state.refresh_interval),
             );
         }
+        Ok(())
+    }
+
+    /// Reads the refresh again when the swapchain's timing properties have changed since it was
+    /// read, or while it is still unknown: a driver may report no period when the swapchain is
+    /// created and learn it from the presents that follow (NVIDIA's Linux driver on Wayland
+    /// reported zero at creation).
+    fn follow_refresh(&mut self, counter: u64) -> Result<(), GraphicsError> {
+        let Some(state) = self.present_timing.as_ref() else {
+            return Ok(());
+        };
+        if state.timing_properties_counter == counter && state.refresh_interval.is_some() {
+            return Ok(());
+        }
+        let (refresh_interval, fixed_refresh, counter) = self.native_refresh()?;
+        let state = self
+            .present_timing
+            .as_mut()
+            .expect("present-timing state is retained across the refresh read");
+        state.refresh_interval = refresh_interval;
+        state.fixed_refresh = fixed_refresh;
+        state.timing_properties_counter = counter;
         Ok(())
     }
 
@@ -616,6 +645,7 @@ mod queue_capacity_tests {
             next_present_id: 0,
             refresh_interval: None,
             fixed_refresh: false,
+            timing_properties_counter: 0,
             pending: Vec::new(),
             anchor: None,
         };
@@ -637,6 +667,7 @@ mod queue_capacity_tests {
             next_present_id: 0,
             refresh_interval: None,
             fixed_refresh: false,
+            timing_properties_counter: 0,
             pending: Vec::new(),
             anchor: None,
         };

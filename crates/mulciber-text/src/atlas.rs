@@ -63,6 +63,23 @@ impl Font {
     pub fn has(&self, character: char) -> bool {
         self.inner.lookup_glyph_index(character) != 0
     }
+
+    /// `character`'s coverage at `px` pixels, as [`AtlasBuilder::face`] rasterises it: its width
+    /// and height in texels and a byte a texel, row by row; `None` when the font lacks it. For a
+    /// glyph the game alters before packing it with [`AtlasBuilder::coverage`]: cut, split in
+    /// parts drawn in different colours, or composed with a shape of its own.
+    #[must_use]
+    pub fn rasterise(&self, character: char, px: f32) -> Option<(u32, u32, Vec<u8>)> {
+        if !self.has(character) {
+            return None;
+        }
+        let (metrics, coverage) = self.inner.rasterize(character, px);
+        Some((
+            u32::try_from(metrics.width).ok()?,
+            u32::try_from(metrics.height).ok()?,
+            coverage,
+        ))
+    }
 }
 
 impl fmt::Debug for Font {

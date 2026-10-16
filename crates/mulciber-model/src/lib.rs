@@ -33,13 +33,18 @@
 //! time, [`Pose::blend`] mixes two, and [`Skeleton::palette`] turns a pose into the bone matrices.
 //! A model with neither skin nor animation has no skeleton, and its parts no joints.
 //!
+//! [`vertex_curvature`] works out how curved a part is at each vertex, for shading that depends
+//! on it, such as `mulciber-shader`'s pre-integrated skin.
+//!
 //! Morph targets, cameras and lights are not read yet.
 
 mod animation;
+mod curvature;
 mod skeleton;
 mod tangents;
 
 pub use animation::{Animation, Channel, Interpolation, Keys};
+pub use curvature::vertex_curvature;
 pub use skeleton::{Joint, Node, Pose, Skeleton, Transform, inverse, slerp};
 
 use std::collections::HashMap;

@@ -60,6 +60,11 @@ let palette = skeleton.palette(&pose);          // a matrix per joint, for the v
 let hand = skeleton.node_matrices(&pose)[skeleton.find("Hand_R").unwrap()]; // to hold a weapon
 ```
 
+`vertex_curvature(positions, normals, indices, most)` works out how curved a part is at each vertex,
+per metre: how far the normals turn between neighbours over how far apart they are, evened out over
+the neighbourhood, and the same for a vertex's copies at a texture seam. `mulciber-shader`'s
+pre-integrated skin reads it (pass its `SKIN_MOST_CURVATURE` as `most`).
+
 Animations sample step, linear (rotations along the shorter arc) and cubic-spline keys, holding
 their ends outside them. `Pose::blend` cross-fades two poses; `Pose::blend_masked` blends only a
 subtree. `Model::transform` moves the skeleton with the vertices, so poses fit a Z-up world too.

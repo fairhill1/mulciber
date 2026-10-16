@@ -12,14 +12,19 @@
 //! [`WgslShader`] composes a top-level shader with the modules it `#import`s, optionally with
 //! shader defs, into the same artifact or host field. Mulciber's own modules are in every set:
 //! `mulciber::colorspace`, `mulciber::photometry` (light units, falloff, exposure), `mulciber::pbr`
-//! (the BRDF and split-sum environment specular) and `mulciber::tonemap`. [`bake_dfg_table`] bakes
-//! the DFG lookup table `mulciber::pbr` samples.
+//! (the BRDF and split-sum environment specular), `mulciber::tonemap`, `mulciber::overlay` and
+//! `mulciber::skin` (pre-integrated skin diffusion). [`bake_dfg_table`] bakes the DFG lookup table
+//! `mulciber::pbr` samples, and [`bake_skin_table`] the table `mulciber::skin` does.
+//!
+//! In a `build.rs`, [`ShaderTarget::for_build`] picks the target Cargo is building for and
+//! [`ShaderModules::compile_dir`] compiles a directory's shaders into `OUT_DIR`.
 
 mod dfg;
 mod host_field;
 #[cfg(test)]
 mod library_tests;
 mod modules;
+mod skin;
 
 use std::fmt;
 use std::fs;
@@ -32,6 +37,10 @@ use naga::{AddressSpace, Binding, Handle, ResourceBinding, Scalar, ScalarKind, T
 
 pub use dfg::{DFG_SAMPLE_COUNT, DFG_TABLE_SIZE, DfgTable, bake_dfg_table, dfg_value};
 pub use modules::{ShaderDef, ShaderModules, WgslShader};
+pub use skin::{
+    SKIN_MOST_CURVATURE, SKIN_SPREAD, SKIN_TABLE_HEIGHT, SKIN_TABLE_WIDTH, SkinTable,
+    bake_skin_table, skin_diffusion,
+};
 
 const MAGIC: &[u8; 8] = b"MULSHDR4";
 const VULKAN_KIND: u32 = 1;
@@ -75,6 +84,34 @@ impl ShaderTarget {
             "metal" => Some(Self::Metal),
             _ => None,
         }
+    }
+
+    /// The target for an operating system as Cargo spells it (`CARGO_CFG_TARGET_OS`): Metal on
+    /// macOS and iOS, Vulkan on Linux, Windows and Android, `None` elsewhere.
+    #[must_use]
+    pub fn for_os(os: &str) -> Option<Self> {
+        match os {
+            "macos" | "ios" => Some(Self::Metal),
+            "linux" | "windows" | "android" => Some(Self::Vulkan),
+            _ => None,
+        }
+    }
+
+    /// The target for the operating system Cargo is building for, read from a `build.rs`'s
+    /// `CARGO_CFG_TARGET_OS` (the target's, not the host's, when cross-compiling).
+    ///
+    /// # Errors
+    ///
+    /// Outside a build script, or for an operating system Mulciber has no backend for.
+    pub fn for_build() -> Result<Self, ShaderBuildError> {
+        let os = std::env::var("CARGO_CFG_TARGET_OS").map_err(|_| {
+            ShaderBuildError(
+                "CARGO_CFG_TARGET_OS is not set: ShaderTarget::for_build runs in a build.rs"
+                    .to_owned(),
+            )
+        })?;
+        Self::for_os(&os)
+            .ok_or_else(|| ShaderBuildError(format!("Mulciber has no shader target for {os}")))
     }
 }
 

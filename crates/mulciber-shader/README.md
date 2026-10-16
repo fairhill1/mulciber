@@ -74,10 +74,7 @@ use mulciber_shader::{ShaderModules, ShaderTarget};
 
 fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let target = match std::env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {
-        "macos" => ShaderTarget::Metal,
-        _ => ShaderTarget::Vulkan,
-    };
+    let target = ShaderTarget::for_build().expect("a shader target"); // Metal on macOS
 
     let mut modules = ShaderModules::new(); // already holds mulciber::colorspace
     modules.add_dir("shaders/lib").expect("register WGSL modules");
@@ -100,6 +97,13 @@ fn main() {
         .expect("generate the lighting host field");
 }
 ```
+
+A directory of shaders that each compile as they are needs no loop:
+`modules.compile_dir("shaders", &out, target)` compiles every top-level `.wgsl` file directly in it
+(those without `#define_import_path`; subdirectories are left alone) into
+`OUT_DIR/<name>.shaderbin`, printing `cargo::rerun-if-changed` for the directory and each shader.
+`ShaderTarget::for_build()` reads `CARGO_CFG_TARGET_OS`: Metal on macOS and iOS, Vulkan on Linux,
+Windows and Android.
 
 - `ShaderModules::new()` holds Mulciber's own modules. `add_source(label, text)` registers one
   module from a string, `add_file(path)` from a file, and `add_dir(dir)` every `.wgsl` file under a
@@ -146,6 +150,7 @@ starts with `mulciber::` is an error, so a game cannot shadow one.
 | `mulciber::pbr` | the BRDF, punctual lights and split-sum environment specular |
 | `mulciber::tonemap` | `hue_preserving_shoulder`, and `whitening_shoulder` with its inverse; `pbr_neutral` and its inverse, `pbr_neutral_inverse` |
 | `mulciber::overlay` | `OverlayVertex`, `OverlayRaster`, `overlay_raster` and `overlay_shade`: [`mulciber-text`](../mulciber-text/README.md)'s overlay geometry over one atlas, premultiplied |
+| `mulciber::skin` | `SKIN_MOST_CURVATURE`, `skin_table_uv` and `skin_diffuse`: pre-integrated skin diffusion read from `bake_skin_table`'s table by n·l and curvature |
 
 The module names end in segments that are unlikely local variable names, because of the alias rule
 under [composition rules](#composition-rules-and-limits).
@@ -325,6 +330,16 @@ let dfg = device.create_texture(&TextureDescriptor {
 
 Sample it with a linear, clamp-to-edge sampler. `DfgTable::rgba()` gives the same texels directly
 where the table is baked in the same process.
+
+**The skin table.** `bake_skin_table(SKIN_SPREAD)` bakes pre-integrated skin diffusion (Penner,
+SIGGRAPH 2011): how much of a light at n·l skin takes, red, green and blue, where it curves, light
+spreading under it a Gaussian `SKIN_SPREAD` metres wide per channel (red furthest), so it takes a
+light more softly than Lambert round a nose or a cheek and warms toward the shade. It is
+`SKIN_TABLE_WIDTH` × `SKIN_TABLE_HEIGHT` (128 × 64): n·l from −1 to 1 across, curvature from 0 to
+`SKIN_MOST_CURVATURE` (500 per metre) down, Lambert's on the flat row. Bake it in `build.rs`
+(`to_le_bytes()`, RGB `f32` triples), upload it as RGBA16Float with a linear, clamp-to-edge sampler,
+and shade with `mulciber::skin`'s `skin_diffuse(table, sampler, n_dot_l, curvature)` where Lambert
+gives `max(n·l, 0)`. `mulciber-model`'s `vertex_curvature` gives each vertex its curvature.
 
 The library's tests run on host evaluators generated from these modules, so they measure the WGSL
 that shaders import: GGX normalisation, reciprocity, a white furnace whose quadrature matches the

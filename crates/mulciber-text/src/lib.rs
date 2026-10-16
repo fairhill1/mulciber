@@ -15,6 +15,9 @@
 //!   It becomes one material record's transient geometry, laid out as [`VERTEX_LAYOUT`].
 //! - [`Batch::rasterise`] draws it in software as the overlay shader does, so a screen can be
 //!   tested or previewed with no GPU.
+//! - For what a game draws of its own: [`Font::rasterise`] gives a glyph's coverage to alter before
+//!   packing it as a mask, [`Batch::mesh`] adds triangles coloured at each corner, and
+//!   [`Batch::text_turned`] sets text turned about its middle.
 //!
 //! The shader is `mulciber-shader`'s `mulciber::overlay` WGSL module: a game's overlay shader
 //! declares the atlas texture and sampler and calls `overlay_raster` and `overlay_shade`.

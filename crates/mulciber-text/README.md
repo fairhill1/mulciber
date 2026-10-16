@@ -25,6 +25,13 @@ draw it in software for tests. It holds no fonts of its own.
   geometry.
 - **`Batch::rasterise`** draws the batch as the overlay shader does, so a screen can be checked or
   previewed on a machine with no GPU.
+- **Beyond those**, for what a game draws of its own:
+  - `Font::rasterise` gives one glyph's coverage, to alter (cut, split, compose) before packing it
+    with `AtlasBuilder::coverage`;
+  - `Batch::mesh` adds triangles of the solid block, coloured at each corner: rings, arcs,
+    gradients;
+  - `Batch::text_turned` sets text turned about its middle, as a stamp;
+  - `Batch::into_parts` takes the vertices and indices out, to keep them past the atlas's borrow.
 
 ## Shader and pipeline
 

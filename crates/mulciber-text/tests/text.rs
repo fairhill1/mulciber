@@ -421,3 +421,136 @@ fn images_draw_in_their_own_colour_tinted() {
         0
     );
 }
+
+#[test]
+fn a_glyph_rasterises_alone_as_the_face_packs_it() {
+    let font = Font::from_bytes(FONT).unwrap();
+    let (width, height, coverage) = font.rasterise('A', 20.0).expect("the font has A");
+    assert!(width > 0 && height > 0);
+    assert_eq!(coverage.len(), width as usize * height as usize);
+    assert!(coverage.contains(&255));
+    assert!(font.rasterise('Ж', 20.0).is_none());
+    // Packed as a mask, it draws as the face's own glyph does.
+    let mut builder = AtlasBuilder::new(256).unwrap();
+    let face = builder.face(&font, 20.0, ['A']).unwrap();
+    let mask = builder.coverage(width, height, &coverage).unwrap();
+    let atlas = builder.build();
+    let mut set = Batch::new(&atlas, 64, 64);
+    set.text(face, "A", 10.0, 40.0, [1.0; 4]);
+    let ([left, top], [right, bottom]) = (pixel(&set, 0, 64.0), pixel(&set, 2, 64.0));
+    #[allow(clippy::cast_precision_loss)]
+    let size = [width as f32, height as f32];
+    assert_eq!([right - left, bottom - top], size);
+    let mut drawn = Batch::new(&atlas, 64, 64);
+    drawn.image(mask, [left, top, right, bottom], [1.0; 4]);
+    assert_eq!(
+        set.rasterise([0.0, 0.0, 0.0, 1.0]),
+        drawn.rasterise([0.0, 0.0, 0.0, 1.0])
+    );
+}
+
+/// Vertex `index` of `batch`, on a square surface `side` pixels across, in pixels.
+fn pixel(batch: &Batch<'_>, index: u32, side: f32) -> [f32; 2] {
+    let [x, y] = clip(batch, index);
+    [f32::midpoint(x, 1.0) * side, (1.0 - y) * 0.5 * side]
+}
+
+#[test]
+fn a_mesh_blends_its_corners_colours_and_faces_the_screen() {
+    let (atlas, _, _) = atlas();
+    let mut batch = Batch::new(&atlas, 16, 16);
+    // A square of two triangles, wound one each way, red on the left and blue on the right.
+    let (red, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+    batch.mesh(
+        &[
+            ([0.0, 0.0], red),
+            ([16.0, 0.0], blue),
+            ([16.0, 16.0], blue),
+            ([0.0, 16.0], red),
+        ],
+        &[[0, 1, 2], [0, 3, 2]],
+    );
+    for triangle in batch.indices().as_chunks::<3>().0 {
+        let [a, b, c] = triangle.map(|index| clip(&batch, index));
+        assert!((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) >= 0.0);
+    }
+    let image = batch.rasterise([0.0, 0.0, 0.0, 1.0]);
+    let pixel = |x: usize, y: usize| image.as_chunks::<4>().0[y * 16 + x];
+    assert!(pixel(0, 8)[0] > 240 && pixel(0, 8)[2] < 80);
+    assert!(pixel(15, 8)[2] > 240 && pixel(15, 8)[0] < 80);
+    // Every pixel covered once, opaque.
+    assert!(image.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+    let (vertices, indices) = batch.into_parts();
+    assert_eq!((vertices.len(), indices.len()), (4 * 32, 6));
+}
+
+#[test]
+#[should_panic(expected = "index past")]
+fn a_mesh_refuses_a_corner_it_was_not_given() {
+    let (atlas, _, _) = atlas();
+    Batch::new(&atlas, 16, 16).mesh(&[([0.0, 0.0], [1.0; 4]); 3], &[[0, 1, 3]]);
+}
+
+#[test]
+fn turned_text_is_level_text_turned_about_its_middle() {
+    let (atlas, text, _) = atlas();
+    let style = Style {
+        tracking: 2.0,
+        ..Style::new(text)
+    };
+    let (width, cap) = (
+        atlas.measure(style, "Stamp"),
+        atlas.metrics(text).cap_height,
+    );
+    // Unturned, about a centre that puts its pen and baseline on whole pixels, it is level text.
+    let centre = [
+        (60.0 - width * 0.5).round() + width * 0.5,
+        (50.0 + cap * 0.5).round() - cap * 0.5,
+    ];
+    let mut level = Batch::new(&atlas, 120, 100);
+    level.text(
+        style,
+        "Stamp",
+        centre[0] - width * 0.5,
+        centre[1] + cap * 0.5,
+        [1.0; 4],
+    );
+    let mut turned = Batch::new(&atlas, 120, 100);
+    turned.text_turned(style, "Stamp", centre, 0.0, [1.0; 4]);
+    // The same glyphs, the first where level text puts it; the rest follow the pen between
+    // pixels, where level text rounds each to whole ones.
+    assert_eq!(level.indices().len(), turned.indices().len());
+    for index in 0..4 {
+        let (a, b) = (clip(&level, index), clip(&turned, index));
+        assert!((a[0] - b[0]).abs() < 1.0e-4 && (a[1] - b[1]).abs() < 1.0e-4);
+    }
+    for index in 4..level.vertices().len() as u32 / 32 {
+        let (a, b) = (clip(&level, index), clip(&turned, index));
+        assert!((a[0] - b[0]).abs() * 60.0 <= 1.0 && (a[1] - b[1]).abs() < 1.0e-4);
+    }
+    // A quarter turn clockwise stands it on end, reading down, about the same middle.
+    let mut upright = Batch::new(&atlas, 120, 100);
+    upright.text_turned(
+        style,
+        "Stamp",
+        [60.0, 50.0],
+        std::f32::consts::FRAC_PI_2,
+        [1.0; 4],
+    );
+    let points: Vec<[f32; 2]> = (0..upright.vertices().len() as u32 / 32)
+        .map(|index| {
+            let [x, y] = clip(&upright, index);
+            [f32::midpoint(x, 1.0) * 120.0, (1.0 - y) * 0.5 * 100.0]
+        })
+        .collect();
+    let span = |axis: usize| {
+        let values = points.iter().map(|p| p[axis]);
+        let (low, high) = values.fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        (low, high)
+    };
+    let ((left, right), (top, bottom)) = (span(0), span(1));
+    assert!(bottom - top > right - left, "{points:?}");
+    assert!((f32::midpoint(top, bottom) - 50.0).abs() < 3.0);
+    // The first letter at the top.
+    assert!(points[0][1] < 50.0);
+}

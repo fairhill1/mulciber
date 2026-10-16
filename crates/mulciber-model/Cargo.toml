@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-model"
-version = "0.3.0"
+version = "0.3.1"
 description = "Model loading for Mulciber games: glTF 2.0 meshes and their materials, transforms baked, tangents generated, skins and animations sampled into bone palettes"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"

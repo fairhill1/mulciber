@@ -147,16 +147,101 @@ impl<'a> Batch<'a> {
         pen
     }
 
+    /// `text` set in `style` and turned `angle` radians clockwise on the screen about `centre`:
+    /// the middle of the line across, and of its capitals from the baseline up. A stamp, or a
+    /// label along a slope.
+    ///
+    /// Turned glyphs land between pixels, so their edges are rougher than level text's; a linear
+    /// sampler smooths them.
+    pub fn text_turned(
+        &mut self,
+        style: impl Into<Style>,
+        text: &str,
+        centre: [f32; 2],
+        angle: f32,
+        color: [f32; 4],
+    ) {
+        let style = style.into();
+        let (sin, cos) = angle.sin_cos();
+        let turn =
+            |[x, y]: [f32; 2]| [centre[0] + x * cos - y * sin, centre[1] + x * sin + y * cos];
+        let middle = self.atlas.metrics(style.face).cap_height * style.scale * 0.5;
+        let mut pen = -self.atlas.measure(style, text) * 0.5;
+        let mut first = true;
+        for character in text.chars() {
+            let Some(&glyph) = self.atlas.glyph(style.face, character) else {
+                continue;
+            };
+            if !first {
+                pen += style.tracking;
+            }
+            first = false;
+            if glyph.region.width > 0 && glyph.region.height > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                let (width, height) = (
+                    glyph.region.width as f32 * style.scale,
+                    glyph.region.height as f32 * style.scale,
+                );
+                let left = pen + glyph.xmin * style.scale;
+                let bottom = middle - glyph.ymin * style.scale;
+                let top = bottom - height;
+                self.quad(
+                    glyph.region,
+                    [
+                        turn([left, top]),
+                        turn([left + width, top]),
+                        turn([left + width, bottom]),
+                        turn([left, bottom]),
+                    ],
+                    color,
+                );
+            }
+            pen += glyph.advance * style.scale;
+        }
+    }
+
     /// `region` of the atlas stretched over `rect` (left, top, right, bottom), tinted by `color`:
     /// an icon, a picture, a mask.
     pub fn image(&mut self, region: Region, [left, top, right, bottom]: [f32; 4], color: [f32; 4]) {
-        let [u0, v0, u1, v1] = self.atlas.uv(region);
-        let first = self.vertex([left, top], [u0, v0], color);
-        self.vertex([right, top], [u1, v0], color);
-        self.vertex([right, bottom], [u1, v1], color);
-        self.vertex([left, bottom], [u0, v1], color);
-        self.triangle(first, first + 1, first + 2);
-        self.triangle(first, first + 2, first + 3);
+        self.quad(
+            region,
+            [[left, top], [right, top], [right, bottom], [left, bottom]],
+            color,
+        );
+    }
+
+    /// Triangles of the atlas's solid block, each corner in its own colour (linear, straight
+    /// alpha) and blended between them: for shapes the others don't make, such as rings, arcs and
+    /// gradients. `triangles` index `corners`, wound either way.
+    ///
+    /// Their edges are not softened; fade a rim of corners to clear for that, as
+    /// [`polygon`](Self::polygon) does.
+    ///
+    /// # Panics
+    ///
+    /// When a triangle indexes past `corners`, or with more vertices in the batch than `u32`
+    /// indices reach.
+    pub fn mesh(&mut self, corners: &[([f32; 2], [f32; 4])], triangles: &[[u32; 3]]) {
+        let uv = self.atlas.solid_uv();
+        let first = self.next_index();
+        let count = u32::try_from(corners.len()).expect("a mesh's corners fit u32");
+        for &(position, color) in corners {
+            self.vertex(position, uv, color);
+        }
+        for &[a, b, c] in triangles {
+            assert!(
+                a < count && b < count && c < count,
+                "a triangle's corners {a}, {b}, {c} index past the {count} given"
+            );
+            self.triangle(first + a, first + b, first + c);
+        }
+    }
+
+    /// The vertex bytes and indices, taken out of the batch: for geometry kept past the atlas's
+    /// borrow, such as a frame built in one place and recorded in another.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<u8>, Vec<u32>) {
+        (self.vertices, self.indices)
     }
 
     /// A filled convex polygon, its corners in either winding.
@@ -267,6 +352,18 @@ impl<'a> Batch<'a> {
 
     pub(crate) const fn atlas(&self) -> &Atlas {
         self.atlas
+    }
+
+    /// `region` stretched over the quadrilateral `corners`: its top left, top right, bottom
+    /// right and bottom left.
+    fn quad(&mut self, region: Region, corners: [[f32; 2]; 4], color: [f32; 4]) {
+        let [u0, v0, u1, v1] = self.atlas.uv(region);
+        let first = self.vertex(corners[0], [u0, v0], color);
+        self.vertex(corners[1], [u1, v0], color);
+        self.vertex(corners[2], [u1, v1], color);
+        self.vertex(corners[3], [u0, v1], color);
+        self.triangle(first, first + 1, first + 2);
+        self.triangle(first, first + 2, first + 3);
     }
 
     fn next_index(&self) -> u32 {

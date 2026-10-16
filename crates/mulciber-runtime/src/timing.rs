@@ -28,12 +28,22 @@ impl RuntimeConfig {
         if updates_per_second == 0 {
             return Err(RuntimeConfigError::ZeroUpdateRate);
         }
-        let fixed_step = Duration::from_secs_f64(1.0 / f64::from(updates_per_second));
-        if fixed_step.is_zero() {
+        Self::fixed_interval(Duration::from_secs_f64(1.0 / f64::from(updates_per_second)))
+    }
+
+    /// Creates a configuration whose fixed updates each last `interval`, for a rate that is not a
+    /// whole number per second, such as Source's 15 ms tick (66.67 Hz). The catch-up defaults
+    /// are those of [`Self::fixed_hz`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeConfigError::UpdateRateTooHigh`] when `interval` is zero.
+    pub fn fixed_interval(interval: Duration) -> Result<Self, RuntimeConfigError> {
+        if interval.is_zero() {
             return Err(RuntimeConfigError::UpdateRateTooHigh);
         }
         Ok(Self {
-            fixed_step,
+            fixed_step: interval,
             max_frame_delta: DEFAULT_MAX_FRAME_DELTA,
             max_fixed_steps: DEFAULT_MAX_FIXED_STEPS,
         })
@@ -95,7 +105,8 @@ impl RuntimeConfig {
 pub enum RuntimeConfigError {
     /// The requested fixed update rate was zero.
     ZeroUpdateRate,
-    /// The requested update rate cannot be represented by a nonzero [`Duration`].
+    /// The requested update rate cannot be represented by a nonzero [`Duration`], or the fixed
+    /// interval given was zero.
     UpdateRateTooHigh,
     /// The maximum accepted frame delta was zero.
     ZeroMaxFrameDelta,
@@ -284,6 +295,31 @@ mod tests {
         let second = clock.advance_by(Duration::from_millis(85));
         assert_eq!(second.fixed_steps(), 1);
         assert!((second.interpolation() - 0.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_fixed_interval_runs_steps_no_whole_rate_can() {
+        let config = RuntimeConfig::fixed_interval(Duration::from_millis(15)).unwrap();
+        assert_eq!(config.fixed_step(), Duration::from_millis(15));
+        assert_eq!(
+            config,
+            RuntimeConfig::fixed_interval(Duration::from_millis(15)).unwrap()
+        );
+        let mut clock = FrameClock::new(config);
+        let plan = clock.advance_by(Duration::from_millis(40));
+        assert_eq!(plan.fixed_steps(), 2);
+        assert_eq!(plan.fixed_step(), Duration::from_millis(15));
+        assert!((plan.interpolation() - 10.0 / 15.0).abs() < 1e-12);
+        assert_eq!(
+            RuntimeConfig::fixed_interval(Duration::ZERO),
+            Err(RuntimeConfigError::UpdateRateTooHigh)
+        );
+        assert_eq!(
+            RuntimeConfig::fixed_hz(60).unwrap().fixed_step(),
+            RuntimeConfig::fixed_interval(Duration::from_secs_f64(1.0 / 60.0))
+                .unwrap()
+                .fixed_step()
+        );
     }
 
     #[test]

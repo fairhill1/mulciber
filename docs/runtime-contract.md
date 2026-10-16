@@ -12,6 +12,9 @@ The runtime begins from an explicit clock origin and fixed update rate:
 let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60)?, Instant::now());
 ```
 
+`RuntimeConfig::fixed_interval(Duration)` gives a step no whole rate can, such as Source's 15 ms
+tick (66.67 Hz); a zero interval is refused as `UpdateRateTooHigh`.
+
 The application forwards each `mulciber-platform::WindowEvent` through
 `Runtime::handle_window_event`; the runtime consumes its input, rendering lifecycle and native display timing while
 redraw, close, and graphics policy stay with the application. On each redraw it begins a

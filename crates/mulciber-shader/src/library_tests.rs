@@ -25,6 +25,9 @@ mod tonemap {
 mod overlay {
     include!("library_fixtures/overlay.rs");
 }
+mod skin {
+    include!("library_fixtures/skin.rs");
+}
 
 const FIXTURES: &[(&str, &str, &[&str])] = &[
     (
@@ -84,6 +87,7 @@ const FIXTURES: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("overlay", "mulciber::overlay", &["overlay_shade"]),
+    ("skin", "mulciber::skin", &["skin_table_uv"]),
 ];
 
 #[test]
@@ -803,6 +807,50 @@ fn an_overlay_shader_composes_with_the_text_crates_vertex_layout() {
         })
         .collect();
     assert_eq!(inputs, OVERLAY_VERTEX_INPUTS);
+    let words = naga::back::spv::write_vec(
+        &module,
+        &info,
+        &naga::back::spv::Options {
+            lang_version: (1, 4),
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("SPIR-V generation");
+    assert_eq!(words.first().copied(), Some(0x0723_0203));
+    crate::metal_source(&module, &info).expect("MSL generation");
+}
+
+// ---------------------------------------------------------------------------------------------
+// mulciber::skin
+
+#[test]
+fn skin_reads_its_table_at_texel_centres() {
+    let size = [crate::SKIN_TABLE_WIDTH, crate::SKIN_TABLE_HEIGHT]
+        .map(|texels| f32::from(u16::try_from(texels).expect("the table fits u16 texels")));
+    let texel = |n_dot_l: f32, curvature: f32| {
+        let [u, v] = skin::skin_table_uv(n_dot_l, curvature, size);
+        [u * size[0] - 0.5, v * size[1] - 0.5]
+    };
+    // Flat skin facing away and facing the light: the table's first and last columns, row 0.
+    assert_eq!(texel(-1.0, 0.0), [0.0, 0.0]);
+    assert_eq!(texel(1.0, 0.0), [size[0] - 1.0, 0.0]);
+    // The most curvature, and anything past it, on the last row.
+    let most = crate::SKIN_MOST_CURVATURE;
+    assert_eq!(texel(1.0, most), [size[0] - 1.0, size[1] - 1.0]);
+    assert_eq!(texel(2.0, most * 3.0), [size[0] - 1.0, size[1] - 1.0]);
+    // n·l = 0 halfway across, where the bake put it.
+    assert!((texel(0.0, 0.0)[0] - (size[0] - 1.0) * 0.5).abs() < 1.0e-4);
+}
+
+#[test]
+fn a_skin_shader_composes_and_generates_native_code() {
+    let modules = ShaderModules::new();
+    let shader = modules.shader_source(
+        "skin.wgsl",
+        include_str!("library_fixtures/skin_example.wgsl"),
+    );
+    let (module, info) = shader.compose(&[]).expect("the skin shader composes");
     let words = naga::back::spv::write_vec(
         &module,
         &info,

@@ -34,7 +34,7 @@ the existing mesh APIs remain the one-part/default-part path.
 
 On Vulkan a frame is recorded while earlier frames are still executing: command buffers, fences,
 semaphores, GPU timestamp blocks, and every host-visible per-frame region belong to one of three
-frame slots, so building a frame no longer costs the previous frame's GPU time as well as its own.
+frame slots, so building a frame does not wait on the previous frame's GPU time.
 Metal also uses three slots, matched to its drawable pool. Each owns a retained command buffer
 and separate CPU-written uniform, storage, transient-geometry, transform, and record-instance
 buffers. Acquisition waits only before reusing a slot; unavailable and abandoned acquisitions do
@@ -115,32 +115,27 @@ indexed draws for immutable single-instance parts. Native presentation feedback 
 reports an optional display refresh duration for application-controlled frame-start pacing.
 The runtime limiter is opt-in; graphics presentation mode selection is unchanged.
 
-## Floating-point sampled uploads (0.13.13)
+## Sampled textures
 
-`TexelData::Rgba16Float(&[&rgba_f32_texels])` in `Device::create_texture` returns a `Texture`
-for existing material bindings and WGSL `texture_2d<f32>` in vertex or fragment shaders;
-`MipChain::Supplied` takes a complete authored chain. Conversion rounds
-to binary16, ties to even, without color transforms or a 0–1 clamp; non-finite values and
-magnitudes above 65504 are rejected. Signed zero and half subnormals are preserved in storage,
-while GPU subnormal arithmetic can differ. Linear material samplers interpolate texels and mips.
-Metal numerical readback passed on Apple M2; native Vulkan numerical validation remains pending.
-See the [contract and migration notes](https://github.com/fairhill1/mulciber/blob/main/docs/float-texture-uploads.md).
+`Device::create_texture` takes three kinds of `TexelData`, all sampled through the same material
+bindings:
 
-## Growable Vulkan descriptor pools (0.13.14)
+- **RGBA8**, sRGB or linear (normal maps), with any `MipChain`.
+- **`RGBA16Float`**, from `f32` or directly from binary16 bit patterns, for WGSL
+  `texture_2d<f32>` in vertex or fragment shaders. Conversion from `f32` rounds to binary16, ties
+  to even, without colour transforms or a 0–1 clamp; non-finite values and magnitudes above 65504
+  are rejected. Signed zero and half subnormals are preserved in storage, while GPU subnormal
+  arithmetic can differ. Linear samplers interpolate texels and mips. Metal numerical readback
+  passed on Apple M2; native Vulkan numerical validation remains pending. See the
+  [contract](https://github.com/fairhill1/mulciber/blob/main/docs/float-texture-uploads.md).
+- **Block-compressed** BC1, BC2, BC3, BC5, BC6H or BC7, as
+  `TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &level_slices)` or
+  `create_texture(&ktx.descriptor())` for a KTX 2.0 file. These are sampled directly at a quarter
+  of the RGBA8 footprint (BC6H, unsigned half-float light, at an eighth of `RGBA16Float`'s). The
+  application encodes every level of its own filtered chain; Mulciber never encodes or decodes,
+  so block-compressed data cannot ask for `MipChain::Generated` (`InvalidRequest`). Adapters
+  without BC sampling return `Unsupported` for these uploads and are otherwise unaffected. See the
+  [contract](https://github.com/fairhill1/mulciber/blob/main/docs/block-compressed-textures.md).
 
-Vulkan descriptor sets cached per pipeline are allocated from as many pools as needed, so the
-number of distinct textures a scene binds through one pipeline is no longer capped at 64.
-A full pool is answered by opening another rather than by `VK_ERROR_OUT_OF_POOL_MEMORY`.
-No API change; Metal was never limited this way.
-
-## Block-compressed sampled uploads (0.13.15)
-
-`TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &level_slices)` in
-`Device::create_texture` (or `create_texture(&ktx.descriptor())` for a KTX 2.0 file) uploads
-already encoded BC1, BC2, BC3, BC5, BC6H or BC7 blocks and returns a `Texture` for the existing
-material bindings, sampled directly at a quarter of the RGBA8 footprint (BC6H, unsigned half-float
-light, at an eighth of `RGBA16Float`'s). The application encodes every level of
-its own filtered chain; Mulciber never encodes or decodes, so block-compressed data cannot ask
-for `MipChain::Generated` (`InvalidRequest`). Adapters without BC sampling return `Unsupported`
-for these uploads and are otherwise unaffected. See the
-[contract](https://github.com/fairhill1/mulciber/blob/main/docs/block-compressed-textures.md).
+On Vulkan, the descriptor sets cached per pipeline are allocated from as many pools as needed, so
+the number of distinct textures a scene binds through one pipeline has no fixed limit.

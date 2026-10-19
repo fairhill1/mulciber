@@ -10,10 +10,14 @@ pub enum PresentationMode {
     /// Whether a late frame tears is the adapter's to answer, so a policy-sensitive
     /// application should query [`crate::OpenedGraphics`] for the active native mode
     /// rather than assume. Vulkan takes relaxed FIFO where the driver exposes it,
-    /// which presents a late frame immediately and tears; otherwise latest-ready,
-    /// which stays on the vertical blank and discards the images that went stale
-    /// waiting for one. Metal begins immediate and enables display sync once the
-    /// workload sustains the refresh rate.
+    /// which presents a late frame immediately and tears. Otherwise, with
+    /// `VK_KHR_swapchain_maintenance1`, one swapchain switches each present between
+    /// FIFO and immediate on the same workload judgement Strict uses: three
+    /// overloaded frames release to immediate and 90 with headroom return to FIFO.
+    /// Latest-ready is the last resort; it stays on the vertical blank and discards
+    /// the images that went stale waiting for one. Metal on a fixed-refresh display
+    /// makes the same switch as the Vulkan swapchain, stays synchronized on a
+    /// variable-refresh display, and presents immediately while the timing is unknown.
     Adaptive,
     /// Always synchronize, even when frames miss refresh deadlines.
     #[default]

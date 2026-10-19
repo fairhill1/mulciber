@@ -26,6 +26,9 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
   spatialization, voices muffled by what stands between them and the listener, and a room reverb
   sized by probing the game's world.
+- **Entities** (`mulciber-ecs`): a small sparse-set entity component store with generational
+  handles, so a stale handle misses instead of aliasing a reused slot. There are no systems or
+  schedules; the game decides what runs when.
 - **Networking** (`mulciber-net`): a dedicated server and its clients over UDP, with
   address-proving connects, reliable ordered and unreliable messages of any size, acks, round-trip
   time and loss, and a link conditioner for latency, jitter, loss and duplication.
@@ -55,8 +58,8 @@ Advanced GPU features are tracked as independent capabilities. See the
 Published `mulciber` builds do not require Vulkan SDK validation layers. Enable the
 `vulkan-validation` Cargo feature during development to require Khronos validation and its
 debug messenger. Repository examples and probes explicitly enable it; leave it off when
-shipping a game. This feature is independent of debug/release optimization.
-Use 0.13.17 or newer: it also makes device debug labels optional while retaining GPU timing.
+shipping a game. This feature is independent of debug/release optimization. Device debug
+labels are optional, and GPU timing works without them.
 
 ## Examples
 
@@ -104,10 +107,36 @@ conventions to know:
   resumes with visibility, so a program counting presented frames stalls while hidden. See the
   [platform contract](docs/api-platform-contract.md).
 
-## Validation
+## Frame pacing
 
-The unreleased Vulkan acquisition/attachment fix has a reproduced Windows
-before/after synchronization check; see [evidence and limits](docs/swapchain-synchronization.md).
+`Surface::set_presentation_mode` chooses how frames reach the display:
+
+| Policy | Behaviour |
+| --- | --- |
+| `Synchronized` (default) | Always wait for the vertical blank, even when a frame is late. |
+| `Immediate` | Present as soon as possible, permitting tearing. |
+| `Adaptive` | Synchronized while the game keeps up, never queueing stale frames; whether a late frame tears depends on the backend. |
+| `HalfRefresh` | Tear-free at half the native refresh rate. |
+| `Strict` | Synchronized, switching between full and half refresh from measured CPU and GPU work. |
+
+Query `supports_presentation_mode` first: an unsupported policy returns an error rather than
+silently becoming another. Metal implements every policy natively. Vulkan Adaptive uses relaxed
+FIFO where the driver offers it, otherwise one swapchain switching between FIFO and immediate per
+present (`VK_KHR_swapchain_maintenance1`), and latest-ready only as a last resort; Strict and
+HalfRefresh need `VK_EXT_present_timing`.
+
+`mulciber-runtime` smooths frame deltas onto the display's cadence only when the refresh period is
+known to be fixed, from the window system (AppKit), from the presentation engine
+(`VK_EXT_present_timing`), or from a nominal period that recent presents confirm. Variable or
+unknown timing uses elapsed time. Explicit frame caps (`FrameStartLimiter`) are independent of
+refresh and are never rounded to a divisor of it.
+
+Strict pacing has been reported as still irregular on Windows (RTX 3060 Ti, 75 Hz), not every Vulkan
+path has been exercised on hardware, and variable refresh and multiple
+displays are unvalidated. See [frame-pacing controls](docs/frame-pacing-controls.md) for the
+behaviour in detail, the measurements and their limits.
+
+## Validation
 
 Native probes exercise backend capabilities, rendering, and presentation lifecycle. API probes
 cover finite runs, acquired-frame abandonment and recovery, and forced single-sample rendering.
@@ -127,6 +156,8 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
   [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md), and
   [cube textures and cube texture arrays](docs/cube-textures.md)
+- [Frame pacing](docs/frame-pacing-controls.md) and
+  [swapchain synchronization](docs/swapchain-synchronization.md)
 - [Packed vertex formats](docs/vertex-formats.md),
   [per-entry-point resource bindings](docs/per-entry-point-bindings.md),
   [frame capture](docs/frame-capture.md), and [render textures](docs/render-textures.md)
@@ -134,33 +165,3 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Roadmap](docs/roadmap.md), [viability gates](docs/viability-gates.md), and
   [API extraction plan](docs/api-extraction-plan.md)
 - [Changelog](CHANGELOG.md)
-
-### Display-aware pacing (platform/runtime 0.5.5)
-
-Native AppKit timing now distinguishes fixed/variable/unknown refresh; the runtime smooths only
-a known fixed period and uses elapsed time otherwise. Explicit caps remain independent. Other
-platforms report unknown until native capability evidence is added. Fixed-panel native evidence
-and synthetic VRR regressions do not establish physical VRR support or advance a viability gate.
-See [frame-pacing controls](docs/frame-pacing-controls.md).
-
-### Adaptive/Strict presentation (graphics 0.13.21)
-
-The graphics API now owns adaptive synchronization and automatic full/half refresh with
-workload-based recovery. Applications query support and select policy; fixed-divisor scheduling
-is native, not a rounded integer CPU cap. The Apple M2 fixed-60-Hz probe demonstrates stable
-full/half/full transitions and API conformance passes 101 cases with Metal validation. Vulkan
-Adaptive uses FIFO relaxed where a driver exposes it, otherwise one swapchain switching FIFO and
-immediate per present (`VK_KHR_swapchain_maintenance1`), and latest-ready only as a last resort; Strict/HalfRefresh use capability-gated relative
-presentation timing. The new paths are compile checked, not physically validated here. VRR and multi-display evidence remain outstanding.
-See [behavior, reproduction and limits](docs/frame-pacing-controls.md#adaptive-and-strict-presentation--graphics-01321).
-
-
-### Strict pacing correction (graphics 0.13.24)
-
-Strict starts at full refresh, steps down after sustained workload overload, and
-recovers with five percent headroom. Vulkan workload timing excludes native
-submission and image-availability waits. Regression tests cover 85-90 FPS capacity
-on a 75 Hz display. The user reports the consuming game works on Windows / RTX
-3060 Ti / 75 Hz but Strict still behaves irregularly; this is not a claim of
-fully resolved Strict pacing or broader hardware coverage. See
-[the correction and validation limits](docs/frame-pacing-controls.md#strict-recovery-correction-01324-2026-09-21).

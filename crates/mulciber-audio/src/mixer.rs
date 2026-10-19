@@ -98,6 +98,106 @@ impl Rolloff {
     }
 }
 
+/// How much what stands between a voice and the listener (a wall, a shut door, a deck) muffles it:
+/// turned down, and its highs cut by a low-pass of two poles at `cutoff_hz`, 12 dB an octave above
+/// it. The game works out what stands between; the mixer only muffles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Muffle {
+    /// Gain in decibels, on top of the voice's own and its distance's.
+    pub gain_db: f32,
+    /// Where the low-pass cuts, in hertz; [`f32::INFINITY`] lets every frequency through.
+    pub cutoff_hz: f32,
+}
+
+impl Muffle {
+    /// Nothing in the way: every frequency at the voice's own gain.
+    pub const CLEAR: Self = Self {
+        gain_db: 0.0,
+        cutoff_hz: f32::INFINITY,
+    };
+}
+
+impl Default for Muffle {
+    fn default() -> Self {
+        Self::CLEAR
+    }
+}
+
+/// Seconds a muffle set on a playing voice takes to come most of the way (1 - 1/e) to the new
+/// one, so a door shutting or a listener stepping round a corner glides rather than clicks.
+const MUFFLE_GLIDE: f32 = 0.05;
+
+/// A voice's muffle as it's heard: its gain and the low-pass's pole gliding toward the last set,
+/// and the poles' state for each channel.
+struct Muffler {
+    gain: f32,
+    target_gain: f32,
+    /// The one-pole coefficient, 1 passing every frequency.
+    pole: f32,
+    target_pole: f32,
+    /// How far toward the targets each frame goes.
+    glide: f32,
+    /// Each channel's two poles.
+    state: [[f32; 2]; 2],
+}
+
+impl Muffler {
+    fn new(muffle: Muffle, sample_rate: u32) -> Self {
+        let (gain, pole) = Self::targets(muffle, sample_rate);
+        #[allow(clippy::cast_precision_loss)]
+        let glide = 1.0 - (-1.0 / (MUFFLE_GLIDE * sample_rate as f32)).exp();
+        Self {
+            gain,
+            target_gain: gain,
+            pole,
+            target_pole: pole,
+            glide,
+            state: [[0.0; 2]; 2],
+        }
+    }
+
+    fn targets(muffle: Muffle, sample_rate: u32) -> (f32, f32) {
+        #[allow(clippy::cast_precision_loss)]
+        let pole =
+            1.0 - (-std::f32::consts::TAU * muffle.cutoff_hz.max(0.0) / sample_rate as f32).exp();
+        (db_to_amplitude(muffle.gain_db), pole)
+    }
+
+    /// Glides to `muffle` from where it is.
+    fn set(&mut self, muffle: Muffle, sample_rate: u32) {
+        (self.target_gain, self.target_pole) = Self::targets(muffle, sample_rate);
+    }
+
+    /// One frame through the muffle.
+    // Exact on purpose: whether a glide has arrived, or a step changed nothing.
+    #[allow(clippy::float_cmp)]
+    fn process(&mut self, (left, right): (f32, f32)) -> (f32, f32) {
+        if self.pole >= 1.0 && self.target_pole >= 1.0 && self.gain == self.target_gain {
+            // Clear: the poles follow the signal, so a muffle set later starts from it.
+            self.state = [[left; 2], [right; 2]];
+            return (left * self.gain, right * self.gain);
+        }
+        // Arrived once a step no longer moves it: near 1, f32 loses a step that small.
+        let step = |value: &mut f32, target: f32, glide: f32| {
+            let next = *value + (target - *value) * glide;
+            *value = if next == *value { target } else { next };
+        };
+        step(&mut self.gain, self.target_gain, self.glide);
+        step(&mut self.pole, self.target_pole, self.glide);
+        let pole = self.pole;
+        let filter = |state: &mut [f32; 2], sample: f32| {
+            state[0] += (sample - state[0]) * pole;
+            state[1] += (state[0] - state[1]) * pole;
+            state[1]
+        };
+        let [left_state, right_state] = &mut self.state;
+        (
+            filter(left_state, left) * self.gain,
+            filter(right_state, right) * self.gain,
+        )
+    }
+}
+
 /// The volume a played clip follows, one of [`Volumes`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Bus {
@@ -157,6 +257,8 @@ pub struct Play {
     pub fade_in: f32,
     /// Whether it loops until stopped rather than ending with its clip.
     pub looping: bool,
+    /// How muffled it is from the start; [`Controls::set_voice_muffle`] changes it as it plays.
+    pub muffle: Muffle,
 }
 
 impl Default for Play {
@@ -168,6 +270,7 @@ impl Default for Play {
             placement: Placement::Flat,
             fade_in: 0.0,
             looping: false,
+            muffle: Muffle::CLEAR,
         }
     }
 }
@@ -204,6 +307,7 @@ enum Command {
         world: Option<(Vec3, Option<EmitterId>)>,
         fade_samples: usize,
         looping: bool,
+        muffle: Muffle,
     },
     StopVoice {
         id: VoiceId,
@@ -219,6 +323,10 @@ enum Command {
     SetGain {
         id: VoiceId,
         gain: f32,
+    },
+    SetMuffle {
+        id: VoiceId,
+        muffle: Muffle,
     },
     Listener(Listener),
     MoveEmitter {
@@ -274,6 +382,7 @@ struct Voice {
     fade_in: Option<Fade>,
     /// Listener-space direction (x right, y up, z forward).
     direction: Vec3,
+    muffler: Muffler,
     #[cfg(feature = "hrtf")]
     hrtf: HrtfVoice,
 }
@@ -291,7 +400,7 @@ struct HrtfVoice {
 }
 
 impl Voice {
-    fn new(samples: Arc<[f32]>, channels: u8, gain: f32, rate: f64) -> Self {
+    fn new(samples: Arc<[f32]>, channels: u8, gain: f32, rate: f64, muffler: Muffler) -> Self {
         Self {
             id: None,
             samples,
@@ -309,6 +418,7 @@ impl Voice {
             fade_out: None,
             fade_in: None,
             direction: [0.0, 0.0, 1.0],
+            muffler,
             #[cfg(feature = "hrtf")]
             hrtf: HrtfVoice {
                 previous_direction: [0.0, 0.0, 1.0],
@@ -380,6 +490,12 @@ impl Voice {
         Some(frame)
     }
 
+    /// The next source frame through the voice's muffle.
+    fn muffled_frame(&mut self) -> Option<(f32, f32)> {
+        let frame = self.interpolated_frame()?;
+        Some(self.muffler.process(frame))
+    }
+
     /// The fade envelope for this frame, or `None` once a fade-out has finished.
     fn envelope(&mut self) -> Option<f32> {
         let mut envelope = 1.0;
@@ -408,7 +524,7 @@ impl Voice {
     /// The next mixed frame without HRTF: spatial voices are downmixed and panned with a
     /// constant-power law, stereo plays as is, and mono sits in the centre at -3 dB per side.
     fn next_frame(&mut self) -> Option<(f32, f32)> {
-        let (source_left, source_right) = self.interpolated_frame()?;
+        let (source_left, source_right) = self.muffled_frame()?;
         let (left, right) = if self.spatial {
             let mono = f32::midpoint(source_left, source_right);
             let angle = (self.direction[0].clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
@@ -461,7 +577,7 @@ impl HrtfState {
         let mut filled = 0;
         for sample in &mut self.input {
             // A rate-aware, downmixed read, so pitch applies to spatial voices too.
-            let Some((left, right)) = voice.interpolated_frame() else {
+            let Some((left, right)) = voice.muffled_frame() else {
                 break;
             };
             *sample = f32::midpoint(left, right);
@@ -726,8 +842,10 @@ impl Mixer {
                 world,
                 fade_samples,
                 looping,
+                muffle,
             } => {
-                let mut voice = Voice::new(samples, channels, gain, rate);
+                let muffler = Muffler::new(muffle, self.sample_rate);
+                let mut voice = Voice::new(samples, channels, gain, rate, muffler);
                 voice.id = Some(id);
                 voice.bus = bus;
                 voice.looping = looping;
@@ -761,7 +879,8 @@ impl Mixer {
                 position,
                 emitter,
             } => {
-                let mut voice = Voice::new(Arc::from([]), 1, gain, 1.0);
+                let muffler = Muffler::new(Muffle::CLEAR, self.sample_rate);
+                let mut voice = Voice::new(Arc::from([]), 1, gain, 1.0, muffler);
                 voice.id = Some(id);
                 voice.stream = Some(reader);
                 voice.bus = MixBus::Voice;
@@ -785,6 +904,13 @@ impl Mixer {
                         } else {
                             voice.gain = gain;
                         }
+                    }
+                }
+            }
+            Command::SetMuffle { id, muffle } => {
+                for voice in &mut self.voices {
+                    if voice.id == Some(id) {
+                        voice.muffler.set(muffle, self.sample_rate);
                     }
                 }
             }
@@ -904,6 +1030,7 @@ impl Controls {
             },
             fade_samples: self.fade_samples(play.fade_in),
             looping: play.looping,
+            muffle: play.muffle,
         });
         id
     }
@@ -953,6 +1080,13 @@ impl Controls {
             id,
             gain: db_to_amplitude(gain_db),
         });
+    }
+
+    /// Muffles a playing voice, a clip's or a live one's, gliding to `muffle` from how muffled it
+    /// was over about 50 ms: what stands between it and the listener changed.
+    /// [`Muffle::CLEAR`] unmuffles it. Unknown or finished voices are ignored.
+    pub fn set_voice_muffle(&self, id: VoiceId, muffle: Muffle) {
+        self.send(Command::SetMuffle { id, muffle });
     }
 
     /// Moves the listener, in a world whose up is +Y. Call once per rendered frame with the
@@ -1378,6 +1512,114 @@ mod tests {
         let ahead = energy_from([0.0, 0.0, -3.0]);
         let behind = energy_from([0.0, 0.0, 3.0]);
         assert!(ahead > 4.0 * behind, "ahead {ahead} behind {behind}");
+    }
+
+    /// A sound at the highest frequency there is, its samples alternating.
+    fn highest(value: f32, frames: usize) -> Sound {
+        let samples = (0..frames)
+            .map(|frame| if frame % 2 == 0 { value } else { -value })
+            .collect();
+        Sound::from_interleaved(samples, 1, RATE, RATE)
+    }
+
+    /// A muffled voice is turned down by its gain and its highs are cut: a steady level comes
+    /// through at the gain alone, the highest frequency next to not at all.
+    #[test]
+    fn a_muffle_turns_down_and_dulls() {
+        let muffle = Muffle {
+            gain_db: -12.0,
+            cutoff_hz: 400.0,
+        };
+        let settled = |sound: &Sound, muffle: Muffle| {
+            let (mut mixer, controls) = Mixer::new(RATE);
+            controls.play(
+                sound,
+                Play {
+                    muffle,
+                    ..Play::default()
+                },
+            );
+            peak(&render(&mut mixer, 4_800)[2 * 4_000..])
+        };
+        let steady = constant(0.5, 4_800, 1);
+        let (clear, muffled) = (settled(&steady, Muffle::CLEAR), settled(&steady, muffle));
+        assert!(
+            (muffled - clear * db_to_amplitude(-12.0)).abs() < 1.0e-4,
+            "{muffled} of {clear}"
+        );
+        let high = highest(0.5, 4_800);
+        let (clear, muffled) = (settled(&high, Muffle::CLEAR), settled(&high, muffle));
+        assert!(clear > 0.3, "{clear}");
+        assert!(muffled < clear * 1.0e-3, "{muffled} of {clear}");
+    }
+
+    /// A muffle set on a playing voice glides there rather than stepping, and back once clear.
+    #[test]
+    fn a_muffle_set_while_playing_glides() {
+        let (mut mixer, controls) = Mixer::new(RATE);
+        let radio = controls.play(
+            &constant(0.5, RATE as usize, 1),
+            Play {
+                looping: true,
+                ..Play::default()
+            },
+        );
+        let clear = render(&mut mixer, 64)[0];
+        controls.set_voice_muffle(
+            radio,
+            Muffle {
+                gain_db: -20.0,
+                cutoff_hz: f32::INFINITY,
+            },
+        );
+        let gliding = render(&mut mixer, 2_400);
+        assert!(
+            gliding[0] > clear * 0.99,
+            "a step: {} of {clear}",
+            gliding[0]
+        );
+        let later = gliding[2 * 2_399];
+        assert!(
+            later > clear * 0.3 && later < clear * 0.6,
+            "{later} of {clear}"
+        );
+        render(&mut mixer, 24_000);
+        let muffled = render(&mut mixer, 64)[0];
+        assert!(
+            (muffled - clear * 0.1).abs() < 1.0e-4,
+            "{muffled} of {clear}"
+        );
+        controls.set_voice_muffle(radio, Muffle::CLEAR);
+        render(&mut mixer, 24_000);
+        assert!((render(&mut mixer, 64)[0] - clear).abs() < 1.0e-6);
+    }
+
+    #[cfg(feature = "hrtf")]
+    #[test]
+    fn the_hrtf_hears_a_voice_muffled() {
+        let energy = |muffle: Muffle| {
+            let (mut mixer, controls) = Mixer::with_hrtf(RATE, ear_sphere());
+            controls.set_listener([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+            controls.play(
+                &highest(0.5, 2_048),
+                Play {
+                    placement: Placement::at([0.0, 0.0, -3.0]),
+                    muffle,
+                    ..Play::default()
+                },
+            );
+            render(&mut mixer, 2_048)
+                .iter()
+                .map(|sample| sample * sample)
+                .sum::<f32>()
+        };
+        let clear = energy(Muffle::CLEAR);
+        let muffled = energy(Muffle {
+            gain_db: 0.0,
+            cutoff_hz: 400.0,
+        });
+        assert!(clear > 0.0);
+        assert!(muffled < clear * 1.0e-3, "{muffled} of {clear}");
     }
 
     #[test]

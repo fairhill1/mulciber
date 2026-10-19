@@ -2,6 +2,19 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Muffled voices (audio 0.4.0)
+
+Breaking: `Play` gains `muffle`, so a `Play` written out field by field without
+`..Play::default()` needs it.
+
+A voice with something between it and the listener, a wall, a shut door, a deck, can be muffled:
+`Muffle { gain_db, cutoff_hz }` turns it down and dulls it through a low-pass of two poles at the
+cutoff, 12 dB an octave above it (`Muffle::CLEAR`, the default, lets it through untouched). A clip
+takes one as it starts (`Play::muffle`); a playing voice, a clip's or a live stream's, is changed by
+`Controls::set_voice_muffle`, which glides there over about 50 ms rather than stepping. The game
+decides how muffled each voice is: the mixer knows nothing of walls. Muffled voices still feed the
+listener's room reverb, as sound coming through a wall rings in the room it comes into.
+
 ## Shared by both games: build scripts, sound takes, skin (shader 0.5.7, audio 0.3.1, model 0.3.1)
 
 Three things Deadly Voyage and Isle of Rán each wrote for themselves.

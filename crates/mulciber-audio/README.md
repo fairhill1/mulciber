@@ -13,6 +13,10 @@ through a cloneable command handle.
   otherwise.
 - **Music in the world**: spatial voices on the music bus, a radio's or a gramophone's, that
   follow the music volume live and sound in the room.
+- **Muffling**: a voice behind a wall, a shut door or a deck is turned down and dulled by a
+  low-pass of two poles, 12 dB an octave above its cutoff (`Muffle`), from the start
+  (`Play::muffle`) or while it plays (`Controls::set_voice_muffle`, gliding over about 50 ms so a
+  door shutting doesn't click). The game works out what stands between; the mixer only muffles.
 - **Room reverb**: a Freeverb-style bus fed by the effect voices, set by wet, decay (RT60 in
   seconds) and damp. `probe_room` sizes the room by casting a sphere of rays through a trace the
   game supplies (voxels, heightfield, BSP, colliders) and works out its decay by Sabine's formula,

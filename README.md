@@ -24,7 +24,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   render interpolation, suspension coordination, and optional frame-start pacing.
   [Presentation controls](docs/frame-pacing-controls.md) also support explicit caps independent of refresh.
 - **Audio** (`mulciber-audio`): a mixer with buses, music fades, moving emitters, HRTF
-  spatialization, and a room reverb sized by probing the game's world.
+  spatialization, voices muffled by what stands between them and the listener, and a room reverb
+  sized by probing the game's world.
 - **Networking** (`mulciber-net`): a dedicated server and its clients over UDP, with
   address-proving connects, reliable ordered and unreliable messages of any size, acks, round-trip
   time and loss, and a link conditioner for latency, jitter, loss and duplication.

@@ -34,6 +34,10 @@
 //! take at random each time, never the same one twice running, at a playback rate varied within
 //! a range; [`other_take`] is the same choice for a game that keeps its own random source.
 //!
+//! A voice with something in the way (a wall, a shut door, a deck) is muffled: turned down and
+//! dulled by a low-pass ([`Muffle`]), set as it starts ([`Play::muffle`]) or as it plays
+//! ([`Controls::set_voice_muffle`]). What stands between is the game's to work out.
+//!
 //! Live audio, a player's speech, plays through [`Controls::play_spatial_stream`]: push samples
 //! into the [`VoiceStream`] it returns as they arrive, and a jitter buffer plays them a little
 //! late, in the world and the room as any spatial voice. With the `input` feature, `Microphone`
@@ -58,7 +62,9 @@ mod takes;
 pub use acoustics::{ProbeSettings, RayHit, RoomAcoustics, RoomTracker, probe_room};
 #[cfg(feature = "input")]
 pub use input::{InputError, Microphone};
-pub use mixer::{Bus, Controls, EmitterId, Mixer, Placement, Play, Rolloff, VoiceId, Volumes};
+pub use mixer::{
+    Bus, Controls, EmitterId, Mixer, Muffle, Placement, Play, Rolloff, VoiceId, Volumes,
+};
 #[cfg(feature = "output")]
 pub use output::{AudioEngine, OutputError};
 #[cfg(any(feature = "wav", feature = "ogg"))]

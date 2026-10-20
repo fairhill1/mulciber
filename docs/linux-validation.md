@@ -148,6 +148,15 @@ counting as already reported from capture on whenever raw motion is selected. Th
 synthetic motion, not a physical mouse's acceleration; native Xorg, a physical mouse, an absolute
 device, and a server without `XInput2` 2.1 remain unexercised.
 
+**`PointerMotion` through XWayland (automated, XTEST-driven, 2026-10-20, platform 0.5.9 on an
+uncommitted tree based on `7e9bdeb`)**: the same probe, setting the window's `PointerMotion`
+before capture. With `Raw`, moves of (10, 0) and (60, −20) came back as exactly those deltas.
+With `System`, the first move came back as two deltas, (50, 7) and (60, 7), the pointer having
+been off the window's center when capture began, and the second as (60, −20): the warp-to-center
+path's first motion after capture under XWayland, the path X11 used for all captured motion before
+0.5.8. XTEST's motion isn't accelerated, so this shows which path reports, not the acceleration
+itself; the Wayland, Win32 and AppKit `System` paths were not exercised.
+
 The Wayland keymap path adds `libxkbcommon` as a Linux link-time dependency beside
 `libwayland-client`/`libX11`/`libXext`, used solely to resolve modifier-mask bit positions from
 the compositor-supplied keymap; the single-backend `ldd` list recorded above predates it.

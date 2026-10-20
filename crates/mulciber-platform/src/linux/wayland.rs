@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use super::keymap;
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PlatformError,
-    PlatformErrorKind, PointerButton, ScrollDelta, WindowMode,
+    PlatformErrorKind, PointerButton, PointerMotion, ScrollDelta, WindowMode,
 };
 
 #[repr(C)]
@@ -876,6 +876,7 @@ struct WindowState {
     repeat_due: Cell<Option<Instant>>,
     capture_requested: Cell<bool>,
     capture_active: Cell<bool>,
+    pointer_motion: Cell<PointerMotion>,
 }
 
 impl WindowState {
@@ -975,6 +976,7 @@ impl Window {
                 repeat_due: Cell::new(None),
                 capture_requested: Cell::new(false),
                 capture_active: Cell::new(false),
+                pointer_motion: Cell::new(PointerMotion::Raw),
             }),
         };
         window.create_registry()?;
@@ -1442,6 +1444,14 @@ impl Window {
         } else {
             CursorMode::Normal
         }
+    }
+
+    pub(super) fn set_pointer_motion(&self, motion: PointerMotion) {
+        self.state.pointer_motion.set(motion);
+    }
+
+    pub(super) fn pointer_motion(&self) -> PointerMotion {
+        self.state.pointer_motion.get()
     }
 
     pub(super) fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
@@ -2469,8 +2479,8 @@ unsafe extern "C" fn relative_pointer_motion(
     _relative_pointer: *mut c_void,
     _utime_hi: u32,
     _utime_lo: u32,
-    _dx: i32,
-    _dy: i32,
+    dx: i32,
+    dy: i32,
     raw_x: i32,
     raw_y: i32,
 ) {
@@ -2482,11 +2492,16 @@ unsafe extern "C" fn relative_pointer_motion(
     // The relative pointer also reports while the lock is inactive; those intervals already
     // deliver absolute motion, so deltas surface only while capture holds. The unaccelerated
     // pair is the device's own motion, which is what mouse look wants: the compositor's pointer
-    // acceleration would make turning depend on how fast the mouse moved.
+    // acceleration would make turning depend on how fast the mouse moved. The accelerated pair is
+    // for a window that asks for the system's pointer (a touchpad).
     if state.capture_active.get() {
+        let (x, y) = match state.pointer_motion.get() {
+            PointerMotion::Raw => (raw_x, raw_y),
+            PointerMotion::System => (dx, dy),
+        };
         state.push_input(InputEvent::PointerDelta {
-            delta_x: wl_fixed_to_f64(raw_x),
-            delta_y: wl_fixed_to_f64(raw_y),
+            delta_x: wl_fixed_to_f64(x),
+            delta_y: wl_fixed_to_f64(y),
             modifiers: state.modifiers.get(),
         });
     }

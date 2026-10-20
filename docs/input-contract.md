@@ -100,6 +100,14 @@ cursor. Requesting `Normal` succeeds on every backend so portable release paths 
 requesting `Captured` on a backend without an implementation reports an `Unsupported` platform
 error rather than pretending.
 
+Where captured motion comes from is the window's `PointerMotion`, changeable at any time and
+taking effect at once: `Raw` (the default) is the device's own motion before the system's pointer
+acceleration, so turning speed doesn't depend on how fast the mouse moves; `System` is the system
+pointer's accelerated motion, following the user's pointer settings, for a touchpad. Every backend
+reports both from paths it already has, as below; with `System`, Win32 reports the hidden cursor's
+way off the client center from `WM_MOUSEMOVE`, Wayland the relative pointer's accelerated pair,
+X11 the warp-to-center deltas, and AppKit the `NSEvent` deltas.
+
 Backend status: the AppKit implementation pins the cursor by warping it to the content-view center,
 detaching cursor movement with `CGAssociateMouseAndMouseCursorPosition`, and hiding it with
 `NSCursor`; during capture it reports the unaccelerated motion of every connected `GCMouse`

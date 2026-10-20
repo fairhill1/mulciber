@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Raw or system pointer motion (platform 0.5.9)
+
+`Window::set_pointer_motion` chooses where a captured pointer's `PointerDelta` motion comes from:
+`PointerMotion::Raw`, the device's own motion before the system's acceleration (the default, as
+in 0.5.8), or `PointerMotion::System`, the system pointer's motion, accelerated as the user's
+pointer settings say, for a touchpad. It takes effect at once, captured or not;
+`Window::pointer_motion` reads it back. Each backend already had both: Win32 reports the hidden
+cursor's way off the client center from `WM_MOUSEMOVE` instead of `WM_INPUT`, Wayland the
+relative pointer's accelerated pair instead of its unaccelerated one, X11 the warp-to-center
+deltas instead of `XInput2` raw motion, and AppKit the `NSEvent` deltas instead of `GCMouse`'s.
+
 ## Unaccelerated X11 and AppKit pointer deltas (platform 0.5.8)
 
 While the pointer is captured, every backend's `PointerDelta` now carries the mouse's own motion,

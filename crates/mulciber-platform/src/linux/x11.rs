@@ -6,7 +6,7 @@ use std::{ptr, slice};
 use super::keymap;
 use crate::{
     ButtonState, CursorMode, InputEvent, LogicalPosition, Modifiers, PlatformError,
-    PlatformErrorKind, PointerButton, ScrollDelta, WindowMode,
+    PlatformErrorKind, PointerButton, PointerMotion, ScrollDelta, WindowMode,
 };
 
 #[repr(C)]
@@ -560,6 +560,7 @@ pub(super) struct Window {
     /// Whether the latest raw motion came from a relative device, so the core motion that follows
     /// it is already reported and only re-centers the pointer.
     raw_relative: Cell<bool>,
+    pointer_motion: Cell<PointerMotion>,
     state: WindowState,
 }
 
@@ -611,6 +612,7 @@ impl Window {
             xi_opcode: None,
             raw_devices: RefCell::new(Vec::new()),
             raw_relative: Cell::new(false),
+            pointer_motion: Cell::new(PointerMotion::Raw),
             state: WindowState {
                 width: Cell::new(width),
                 height: Cell::new(height),
@@ -1144,7 +1146,7 @@ impl Window {
     }
 
     fn handle_raw_motion(&self, raw: &XIRawEvent) {
-        let relative = self.device_is_relative(raw.sourceid);
+        let relative = self.raw_motion() && self.device_is_relative(raw.sourceid);
         self.raw_relative.set(relative);
         if !relative || !self.state.capture_engaged.get() {
             return;
@@ -1301,6 +1303,20 @@ impl Window {
         }
     }
 
+    pub(super) fn set_pointer_motion(&self, motion: PointerMotion) {
+        self.pointer_motion.set(motion);
+        self.raw_relative.set(self.raw_motion());
+    }
+
+    pub(super) fn pointer_motion(&self) -> PointerMotion {
+        self.pointer_motion.get()
+    }
+
+    /// Whether captured motion is reported from raw events: asked for, and the server has them.
+    fn raw_motion(&self) -> bool {
+        self.pointer_motion.get() == PointerMotion::Raw && self.xi_opcode.is_some()
+    }
+
     pub(super) fn set_cursor_mode(&self, mode: CursorMode) -> Result<(), PlatformError> {
         match mode {
             CursorMode::Captured => {
@@ -1417,7 +1433,7 @@ impl Window {
         // With raw motion, core motion counts as already reported until an absolute device's
         // raw event says otherwise: XWayland can deliver a capture's first core motion before
         // the raw event it came with.
-        self.raw_relative.set(self.xi_opcode.is_some());
+        self.raw_relative.set(self.raw_motion());
         self.warp_to_center();
         // SAFETY: The display connection is live and buffered requests must reach the server.
         unsafe { XFlush(self.display) };

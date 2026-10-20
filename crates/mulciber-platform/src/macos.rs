@@ -8,8 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
-    PlatformError, PlatformErrorKind, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor,
-    WindowEvent, WindowMetrics, WindowMode, WindowRevision,
+    PlatformError, PlatformErrorKind, PointerButton, PointerMotion, PumpStatus, ScrollDelta,
+    WindowDescriptor, WindowEvent, WindowMetrics, WindowMode, WindowRevision,
 };
 
 type Object = *mut c_void;
@@ -277,6 +277,7 @@ impl Application {
                 capture_applied: Cell::new(false),
                 pending_warp_delta: Cell::new((0.0, 0.0)),
                 raw_mice: Cell::new(0),
+                pointer_motion: Cell::new(PointerMotion::Raw),
                 function_key_held: Cell::new(false),
                 pending_modifier_key: Cell::new(None),
                 pending_characters: Cell::new(Vec::new()),
@@ -414,6 +415,7 @@ pub struct Window {
     // How many `GCMouse` devices report their unaccelerated motion while captured; with none,
     // the accelerated `NSEvent` deltas are reported instead.
     raw_mice: Cell<usize>,
+    pointer_motion: Cell<PointerMotion>,
     // AppKit's function modifier flag describes the navigation and F-key cluster as much as the
     // physical Fn/globe key, so the key's own transitions are tracked here instead of read back
     // off each event. See `function_key_transition`.
@@ -473,6 +475,23 @@ impl Window {
     #[must_use]
     pub fn cursor_mode(&self) -> CursorMode {
         self.cursor_mode.get()
+    }
+
+    /// Chooses where captured [`InputEvent::PointerDelta`] motion comes from: the device's own,
+    /// before the system's pointer acceleration ([`PointerMotion::Raw`], the default), or the
+    /// system's accelerated pointer ([`PointerMotion::System`]). It takes effect at once, captured
+    /// or not, and lasts until changed.
+    pub fn set_pointer_motion(&self, motion: PointerMotion) {
+        self.pointer_motion.set(motion);
+        if self.capture_applied.get() {
+            self.follow_pointer_motion();
+        }
+    }
+
+    /// Returns where captured motion comes from.
+    #[must_use]
+    pub fn pointer_motion(&self) -> PointerMotion {
+        self.pointer_motion.get()
     }
 
     /// Requests whether this window occupies its display as a fullscreen Space or shares the
@@ -547,20 +566,31 @@ impl Window {
             void(class(c"NSCursor")?, c"hide");
         }
         self.capture_applied.set(true);
+        self.follow_pointer_motion();
+        Ok(())
+    }
+
+    /// Gives the mice the moved handler while captured raw motion is asked for, and takes it
+    /// away otherwise, starting the gathered motion afresh.
+    fn follow_pointer_motion(&self) {
         if let Ok(mut motion) = RAW_MOTION.lock() {
             *motion = (0.0, 0.0);
         }
-        // SAFETY: Capture is applied on AppKit's main thread; the handler is a global block.
-        self.raw_mice
-            .set(unsafe { set_raw_mouse_handlers(mouse_moved_block()) });
-        Ok(())
+        let handler = match self.pointer_motion.get() {
+            PointerMotion::Raw => mouse_moved_block(),
+            PointerMotion::System => core::ptr::null_mut(),
+        };
+        // SAFETY: Capture is applied on AppKit's main thread; the handler is nil or a global
+        // block.
+        let mice = unsafe { set_raw_mouse_handlers(handler) };
+        self.raw_mice.set(if handler.is_null() { 0 } else { mice });
     }
 
     /// The unaccelerated motion every `GCMouse` reported since the last pump while captured,
     /// handing each mouse connected since the handler. `GCMouse` reads the device itself, so
     /// macOS's pointer acceleration doesn't reach it; its y grows upward, flipped on the way in.
     fn take_raw_motion(&self) -> Option<InputEvent> {
-        if !self.capture_applied.get() {
+        if !self.capture_applied.get() || self.pointer_motion.get() == PointerMotion::System {
             return None;
         }
         // SAFETY: The pump runs on AppKit's main thread; the handler is a global block, and

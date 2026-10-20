@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
-    PlatformError, PointerButton, PumpStatus, ScrollDelta, WindowDescriptor, WindowEvent,
-    WindowMetrics, WindowMode, WindowRevision,
+    PlatformError, PointerButton, PointerMotion, PumpStatus, ScrollDelta, WindowDescriptor,
+    WindowEvent, WindowMetrics, WindowMode, WindowRevision,
 };
 
 type Handle = *mut c_void;
@@ -462,6 +462,7 @@ struct WindowState {
     capture_requested: Cell<bool>,
     capture_engaged: Cell<bool>,
     last_raw_absolute: Cell<Option<(i32, i32)>>,
+    pointer_motion: Cell<PointerMotion>,
     close_requested: Cell<bool>,
     close_reported: Cell<bool>,
     fullscreen_requested: Cell<bool>,
@@ -489,6 +490,7 @@ impl WindowState {
             capture_requested: Cell::new(false),
             capture_engaged: Cell::new(false),
             last_raw_absolute: Cell::new(None),
+            pointer_motion: Cell::new(PointerMotion::Raw),
             close_requested: Cell::new(false),
             close_reported: Cell::new(false),
             fullscreen_requested: Cell::new(false),
@@ -667,6 +669,20 @@ impl Window {
         } else {
             CursorMode::Normal
         }
+    }
+
+    /// Chooses where captured [`InputEvent::PointerDelta`] motion comes from: the device's own,
+    /// before the system's pointer acceleration ([`PointerMotion::Raw`], the default), or the
+    /// system's accelerated pointer ([`PointerMotion::System`]). It takes effect at once, captured
+    /// or not, and lasts until changed.
+    pub fn set_pointer_motion(&self, motion: PointerMotion) {
+        self.state.pointer_motion.set(motion);
+    }
+
+    /// Returns where captured motion comes from.
+    #[must_use]
+    pub fn pointer_motion(&self) -> PointerMotion {
+        self.state.pointer_motion.get()
     }
 
     /// Requests whether this window occupies its current display or shares the desktop.
@@ -997,9 +1013,8 @@ unsafe fn handle_input_message(
         WM_MOUSEMOVE => {
             if let Some(state) = state {
                 if state.capture_engaged.get() {
-                    // Deltas come from WM_INPUT; absolute motion only recenters the pinned cursor.
-                    // SAFETY: The warp targets this live window's client center.
-                    unsafe { recenter_captured_cursor(window, l_param) };
+                    // SAFETY: The window is live and its pump registration is active.
+                    unsafe { captured_pointer_moved(window, state, l_param) };
                 } else {
                     let position = pointer_position(l_param);
                     state.last_pointer_position.set(position);
@@ -1020,6 +1035,7 @@ unsafe fn handle_input_message(
         WM_INPUT => {
             if let Some(state) = state
                 && state.capture_engaged.get()
+                && state.pointer_motion.get() == PointerMotion::Raw
             {
                 // SAFETY: The raw-input handle in l_param is valid for this synchronous message.
                 unsafe { dispatch_raw_pointer_delta(state, l_param) };
@@ -1182,21 +1198,45 @@ unsafe fn reclip_captured_cursor(window: Hwnd, state: &WindowState) {
     }
 }
 
+/// Captured absolute motion: recenters the pinned cursor, and reports how far off the center it
+/// was when the window asks for the system's accelerated motion. Raw deltas come from `WM_INPUT`.
+unsafe fn captured_pointer_moved(window: Hwnd, state: &WindowState, l_param: Lparam) {
+    // SAFETY: The warp targets this live window's client center.
+    let moved = unsafe { recenter_captured_cursor(window, l_param) };
+    if let Some((delta_x, delta_y)) = moved
+        && state.pointer_motion.get() == PointerMotion::System
+    {
+        // SAFETY: Pointer messages are synchronous while pump registration is live.
+        unsafe {
+            dispatch_input_event(
+                state,
+                InputEvent::PointerDelta {
+                    delta_x,
+                    delta_y,
+                    modifiers: win32_modifiers(),
+                },
+            );
+        }
+    }
+}
+
 /// Warps the hidden cursor back to the client center so absolute motion cannot reach the clip
-/// edge; the warp's own echo motion lands exactly on the center and is filtered here.
-unsafe fn recenter_captured_cursor(window: Hwnd, l_param: Lparam) {
+/// edge, returning how far off the center it was; the warp's own echo motion lands exactly on the
+/// center and is filtered here.
+unsafe fn recenter_captured_cursor(window: Hwnd, l_param: Lparam) -> Option<(f64, f64)> {
     let mut client = Rect::default();
     // SAFETY: The window is live and the rectangle is writable.
     if unsafe { GetClientRect(window, &raw mut client) } == 0 {
-        return;
+        return None;
     }
     let mut center = Point {
         x: (client.right - client.left) / 2,
         y: (client.bottom - client.top) / 2,
     };
     let position = pointer_position(l_param);
-    if position == LogicalPosition::new(f64::from(center.x), f64::from(center.y)) {
-        return;
+    let (center_x, center_y) = (f64::from(center.x), f64::from(center.y));
+    if position == LogicalPosition::new(center_x, center_y) {
+        return None;
     }
     // SAFETY: The point converts against this live window; the warp itself is best-effort.
     unsafe {
@@ -1204,6 +1244,7 @@ unsafe fn recenter_captured_cursor(window: Hwnd, l_param: Lparam) {
             SetCursorPos(center.x, center.y);
         }
     }
+    Some((position.x - center_x, position.y - center_y))
 }
 
 unsafe fn client_bounds_on_screen(window: Hwnd) -> Result<Rect, PlatformError> {

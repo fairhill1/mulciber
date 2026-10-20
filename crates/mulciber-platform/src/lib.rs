@@ -438,6 +438,20 @@ pub enum CursorMode {
     Captured,
 }
 
+/// Where a captured pointer's [`InputEvent::PointerDelta`] motion comes from.
+///
+/// Raw motion turns a view by the same amount however fast the mouse moves, which is what a
+/// mouse wants for aiming. The system's accelerated pointer suits a touchpad, whose small moves
+/// need its slow-speed damping and long sweeps its gain; it follows the user's own pointer settings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PointerMotion {
+    /// The device's own motion, before the system's pointer acceleration.
+    #[default]
+    Raw,
+    /// The system pointer's motion, accelerated as the user's pointer settings say.
+    System,
+}
+
 /// Whether a window shares the desktop as a movable window or occupies its current display.
 ///
 /// Fullscreen is an application intent implemented as each platform's borderless or native

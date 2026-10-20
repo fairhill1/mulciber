@@ -12,8 +12,8 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use crate::{
-    CursorMode, PhysicalExtent, PlatformError, PlatformErrorKind, PumpStatus, WindowDescriptor,
-    WindowEvent, WindowMetrics, WindowMode, WindowRevision,
+    CursorMode, PhysicalExtent, PlatformError, PlatformErrorKind, PointerMotion, PumpStatus,
+    WindowDescriptor, WindowEvent, WindowMetrics, WindowMode, WindowRevision,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -243,6 +243,26 @@ impl Window {
         match &self.native {
             NativeWindow::Wayland(native) => native.cursor_mode(),
             NativeWindow::X11(native) => native.cursor_mode(),
+        }
+    }
+
+    /// Chooses where captured [`InputEvent::PointerDelta`] motion comes from: the device's own,
+    /// before the system's pointer acceleration ([`PointerMotion::Raw`], the default), or the
+    /// system's accelerated pointer ([`PointerMotion::System`]). It takes effect at once, captured
+    /// or not, and lasts until changed.
+    pub fn set_pointer_motion(&self, motion: PointerMotion) {
+        match &self.native {
+            NativeWindow::Wayland(native) => native.set_pointer_motion(motion),
+            NativeWindow::X11(native) => native.set_pointer_motion(motion),
+        }
+    }
+
+    /// Returns where captured motion comes from.
+    #[must_use]
+    pub fn pointer_motion(&self) -> PointerMotion {
+        match &self.native {
+            NativeWindow::Wayland(native) => native.pointer_motion(),
+            NativeWindow::X11(native) => native.pointer_motion(),
         }
     }
 

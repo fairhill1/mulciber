@@ -29,7 +29,8 @@ pub use chain::{
     CUTOUT_THRESHOLD, Chain, Levels, chain_len, linear_to_srgb, mip_extent, srgb_to_linear,
 };
 pub use container::{
-    MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_bytes, level_bytes, write_ktx2,
+    MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_bytes, level_bytes, refuse_misread_chain,
+    write_ktx2,
 };
 #[cfg(feature = "encode")]
 pub use encode::{BakeMode, Baked, bake, bake_materials, encode_bc6h, encode_bc7, run};

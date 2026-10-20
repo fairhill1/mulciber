@@ -133,7 +133,9 @@ bindings:
   `create_texture(&ktx.descriptor())` for a KTX 2.0 file. These are sampled directly at a quarter
   of the RGBA8 footprint (BC6H, unsigned half-float light, at an eighth of `RGBA16Float`'s). The
   application encodes every level of its own filtered chain; Mulciber never encodes or decodes,
-  so block-compressed data cannot ask for `MipChain::Generated` (`InvalidRequest`). Adapters
+  so block-compressed data cannot ask for `MipChain::Generated` (`InvalidRequest`), and a chain
+  at an extent Apple GPUs misread a level of (`misread_block_mip`) is refused on every backend
+  (`InvalidRequest`). Adapters
   without BC sampling return `Unsupported` for these uploads and are otherwise unaffected. See the
   [contract](https://github.com/fairhill1/mulciber/blob/main/docs/block-compressed-textures.md).
 

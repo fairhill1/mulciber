@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use mulciber::{BlockCompression, ktx2_vk_format};
+use mulciber::{BlockCompression, ktx2_vk_format, misread_block_mip};
 
 use crate::TextureError;
 use crate::chain::{chain_len, mip_extent};
@@ -31,6 +31,45 @@ pub fn level_bytes(compression: BlockCompression, width: u32, height: u32) -> us
     width.div_ceil(4) as usize * height.div_ceil(4) as usize * block
 }
 
+/// Refuses a complete chain at an extent Apple GPUs sample a level of from the wrong place
+/// ([`misread_block_mip`]), naming the nearest whole-block extents, the width or the height
+/// changed, that they sample right.
+///
+/// # Errors
+///
+/// For such an extent.
+pub fn refuse_misread_chain(width: u32, height: u32) -> Result<(), TextureError> {
+    let Some(level) = misread_block_mip(width, height) else {
+        return Ok(());
+    };
+    let mut fixes: Vec<(u32, u32, u32)> = Vec::new();
+    for (extent, other, turned) in [(width, height, false), (height, width, true)] {
+        let fits = |e: u32| {
+            let (w, h) = if turned { (other, e) } else { (e, other) };
+            misread_block_mip(w, h)
+                .is_none()
+                .then_some((e.abs_diff(extent), w, h))
+        };
+        let blocks = extent.div_ceil(4);
+        fixes.extend((blocks + 1..=blocks * 2).map(|b| b * 4).find_map(fits));
+        fixes.extend((1..blocks).rev().map(|b| b * 4).find_map(fits));
+    }
+    fixes.sort_unstable();
+    let named: Vec<String> = fixes
+        .iter()
+        .take(2)
+        .map(|(_, w, h)| format!("{w}x{h}"))
+        .collect();
+    Err(TextureError::new(format!(
+        "{width}x{height}: Apple GPUs sample mip level {level} ({}x{}) of a block-compressed \
+         texture this size from the wrong place (mulciber::misread_block_mip); the nearest extents \
+         in whole blocks that they sample right are {}",
+        mip_extent(width, level),
+        mip_extent(height, level),
+        named.join(" and ")
+    )))
+}
+
 fn key_value_data(entries: &[(&str, &str)]) -> Vec<u8> {
     let mut block = Vec::new();
     for (key, value) in entries {
@@ -53,8 +92,8 @@ fn key_value_data(entries: &[(&str, &str)]) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// For a level count that is neither one nor the complete chain, or a
-/// level of the wrong size.
+/// For a level count that is neither one nor the complete chain, a complete chain at an extent
+/// [`refuse_misread_chain`] refuses, or a level of the wrong size.
 pub fn ktx2_bytes(
     compression: BlockCompression,
     width: u32,
@@ -68,6 +107,9 @@ pub fn ktx2_bytes(
             "{level_count} levels for {width}x{height}; a bake holds 1 or the complete chain of {}",
             chain_len(width, height)
         )));
+    }
+    if level_count > 1 {
+        refuse_misread_chain(width, height)?;
     }
     for (level, blocks) in (0_u32..).zip(levels) {
         let expected = level_bytes(
@@ -224,6 +266,32 @@ mod tests {
         let levels: Vec<Vec<u8>> = [96, 32, 16, 16].iter().map(|&n| vec![9; n]).collect();
         let bytes = ktx2_bytes(BlockCompression::Bc7Unorm, 12, 5, &levels, &[]).unwrap();
         assert_eq!(Ktx2Texture::parse(&bytes).unwrap().level_count(), 4);
+    }
+
+    #[test]
+    fn a_chain_apple_gpus_misread_is_refused_with_the_nearest_fixes() {
+        // 4608x576's 36x4 level; 612 rows (a block past 608) and 512 sample right.
+        let levels: Vec<Vec<u8>> = (0..13)
+            .map(|level| {
+                vec![
+                    0;
+                    level_bytes(
+                        BlockCompression::Bc7Srgb,
+                        mip_extent(4608, level),
+                        mip_extent(576, level)
+                    )
+                ]
+            })
+            .collect();
+        let error = ktx2_bytes(BlockCompression::Bc7Srgb, 4608, 576, &levels, &[]).unwrap_err();
+        assert!(error.to_string().contains("mip level 7 (36x4)"), "{error}");
+        assert!(
+            error.to_string().ends_with("are 4608x612 and 4608x512"),
+            "{error}"
+        );
+        // Its base level alone is not a chain, and is written.
+        assert!(ktx2_bytes(BlockCompression::Bc7Srgb, 4608, 576, &levels[..1], &[]).is_ok());
+        assert!(refuse_misread_chain(4608, 640).is_ok());
     }
 
     #[test]

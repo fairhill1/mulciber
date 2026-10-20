@@ -107,6 +107,16 @@ the same rule supplied RGBA8 chains follow. A level whose byte count is not its 
 the block size is `InvalidRequest`, naming the level and both numbers. Input byte ranges and summed
 staging capacity are checked before native upload.
 
+A complete chain at an extent Apple GPUs misread is `InvalidRequest` on every backend, naming the
+level, so a texture that would draw wrong on a Mac fails wherever it is first loaded.
+`misread_block_mip(width, height)` gives that level, or `None`. It befalls an axis whose block count
+is just past a power of two: by up to 3/16 of it, at the level where that axis is four texels long;
+by up to 1/16, at the level where it is eight too. Such a level is misread when it is taller than
+wide (a width so placed) or more than twice as wide as tall (a height so placed). 4608×576 is one:
+its 36×4 level samples half black (BC7), where 4608×512 and 4608×640 sample right. A square, a
+power-of-two extent and a single level never meet it. [`mulciber-texture`](../crates/mulciber-texture/README.md)
+refuses to bake such an extent (`refuse_misread_chain`), naming the nearest that are sampled right.
+
 ## Capability
 
 BC sampling is optional hardware. On Vulkan the adapter's `textureCompressionBC` feature is read
@@ -144,6 +154,17 @@ a The Ship map viewer uploaded 151 textures from the game's own DXT1 and DXT5 da
 them in a material pipeline; the rendered frame was inspected and matched the same data decoded
 through another renderer. BC2 was not exercised (that game ships no DXT3), the UNORM variants were
 not exercised, and Metal was not run.
+
+Misread extents (graphics 0.18.1, texture 0.6.1): on 2026-10-20, Apple M2, macOS 15.6, Metal, a standalone probe
+uploaded complete chains of one opaque block repeated and read every texel of every level back
+through a compute kernel. Shiplike's 4608×576 BC7 bake sampled its 36×4 level half black, block
+columns 2–3 and 6–7, though `getBytes` read the level back as written; `replaceRegion` with and
+without `bytesPerImage`, a blit from a buffer into shared and into private storage, and
+`allowGPUOptimizedContents` off all gave the same. BC1, BC3, BC5, BC6H and BC7 broke at the same
+extents and levels; RGBA8 did not. `misread_block_mip` was fitted to every extent from 1×1 to 256×256
+and 4608 by 1 to 1300 each way, then predicted 3000 random extents to 4096 (1051 of them misread)
+without a miss: 71102 extents in all agree. Other Apple GPUs and macOS versions were not measured,
+and the refusal was not run through a Vulkan device.
 
 KTX 2.0 (unreleased): unit tests parse files written byte by byte from the specification, every
 `BlockCompression` encoding's `VkFormat`, a base-level-only file and a complete non-square chain,

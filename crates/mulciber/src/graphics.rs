@@ -293,7 +293,8 @@ impl Device<'_> {
     /// Returns `InvalidRequest` for a zero extent or no cube array layers, an image count that
     /// does not match the shape and mips, a level whose size does not match its extent or float
     /// components outside binary16's finite range (each naming the layer, face and level), a
-    /// block-compressed texture asking for generated mips, or overflow. Returns `Unsupported`
+    /// block-compressed texture asking for generated mips, a block-compressed chain at an extent
+    /// Apple GPUs misread ([`misread_block_mip`], refused on every backend), or overflow. Returns `Unsupported`
     /// when the device cannot sample the format, the cube array, or linearly filterable
     /// `RGBA16Float`, cannot blit the format with linear filtering for generated mips, or for
     /// combinations not implemented: generated mips are 2D only, and a cube array takes
@@ -2599,6 +2600,19 @@ fn validate_texture_request(descriptor: &TextureDescriptor<'_>) -> Result<usize,
             data.len()
         )));
     }
+    // Refused on every backend, so a texture that would draw wrong on a Mac fails wherever it is
+    // first loaded.
+    if mips == MipChain::Supplied
+        && data.is_block_compressed()
+        && let Some(level) = misread_block_mip(width, height)
+    {
+        return Err(GraphicsError::invalid_request(format!(
+            "a block-compressed {width}x{height} {label}'s mip level {level} ({}x{}) is sampled \
+             from the wrong place on Apple GPUs (see misread_block_mip); give it another extent",
+            mip_extent(width, level),
+            mip_extent(height, level)
+        )));
+    }
     Ok(levels)
 }
 
@@ -3971,6 +3985,40 @@ pub(crate) const fn mip_extent(base: u32, level: u32) -> u32 {
     if scaled == 0 { 1 } else { scaled }
 }
 
+/// The first level of a block-compressed `width`×`height` texture's complete mip chain that Apple
+/// GPUs sample from the wrong place, or `None` when they sample every level as it was uploaded.
+///
+/// It befalls an axis whose count of 4×4 blocks is just past a power of two: by up to 3/16 of it,
+/// at the level where that axis is four texels long; by up to 1/16, at the level where it is eight
+/// too. Such a level is misread when it is taller than it is wide (a width so placed) or more than
+/// twice as wide as it is tall (a height so placed): part of it samples as other memory, black for
+/// BC7. 4608×576 is one: its 36×4 level (the height 144 blocks, an eighth past 128) samples half
+/// black, while 4608×512 and 4608×640 sample right. A square never meets it, nor a power-of-two
+/// extent, nor a texture of one level.
+///
+/// Measured on an Apple M2 (macOS 15.6), every BC encoding alike, through every upload Metal has
+/// (`replaceRegion`, a blit from a buffer, shared and private storage, GPU-optimised contents or
+/// not), while the level reads back on the CPU as it was written. The rule is fitted to every level
+/// of every extent from 1×1 to 256×256 and of 4608 by 1 to 1300 each way, and predicts 3000 random
+/// extents to 4096 besides. Other Apple GPUs have not been measured; Vulkan samples these extents
+/// right.
+#[must_use]
+pub fn misread_block_mip(width: u32, height: u32) -> Option<u32> {
+    // Whether an axis `extent` texels long is just past a power of two in blocks, where `level`
+    // leaves it four texels long or eight.
+    let placed = |extent: u32, level: u32| {
+        let blocks = u64::from(extent.div_ceil(4));
+        let four = 1_u64 << level;
+        let eight = four << 1;
+        (four < blocks && 16 * blocks <= 19 * four) || (eight < blocks && 16 * blocks <= 17 * eight)
+    };
+    let levels = 32 - width.max(height).leading_zeros();
+    (0..levels).find(|&level| {
+        let (w, h) = (mip_extent(width, level), mip_extent(height, level));
+        (placed(width, level) && h > w) || (placed(height, level) && w > 2 * h)
+    })
+}
+
 /// Checks that one mip level's byte count matches its tightly packed extent: texels for an
 /// uncompressed format, whole 4×4 blocks for a compressed one.
 fn validate_mip_level(
@@ -4860,7 +4908,10 @@ mod foreground_tests {
 
 #[cfg(test)]
 mod block_compressed_tests {
-    use super::{BlockCompression, SampledTextureFormat, validate_mip_level};
+    use super::{
+        BlockCompression, MipChain, SampledTextureFormat, TexelData, TextureDescriptor,
+        TextureShape, misread_block_mip, validate_mip_level, validate_texture_request,
+    };
 
     #[test]
     fn a_compressed_level_is_whole_blocks_at_every_extent() {
@@ -4919,6 +4970,70 @@ mod block_compressed_tests {
         assert!(validate_mip_level(bc1, 8, 8, 0, &blocks[..32]).is_ok());
         assert!(validate_mip_level(bc1, 8, 8, 3, &blocks[..8]).is_ok());
         assert!(validate_mip_level(bc1, 8, 8, 3, &blocks[..16]).is_err());
+    }
+
+    #[test]
+    fn the_levels_apple_gpus_misread_are_named() {
+        // Each measured on an Apple M2: the first level it sampled wrong, or none.
+        for (width, height, misread) in [
+            // A height 144 blocks (an eighth past 128) at its 36x4 level, and the fixes.
+            (4608, 576, Some(7)),
+            (4608, 608, Some(7)),
+            (4608, 609, None),
+            (4608, 512, None),
+            (4608, 640, None),
+            // The same turned on its side, a width where the level is taller than wide.
+            (576, 4608, Some(7)),
+            // Within a sixteenth of the power of two, the level eight texels high goes first.
+            (4608, 516, Some(6)),
+            (4608, 545, Some(7)),
+            (200, 65, Some(3)),
+            // A width needs the level taller than wide; a height, the level over twice as wide.
+            (36, 40, Some(3)),
+            (36, 39, None),
+            (40, 36, None),
+            (72, 36, Some(3)),
+            (1040, 663, None),
+            // Squares and powers of two never.
+            (1260, 1260, None),
+            (4096, 1024, None),
+            (1, 1, None),
+        ] {
+            assert_eq!(
+                misread_block_mip(width, height),
+                misread,
+                "{width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_misread_chain_is_refused_and_a_single_level_is_not() {
+        let images: [&[u8]; 13] = [&[]; 13];
+        let shape = TextureShape::D2 {
+            width: 4608,
+            height: 576,
+        };
+        let error = validate_texture_request(&TextureDescriptor {
+            shape,
+            mips: MipChain::Supplied,
+            data: TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &images),
+        })
+        .unwrap_err();
+        assert!(
+            error.message().contains("mip level 7 (36x4)"),
+            "{}",
+            error.message()
+        );
+        for (mips, data) in [
+            (
+                MipChain::Single,
+                TexelData::BlockCompressed(BlockCompression::Bc7Srgb, &images[..1]),
+            ),
+            (MipChain::Supplied, TexelData::Rgba8Srgb(&images)),
+        ] {
+            assert!(validate_texture_request(&TextureDescriptor { shape, mips, data }).is_ok());
+        }
     }
 }
 

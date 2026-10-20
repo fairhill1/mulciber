@@ -50,9 +50,12 @@ A `Recipe` is four `Channel`s (an image's red, green, blue, alpha or grey value,
 | `Normal` | RGB averaged as unit vectors and renormalised, alpha box filtered | BC7 UNORM |
 | `Linear` | every channel box filtered | BC7 UNORM |
 
-Any size works, not only powers of two: each level halves both axes and floors at one texel, the
-rule Mulciber's mip uploads check, and a level that is not a multiple of four is padded for the
-encoder by repeating its edge. The encoder uses the slow (best) BC7 settings, in opaque modes when
+Any size works, not only powers of two, but for a few just past one: each level halves both axes
+and floors at one texel, the rule Mulciber's mip uploads check, and a level that is not a multiple
+of four is padded for the encoder by repeating its edge. An extent Apple GPUs misread a level of
+(`mulciber::misread_block_mip`, 4608×576 for one) is refused before encoding, the error naming the
+nearest whole-block extents that are sampled right; `refuse_misread_chain(width, height)` asks the
+same, and `ktx2_bytes` refuses to write such a chain. The encoder uses the slow (best) BC7 settings, in opaque modes when
 every texel is opaque.
 
 A bake's key/value data carries `MulciberSourceDigest` (FNV-1a over the bake version, the chain, the

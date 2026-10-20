@@ -8,7 +8,7 @@ use intel_tex_2::{RgbaSurface, bc6h, bc7};
 
 use crate::TextureError;
 use crate::chain::{Levels, mip_extent};
-use crate::container::{SOURCE_DIGEST_KEY, write_ktx2};
+use crate::container::{SOURCE_DIGEST_KEY, refuse_misread_chain, write_ktx2};
 use crate::hdr::unsigned_halves;
 use crate::material::{MaterialDefaults, MaterialMaps, find_materials, is_albedo};
 use crate::recipe::{Recipe, Stats};
@@ -161,6 +161,8 @@ pub fn bake(recipe: &Recipe, mode: BakeMode) -> Result<Baked, TextureError> {
     }
     let digest = recipe.digest()?;
     let levels = recipe.build()?;
+    // Before the encoder's minutes, not after.
+    refuse_misread_chain(levels.width, levels.height).map_err(|error| error.at(&recipe.output))?;
     let stats = Stats::of(&levels.levels[0], recipe.chain.is_srgb());
     let blocks = encode_bc7(&levels);
     let digest = format!("{digest:016x}");

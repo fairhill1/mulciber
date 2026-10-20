@@ -2,6 +2,23 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Unaccelerated X11 and AppKit pointer deltas (platform 0.5.8)
+
+While the pointer is captured, every backend's `PointerDelta` now carries the mouse's own motion,
+before the system's pointer acceleration, so turning speed no longer depends on how fast the mouse
+moves anywhere (Win32 and Wayland already did).
+
+- X11 selects `XInput2` raw motion (`XI_RawMotion`, `XInput2` 2.1 or later) from every master
+  pointer on the root window and reports its raw values for the first two axes. The pointer stays
+  grabbed and warped to the window's center, its core motion now only re-centering it. An absolute
+  device's motion (a tablet, a virtual machine's pointer), which the server doesn't accelerate, is
+  still reported from the warp. A server without `XInput2` 2.1 keeps the warp deltas. `libXi`
+  joins the Linux link-time dependencies.
+- AppKit gives every connected `GCMouse` (the GameController framework, macOS 11) a moved handler
+  while captured and reports the motion it gathered once per pump, y flipped to point down. With
+  no `GCMouse` (before macOS 11, or before the framework finds a mouse), the `NSEvent` deltas are
+  reported as before. `GameController` joins the macOS frameworks linked.
+
 ## Muffled voices (audio 0.4.0)
 
 Breaking: `Play` gains `muffle`, so a `Play` written out field by field without

@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{CString, c_char, c_int, c_long, c_uint, c_ulong, c_ushort, c_void};
-use std::ptr;
+use std::{ptr, slice};
 
 use super::keymap;
 use crate::{
@@ -67,6 +67,14 @@ const CURRENT_TIME: c_ulong = 0;
 const X_KEYCODE_EVDEV_OFFSET: c_uint = 8;
 const SCROLL_BUTTON_FIRST: c_uint = 4;
 const SCROLL_BUTTON_LAST: c_uint = 7;
+const GENERIC_EVENT: c_int = 35;
+const SUCCESS: Status = 0;
+/// `XInput2`'s raw motion: a device's motion before the server's pointer acceleration.
+const XI_RAW_MOTION: c_int = 17;
+const XI_ALL_DEVICES: c_int = 0;
+const XI_ALL_MASTER_DEVICES: c_int = 1;
+const XI_VALUATOR_CLASS: c_int = 2;
+const XI_MODE_ABSOLUTE: c_int = 1;
 
 #[link(name = "X11")]
 unsafe extern "C" {
@@ -198,6 +206,106 @@ unsafe extern "C" {
         compose_status: *mut c_void,
     ) -> c_int;
     fn XRefreshKeyboardMapping(event: *mut XMappingEvent) -> c_int;
+    fn XQueryExtension(
+        display: *mut Display,
+        name: *const c_char,
+        major_opcode: *mut c_int,
+        first_event: *mut c_int,
+        first_error: *mut c_int,
+    ) -> c_int;
+    fn XGetEventData(display: *mut Display, cookie: *mut XGenericEventCookie) -> c_int;
+    fn XFreeEventData(display: *mut Display, cookie: *mut XGenericEventCookie);
+}
+
+#[link(name = "Xi")]
+unsafe extern "C" {
+    fn XIQueryVersion(display: *mut Display, major: *mut c_int, minor: *mut c_int) -> Status;
+    fn XISelectEvents(
+        display: *mut Display,
+        window: XWindow,
+        masks: *mut XIEventMask,
+        num_masks: c_int,
+    ) -> Status;
+    fn XIQueryDevice(
+        display: *mut Display,
+        deviceid: c_int,
+        ndevices_return: *mut c_int,
+    ) -> *mut XIDeviceInfo;
+    fn XIFreeDeviceInfo(info: *mut XIDeviceInfo);
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct XGenericEventCookie {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut Display,
+    extension: c_int,
+    evtype: c_int,
+    cookie: c_uint,
+    data: *mut c_void,
+}
+
+#[repr(C)]
+struct XIEventMask {
+    deviceid: c_int,
+    mask_len: c_int,
+    mask: *mut u8,
+}
+
+#[repr(C)]
+struct XIValuatorState {
+    mask_len: c_int,
+    mask: *mut u8,
+    values: *mut f64,
+}
+
+#[repr(C)]
+struct XIRawEvent {
+    kind: c_int,
+    serial: c_ulong,
+    send_event: c_int,
+    display: *mut Display,
+    extension: c_int,
+    evtype: c_int,
+    time: c_ulong,
+    deviceid: c_int,
+    sourceid: c_int,
+    detail: c_int,
+    flags: c_int,
+    valuators: XIValuatorState,
+    raw_values: *mut f64,
+}
+
+#[repr(C)]
+struct XIDeviceInfo {
+    deviceid: c_int,
+    name: *mut c_char,
+    device_use: c_int,
+    attachment: c_int,
+    enabled: c_int,
+    num_classes: c_int,
+    classes: *mut *mut XIAnyClassInfo,
+}
+
+#[repr(C)]
+struct XIAnyClassInfo {
+    kind: c_int,
+    sourceid: c_int,
+}
+
+#[repr(C)]
+struct XIValuatorClassInfo {
+    kind: c_int,
+    sourceid: c_int,
+    number: c_int,
+    label: Atom,
+    min: f64,
+    max: f64,
+    value: f64,
+    resolution: c_int,
+    mode: c_int,
 }
 
 #[repr(C)]
@@ -377,6 +485,7 @@ union XEvent {
     client_message: XClientMessageEvent,
     property: XPropertyEvent,
     mapping: XMappingEvent,
+    cookie: XGenericEventCookie,
     padding: [c_long; XEVENT_PADDING_WORDS],
 }
 
@@ -442,6 +551,15 @@ pub(super) struct Window {
     fullscreen_supported: bool,
     sync_counter: c_ulong,
     invisible_cursor: Cell<c_ulong>,
+    /// The `XInput2` major opcode when the server delivers raw motion (2.1 or later), whose
+    /// unaccelerated deltas captured motion reports; `None` falls back to warp-to-center deltas.
+    xi_opcode: Option<c_int>,
+    /// Each input device seen by id, and whether it moves relatively (a mouse) rather than to
+    /// absolute positions (a tablet, a virtual machine's pointer).
+    raw_devices: RefCell<Vec<(c_int, bool)>>,
+    /// Whether the latest raw motion came from a relative device, so the core motion that follows
+    /// it is already reported and only re-centers the pointer.
+    raw_relative: Cell<bool>,
     state: WindowState,
 }
 
@@ -490,6 +608,9 @@ impl Window {
             fullscreen_supported: false,
             sync_counter: 0,
             invisible_cursor: Cell::new(0),
+            xi_opcode: None,
+            raw_devices: RefCell::new(Vec::new()),
+            raw_relative: Cell::new(false),
             state: WindowState {
                 width: Cell::new(width),
                 height: Cell::new(height),
@@ -547,6 +668,7 @@ impl Window {
         }
         window.register_wm_protocols()?;
         window.register_ewmh_fullscreen();
+        window.xi_opcode = window.select_raw_motion();
         if visible {
             // SAFETY: The display/window are live; mapping requests WM management of the window.
             unsafe {
@@ -649,6 +771,43 @@ impl Window {
         self.fullscreen_supported = self
             .read_atom_property(self.root, supported)
             .contains(&self.net_wm_state_fullscreen);
+    }
+
+    /// Asks for `XInput2` raw motion from every master pointer, delivered to the root window
+    /// whatever has focus or holds a grab (`XInput2` 2.1), so captured motion can be reported
+    /// before the server's pointer acceleration. Returns the extension's opcode, or `None` when
+    /// the server lacks `XInput2` 2.1.
+    fn select_raw_motion(&self) -> Option<c_int> {
+        let mut opcode = 0;
+        let mut first_event = 0;
+        let mut first_error = 0;
+        let mut major = 2;
+        let mut minor = 1;
+        let mut bits = [0_u8; 4];
+        bits[XI_RAW_MOTION as usize / 8] |= 1 << (XI_RAW_MOTION % 8);
+        let mut mask = XIEventMask {
+            deviceid: XI_ALL_MASTER_DEVICES,
+            mask_len: c_int::try_from(bits.len()).expect("mask length fits c_int"),
+            mask: bits.as_mut_ptr(),
+        };
+        // SAFETY: The display and root window are live, the extension name is NUL-terminated,
+        // every output pointer is writable, and the mask outlives the selection request.
+        unsafe {
+            if XQueryExtension(
+                self.display,
+                c"XInputExtension".as_ptr(),
+                &raw mut opcode,
+                &raw mut first_event,
+                &raw mut first_error,
+            ) == FALSE
+                || XIQueryVersion(self.display, &raw mut major, &raw mut minor) != SUCCESS
+                || (major, minor) < (2, 1)
+                || XISelectEvents(self.display, self.root, &raw mut mask, 1) != SUCCESS
+            {
+                return None;
+            }
+        }
+        Some(opcode)
     }
 
     /// Reads an `ATOM[]` property, returning an empty list when the property is absent or malformed.
@@ -813,6 +972,12 @@ impl Window {
                 unsafe { XRefreshKeyboardMapping(&raw mut mapping) };
                 false
             }
+            GENERIC_EVENT => {
+                // SAFETY: The discriminant identifies the generic-event cookie as initialized.
+                let cookie = unsafe { event.cookie };
+                self.handle_generic_event(cookie);
+                false
+            }
             MAP_NOTIFY => true,
             _ => false,
         }
@@ -940,18 +1105,140 @@ impl Window {
     /// Converts grabbed motion into deltas against the window center and warps back to it.
     ///
     /// The motion generated by the warp itself lands exactly on the center and is filtered out
-    /// rather than reported as a mirrored delta.
+    /// rather than reported as a mirrored delta. Motion a relative device's raw event already
+    /// reported only re-centers the pointer: its core position is accelerated. An absolute
+    /// device's isn't, as the server accelerates relative motion alone, so it is reported here.
     fn handle_captured_motion(&self, x: c_int, y: c_int, modifiers: Modifiers) {
         let (center_x, center_y) = self.capture_center();
         if x == center_x && y == center_y {
             return;
         }
-        self.state.push_input(InputEvent::PointerDelta {
-            delta_x: f64::from(x - center_x),
-            delta_y: f64::from(y - center_y),
-            modifiers,
-        });
+        if !self.raw_relative.get() {
+            self.state.push_input(InputEvent::PointerDelta {
+                delta_x: f64::from(x - center_x),
+                delta_y: f64::from(y - center_y),
+                modifiers,
+            });
+        }
         self.warp_to_center();
+    }
+
+    /// Reads an `XInput2` raw motion event, reporting a relative device's motion while captured.
+    fn handle_generic_event(&self, mut cookie: XGenericEventCookie) {
+        if self.xi_opcode != Some(cookie.extension) || cookie.evtype != XI_RAW_MOTION {
+            return;
+        }
+        // SAFETY: The cookie came from this display's event queue; its data is claimed here and
+        // freed below.
+        if unsafe { XGetEventData(self.display, &raw mut cookie) } == FALSE {
+            return;
+        }
+        if !cookie.data.is_null() {
+            // SAFETY: A claimed XI_RawMotion cookie's data is an XIRawEvent owned by Xlib until
+            // XFreeEventData.
+            let raw = unsafe { &*cookie.data.cast::<XIRawEvent>() };
+            self.handle_raw_motion(raw);
+        }
+        // SAFETY: The cookie's data was claimed above and is not used after this.
+        unsafe { XFreeEventData(self.display, &raw mut cookie) };
+    }
+
+    fn handle_raw_motion(&self, raw: &XIRawEvent) {
+        let relative = self.device_is_relative(raw.sourceid);
+        self.raw_relative.set(relative);
+        if !relative || !self.state.capture_engaged.get() {
+            return;
+        }
+        let mask_len = usize::try_from(raw.valuators.mask_len).unwrap_or(0);
+        if raw.valuators.mask.is_null() || raw.raw_values.is_null() || mask_len == 0 {
+            return;
+        }
+        // SAFETY: The mask holds mask_len bytes, and raw_values one value per bit set in it.
+        let mask = unsafe { slice::from_raw_parts(raw.valuators.mask, mask_len) };
+        let count = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+        // SAFETY: As above; the event outlives both borrows.
+        let values = unsafe { slice::from_raw_parts(raw.raw_values, count) };
+        let (delta_x, delta_y) = raw_axes(mask, values);
+        if delta_x != 0.0 || delta_y != 0.0 {
+            self.state.push_input(InputEvent::PointerDelta {
+                delta_x,
+                delta_y,
+                modifiers: self.state.modifiers.get(),
+            });
+        }
+    }
+
+    /// Whether the input device `id` moves relatively, from the devices last listed, listing
+    /// them again for one not seen before (plugged in since). Old servers name no source device
+    /// (zero), which counts as a mouse, as does a device still unknown.
+    fn device_is_relative(&self, id: c_int) -> bool {
+        let known = |devices: &[(c_int, bool)]| {
+            devices
+                .iter()
+                .find(|(device, _)| *device == id)
+                .map(|&(_, relative)| relative)
+        };
+        if id <= XI_ALL_MASTER_DEVICES {
+            return true;
+        }
+        if let Some(relative) = known(&self.raw_devices.borrow()) {
+            return relative;
+        }
+        self.list_raw_devices();
+        let mut devices = self.raw_devices.borrow_mut();
+        known(&devices).unwrap_or_else(|| {
+            devices.push((id, true));
+            true
+        })
+    }
+
+    /// Lists every input device and whether its first axis is relative. All devices are asked
+    /// for at once: asking for one that was unplugged meanwhile is an X error, fatal under Xlib's
+    /// default handler.
+    fn list_raw_devices(&self) {
+        let mut count = 0;
+        // SAFETY: The display is live and the count pointer is writable.
+        let info = unsafe { XIQueryDevice(self.display, XI_ALL_DEVICES, &raw mut count) };
+        if info.is_null() {
+            return;
+        }
+        // SAFETY: XIQueryDevice returned `count` contiguous device records.
+        let devices = unsafe { slice::from_raw_parts(info, usize::try_from(count).unwrap_or(0)) };
+        let listed = devices
+            .iter()
+            .map(|device| {
+                let classes = if device.classes.is_null() {
+                    &[][..]
+                } else {
+                    // SAFETY: Each record lists num_classes class pointers.
+                    unsafe {
+                        slice::from_raw_parts(
+                            device.classes,
+                            usize::try_from(device.num_classes).unwrap_or(0),
+                        )
+                    }
+                };
+                let absolute = classes.iter().any(|&class| {
+                    if class.is_null() {
+                        return false;
+                    }
+                    // SAFETY: Each class pointer is a live record headed by its type; a valuator
+                    // class's record is an XIValuatorClassInfo, malloc-allocated by libXi, so
+                    // aligned for it despite the narrower header type.
+                    #[allow(clippy::cast_ptr_alignment)]
+                    unsafe {
+                        (*class).kind == XI_VALUATOR_CLASS && {
+                            let valuator = &*class.cast::<XIValuatorClassInfo>();
+                            valuator.number == 0 && valuator.mode == XI_MODE_ABSOLUTE
+                        }
+                    }
+                });
+                (device.deviceid, !absolute)
+            })
+            .collect();
+        // SAFETY: The list came from XIQueryDevice and is not used after this.
+        unsafe { XIFreeDeviceInfo(info) };
+        *self.raw_devices.borrow_mut() = listed;
     }
 
     fn handle_focus_event(&self, focused: bool) {
@@ -1127,6 +1414,10 @@ impl Window {
             )));
         }
         self.state.capture_engaged.set(true);
+        // With raw motion, core motion counts as already reported until an absolute device's
+        // raw event says otherwise: XWayland can deliver a capture's first core motion before
+        // the raw event it came with.
+        self.raw_relative.set(self.xi_opcode.is_some());
         self.warp_to_center();
         // SAFETY: The display connection is live and buffered requests must reach the server.
         unsafe { XFlush(self.display) };
@@ -1305,6 +1596,27 @@ fn x11_pointer_button(button: c_uint) -> PointerButton {
     }
 }
 
+/// The first two axes' values from a raw event's packed values, one for each bit set in its
+/// mask in order; an axis it doesn't carry hasn't moved.
+fn raw_axes(mask: &[u8], values: &[f64]) -> (f64, f64) {
+    let mut axes = [0.0; 2];
+    let mut next = values.iter();
+    for bit in 0..mask.len() * 8 {
+        if mask[bit / 8] & (1 << (bit % 8)) == 0 {
+            continue;
+        }
+        let Some(&value) = next.next() else {
+            break;
+        };
+        if let Some(axis) = axes.get_mut(bit) {
+            *axis = value;
+        } else {
+            break;
+        }
+    }
+    (axes[0], axes[1])
+}
+
 /// One coarse step per core scroll button, wheel-forward and scroll-right positive.
 const fn scroll_steps(button: c_uint) -> (f64, f64) {
     match button {
@@ -1320,7 +1632,7 @@ const fn scroll_steps(button: c_uint) -> (f64, f64) {
 mod tests {
     use super::{
         CONTROL_MASK, LOCK_MASK, MOD1_MASK, MOD4_MASK, SHIFT_MASK, modifiers_from_x_state,
-        scroll_steps, x11_pointer_button,
+        raw_axes, scroll_steps, x11_pointer_button,
     };
     use crate::PointerButton;
 
@@ -1352,5 +1664,15 @@ mod tests {
         assert_eq!(scroll_steps(5), (0.0, -1.0));
         assert_eq!(scroll_steps(6), (-1.0, 0.0));
         assert_eq!(scroll_steps(7), (1.0, 0.0));
+    }
+
+    #[test]
+    fn raw_axes_take_the_values_their_mask_bits_name() {
+        assert_eq!(raw_axes(&[0b11], &[3.5, -2.0]), (3.5, -2.0));
+        assert_eq!(raw_axes(&[0b10], &[-4.0]), (0.0, -4.0));
+        assert_eq!(raw_axes(&[0b1101], &[1.0, 9.0, 9.0]), (1.0, 0.0));
+        assert_eq!(raw_axes(&[0b1100, 0], &[9.0, 9.0]), (0.0, 0.0));
+        assert_eq!(raw_axes(&[0b11], &[2.0]), (2.0, 0.0));
+        assert_eq!(raw_axes(&[], &[]), (0.0, 0.0));
     }
 }

@@ -136,6 +136,18 @@ and that path is untested against a real compositor. This is automated single-ma
 physical (human) keyboard/mouse interaction on Wayland and X11, key-repeat cadence observation,
 modifier and focus-transition coverage, native Xorg, and non-KDE compositors remain unrecorded.
 
+**X11 raw motion through XWayland (automated, XTEST-driven, 2026-10-20, platform 0.5.8 on an
+uncommitted tree based on `02e5b3d`)**: a scratchpad probe on `mulciber-platform` alone, run with
+`WAYLAND_DISPLAY` unset on the KDE Plasma Wayland session, opened a window, captured the pointer
+on focus and printed each `PointerDelta`. XWayland reported `XInput2` 2.1. `xdotool
+mousemove_relative` moves of (10, 0) twice, (60, −20) and (−5, 3) came back as exactly those
+deltas, one each, from raw events of the XTEST pointer (a relative device), with the core motion
+after each only re-centering the pointer. A first run with logging showed the capture's first core
+motion arriving before its raw event and reported as an extra delta, which led to core motion
+counting as already reported from capture on whenever raw motion is selected. This is XTEST's
+synthetic motion, not a physical mouse's acceleration; native Xorg, a physical mouse, an absolute
+device, and a server without `XInput2` 2.1 remain unexercised.
+
 The Wayland keymap path adds `libxkbcommon` as a Linux link-time dependency beside
 `libwayland-client`/`libX11`/`libXext`, used solely to resolve modifier-mask bit positions from
 the compositor-supplied keymap; the single-backend `ldd` list recorded above predates it.

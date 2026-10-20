@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::{
     ButtonState, CursorMode, InputEvent, KeyCode, LogicalPosition, Modifiers, PhysicalExtent,
@@ -45,6 +45,12 @@ const MODIFIER_FUNCTION: usize = 1 << 23;
 /// `kVK_Function`: the physical Fn/globe key's own code in a `flagsChanged` event.
 const KEY_CODE_FUNCTION: u16 = 63;
 static WINDOW_STATE_KEY: u8 = 0;
+/// `BLOCK_IS_GLOBAL`: a block with static storage, which copying leaves where it is.
+const BLOCK_IS_GLOBAL: i32 = 1 << 28;
+/// `BLOCK_HAS_SIGNATURE`: the block's descriptor carries its type encoding.
+const BLOCK_HAS_SIGNATURE: i32 = 1 << 30;
+/// The `GCMouse` motion its moved handler gathered since the last pump, positive y down.
+static RAW_MOTION: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
 
 struct WindowDelegateState {
     close_requested: Cell<bool>,
@@ -108,6 +114,29 @@ unsafe extern "C" {
 #[link(name = "System")]
 unsafe extern "C" {
     fn pthread_main_np() -> c_int;
+    static _NSConcreteGlobalBlock: u8;
+}
+
+// `GCMouse` (macOS 11) is looked up by name; linking the framework loads its classes.
+#[link(name = "GameController", kind = "framework")]
+unsafe extern "C" {}
+
+/// A block's descriptor, as the Blocks ABI lays it out.
+#[repr(C)]
+struct BlockDescriptor {
+    reserved: usize,
+    size: usize,
+    signature: *const c_char,
+}
+
+/// A global block taking `GCMouseMoved`'s arguments: `(GCMouseInput *, float, float)`.
+#[repr(C)]
+struct MouseMovedBlock {
+    isa: *const c_void,
+    flags: i32,
+    reserved: i32,
+    invoke: unsafe extern "C" fn(*const MouseMovedBlock, Object, f32, f32),
+    descriptor: *const BlockDescriptor,
 }
 
 /// The `AppKit` application connection and native event pump.
@@ -247,6 +276,7 @@ impl Application {
                 cursor_mode: Cell::new(CursorMode::Normal),
                 capture_applied: Cell::new(false),
                 pending_warp_delta: Cell::new((0.0, 0.0)),
+                raw_mice: Cell::new(0),
                 function_key_held: Cell::new(false),
                 pending_modifier_key: Cell::new(None),
                 pending_characters: Cell::new(Vec::new()),
@@ -333,6 +363,9 @@ impl Application {
             }
             void(self.raw.as_ptr(), c"updateWindows");
         }
+        if let Some(motion) = window.take_raw_motion() {
+            handler(WindowEvent::Input(motion));
+        }
 
         if !window.is_open() {
             if !window.close_reported.replace(true) {
@@ -378,6 +411,9 @@ pub struct Window {
     // event instead of delivering it separately, so each warp accumulates its
     // vector here and the next motion event subtracts it.
     pending_warp_delta: Cell<(f64, f64)>,
+    // How many `GCMouse` devices report their unaccelerated motion while captured; with none,
+    // the accelerated `NSEvent` deltas are reported instead.
+    raw_mice: Cell<usize>,
     // AppKit's function modifier flag describes the navigation and F-key cluster as much as the
     // physical Fn/globe key, so the key's own transitions are tracked here instead of read back
     // off each event. See `function_key_transition`.
@@ -511,15 +547,48 @@ impl Window {
             void(class(c"NSCursor")?, c"hide");
         }
         self.capture_applied.set(true);
+        if let Ok(mut motion) = RAW_MOTION.lock() {
+            *motion = (0.0, 0.0);
+        }
+        // SAFETY: Capture is applied on AppKit's main thread; the handler is a global block.
+        self.raw_mice
+            .set(unsafe { set_raw_mouse_handlers(mouse_moved_block()) });
         Ok(())
+    }
+
+    /// The unaccelerated motion every `GCMouse` reported since the last pump while captured,
+    /// handing each mouse connected since the handler. `GCMouse` reads the device itself, so
+    /// macOS's pointer acceleration doesn't reach it; its y grows upward, flipped on the way in.
+    fn take_raw_motion(&self) -> Option<InputEvent> {
+        if !self.capture_applied.get() {
+            return None;
+        }
+        // SAFETY: The pump runs on AppKit's main thread; the handler is a global block, and
+        // `modifierFlags` is a class property of NSEvent.
+        let flags = unsafe {
+            self.raw_mice
+                .set(set_raw_mouse_handlers(mouse_moved_block()));
+            usize_value(class(c"NSEvent").ok()?, c"modifierFlags")
+        };
+        let (delta_x, delta_y) = mem::take(&mut *RAW_MOTION.lock().ok()?);
+        (self.raw_mice.get() > 0 && (delta_x != 0.0 || delta_y != 0.0)).then(|| {
+            InputEvent::PointerDelta {
+                delta_x,
+                delta_y,
+                modifiers: appkit_modifiers(flags, self.function_key_held.get()),
+            }
+        })
     }
 
     fn release_pointer_capture(&self) -> Result<(), PlatformError> {
         if !self.capture_applied.replace(false) {
             return Ok(());
         }
-        // SAFETY: The calls balance the successful capture that set `capture_applied`.
+        // SAFETY: The calls balance the successful capture that set `capture_applied`; a nil
+        // handler stops the mice reporting.
         unsafe {
+            set_raw_mouse_handlers(core::ptr::null_mut());
+            self.raw_mice.set(0);
             let reassociated = CGAssociateMouseAndMouseCursorPosition(1) == 0;
             void(class(c"NSCursor")?, c"unhide");
             if !reassociated {
@@ -701,6 +770,10 @@ impl Window {
                 | EVENT_RIGHT_MOUSE_DRAGGED
                 | EVENT_OTHER_MOUSE_DRAGGED => {
                     let (warp_x, warp_y) = self.pending_warp_delta.replace((0.0, 0.0));
+                    if self.capture_applied.get() && self.raw_mice.get() > 0 {
+                        // The mice report their own motion unaccelerated (`take_raw_motion`).
+                        return None;
+                    }
                     if self.capture_applied.get() {
                         // The pinned cursor makes absolute positions meaningless; AppKit's
                         // event deltas are already top-left oriented. The first deltas
@@ -1177,6 +1250,68 @@ impl Drop for AutoreleasePool {
     }
 }
 
+/// The moved handler every captured `GCMouse` is given, adding its motion to [`RAW_MOTION`].
+fn mouse_moved_block() -> Object {
+    static DESCRIPTOR: OnceLock<usize> = OnceLock::new();
+    static BLOCK: OnceLock<usize> = OnceLock::new();
+    let descriptor = *DESCRIPTOR.get_or_init(|| {
+        Box::into_raw(Box::new(BlockDescriptor {
+            reserved: 0,
+            size: mem::size_of::<MouseMovedBlock>(),
+            signature: c"v24@?0@8f16f20".as_ptr(),
+        })) as usize
+    });
+    *BLOCK.get_or_init(|| {
+        Box::into_raw(Box::new(MouseMovedBlock {
+            isa: (&raw const _NSConcreteGlobalBlock).cast::<c_void>(),
+            flags: BLOCK_IS_GLOBAL | BLOCK_HAS_SIGNATURE,
+            reserved: 0,
+            invoke: mouse_moved,
+            descriptor: descriptor as *const BlockDescriptor,
+        })) as usize
+    }) as Object
+}
+
+unsafe extern "C" fn mouse_moved(
+    _block: *const MouseMovedBlock,
+    _mouse: Object,
+    delta_x: f32,
+    delta_y: f32,
+) {
+    if let Ok(mut motion) = RAW_MOTION.lock() {
+        motion.0 += f64::from(delta_x);
+        motion.1 -= f64::from(delta_y);
+    }
+}
+
+/// Gives every connected `GCMouse` the moved handler `handler` (nil takes it away), returning
+/// how many there are: none before macOS 11, or before the framework has found any.
+///
+/// # Safety
+///
+/// Must run on the main thread, `handler` nil or a global block of `GCMouseMoved`'s type.
+unsafe fn set_raw_mouse_handlers(handler: Object) -> usize {
+    // SAFETY (caller): main thread; every selector is GCMouse's, GCMouseInput's or NSArray's.
+    unsafe {
+        let mouse_class = objc_getClass(c"GCMouse".as_ptr());
+        if mouse_class.is_null() {
+            return 0;
+        }
+        let mice = object(mouse_class, c"mice");
+        if mice.is_null() {
+            return 0;
+        }
+        let count = usize_value(mice, c"count");
+        for index in 0..count {
+            let input = object(object_usize(mice, c"objectAtIndex:", index), c"mouseInput");
+            if !input.is_null() {
+                void_object(input, c"setMouseMovedHandler:", handler);
+            }
+        }
+        count
+    }
+}
+
 fn class(name: &CStr) -> Result<Object, PlatformError> {
     // SAFETY: The name is NUL-terminated and Objective-C class objects have process lifetime.
     let value = unsafe { objc_getClass(name.as_ptr()) };
@@ -1199,6 +1334,12 @@ unsafe fn object(receiver: Object, name: &CStr) -> Object {
     let function: unsafe extern "C" fn(Object, Selector) -> Object =
         unsafe { mem::transmute(objc_msgSend as *const ()) };
     unsafe { function(receiver, selector(name)) }
+}
+
+unsafe fn object_usize(receiver: Object, name: &CStr, value: usize) -> Object {
+    let function: unsafe extern "C" fn(Object, Selector, usize) -> Object =
+        unsafe { mem::transmute(objc_msgSend as *const ()) };
+    unsafe { function(receiver, selector(name), value) }
 }
 
 unsafe fn object_window_init(

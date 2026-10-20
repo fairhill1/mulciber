@@ -102,16 +102,23 @@ error rather than pretending.
 
 Backend status: the AppKit implementation pins the cursor by warping it to the content-view center,
 detaching cursor movement with `CGAssociateMouseAndMouseCursorPosition`, and hiding it with
-`NSCursor`, reporting `NSEvent` deltas during capture. The Wayland implementation locks the pointer
+`NSCursor`; during capture it reports the unaccelerated motion of every connected `GCMouse`
+(GameController, macOS 11), gathered by a moved handler and delivered once per pump, and falls
+back to the accelerated `NSEvent` deltas only when no `GCMouse` is connected. The `GCMouse` path
+has compiled and linted for `aarch64-apple-darwin` from Linux and has not run on a Mac. The Wayland implementation locks the pointer
 through `zwp_pointer_constraints_v1` with the persistent lifetime (the compositor itself suspends
 and re-establishes the lock across focus changes), reads deltas from
 `zwp_relative_pointer_manager_v1` (its unaccelerated pair, so the compositor's pointer acceleration
 does not reach mouse look), hides the cursor with a null `wl_pointer.set_cursor`, and
 restores it through `wp_cursor_shape_manager_v1`; when the compositor lacks any of the three
 protocols, the capture request reports `Unsupported` naming the missing global. The X11
-implementation grabs the pointer confined to the window with a fully transparent pixmap cursor and
-reports warp-to-center deltas, filtering the warp's own echo motion; the grab is released on focus
-loss and best-effort reapplied on focus gain. The Win32 implementation registers the window for
+implementation grabs the pointer confined to the window with a fully transparent pixmap cursor,
+keeps it warped to the window's center, and reports `XInput2` raw motion (`XI_RawMotion`, 2.1 or
+later, selected on the root window for every master pointer), the device's motion before the
+server's pointer acceleration; an absolute device's motion, which the server doesn't accelerate,
+and every motion on a server without `XInput2` 2.1, are reported as warp-to-center deltas,
+filtering the warp's own echo motion. The grab is released on focus loss and best-effort
+reapplied on focus gain. The Win32 implementation registers the window for
 raw mouse input and reports `WM_INPUT` motion as deltas (absolute-mode samples, as remote
 desktop delivers, are differenced against the previous sample), confines the hidden cursor to
 the screen-space client rectangle with `ClipCursor` re-derived on move and resize, hides it

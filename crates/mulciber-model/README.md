@@ -14,7 +14,7 @@ undecoded, for the game to bake as it does its other textures (`mulciber-texture
 
 ```toml
 [dependencies]
-mulciber-model = "0.2.0"
+mulciber-model = "0.4.0"
 ```
 
 ```rust
@@ -69,4 +69,27 @@ Animations sample step, linear (rotations along the shorter arc) and cubic-splin
 their ends outside them. `Pose::blend` cross-fades two poses; `Pose::blend_masked` blends only a
 subtree. `Model::transform` moves the skeleton with the vertices, so poses fit a Z-up world too.
 
-Morph targets, cameras and lights are not read yet.
+## Morph targets
+
+Morph targets are read by name: `Model::morphs` lists them once each, as the meshes'
+`extras.targetNames` name them (Blender writes these; a target without a name is named by its index
+in its mesh). Meshes with targets of the same name share one, so a weight that opens a face's mouth
+moves the teeth and tongue fitted to it too. Every part keeps, for each target that moves any of its
+vertices, a `Morph` of only those vertices: how far each moves at full weight and how its normal
+changes. The part's transforms, its double-sided copies and its tangents' vertex splits apply to
+them as to the vertices. A target moves a skinned vertex before its joints carry it, as glTF says.
+
+```rust
+let jaw = model.morph("viseme_aa").unwrap();
+let mut weights = vec![0.0; model.morphs.len()];
+weights[jaw] = 0.6;
+for part in &model.parts {
+    // part.morphs into the game's own buffers for its vertex shader, or on the CPU:
+    let (positions, normals) = part.morphed(&weights);
+}
+```
+
+The meshes' default weights are not applied (the rest shape is the one without targets), tangents
+are not moved, and animations' channels of morph weights are left out.
+
+Cameras and lights are not read yet.

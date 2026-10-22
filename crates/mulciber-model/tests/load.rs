@@ -541,3 +541,87 @@ fn a_model_that_never_moves_has_no_skeleton() {
         (0, 0)
     );
 }
+
+#[test]
+fn morph_targets_move_the_vertices_they_name_across_meshes() {
+    let dir = folder("morphs");
+    let mut chunks = quad(true);
+    let mut moved = [0.0; 12];
+    moved[6..9].copy_from_slice(&[0.0, 0.0, 1.0]);
+    let mut turned = [0.0; 12];
+    turned[6..9].copy_from_slice(&[0.0, 1.0, -1.0]);
+    let mut slid = [0.0; 12];
+    slid[0] = 1.0;
+    chunks.push((floats(&moved), 5126, 4, "VEC3"));
+    chunks.push((floats(&turned), 5126, 4, "VEC3"));
+    chunks.push((floats(&[0.0; 12]), 5126, 4, "VEC3"));
+    chunks.push((floats(&slid), 5126, 4, "VEC3"));
+    // The jaw opens vertex 2 up and turns its normal; the smile, named in both meshes, moves
+    // nothing of the first and vertex 0 of the second, ten along x.
+    let rest = r#""meshes":[
+        {"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,
+            "targets":[{"POSITION":4,"NORMAL":5},{"POSITION":6}]}],
+         "extras":{"targetNames":["jawOpen","smile"]}},
+        {"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,
+            "targets":[{"POSITION":7}]}],
+         "extras":{"targetNames":["smile"]}}],
+        "nodes":[{"mesh":0},{"mesh":1,"translation":[10,0,0]}],"scenes":[{"nodes":[0,1]}]"#;
+    let mut model = Model::load(write_gltf(&dir, "face.gltf", &layout(&chunks), rest)).unwrap();
+
+    assert_eq!(model.morphs, ["jawOpen", "smile"]);
+    assert_eq!(model.morph("smile"), Some(1));
+    assert_eq!(model.morph("frown"), None);
+    let part = &model.parts[0];
+    assert_eq!(part.positions.len(), 8);
+    assert_eq!(part.morphs.len(), 2);
+    let jaw = &part.morphs[0];
+    assert_eq!((jaw.target, &jaw.vertices[..]), (0, &[2][..]));
+    assert!(close(&jaw.positions[0], &[0.0, 0.0, 1.0]));
+    // The second mesh's vertices follow the first's.
+    let smile = &part.morphs[1];
+    assert_eq!((smile.target, &smile.vertices[..]), (1, &[4][..]));
+
+    let (positions, normals) = part.morphed(&[0.5, 1.0]);
+    assert!(close(&positions[2], &[1.0, 1.0, 0.5]));
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(close(&normals[2], &[0.0, half, half]));
+    assert!(close(&positions[4], &[11.0, 0.0, 0.0]));
+    assert!(close(&normals[4], &[0.0, 0.0, 1.0]));
+    // Unweighted, or weighted nothing, it rests.
+    assert_eq!(
+        part.morphed(&[]),
+        (part.positions.clone(), part.normals.clone())
+    );
+
+    // Turned up, the jaw opens along -Y and its normal turns up +Z.
+    model.transform(&Y_UP_TO_Z_UP);
+    let part = &model.parts[0];
+    assert!(close(&part.morphs[0].positions[0], &[0.0, -1.0, 0.0]));
+    let (positions, normals) = part.morphed(&[1.0]);
+    assert!(close(&positions[2], &[1.0, -1.0, 1.0]));
+    assert!(close(&normals[2], &[0.0, 0.0, 1.0]));
+}
+
+#[test]
+fn morph_targets_turn_flat_normals_and_move_back_faces() {
+    let dir = folder("flat-morph");
+    // A triangle without normals, its third corner lifted along +Z by its target, double sided.
+    let positions = floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    let lift = floats(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    let layout = layout(&[(positions, 5126, 3, "VEC3"), (lift, 5126, 3, "VEC3")]);
+    let rest = r#""meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0,"targets":[{"POSITION":1}]}]}],"materials":[{"doubleSided":true}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}]"#;
+    let mut model = Model::load(write_gltf(&dir, "leaf.gltf", &layout, rest)).unwrap();
+    // Unnamed, it's named by its index.
+    assert_eq!(model.morphs, ["0"]);
+    model.duplicate_double_sided();
+
+    let part = &model.parts[0];
+    // Each corner turns with the lifted triangle, front and back.
+    assert_eq!(part.morphs[0].vertices, [0, 1, 2, 3, 4, 5]);
+    let (positions, normals) = part.morphed(&[1.0]);
+    assert!(close(&positions[2], &[0.0, 1.0, 1.0]));
+    assert!(close(&positions[5], &[0.0, 1.0, 1.0]));
+    let half = std::f32::consts::FRAC_1_SQRT_2;
+    assert!(normals[..3].iter().all(|n| close(n, &[0.0, -half, half])));
+    assert!(normals[3..].iter().all(|n| close(n, &[0.0, half, -half])));
+}

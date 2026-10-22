@@ -36,7 +36,16 @@
 //! [`vertex_curvature`] works out how curved a part is at each vertex, for shading that depends
 //! on it, such as `mulciber-shader`'s pre-integrated skin.
 //!
-//! Morph targets, cameras and lights are not read yet.
+//! Morph targets are read by name ([`Model::morphs`], as the mesh's `extras.targetNames` gives them,
+//! which Blender writes): every part keeps, for each target that moves any of its vertices, a
+//! [`Morph`] of only those vertices, how far each moves and how its normal turns at full weight,
+//! with the part's own transforms and copies applied to them as to the vertices. Meshes with targets
+//! of the same name share it, so one weight moves a face and the teeth fitted to it. Targets move a
+//! skinned vertex before its joints carry it, as glTF says. A game sets each target's weight and
+//! blends them in its vertex shader, or on the CPU with [`Part::morphed`]. The meshes' default
+//! weights are not applied (the rest shape is the one without targets) and tangents are not moved.
+//!
+//! Cameras and lights are not read yet.
 
 mod animation;
 mod curvature;
@@ -88,6 +97,10 @@ pub struct Model {
     /// The file's animations, by glTF index; none without a skeleton. Channels of morph target
     /// weights, or of nodes outside the scene, are left out.
     pub animations: Vec<Animation>,
+    /// The names of its meshes' morph targets, each once, in the order they are first met: a
+    /// [`Morph::target`] is an index here. A target without a name is named by its index in its
+    /// mesh.
+    pub morphs: Vec<String>,
 }
 
 /// One material's triangles, with every node's transform baked in.
@@ -111,6 +124,8 @@ pub struct Part {
     pub weights: Vec<[f32; 4]>,
     /// Triangle list, counter-clockwise from the front.
     pub indices: Vec<u32>,
+    /// What each morph target that moves any of its vertices does to them, one per target.
+    pub morphs: Vec<Morph>,
 }
 
 impl Part {
@@ -119,6 +134,72 @@ impl Part {
     pub fn triangles(&self) -> usize {
         self.indices.len() / 3
     }
+
+    /// Its positions and normals with each morph target at its weight in `weights`, by
+    /// [`Morph::target`] (one past their end weighs nothing): every vertex moved by its targets'
+    /// offsets times their weights, and its normal turned by theirs and made unit again.
+    #[must_use]
+    pub fn morphed(&self, weights: &[f32]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+        let mut positions = self.positions.clone();
+        let mut normals = self.normals.clone();
+        let mut turned = vec![false; normals.len()];
+        for morph in &self.morphs {
+            let weight = weights.get(morph.target).copied().unwrap_or(0.0);
+            for (k, &v) in morph.vertices.iter().enumerate() {
+                let v = v as usize;
+                positions[v] = add(positions[v], scale(morph.positions[k], weight));
+                normals[v] = add(normals[v], scale(morph.normals[k], weight));
+                turned[v] = true;
+            }
+        }
+        for (normal, _) in normals.iter_mut().zip(turned).filter(|(_, t)| *t) {
+            *normal = normalize(*normal);
+        }
+        (positions, normals)
+    }
+}
+
+/// What one morph target does to a part at full weight, to the vertices it moves alone. At weight
+/// `w` a vertex is at its position plus `w` times its offset here, summed over the targets, and its
+/// normal is its own plus `w` times the change here, made unit again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Morph {
+    /// Index into [`Model::morphs`].
+    pub target: usize,
+    /// The vertices it moves or turns, ascending: indices into the part's.
+    pub vertices: Vec<u32>,
+    /// How far each of [`Morph::vertices`] moves.
+    pub positions: Vec<[f32; 3]>,
+    /// How each of [`Morph::vertices`]' normals changes; zeros where the file says nothing.
+    pub normals: Vec<[f32; 3]>,
+}
+
+impl Morph {
+    /// A target's offsets and normals' changes for every vertex, kept for those it moves or turns.
+    fn sparse(target: usize, positions: &[[f32; 3]], normals: &[[f32; 3]]) -> Self {
+        let mut morph = Self {
+            target,
+            ..Self::default()
+        };
+        for (v, (&p, &n)) in positions.iter().zip(normals).enumerate() {
+            if p.into_iter().chain(n).any(|c| c != 0.0) {
+                morph
+                    .vertices
+                    .push(u32::try_from(v).expect("a part fits u32 indices"));
+                morph.positions.push(p);
+                morph.normals.push(n);
+            }
+        }
+        morph
+    }
+}
+
+/// A morph target's offsets and normals' changes for every vertex of a primitive, as glTF stores
+/// them, and its index in [`Model::morphs`].
+struct Displacements {
+    target: usize,
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
 }
 
 /// A glTF metallic-roughness material.
@@ -277,6 +358,7 @@ impl Model {
                 .map_err(|e| at(&e))?,
             skeleton: None,
             animations: Vec::new(),
+            morphs: Vec::new(),
         };
         let mut parts = HashMap::new();
         match Rig::read(&document, &scene, &buffers).map_err(|e| at(&e))? {
@@ -310,8 +392,9 @@ impl Model {
     ) {
         let world = multiply(parent, &node.transform().matrix());
         if let Some(mesh) = node.mesh() {
+            let targets = self.targets(&mesh);
             for primitive in mesh.primitives() {
-                let Some(mut piece) = Piece::read(&primitive, buffers, false) else {
+                let Some(mut piece) = Piece::read(&primitive, buffers, false, &targets) else {
                     continue;
                 };
                 piece.transform(&world);
@@ -344,9 +427,11 @@ impl Model {
     ) {
         let k = rig.index_of[&node.index()];
         if let Some(mesh) = node.mesh() {
+            let targets = self.targets(&mesh);
             for primitive in mesh.primitives() {
                 let skin = node.skin();
-                let Some(mut piece) = Piece::read(&primitive, buffers, skin.is_some()) else {
+                let Some(mut piece) = Piece::read(&primitive, buffers, skin.is_some(), &targets)
+                else {
                     continue;
                 };
                 if let Some(skin) = skin.filter(|_| !piece.joints.is_empty()) {
@@ -376,6 +461,49 @@ impl Model {
         }
     }
 
+    /// Where each of `mesh`'s morph targets is in [`Model::morphs`], by its name in the mesh's
+    /// `extras.targetNames` (or its index without one), adding those not met before.
+    fn targets(&mut self, mesh: &gltf::Mesh<'_>) -> Vec<usize> {
+        use gltf::json::Value;
+        let count = mesh
+            .primitives()
+            .map(|p| p.morph_targets().count())
+            .max()
+            .unwrap_or(0);
+        if count == 0 {
+            return Vec::new();
+        }
+        let extras = mesh
+            .extras()
+            .as_ref()
+            .and_then(|raw| gltf::json::deserialize::from_str::<Value>(raw.get()).ok());
+        let names = extras
+            .as_ref()
+            .and_then(|e| e.get("targetNames"))
+            .and_then(Value::as_array);
+        (0..count)
+            .map(|k| {
+                let name = names
+                    .and_then(|n| n.get(k))
+                    .and_then(Value::as_str)
+                    .map_or_else(|| k.to_string(), str::to_owned);
+                self.morphs
+                    .iter()
+                    .position(|m| *m == name)
+                    .unwrap_or_else(|| {
+                        self.morphs.push(name);
+                        self.morphs.len() - 1
+                    })
+            })
+            .collect()
+    }
+
+    /// The index of the morph target `name` in [`Model::morphs`], if its meshes have one.
+    #[must_use]
+    pub fn morph(&self, name: &str) -> Option<usize> {
+        self.morphs.iter().position(|m| m == name)
+    }
+
     /// Moves every vertex by `matrix`: positions as points, tangents as directions, normals by the
     /// inverse transpose. A transform that mirrors (negative determinant) turns each triangle's
     /// winding and each tangent's handedness, so the fronts still face out. A skeleton moves with
@@ -394,7 +522,7 @@ impl Model {
     /// Adds, for every part whose material is double sided, a copy of its triangles wound the
     /// other way with their normals reversed, for pipelines that cull back faces. The copies'
     /// tangents keep their direction and turn their handedness, so a normal map reads the same
-    /// from either side.
+    /// from either side, and their morph targets move them as the fronts.
     ///
     /// The back faces are then explicit geometry, so every material's
     /// [`double_sided`](Material::double_sided) is cleared: a renderer that turns culling off for
@@ -433,6 +561,13 @@ impl Model {
                 .collect();
             part.tangents.extend(tangents);
             part.indices.extend(back);
+            for morph in &mut part.morphs {
+                let copies: Vec<u32> = morph.vertices.iter().map(|v| v + offset).collect();
+                morph.vertices.extend(copies);
+                morph.positions.extend_from_within(..);
+                let normals: Vec<[f32; 3]> = morph.normals.iter().map(|n| n.map(|c| -c)).collect();
+                morph.normals.extend(normals);
+            }
         }
         for material in &mut self.materials {
             material.double_sided = false;
@@ -482,16 +617,20 @@ struct Piece {
     joints: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
     indices: Vec<u32>,
+    /// By [`Morph::target`], none empty.
+    morphs: Vec<Morph>,
 }
 
 impl Piece {
-    /// A primitive's triangles, with normals and tangents made for it where it has none, and when
-    /// `skinned` its joints and weights if it has them (indices into its skin's joints); `None`
-    /// for one without positions or triangles.
+    /// A primitive's triangles, with normals and tangents made for it where it has none, when
+    /// `skinned` its joints and weights if it has them (indices into its skin's joints), and its
+    /// morph targets, at `targets` in [`Model::morphs`]; `None` for one without positions or
+    /// triangles.
     fn read(
         primitive: &gltf::Primitive<'_>,
         buffers: &[gltf::buffer::Data],
         skinned: bool,
+        targets: &[usize],
     ) -> Option<Self> {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| &d.0[..]));
         let positions: Vec<[f32; 3]> = reader.read_positions()?.collect();
@@ -518,8 +657,26 @@ impl Piece {
         } else {
             (Vec::new(), Vec::new())
         };
+        let every = |read: Option<Vec<[f32; 3]>>| {
+            read.filter(|d| d.len() == positions.len())
+                .unwrap_or_else(|| vec![[0.0; 3]; positions.len()])
+        };
+        let displacements: Vec<Displacements> = reader
+            .read_morph_targets()
+            .zip(targets)
+            .map(|((moved, turned, _), &target)| Displacements {
+                target,
+                positions: every(moved.map(Iterator::collect)),
+                normals: every(turned.map(Iterator::collect)),
+            })
+            .collect();
         let mut piece = match normals {
             Some(normals) => Self {
+                morphs: displacements
+                    .iter()
+                    .map(|d| Morph::sparse(d.target, &d.positions, &d.normals))
+                    .filter(|m| !m.vertices.is_empty())
+                    .collect(),
                 positions,
                 normals,
                 tangents: Vec::new(),
@@ -528,7 +685,13 @@ impl Piece {
                 weights,
                 indices,
             },
-            None => Self::flat(&positions, &uvs, (&joints, &weights), &indices),
+            None => Self::flat(
+                &positions,
+                &uvs,
+                (&joints, &weights),
+                &indices,
+                &displacements,
+            ),
         };
         let tangents: Option<Vec<[f32; 4]>> = reader
             .read_tangents()
@@ -541,12 +704,14 @@ impl Piece {
         Some(piece)
     }
 
-    /// Every triangle its own three vertices, each with the triangle's normal.
+    /// Every triangle its own three vertices, each with the triangle's normal; a morph target
+    /// turns them to the normal of the triangle it makes at full weight.
     fn flat(
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
         (joints, weights): (&[[u16; 4]], &[[f32; 4]]),
         indices: &[u32],
+        displacements: &[Displacements],
     ) -> Self {
         let mut piece = Self {
             positions: Vec::with_capacity(indices.len()),
@@ -556,10 +721,30 @@ impl Piece {
             joints: Vec::new(),
             weights: Vec::new(),
             indices: Vec::with_capacity(indices.len()),
+            morphs: Vec::new(),
         };
+        let normal_of = |[a, b, c]: [[f32; 3]; 3]| normalize(cross(sub(b, a), sub(c, a)));
+        for d in displacements {
+            let mut moved = Vec::with_capacity(indices.len());
+            let mut turned = Vec::with_capacity(indices.len());
+            for triangle in indices.as_chunks::<3>().0 {
+                let at = triangle.map(|i| positions[i as usize]);
+                let offsets = triangle.map(|i| d.positions[i as usize]);
+                let turn = sub(
+                    normal_of(std::array::from_fn(|k| add(at[k], offsets[k]))),
+                    normal_of(at),
+                );
+                moved.extend(offsets);
+                turned.extend([turn; 3]);
+            }
+            let morph = Morph::sparse(d.target, &moved, &turned);
+            if !morph.vertices.is_empty() {
+                piece.morphs.push(morph);
+            }
+        }
         for triangle in indices.as_chunks::<3>().0 {
             let [a, b, c] = [0, 1, 2].map(|k| positions[triangle[k] as usize]);
-            let normal = normalize(cross(sub(b, a), sub(c, a)));
+            let normal = normal_of([a, b, c]);
             for &i in triangle {
                 piece
                     .indices
@@ -586,6 +771,7 @@ impl Piece {
             joints: std::mem::take(&mut part.joints),
             weights: std::mem::take(&mut part.weights),
             indices: std::mem::take(&mut part.indices),
+            morphs: std::mem::take(&mut part.morphs),
         }
     }
 
@@ -596,11 +782,21 @@ impl Piece {
         let det = dot(x, cross(y, z));
         let sign = if det < 0.0 { -1.0 } else { 1.0 };
         let cofactor = [cross(y, z), cross(z, x), cross(x, y)];
+        let turn = |n: [f32; 3]| normalize(scale(apply(&cofactor, n), sign));
+        // A target's normals' changes, from the normals before they turn: the turned normal it
+        // makes less the turned normal.
+        for morph in &mut self.morphs {
+            for (k, &v) in morph.vertices.iter().enumerate() {
+                let n = self.normals[v as usize];
+                morph.normals[k] = sub(turn(add(n, morph.normals[k])), turn(n));
+                morph.positions[k] = apply(&[x, y, z], morph.positions[k]);
+            }
+        }
         for p in &mut self.positions {
             *p = add(apply(&[x, y, z], *p), [m[3][0], m[3][1], m[3][2]]);
         }
         for n in &mut self.normals {
-            *n = normalize(scale(apply(&cofactor, *n), sign));
+            *n = turn(*n);
         }
         for t in &mut self.tangents {
             let [tx, ty, tz] = normalize(apply(&[x, y, z], [t[0], t[1], t[2]]));
@@ -623,6 +819,17 @@ impl Piece {
         part.weights.extend(self.weights);
         part.indices
             .extend(self.indices.into_iter().map(|i| i + offset));
+        for morph in self.morphs {
+            let vertices: Vec<u32> = morph.vertices.iter().map(|v| v + offset).collect();
+            match part.morphs.iter_mut().find(|m| m.target == morph.target) {
+                Some(into) => {
+                    into.vertices.extend(vertices);
+                    into.positions.extend(morph.positions);
+                    into.normals.extend(morph.normals);
+                }
+                None => part.morphs.push(Morph { vertices, ..morph }),
+            }
+        }
     }
 }
 

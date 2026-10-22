@@ -2,6 +2,22 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Morph targets (model 0.4.0)
+
+Breaking: `Model` gains `morphs` and `Part` gains `morphs`, so either written out field by field
+without `..Default::default()` needs them.
+
+`mulciber-model` reads morph targets, by name: `Model::morphs` lists every target its meshes have
+once, as their `extras.targetNames` name them (Blender writes these; one without a name is named by
+its index in its mesh), and `Model::morph` finds one. Meshes naming the same target share it, so one
+weight moves a face and the teeth fitted to it. Each part keeps a `Morph` for every target that moves
+any of its vertices, of only those vertices: their offsets at full weight and their normals' changes.
+The model's transforms (the normals' changes turned as the normals are), its double-sided copies
+(their normals' changes reversed) and the vertices split for `MikkTSpace` tangents carry them; a flat
+shaded primitive's targets turn each corner's normal to the moved triangle's. `Part::morphed` blends
+them at a set of weights on the CPU. Default weights are not applied, tangents are not moved, and
+animations' morph weight channels are still left out. `gltf`'s `extras` feature is now enabled.
+
 ## Raw or system pointer motion (platform 0.5.9)
 
 `Window::set_pointer_motion` chooses where a captured pointer's `PointerDelta` motion comes from:

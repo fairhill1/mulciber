@@ -40,7 +40,8 @@ validation gaps are tracked in the [roadmap](docs/roadmap.md) and platform runbo
   node transforms baked in, one part per material, flat normals and MikkTSpace tangents where the
   file has none, and images left for the texture baker. Skins and animations: a skeleton, four
   joints and weights per vertex (rigid meshes ride the node above them), keyframes sampled into
-  poses, poses cross-faded or blended by subtree, and bone palettes for skinned pipelines.
+  poses, poses cross-faded or blended by subtree, and bone palettes for skinned pipelines. Morph targets
+  by name, shared by the meshes that name them, each kept for the vertices it moves.
 - **Text and overlays** (`mulciber-text`): the game's fonts rasterised into one atlas at the sizes
   it asks for, text measured, wrapped and fitted, and overlay geometry for text, images and flat
   shapes, with a software rasteriser for testing screens without a GPU. The look stays the game's.

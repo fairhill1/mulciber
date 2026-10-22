@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use bevy_mikktspace::{Geometry, TangentSpace, generate_tangents};
 
-use crate::{Piece, cross, normalize};
+use crate::{Morph, Piece, cross, normalize};
 
 struct Corners<'a> {
     piece: &'a Piece,
@@ -68,7 +68,8 @@ fn across(normal: [f32; 3]) -> [f32; 4] {
     [x, y, z, 1.0]
 }
 
-/// Fills `piece.tangents`, splitting vertices whose corners' tangents differ.
+/// Fills `piece.tangents`, splitting vertices whose corners' tangents differ; a morph target moves
+/// each copy of a vertex as it moved the vertex.
 pub(crate) fn generate(piece: &mut Piece) {
     let mut corners = Corners {
         piece,
@@ -87,7 +88,10 @@ pub(crate) fn generate(piece: &mut Piece) {
         joints: Vec::new(),
         weights: Vec::new(),
         indices: Vec::with_capacity(piece.indices.len()),
+        morphs: Vec::new(),
     };
+    // The vertex each of `out`'s was split from.
+    let mut from = Vec::with_capacity(piece.positions.len());
     for (corner, &vertex) in piece.indices.iter().enumerate() {
         let tangent = tangents[corner];
         let index = *split
@@ -98,6 +102,7 @@ pub(crate) fn generate(piece: &mut Piece) {
                 out.normals.push(piece.normals[v]);
                 out.uvs.push(piece.uvs[v]);
                 out.tangents.push(tangent);
+                from.push(v);
                 if !piece.joints.is_empty() {
                     out.joints.push(piece.joints[v]);
                     out.weights.push(piece.weights[v]);
@@ -105,6 +110,24 @@ pub(crate) fn generate(piece: &mut Piece) {
                 u32::try_from(out.positions.len() - 1).expect("fits u32")
             });
         out.indices.push(index);
+    }
+    for morph in &piece.morphs {
+        let mut at = vec![None; piece.positions.len()];
+        for (k, &v) in morph.vertices.iter().enumerate() {
+            at[v as usize] = Some(k);
+        }
+        let mut split = Morph {
+            target: morph.target,
+            ..Morph::default()
+        };
+        for (v, &source) in from.iter().enumerate() {
+            if let Some(k) = at[source] {
+                split.vertices.push(u32::try_from(v).expect("fits u32"));
+                split.positions.push(morph.positions[k]);
+                split.normals.push(morph.normals[k]);
+            }
+        }
+        out.morphs.push(split);
     }
     *piece = out;
 }

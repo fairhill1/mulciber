@@ -48,7 +48,7 @@ impl ServerConfig {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ServerEvent {
     /// A client joined, sending `payload` with its request (a name, an auth ticket). To refuse it,
-    /// [`Server::disconnect`] it.
+    /// [`Server::kick`] it.
     Connected {
         /// Its id from now on.
         client: ClientId,
@@ -277,7 +277,7 @@ impl<T: Transport> Server<T> {
             .process(now, kind, reader, size)
             .is_err()
         {
-            self.goodbye(now, k);
+            self.goodbye(now, k, None);
             self.drop_slot(k, DisconnectReason::Misbehaved);
         }
     }
@@ -293,10 +293,14 @@ impl<T: Transport> Server<T> {
         self.leaving.push(slot);
     }
 
-    fn goodbye(&mut self, now: Instant, k: usize) {
+    /// Tells slot `k`'s client goodbye, with a kick's code if it's one.
+    fn goodbye(&mut self, now: Instant, k: usize, kick: Option<u8>) {
         let slot = &self.slots[k];
         let mut goodbye = Writer::new(DISCONNECT);
         goodbye.u64(slot.connection.session());
+        if let Some(code) = kick {
+            goodbye.u8(code);
+        }
         for _ in 0..GOODBYES {
             // A goodbye that can't be sent is no worse than one lost.
             let _ = self.transport.send(now, slot.address, &goodbye.bytes);
@@ -376,8 +380,19 @@ impl<T: Transport> Server<T> {
 
     /// Drops `client`, telling it so. No event follows: the caller knows.
     pub fn disconnect(&mut self, client: ClientId, now: Instant) {
+        self.drop_client(client, now, None);
+    }
+
+    /// Drops `client` as [`Server::disconnect`] does, telling it why with `code`, which the game
+    /// gives its meaning: the client ends [`DisconnectReason::Kicked`] with it. What was queued
+    /// for it and not yet flushed is not sent.
+    pub fn kick(&mut self, client: ClientId, now: Instant, code: u8) {
+        self.drop_client(client, now, Some(code));
+    }
+
+    fn drop_client(&mut self, client: ClientId, now: Instant, kick: Option<u8>) {
         if let Some(k) = self.slots.iter().position(|slot| slot.id == client) {
-            self.goodbye(now, k);
+            self.goodbye(now, k, kick);
             self.slots.swap_remove(k);
         }
     }

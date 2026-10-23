@@ -463,6 +463,62 @@ fn a_client_learns_the_server_is_gone() {
 }
 
 #[test]
+fn a_kicked_client_learns_why() {
+    let network = MemoryNetwork::new();
+    let mut now = Instant::now();
+    let mut server = setup(&network, 4, now);
+    let mut client = Client::connect(
+        network.endpoint(MemoryAddress(2)),
+        SERVER,
+        CONFIG,
+        b"Ann",
+        now,
+    )
+    .unwrap();
+    for _ in 0..3 {
+        now += TICK;
+        tick(now, &mut server, &mut [&mut client]);
+    }
+    let id = connected(&mut server);
+    server.send(id, Channel::Reliable, b"last orders").unwrap();
+    server.flush(now).unwrap();
+    server.kick(id, now, 7);
+    client.update(now).unwrap();
+    assert_eq!(
+        client.state(),
+        ClientState::Disconnected(DisconnectReason::Kicked(7))
+    );
+    assert_eq!(&*client.receive().unwrap().data, b"last orders");
+    assert_eq!(server.clients().count(), 0);
+    assert!(events(&mut server).is_empty(), "the caller knows");
+
+    // Refused as soon as it's connected, from what it sent: it never gets anything else.
+    let mut refused = Client::connect(
+        network.endpoint(MemoryAddress(3)),
+        SERVER,
+        CONFIG,
+        b"Bob",
+        now,
+    )
+    .unwrap();
+    for _ in 0..4 {
+        now += TICK;
+        tick(now, &mut server, &mut [&mut refused]);
+        while let Some(event) = server.poll_event() {
+            if let ServerEvent::Connected { client, payload } = event {
+                assert_eq!(&*payload, b"Bob");
+                server.kick(client, now, 0);
+            }
+        }
+    }
+    assert_eq!(
+        refused.state(),
+        ClientState::Disconnected(DisconnectReason::Kicked(0))
+    );
+    assert!(refused.receive().is_none());
+}
+
+#[test]
 fn a_client_starting_over_from_the_same_address_replaces_its_old_self() {
     let network = MemoryNetwork::new();
     let mut now = Instant::now();

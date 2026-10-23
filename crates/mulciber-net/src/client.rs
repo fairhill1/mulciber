@@ -161,7 +161,12 @@ impl<T: Transport> Client<T> {
                     return;
                 }
                 if kind == DISCONNECT {
-                    self.end(DisconnectReason::ClosedByPeer);
+                    // A kick says why.
+                    self.end(
+                        reader
+                            .u8()
+                            .map_or(DisconnectReason::ClosedByPeer, DisconnectReason::Kicked),
+                    );
                 } else if connection.process(now, kind, reader, size).is_err() {
                     self.disconnect_for(now, DisconnectReason::Misbehaved);
                 }

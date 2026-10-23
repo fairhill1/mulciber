@@ -145,6 +145,9 @@ pub enum DisconnectReason {
     WrongProtocol,
     /// The other end sent something it never should, such as an oversized message.
     Misbehaved,
+    /// The server dropped this client with [`Server::kick`], saying why with a code of the game's
+    /// own: what it means is the game's to say.
+    Kicked(u8),
 }
 
 /// Why a message was not queued.

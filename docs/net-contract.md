@@ -38,7 +38,9 @@ Blocks of Data", "Reliable Ordered Messages"). No code is taken from any of them
   delivered only when every fragment arrives within a second, and at most once.
 - **Ordering across channels** is not kept: a packet carries reliable fragments first.
 - **Liveness.** A connection sends at least once a second; silence for `Config::timeout` (10 s)
-  ends it. Goodbyes are sent three times. Messages received before a disconnect stay readable.
+  ends it. Goodbyes are sent three times. Messages received before a disconnect stay readable. A
+  server's goodbye can carry a code of the game's own (`Server::kick`), which the client ends with
+  (`DisconnectReason::Kicked`).
 - **Stats.** Round-trip time (smoothed; each ack says how long it was held before being sent, in
   100 µs units, and that is subtracted, so the time is the network's alone), packet loss over
   roughly the last 20 packets that carried messages, and bytes a second each way.
@@ -56,7 +58,7 @@ Blocks of Data", "Reliable Ordered Messages"). No code is taken from any of them
 burst acknowledgement, fragment reassembly, duplicates and the message limit; end-to-end tests of
 connecting, both channels across a link with 60–100 ms latency each way, 20% loss and 10%
 duplication (300 reliable messages up to 200 KB each way, delivered exactly and in order), full
-servers, wrong protocols, goodbyes, timeouts, a client restarting on the same address, 20,000
+servers, wrong protocols, goodbyes, kicks, timeouts, a client restarting on the same address, 20,000
 random and spoofed packets, probes (full servers, other protocols, a plain socket), and real UDP
 sockets on loopback. A one-off run across 40 seeds at 45%
 loss each way, 30% duplication and 200 ms of jitter also delivered everything, in order.

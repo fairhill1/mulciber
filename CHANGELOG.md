@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Kicks with a reason (net 0.3.0)
+
+Breaking: `DisconnectReason` gains `Kicked(u8)`, so a `match` on it without a wildcard arm needs it.
+
+`Server::kick` drops a client as `Server::disconnect` does, but its goodbye carries a code of the
+game's own, and the client ends `ClientState::Disconnected(DisconnectReason::Kicked(code))`, so it
+can say why it was put off: for what it did, or refused as soon as it connected, from what it sent
+(`ServerEvent::Connected`'s payload). The `Disconnect` packet carries the code after the session; a
+goodbye without one still reads as `ClosedByPeer`. As with `disconnect`, what was queued for the
+client and not yet flushed is not sent.
+
 ## Imported structs' names in buffer layouts (shader 0.5.8)
 
 A uniform or storage buffer whose struct an imported module declares records the struct's own name

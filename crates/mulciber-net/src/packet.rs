@@ -16,7 +16,7 @@
 //! - `Payload`: sequence u16, ack u16, ack bits u32, ack delay u16 (how long the ack was held, in
 //!   units of 100 µs), then messages to the end.
 //! - `PayloadUnacked`: as `Payload` without the ack fields, before anything has been received.
-//! - `Disconnect`: nothing more.
+//! - `Disconnect`: nothing more, or from a server kicking its client, the kick's code u8.
 //!
 //! A message is a tag and its fields:
 //! - reliable fragment (tag 0, or 1 when it ends its message): id u16, length u16, bytes;

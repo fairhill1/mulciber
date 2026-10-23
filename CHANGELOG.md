@@ -2,6 +2,13 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Imported structs' names in buffer layouts (shader 0.5.8)
+
+A uniform or storage buffer whose struct an imported module declares records the struct's own name
+in its layout (`BufferLayout::type_name`, and a member's `BufferMember::type_name`), as the docs
+say, not the name `naga_oil` decorates it with when composing (`WorldX_naga_oil_mod_X…X` for
+`World`).
+
 ## Morph targets (model 0.4.0)
 
 Breaking: `Model` gains `morphs` and `Part` gains `morphs`, so either written out field by field

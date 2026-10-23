@@ -920,6 +920,56 @@ fn probe_specular(direction: vec3<f32>, probe: i32, roughness: f32) -> vec3<f32>
         assert!(msl.contains("[[texture(12)]]") && msl.contains("[[sampler(4)]]"));
     }
 
+    /// A buffer of a struct an imported module declares records the struct's own name, and its
+    /// members' structs theirs, not the composer's decorated ones.
+    #[test]
+    fn an_imported_struct_buffer_records_its_declared_name() {
+        const SUN: &str = "#define_import_path game::sun
+
+struct Glow {
+    colour: vec3<f32>,
+    power: f32,
+}
+
+struct Sun {
+    toward: vec3<f32>,
+    glow: Glow,
+}
+
+@group(0) @binding(3) var<uniform> sun: Sun;
+
+fn sunlight(normal: vec3<f32>) -> vec3<f32> {
+    return sun.glow.colour * sun.glow.power * max(dot(normal, sun.toward), 0.0);
+}
+";
+        const LIT: &str = "#import game::sun
+
+@fragment fn lit_fragment(@location(0) normal: vec3<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(game::sun::sunlight(normal), 1.0);
+}
+";
+        let mut modules = ShaderModules::new();
+        modules.add_source("shaders/sun.wgsl", SUN).unwrap();
+        let (module, _) = compose(&modules.shader_source("shaders/lit.wgsl", LIT));
+        let (_, sun) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.binding.as_ref().is_some_and(|b| b.binding == 3))
+            .expect("the sun's uniform");
+        assert!(
+            module.types[sun.ty]
+                .name
+                .as_deref()
+                .unwrap()
+                .contains("naga_oil")
+        );
+        assert_eq!(crate::wgsl_type_name(&module, sun.ty), "Sun");
+        let naga::TypeInner::Struct { members, .. } = &module.types[sun.ty].inner else {
+            panic!("the sun is a struct");
+        };
+        assert_eq!(crate::wgsl_type_name(&module, members[1].ty), "Glow");
+    }
+
     /// The composer rebuilds the module, so type order and therefore SPIR-V ids can differ from
     /// a direct parse; the interface `mulciber` validates against is identical.
     #[test]

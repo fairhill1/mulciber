@@ -564,9 +564,20 @@ fn wgsl_type_name(module: &naga::Module, ty: Handle<Type>) -> String {
             }
             _ => format!("array<{}>", wgsl_type_name(module, *base)),
         },
-        TypeInner::Struct { .. } => declared.name.clone().unwrap_or_else(|| "struct".into()),
+        TypeInner::Struct { .. } => declared
+            .name
+            .as_deref()
+            .map_or_else(|| "struct".into(), |name| undecorated(name).to_owned()),
         other => format!("{other:?}"),
     }
+}
+
+/// An item's name as its module declares it. `naga_oil` appends an encoding of an imported
+/// module's path to each of its items (`World` becomes `WorldX_naga_oil_mod_X…X`); a buffer layout
+/// names the struct as it is written.
+fn undecorated(name: &str) -> &str {
+    const DECORATION: &str = "X_naga_oil_mod_X";
+    name.split_once(DECORATION).map_or(name, |(item, _)| item)
 }
 
 fn push_text(bytes: &mut Vec<u8>, text: &str, what: &str) -> Result<(), ShaderBuildError> {

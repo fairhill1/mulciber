@@ -75,6 +75,9 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Where it stands when nothing moves it.
     pub rest: Transform,
+    /// Its glTF `extras`, as written (JSON), if it has any: what a tool says of it for the game
+    /// alone, such as how wide a limb is round its bone.
+    pub extras: Option<String>,
 }
 
 /// One bone matrix of the palette: the node whose movement it follows, and what takes a vertex
@@ -320,6 +323,7 @@ mod tests {
             name: None,
             parent,
             rest: Transform::default(),
+            extras: None,
         };
         let skeleton = Skeleton {
             nodes: vec![node(None), node(Some(0)), node(Some(0)), node(Some(2))],

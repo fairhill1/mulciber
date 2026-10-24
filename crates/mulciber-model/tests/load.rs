@@ -451,7 +451,7 @@ fn a_skinned_mesh_bends_with_its_joints() {
     let layout = timed(layout(&chunks), 7, 1.0);
     let rest = r#""meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2,"JOINTS_0":4,"WEIGHTS_0":5},"indices":3}]}],
         "skins":[{"joints":[0,1],"inverseBindMatrices":6}],
-        "nodes":[{"name":"Hips","translation":[0,1,0],"children":[1]},{"name":"Arm","translation":[1,0,0]},{"mesh":0,"skin":0,"translation":[50,0,0]}],
+        "nodes":[{"name":"Hips","translation":[0,1,0],"children":[1]},{"name":"Arm","translation":[1,0,0],"extras":{"radii":[0.08,0.06]}},{"mesh":0,"skin":0,"translation":[50,0,0]}],
         "animations":[{"name":"Wave","channels":[{"sampler":0,"target":{"node":1,"path":"rotation"}}],"samplers":[{"input":7,"output":8}]}],
         "scenes":[{"nodes":[0,2]}]"#;
     let path = write_gltf(&dir, "skin.gltf", &layout, rest);
@@ -461,6 +461,12 @@ fn a_skinned_mesh_bends_with_its_joints() {
     assert_eq!(skeleton.nodes.len(), 3);
     assert_eq!(skeleton.find("Arm"), Some(1));
     assert_eq!(skeleton.nodes[1].parent, Some(0));
+    // A node's extras as written; none where it has none.
+    assert_eq!(
+        skeleton.nodes[1].extras.as_deref(),
+        Some(r#"{"radii":[0.08,0.06]}"#)
+    );
+    assert_eq!(skeleton.nodes[0].extras, None);
     assert_eq!(model.animations.len(), 1);
     let wave = &model.animations[0];
     assert_eq!((wave.name.as_deref(), wave.duration), (Some("Wave"), 1.0));

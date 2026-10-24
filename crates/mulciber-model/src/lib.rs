@@ -45,15 +45,24 @@
 //! blends them in its vertex shader, or on the CPU with [`Part::morphed`]. The meshes' default
 //! weights are not applied (the rest shape is the one without targets) and tangents are not moved.
 //!
+//! [`Hanging`] swings chains of a skeleton's nodes that no animation moves (a skirt's, a coat's
+//! tails, hair): it takes the node matrices as the animation leaves them and moves each chain's
+//! points in the world as weights hung from its root, falling, trailing, swinging, kept out of
+//! [`Capsule`]s on other nodes (the legs) and within a bend of the link above, then turns the chain's
+//! nodes to point where they went. A node's glTF `extras` are kept as written ([`Node::extras`]),
+//! for what a tool says of it for the game.
+//!
 //! Cameras and lights are not read yet.
 
 mod animation;
 mod curvature;
+mod hanging;
 mod skeleton;
 mod tangents;
 
 pub use animation::{Animation, Channel, Interpolation, Keys};
 pub use curvature::vertex_curvature;
+pub use hanging::{Capsule, Hang, Hanging};
 pub use skeleton::{Joint, Node, Pose, Skeleton, Transform, inverse, slerp};
 
 use std::collections::HashMap;
@@ -775,6 +784,8 @@ impl Piece {
         }
     }
 
+    // A matrix's columns and a vertex's parts, named as in the maths.
+    #[allow(clippy::many_single_char_names)]
     fn transform(&mut self, m: &Matrix) {
         let [x, y, z] = [0, 1, 2].map(|c| [m[c][0], m[c][1], m[c][2]]);
         // The inverse transpose's columns are these, over the determinant; only its sign matters
@@ -964,6 +975,7 @@ impl Rig {
             name: node.name().map(str::to_owned),
             parent,
             rest,
+            extras: node.extras().as_ref().map(|raw| raw.get().to_owned()),
         });
         let mut skinned = node.skin().is_some() && node.mesh().is_some();
         for child in node.children() {

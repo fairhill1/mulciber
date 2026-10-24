@@ -93,3 +93,30 @@ The meshes' default weights are not applied (the rest shape is the one without t
 are not moved, and animations' channels of morph weights are left out.
 
 Cameras and lights are not read yet.
+
+## Hanging chains
+
+`Hanging` swings chains of nodes no animation moves: a skirt's from the waist to the hem, a coat's
+tails, hair. Each chain is a root and the line of single children under it. Every frame it takes
+the node matrices as the animation leaves them, with where the model is placed in the world, and
+moves the chains' points there as weights hung from their roots: falling, trailing as the model
+moves on, swinging and settling, drawn gently back to the animation's shape, kept out of `Capsule`s
+carried by other nodes (a thigh, a shin, each end its own radius), neighbouring chains kept within a
+spread of how far apart they are at rest, and each link turned no further than a bend from the one
+above. It then turns the chains' nodes to point where their points went, so the palette carries the
+vertices weighted to them. The points move in fixed steps however long the frame, and a model put
+down somewhere new starts again from its pose.
+
+```rust
+use mulciber_model::{Capsule, Hang, Hanging};
+
+let roots: Vec<usize> = (0..12).filter_map(|c| skeleton.find(&format!("Skirt_{c}_0"))).collect();
+let thigh = Capsule { node: skeleton.find("LeftUpLeg").unwrap(), ends: [[0.0; 3], [0.0, -0.42, 0.0]], radii: [0.09, 0.06] };
+let mut skirt = Hanging::new(skeleton, &roots, true, vec![thigh], Hang::new([0.0, 0.0, -9.81]));
+
+let mut nodes = skeleton.node_matrices(&pose);
+skirt.step(&mut nodes, &placed, dt);  // the chains' nodes turned where they swing
+```
+
+A node's glTF `extras` are kept as written (`Node::extras`, JSON), for what a tool says of it for
+the game alone, such as how wide a limb is round its bone.

@@ -99,8 +99,10 @@ Cameras and lights are not read yet.
 `Hanging` swings chains of nodes no animation moves: a skirt's from the waist to the hem, a coat's
 tails, hair. Each chain is a root and the line of single children under it. Every frame it takes
 the node matrices as the animation leaves them, with where the model is placed in the world, and
-moves the chains' points there as weights hung from their roots: falling, trailing as the model
-moves on, swinging and settling, drawn gently back to the animation's shape, kept out of `Capsule`s
+moves the chains' points there as weights hung from their roots: falling, lagging as the model sets
+off or turns (damped against where the animation carries them, so they go along with it, not
+through the world), swinging and settling, drawn gently back to the animation's shape and kept
+within a leash of it (`Hang::leash`), lying on a ground if one's given, kept out of `Capsule`s
 carried by other nodes (a thigh, a shin, each end its own radius), neighbouring chains kept within a
 spread of how far apart they are at rest, and each link turned no further than a bend from the one
 above. It then turns the chains' nodes to point where their points went, so the palette carries the
@@ -112,7 +114,9 @@ use mulciber_model::{Capsule, Hang, Hanging};
 
 let roots: Vec<usize> = (0..12).filter_map(|c| skeleton.find(&format!("Skirt_{c}_0"))).collect();
 let thigh = Capsule { node: skeleton.find("LeftUpLeg").unwrap(), ends: [[0.0; 3], [0.0, -0.42, 0.0]], radii: [0.09, 0.06] };
-let mut skirt = Hanging::new(skeleton, &roots, true, vec![thigh], Hang::new([0.0, 0.0, -9.81]));
+let hang = Hang { leash: 30f32.to_radians(), ..Hang::new([0.0, 0.0, -9.81]) };
+let mut skirt = Hanging::new(skeleton, &roots, true, vec![thigh], hang);
+skirt.ground = Some([0.0, 0.0, 1.0, floor]);  // a floor `floor` up, its normal +z
 
 let mut nodes = skeleton.node_matrices(&pose);
 skirt.step(&mut nodes, &placed, dt);  // the chains' nodes turned where they swing

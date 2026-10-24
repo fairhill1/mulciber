@@ -1,7 +1,7 @@
 //! What hangs from a skeleton and swings as it moves: a skirt's chains of bones from the hips to
 //! the hem, a coat's tails, hair. [`Hanging`] takes the nodes' matrices as the animation leaves
 //! them and moves its chains as weights hung from their roots would move: falling, lagging behind
-//! as the root moves, swinging and settling, pushed aside by the [`Capsule`]s a game puts round the
+//! as the root sets off, swinging and settling, pushed aside by the [`Capsule`]s a game puts round the
 //! legs, and drawn gently back to where the animation holds them, so they keep their shape. Each
 //! chain's nodes are then turned to point where its points went, and the palette
 //! ([`crate::Skeleton::palette`]'s matrices, from the nodes) carries the vertices weighted to them.
@@ -11,11 +11,16 @@
 //! [`Hang::spread`] of how far apart they are at rest, so a skirt's cloth neither bunches nor tears
 //! between them; a closed ring of chains, a skirt's, is kept so all round.
 //!
-//! The points move in the world, not the model's frame, so walking on carries the model forward and
-//! leaves them trailing: the step takes where the model is placed. They move in fixed steps of
+//! The points move in the world, not the model's frame, so setting off, turning or stopping leaves
+//! them swinging: the step takes where the model is placed. Their speed is damped against where the
+//! animation carries them, so going on steadily they go along with it. A [`Hang::leash`] keeps each
+//! within an angle of where the animation holds it. They move in fixed steps of
 //! [`Hang::step`], however long the frame, the animation and the capsules met between where they
 //! were the frame before and where they are now. A model put down somewhere new (further than
 //! [`Hang::snap`] in a frame) starts again from its pose.
+//!
+//! A [`Hanging::ground`], if the game gives one, is a floor they lie on rather than fall through:
+//! a skirt crouched in, or a body fallen.
 
 use crate::skeleton::inverse;
 use crate::{IDENTITY, Matrix, Skeleton, add, cross, dot, multiply, normalize, scale, sub};
@@ -38,7 +43,9 @@ pub struct Hang {
     /// Which way they fall and how fast, in the world's units a second each second.
     pub gravity: [f32; 3],
     /// How much of their speed goes each second, as a rate: after a second, `exp(-damping)` of it
-    /// is left.
+    /// is left. Their speed past where the animation carries them, not through the world: cloth's
+    /// own stiffness, which carries it along with what wears it, not the air's drag, which left a
+    /// skirt hanging back behind a walker in proportion to how fast she went.
     pub damping: f32,
     /// How quickly they're drawn back to where the animation holds them, as a rate: after a second,
     /// `exp(-stiffness)` of how far off they were is left.
@@ -56,6 +63,11 @@ pub struct Hang {
     /// animation holds it. Cloth bends easily, but kicked by a running knee a skirt's hem folded
     /// right back up over it.
     pub bend: f32,
+    /// How far a point may swing from where the animation holds it, as an angle from its chain's
+    /// root: a point a length down the chain is kept within that length times twice the sine of half
+    /// of it. Cloth hiding what's cut away under it (a skirt over thighs left out of the mesh) mustn't
+    /// lift far off it, as stairs and blows flung it. Half a turn or more, no limit.
+    pub leash: f32,
     /// A root moving further than this in a frame starts the chains again from the pose, in the
     /// world's units.
     pub snap: f32,
@@ -74,6 +86,7 @@ impl Hang {
             most_steps: 8,
             iterations: 4,
             bend: 100f32.to_radians(),
+            leash: std::f32::consts::PI,
             snap: 1.0,
         }
     }
@@ -92,6 +105,9 @@ struct Chain {
 pub struct Hanging {
     /// How they hang.
     pub hang: Hang,
+    /// A plane the points are kept on the upper side of, in the world: its normal, of length 1 and
+    /// pointing up from it, and how far along the normal from the world's origin it lies.
+    pub ground: Option<[f32; 4]>,
     chains: Vec<Chain>,
     closed: bool,
     capsules: Vec<Capsule>,
@@ -153,6 +169,7 @@ impl Hanging {
         }
         Self {
             hang,
+            ground: None,
             chains,
             closed,
             capsules,
@@ -232,6 +249,13 @@ impl Hanging {
                 }
             })
             .collect();
+        // How fast the animation carries each point, through the frame.
+        let carried: Vec<[f32; 3]> = self
+            .held
+            .iter()
+            .zip(&held)
+            .map(|(&a, &b)| scale(sub(b, a), 1.0 / dt.max(1e-6)))
+            .collect();
         for s in 1..=steps {
             #[allow(clippy::cast_precision_loss)]
             let t = s as f32 / steps as f32;
@@ -248,18 +272,20 @@ impl Hanging {
                 .zip(&self.capsules)
                 .map(|((a, b), c)| ([mix(a[0], b[0], t), mix(a[1], b[1], t)], c.radii))
                 .collect();
-            self.move_by(h, &now, &lengths, &capsules);
+            self.move_by(h, &now, &carried, &lengths, &capsules);
         }
         self.held = held;
         self.ends = ends;
         self.pose(nodes, place);
     }
 
-    /// One step of `h` seconds, the animation holding the points at `now`.
+    /// One step of `h` seconds, the animation holding the points at `now` and carrying them at
+    /// `carried`.
     fn move_by(
         &mut self,
         h: f32,
         now: &[[f32; 3]],
+        carried: &[[f32; 3]],
         lengths: &[f32],
         capsules: &[([[f32; 3]; 2], [f32; 2])],
     ) {
@@ -270,15 +296,22 @@ impl Hanging {
             let k = chain.first;
             self.points[k] = now[k];
             self.velocities[k] = [0.0; 3];
-            for k in k + 1..k + chain.nodes.len() {
-                let v = scale(add(self.velocities[k], scale(hang.gravity, h)), kept);
-                self.points[k] = add(self.points[k], scale(v, h));
+            let moving = k + 1..k + chain.nodes.len();
+            for ((p, &v), &along) in self.points[moving.clone()]
+                .iter_mut()
+                .zip(&self.velocities[moving.clone()])
+                .zip(&carried[moving])
+            {
+                let past = sub(add(v, scale(hang.gravity, h)), along);
+                *p = add(*p, scale(add(along, scale(past, kept)), h));
             }
         }
         for _ in 0..hang.iterations {
             self.keep_lengths(lengths, now);
             self.keep_apart(hang.spread);
+            self.keep_near(lengths, now);
             self.keep_out(capsules, now);
+            self.keep_above();
         }
         for (k, v) in self.velocities.iter_mut().enumerate() {
             *v = scale(sub(self.points[k], before[k]), 1.0 / h);
@@ -289,9 +322,47 @@ impl Hanging {
             *p = mix(*p, at, drawn);
         }
         self.keep_lengths(lengths, now);
+        self.keep_near(lengths, now);
         // Again, as a push out of one capsule may push into another where they meet.
         for _ in 0..3 {
             self.keep_out(capsules, now);
+        }
+        self.keep_above();
+    }
+
+    /// Every point within [`Hang::leash`] of where the animation, `now`, holds it, `lengths` each
+    /// link's.
+    fn keep_near(&mut self, lengths: &[f32], now: &[[f32; 3]]) {
+        if self.hang.leash >= std::f32::consts::PI {
+            return;
+        }
+        let chord = 2.0 * (self.hang.leash.max(0.0) / 2.0).sin();
+        for chain in &self.chains {
+            let mut down = 0.0;
+            for k in chain.first + 1..chain.first + chain.nodes.len() {
+                down += lengths[k];
+                let off = sub(self.points[k], now[k]);
+                let (far, most) = (length(off), down * chord);
+                if far > most {
+                    self.points[k] = add(now[k], scale(off, most / far));
+                }
+            }
+        }
+    }
+
+    /// Every point but the roots on the upper side of the ground, if there is one.
+    fn keep_above(&mut self) {
+        let Some([nx, ny, nz, d]) = self.ground else {
+            return;
+        };
+        let normal = [nx, ny, nz];
+        for chain in &self.chains {
+            for p in &mut self.points[chain.first + 1..chain.first + chain.nodes.len()] {
+                let below = d - dot(normal, *p);
+                if below > 0.0 {
+                    *p = add(*p, scale(normal, below));
+                }
+            }
         }
     }
 
@@ -587,21 +658,29 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_lags_as_its_root_moves_then_settles() {
+    fn a_chain_lags_as_its_root_sets_off_then_goes_along_with_it() {
         let (skeleton, roots) = skirt(1, 4);
         let mut hanging = Hanging::new(&skeleton, &roots, false, Vec::new(), Hang::new(DOWN));
         let tip = |hanging: &Hanging| hanging.points().next().unwrap()[3];
         let mut nodes = rest(&skeleton);
         hanging.step(&mut nodes, &IDENTITY, 1.0 / 60.0);
-        // Carried along +x at a metre and a half a second for a third of a second: the tip trails.
+        // Carried along +x at a metre and a half a second: setting off, the tip trails; going on
+        // steadily, it comes back under the root, carried along as cloth is by what wears it.
         let mut x = 0.0;
-        for _ in 0..20 {
+        for frame in 0..60 {
             x += 1.5 / 60.0;
             let mut nodes = rest(&skeleton);
             hanging.step(&mut nodes, &moved([x, 0.0, 0.0]), 1.0 / 60.0);
+            if frame == 2 {
+                let trailing = tip(&hanging);
+                assert!(trailing[0] < x + 0.2 - 0.02, "the tip trails: {trailing:?}");
+            }
         }
-        let trailing = tip(&hanging);
-        assert!(trailing[0] < x + 0.2 - 0.02, "the tip trails: {trailing:?}");
+        assert!(
+            near(tip(&hanging), [x + 0.2, 0.0, 0.7], 0.01),
+            "going along: {:?}",
+            tip(&hanging)
+        );
         // Every link keeps its length.
         let points = hanging.points().next().unwrap().to_vec();
         for pair in points.windows(2) {
@@ -613,6 +692,71 @@ mod tests {
             hanging.step(&mut nodes, &moved([x, 0.0, 0.0]), 1.0 / 60.0);
         }
         assert!(near(tip(&hanging), [x + 0.2, 0.0, 0.7], 0.005));
+    }
+
+    #[test]
+    fn a_leashed_chain_trails_no_further_than_its_leash() {
+        let (skeleton, roots) = skirt(1, 5);
+        let mut hang = Hang::new(DOWN);
+        hang.leash = 20f32.to_radians();
+        let mut hanging = Hanging::new(&skeleton, &roots, false, Vec::new(), hang);
+        let mut nodes = rest(&skeleton);
+        hanging.step(&mut nodes, &IDENTITY, 1.0 / 60.0);
+        // Snatched along +x at four metres a second: each point trails, but within the leash.
+        let mut x = 0.0;
+        for frame in 0..15 {
+            x += 4.0 / 60.0;
+            let mut nodes = rest(&skeleton);
+            hanging.step(&mut nodes, &moved([x, 0.0, 0.0]), 1.0 / 60.0);
+            let points = hanging.points().next().unwrap().to_vec();
+            for (j, p) in points.iter().enumerate().skip(1) {
+                #[allow(clippy::cast_precision_loss)]
+                let down = 0.1 * j as f32;
+                let most = down * 2.0 * 10f32.to_radians().sin();
+                let held = [x + 0.2, 0.0, 1.0 - down];
+                assert!(length(sub(*p, held)) < most + 1e-4, "{j}: {p:?}");
+            }
+            if frame == 2 {
+                let tip = hanging.points().next().unwrap()[4];
+                assert!(tip[0] < x + 0.2 - 0.05, "it trails: {tip:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chain_lies_on_the_ground_rather_than_falling_through() {
+        let (skeleton, roots) = skirt(1, 5);
+        let mut hang = Hang::new(DOWN);
+        hang.stiffness = 0.0;
+        let mut hanging = Hanging::new(&skeleton, &roots, false, Vec::new(), hang);
+        // A floor a quarter of a metre under the root, the chain's four links four tenths long.
+        hanging.ground = Some([0.0, 0.0, 1.0, 0.75]);
+        // Its root carried aside a little as it starts, as nothing falls quite straight.
+        let mut nodes = rest(&skeleton);
+        for frame in 0..240 {
+            #[allow(clippy::cast_precision_loss)]
+            let x = (frame.min(10) as f32) * 0.005;
+            nodes = rest(&skeleton);
+            hanging.step(&mut nodes, &moved([x, 0.0, 0.0]), 1.0 / 60.0);
+        }
+        let points = hanging.points().next().unwrap().to_vec();
+        assert!(points.iter().all(|p| p[2] > 0.75 - 1e-4), "{points:?}");
+        // Lying along it, its links their lengths, and the nodes where the points are (in the
+        // model's frame, put down half a tenth along).
+        assert!(points[4][2] < 0.75 + 1e-3, "{points:?}");
+        for pair in points.windows(2) {
+            assert!(
+                (length(sub(pair[1], pair[0])) - 0.1).abs() < 2e-3,
+                "{points:?}"
+            );
+        }
+        for (j, n) in (roots[0]..roots[0] + 5).enumerate() {
+            assert!(near(
+                add(head(&nodes[n]), [0.05, 0.0, 0.0]),
+                points[j],
+                1e-4
+            ));
+        }
     }
 
     #[test]

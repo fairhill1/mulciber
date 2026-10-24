@@ -47,8 +47,9 @@
 //!
 //! [`Hanging`] swings chains of a skeleton's nodes that no animation moves (a skirt's, a coat's
 //! tails, hair): it takes the node matrices as the animation leaves them and moves each chain's
-//! points in the world as weights hung from its root, falling, trailing, swinging, kept out of
-//! [`Capsule`]s on other nodes (the legs) and within a bend of the link above, then turns the chain's
+//! points in the world as weights hung from its root, falling, swinging, kept out of [`Capsule`]s
+//! on other nodes (the legs), within a bend of the link above and a leash of where the animation
+//! holds them, and above a ground if there is one, then turns the chain's
 //! nodes to point where they went. A node's glTF `extras` are kept as written ([`Node::extras`]),
 //! for what a tool says of it for the game.
 //!

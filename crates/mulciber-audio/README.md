@@ -31,12 +31,19 @@ through a cloneable command handle.
   `StreamConfig::latency` (60 ms by default) and leans the playback rate by at most 1% to keep it
   through bunched packets and a sender's clock running fast or slow; a stream run dry fades out
   and waits, and one fallen far behind drops what's late. `set_voice_gain` sets its volume live.
-- **Microphone** (`input` feature): the default input device, read as mono at the rate asked
-  for, through `StreamResampler`, which resamples chunked audio without seams.
+- **Microphone** (`input` feature): the default input device, or one chosen from
+  `input_devices` (`Microphone::open_on`), read as mono at the rate asked for, through
+  `StreamResampler`, which resamples chunked audio without seams.
+- **Choosing devices**: `output_devices` and `input_devices` list what the host has, each an
+  `AudioDevice` with an id that holds from run to run (to keep in a game's settings) and a name to
+  show. `AudioEngine::on_device` opens one; `AudioEngine::set_output` moves the running mixer to
+  another, its voices playing on and its sounds kept at the mixer's rate, resampled if the new
+  device runs at another; `AudioEngine::lost` says the device has gone (unplugged).
 - **Decoding**: WAV (`wav` feature) and Ogg Vorbis (`ogg` feature), resampled to the mixer rate
   at load.
 
-`AudioEngine` (feature `output`, on by default) opens the default output device through cpal.
+`AudioEngine` (feature `output`, on by default) opens the default output device, or one chosen,
+through cpal.
 `Mixer::render` mixes into any buffer, so tests and offline tools can listen without a device:
 
 ```rust

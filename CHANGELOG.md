@@ -2,6 +2,22 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Choosing the devices (audio 0.4.1)
+
+`output_devices` and `input_devices` list the host's devices, each an `AudioDevice` with an id that
+holds from run to run, to keep in a game's settings, and a name to show. `AudioEngine::on_device`
+opens an output device by its id, and `Microphone::open_on` an input device; `new`,
+`without_hrtf` and `open` still open the defaults. `AudioEngine::set_output` moves the running
+mixer to another device, or back to the default: what's playing plays on and the sounds loaded are
+kept, the mixer keeping the rate it was opened at and what it renders resampled channel by channel
+(`StreamResampler`) on a device at another. The stream it replaces goes quiet as the new one starts,
+and one that fails to open leaves it where it was. `AudioEngine::lost` says the device has gone
+(cpal's `DeviceNotAvailable`), and `OutputError::NotFound` and `InputError::NotFound` an id no
+device has. New tests: a device at the mixer's rate rendered into as before, and one at 44.1 kHz
+under a 48 kHz mixer filled whatever its buffers' sizes, a tone at its own pitch and without a seam
+between buffers. Exercised on Linux against ALSA's null device only (listing, opening by id, a live
+switch, a failed switch, a missing id); nothing heard through a real device.
+
 ## Ropes (model 0.7.0)
 
 Breaking: `Hang` gains `follow`, so one written out field by field without `..Hang::new(gravity)`

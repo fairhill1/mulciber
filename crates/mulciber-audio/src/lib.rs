@@ -7,8 +7,9 @@
 //! the cloneable, thread-safe handle the game keeps: every call on it becomes a command the mixer
 //! drains at the start of its next buffer, so the game thread never blocks on audio.
 //!
-//! With the default `output` feature, `AudioEngine` opens the default output device through
-//! cpal, moves the mixer onto its callback, and dereferences to its [`Controls`]. Without a
+//! With the default `output` feature, `AudioEngine` opens the default output device (or one of
+//! `output_devices`) through cpal, moves the mixer onto its callback, and dereferences to its
+//! [`Controls`]; `AudioEngine::set_output` moves the mixer to another device as it plays. Without a
 //! device, or in tests, build the pair with [`Mixer::new`] (or `Mixer::with_hrtf`) and call
 //! [`Mixer::render`] on a buffer to mix offline.
 //!
@@ -41,12 +42,14 @@
 //! Live audio, a player's speech, plays through [`Controls::play_spatial_stream`]: push samples
 //! into the [`VoiceStream`] it returns as they arrive, and a jitter buffer plays them a little
 //! late, in the world and the room as any spatial voice. With the `input` feature, `Microphone`
-//! captures the default input device.
+//! captures the default input device, or one of `input_devices`.
 //!
 //! Positions and directions are `[f32; 3]`, accepted through `impl Into<[f32; 3]>` so math types
 //! such as `glam::Vec3` pass straight in.
 
 mod acoustics;
+#[cfg(any(feature = "input", feature = "output"))]
+mod devices;
 #[cfg(feature = "input")]
 mod input;
 mod math;
@@ -60,13 +63,15 @@ mod stream;
 mod takes;
 
 pub use acoustics::{ProbeSettings, RayHit, RoomAcoustics, RoomTracker, probe_room};
+#[cfg(any(feature = "input", feature = "output"))]
+pub use devices::AudioDevice;
 #[cfg(feature = "input")]
-pub use input::{InputError, Microphone};
+pub use input::{InputError, Microphone, input_devices};
 pub use mixer::{
     Bus, Controls, EmitterId, Mixer, Muffle, Placement, Play, Rolloff, VoiceId, Volumes,
 };
 #[cfg(feature = "output")]
-pub use output::{AudioEngine, OutputError};
+pub use output::{AudioEngine, OutputError, output_devices};
 #[cfg(any(feature = "wav", feature = "ogg"))]
 pub use sound::{LoadError, LoadErrorKind};
 pub use sound::{Sound, db_to_amplitude, resample};

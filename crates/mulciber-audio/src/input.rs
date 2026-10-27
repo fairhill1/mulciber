@@ -1,16 +1,18 @@
-//! The microphone: the default input device on a cpal stream, read as mono at the rate asked for.
+//! The microphone: an input device, the default or one chosen, on a cpal stream, read as mono at
+//! the rate asked for.
 
 use std::sync::Arc;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, Sample, SizedSample};
 
+use crate::devices::{self, AudioDevice, Direction};
 use crate::stream::{Ring, StreamResampler};
 
 /// How much the microphone holds for the game before dropping what's newest, in seconds.
 const HELD: f64 = 0.5;
 
-/// The default input device, captured from when it opens. [`Self::read`] what it heard since the
+/// An input device, the default or one chosen, captured from when it opens. [`Self::read`] what it heard since the
 /// last read, mono at the rate it was opened for, each game frame or on a thread of its own.
 ///
 /// Dropping it closes the device. Like [`crate::AudioEngine`]'s, its stream belongs on the thread
@@ -32,6 +34,13 @@ impl std::fmt::Debug for Microphone {
     }
 }
 
+/// The input devices the host has, to choose one for [`Microphone::open_on`] by its id; none if
+/// it can't list them.
+#[must_use]
+pub fn input_devices() -> Vec<AudioDevice> {
+    devices::list(Direction::Input)
+}
+
 impl Microphone {
     /// Opens the default input device at its own rate and format, to be read at `sample_rate`.
     ///
@@ -41,8 +50,19 @@ impl Microphone {
     /// `f32`, `i16`, `u16` or `i32`, or the stream cannot be built or started (on macOS, also when
     /// the player hasn't allowed the game the microphone).
     pub fn open(sample_rate: u32) -> Result<Self, InputError> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(InputError::NoDevice)?;
+        Self::open_on(None, sample_rate)
+    }
+
+    /// Opens the input device `device` names (an [`AudioDevice::id`] of [`input_devices`]), or
+    /// the default with none, as [`Self::open`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`], and [`InputError::NotFound`] when no input device has the id.
+    pub fn open_on(device: Option<&str>, sample_rate: u32) -> Result<Self, InputError> {
+        let device = devices::find(Direction::Input, device)
+            .map_err(|()| InputError::NoDevice)?
+            .ok_or_else(|| InputError::NotFound(device.unwrap_or_default().to_owned()))?;
         let supported = device.default_input_config().map_err(InputError::Config)?;
         let device_rate = supported.sample_rate();
         let channels = usize::from(supported.channels()).max(1);
@@ -135,6 +155,8 @@ where
 pub enum InputError {
     /// The host has no default input device.
     NoDevice,
+    /// No input device has the id asked for (unplugged, or another machine's).
+    NotFound(String),
     /// The device's default configuration could not be read.
     Config(cpal::Error),
     /// The device's default sample format is not one the microphone reads.
@@ -149,6 +171,7 @@ impl std::fmt::Display for InputError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoDevice => formatter.write_str("no audio input device"),
+            Self::NotFound(id) => write!(formatter, "no audio input device {id}"),
             Self::Config(error) => write!(formatter, "audio input configuration: {error}"),
             Self::UnsupportedSampleFormat(format) => {
                 write!(formatter, "unsupported input sample format {format:?}")
@@ -163,7 +186,7 @@ impl std::error::Error for InputError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(error) | Self::Build(error) | Self::Play(error) => Some(error),
-            Self::NoDevice | Self::UnsupportedSampleFormat(_) => None,
+            Self::NoDevice | Self::NotFound(_) | Self::UnsupportedSampleFormat(_) => None,
         }
     }
 }

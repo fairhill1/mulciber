@@ -48,9 +48,9 @@
 //! [`Hanging`] swings chains of a skeleton's nodes that no animation moves (a skirt's, a coat's
 //! tails, hair): it takes the node matrices as the animation leaves them and moves each chain's
 //! points in the world as weights hung from its root, falling, swinging, kept out of [`Capsule`]s
-//! on other nodes (the legs), within a bend of the link above and a leash of where the animation
-//! holds them, and above a ground if there is one, then turns the chain's
-//! nodes to point where they went. A node's glTF `extras` are kept as written ([`Node::extras`]),
+//! on other nodes (the legs) and [`Around`] ones in the world (someone walking into it), within a
+//! bend of the link above and a leash of where the animation holds them, and above a ground if
+//! there is one, then turns the chain's nodes to point where they went. A node's glTF `extras` are kept as written ([`Node::extras`]),
 //! for what a tool says of it for the game.
 //!
 //! Cameras and lights are not read yet.
@@ -63,7 +63,7 @@ mod tangents;
 
 pub use animation::{Animation, Channel, Interpolation, Keys};
 pub use curvature::vertex_curvature;
-pub use hanging::{Capsule, Hang, Hanging};
+pub use hanging::{Around, Capsule, Hang, Hanging};
 pub use skeleton::{Joint, Node, Pose, Skeleton, Transform, inverse, slerp};
 
 use std::collections::HashMap;

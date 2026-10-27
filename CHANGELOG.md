@@ -2,6 +2,19 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Ropes (model 0.7.0)
+
+Breaking: `Hang` gains `follow`, so one written out field by field without `..Hang::new(gravity)`
+needs it.
+
+`Hanging::step_among` keeps the chains out of capsules in the world as well as those the skeleton
+carries, given each frame where they are (`Around`): someone walking into a rope hung from a
+ceiling. `Hang::follow` is the follow-the-leader correction to the points' speed (Müller 2012): a
+long chain lightly damped, a rope's, otherwise swings on by itself, its links' lengths kept by
+pulling each point after the one above. 0, the default, leaves it as before. New tests: a capsule in
+the world pushing a chain aside and it swinging back, and a long lightly damped chain settling with
+follow and not without.
+
 ## Kicks with a reason (net 0.3.0)
 
 Breaking: `DisconnectReason` gains `Kicked(u8)`, so a `match` on it without a wildcard arm needs it.

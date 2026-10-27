@@ -20,7 +20,9 @@
 //! [`Hang::snap`] in a frame) starts again from its pose.
 //!
 //! A [`Hanging::ground`], if the game gives one, is a floor they lie on rather than fall through:
-//! a skirt crouched in, or a body fallen.
+//! a skirt crouched in, or a body fallen. Capsules carried by nothing of the skeleton, in the world,
+//! may be given each frame too ([`Around`], [`Hanging::step_among`]): someone walking into a rope
+//! hung from a ceiling.
 
 use crate::skeleton::inverse;
 use crate::{IDENTITY, Matrix, Skeleton, add, cross, dot, multiply, normalize, scale, sub};
@@ -34,6 +36,17 @@ pub struct Capsule {
     /// Its line's ends, in the node's frame.
     pub ends: [[f32; 3]; 2],
     /// How far round the line at each end, in the world's units.
+    pub radii: [f32; 2],
+}
+
+/// A capsule in the world the hanging points are kept out of, carried by none of the skeleton's
+/// nodes: someone walking into a rope hung from a ceiling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Around {
+    /// Its line's ends this frame, in the world.
+    pub ends: [[f32; 3]; 2],
+    /// How far round the line at each end, narrowing evenly from one to the other, in the world's
+    /// units.
     pub radii: [f32; 2],
 }
 
@@ -71,6 +84,12 @@ pub struct Hang {
     /// A root moving further than this in a frame starts the chains again from the pose, in the
     /// world's units.
     pub snap: f32,
+    /// How much of the way each point's lengths moved the point below it is taken back out of its
+    /// speed, 0 to 1 (Müller et al.'s follow-the-leader correction, "Fast Simulation of Inextensible
+    /// Hair and Fur", 2012). Each link's length is kept by moving its lower point alone, and with
+    /// light damping that fed a long chain more speed than it lost, until a rope of ten links
+    /// swung on its own: 0.9 or so takes it back. None by default, as a damped skirt needs none.
+    pub follow: f32,
 }
 
 impl Hang {
@@ -88,6 +107,7 @@ impl Hang {
             bend: 100f32.to_radians(),
             leash: std::f32::consts::PI,
             snap: 1.0,
+            follow: 0.0,
         }
     }
 }
@@ -208,6 +228,16 @@ impl Hanging {
     ///
     /// When `nodes` aren't the skeleton's this was made for.
     pub fn step(&mut self, nodes: &mut [Matrix], place: &Matrix, dt: f32) {
+        self.step_among(nodes, place, dt, &[]);
+    }
+
+    /// As [`Hanging::step`], the chains kept out of the capsules `around` in the world too, each
+    /// where it is now through the whole frame.
+    ///
+    /// # Panics
+    ///
+    /// When `nodes` aren't the skeleton's this was made for.
+    pub fn step_among(&mut self, nodes: &mut [Matrix], place: &Matrix, dt: f32, around: &[Around]) {
         let held: Vec<[f32; 3]> = self
             .chains
             .iter()
@@ -271,6 +301,7 @@ impl Hanging {
                 .zip(&ends)
                 .zip(&self.capsules)
                 .map(|((a, b), c)| ([mix(a[0], b[0], t), mix(a[1], b[1], t)], c.radii))
+                .chain(around.iter().map(|a| (a.ends, a.radii)))
                 .collect();
             self.move_by(h, &now, &carried, &lengths, &capsules);
         }
@@ -291,6 +322,7 @@ impl Hanging {
     ) {
         let hang = self.hang;
         let before = self.points.clone();
+        let mut pulled = vec![[0.0; 3]; self.points.len()];
         let (kept, drawn) = ((-hang.damping * h).exp(), 1.0 - (-hang.stiffness * h).exp());
         for chain in &self.chains {
             let k = chain.first;
@@ -307,7 +339,7 @@ impl Hanging {
             }
         }
         for _ in 0..hang.iterations {
-            self.keep_lengths(lengths, now);
+            self.keep_lengths(lengths, now, &mut pulled);
             self.keep_apart(hang.spread);
             self.keep_near(lengths, now);
             self.keep_out(capsules, now);
@@ -316,12 +348,18 @@ impl Hanging {
         for (k, v) in self.velocities.iter_mut().enumerate() {
             *v = scale(sub(self.points[k], before[k]), 1.0 / h);
         }
+        for chain in &self.chains {
+            for k in chain.first + 1..chain.first + chain.nodes.len() - 1 {
+                let back = scale(pulled[k + 1], hang.follow / h);
+                self.velocities[k] = sub(self.velocities[k], back);
+            }
+        }
         // Drawn back to the animation's shape after their speed is taken, so it eases them there
         // rather than springing them past it, then the lengths and the capsules met again.
         for (p, &at) in self.points.iter_mut().zip(now) {
             *p = mix(*p, at, drawn);
         }
-        self.keep_lengths(lengths, now);
+        self.keep_lengths(lengths, now, &mut pulled);
         self.keep_near(lengths, now);
         // Again, as a push out of one capsule may push into another where they meet.
         for _ in 0..3 {
@@ -368,10 +406,10 @@ impl Hanging {
 
     /// Each point as far from the one above as at rest, down from the root, its link turned no
     /// more than [`Hang::bend`] from the one above (the first, from where the animation, `now`,
-    /// holds it).
+    /// holds it); how far each point is moved so added to `pulled`.
     // Each point is met with the one above it, so by index.
     #[allow(clippy::needless_range_loop)]
-    fn keep_lengths(&mut self, lengths: &[f32], now: &[[f32; 3]]) {
+    fn keep_lengths(&mut self, lengths: &[f32], now: &[[f32; 3]], pulled: &mut [[f32; 3]]) {
         let bend = self.hang.bend;
         for chain in &self.chains {
             let mut before = normalize(sub(now[chain.first + 1], now[chain.first]));
@@ -379,7 +417,9 @@ impl Hanging {
                 let above = self.points[k - 1];
                 let way = normalize_or(sub(self.points[k], above), before);
                 let way = within(way, before, bend);
-                self.points[k] = add(above, scale(way, lengths[k]));
+                let at = add(above, scale(way, lengths[k]));
+                pulled[k] = add(pulled[k], sub(at, self.points[k]));
+                self.points[k] = at;
                 before = way;
             }
         }
@@ -780,6 +820,70 @@ mod tests {
             let radius = 0.08 - 0.02 * t;
             assert!(length(sub(on_line, on_axis)) > radius - 1e-3, "{points:?}");
         }
+    }
+
+    #[test]
+    fn a_capsule_in_the_world_pushes_the_chain_aside_and_it_swings_back() {
+        let (skeleton, roots) = skirt(1, 5);
+        let mut hanging = Hanging::new(&skeleton, &roots, false, Vec::new(), Hang::new(DOWN));
+        // Someone stood up through where the chain hangs, a little to its side.
+        let body = Around {
+            ends: [[0.25, 0.0, 0.0], [0.25, 0.0, 2.0]],
+            radii: [0.1, 0.1],
+        };
+        for _ in 0..60 {
+            let mut nodes = rest(&skeleton);
+            hanging.step_among(&mut nodes, &IDENTITY, 1.0 / 60.0, &[body]);
+        }
+        let points = hanging.points().next().unwrap().to_vec();
+        for pair in points.windows(2).skip(1) {
+            let (_, _, on_line, on_axis) = closest(pair[0], pair[1], body.ends[0], body.ends[1]);
+            assert!(length(sub(on_line, on_axis)) > 0.1 - 1e-3, "{points:?}");
+        }
+        assert!(points[4][0] < 0.2 - 0.04, "pushed aside: {points:?}");
+        // Gone, it comes back to hang where it did.
+        for _ in 0..240 {
+            let mut nodes = rest(&skeleton);
+            hanging.step_among(&mut nodes, &IDENTITY, 1.0 / 60.0, &[]);
+        }
+        let points = hanging.points().next().unwrap().to_vec();
+        assert!(near(points[4], [0.2, 0.0, 0.6], 0.005), "{points:?}");
+    }
+
+    #[test]
+    fn a_long_lightly_damped_chain_swings_and_settles_with_follow() {
+        // Ten links, damped as a rope is, knocked by its root carried aside for a few frames.
+        let (skeleton, roots) = skirt(1, 10);
+        let knocked = |follow: f32| {
+            let hang = Hang {
+                damping: 0.6,
+                stiffness: 0.1,
+                follow,
+                ..Hang::new(DOWN)
+            };
+            let mut hanging = Hanging::new(&skeleton, &roots, false, Vec::new(), hang);
+            let mut tips = Vec::new();
+            for frame in 0..900 {
+                let x = if (5..10).contains(&frame) { 0.05 } else { 0.0 };
+                let mut nodes = rest(&skeleton);
+                hanging.step(&mut nodes, &moved([x, 0.0, 0.0]), 1.0 / 60.0);
+                tips.push(hanging.points().next().unwrap()[9]);
+            }
+            tips
+        };
+        // Without, it swings on, more and more; with, it swings and settles back under its root.
+        let wild = knocked(0.0);
+        assert!(wild[600..].iter().any(|t| (t[0] - 0.2).abs() > 0.1));
+        let tips = knocked(0.9);
+        assert!(
+            tips[..120].iter().any(|t| (t[0] - 0.2).abs() > 1e-3),
+            "it swings"
+        );
+        assert!(
+            tips[600..].iter().all(|t| near(*t, [0.2, 0.0, 0.1], 0.005)),
+            "{:?}",
+            tips[899]
+        );
     }
 
     #[test]

@@ -107,10 +107,13 @@ carried by other nodes (a thigh, a shin, each end its own radius), neighbouring 
 spread of how far apart they are at rest, and each link turned no further than a bend from the one
 above. It then turns the chains' nodes to point where their points went, so the palette carries the
 vertices weighted to them. The points move in fixed steps however long the frame, and a model put
-down somewhere new starts again from its pose.
+down somewhere new starts again from its pose. A long chain lightly damped (a rope) needs
+`Hang::follow`, the follow-the-leader correction, or it swings on by itself. `Hanging::step_among`
+keeps them out of capsules in the world too, given each frame where they are (`Around`): someone
+walking into a rope hung from a ceiling.
 
 ```rust
-use mulciber_model::{Capsule, Hang, Hanging};
+use mulciber_model::{Around, Capsule, Hang, Hanging};
 
 let roots: Vec<usize> = (0..12).filter_map(|c| skeleton.find(&format!("Skirt_{c}_0"))).collect();
 let thigh = Capsule { node: skeleton.find("LeftUpLeg").unwrap(), ends: [[0.0; 3], [0.0, -0.42, 0.0]], radii: [0.09, 0.06] };
@@ -120,6 +123,10 @@ skirt.ground = Some([0.0, 0.0, 1.0, floor]);  // a floor `floor` up, its normal 
 
 let mut nodes = skeleton.node_matrices(&pose);
 skirt.step(&mut nodes, &placed, dt);  // the chains' nodes turned where they swing
+
+// A rope hung from a ceiling, kept out of whoever walks into it.
+let body = Around { ends: [feet, head], radii: [0.25, 0.25] };
+rope.step_among(&mut nodes, &placed, dt, &[body]);
 ```
 
 A node's glTF `extras` are kept as written (`Node::extras`, JSON), for what a tool says of it for

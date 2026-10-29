@@ -2,6 +2,27 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Cloth for skirts (model 0.8.0)
+
+Breaking: `Hang` gains `weave`, `friction` and `reel`, so one written out field by field without
+`..Hang::new(gravity)` needs them. `Hang::step` is now the step the points always move in, what's
+left of a frame carried on to the next, no longer the longest step a frame is cut into.
+
+Neighbouring chains are woven together: the cloth between them, straight across and corner to
+corner, is drawn toward its width at rest as by springs (`Hang::weave`), within `Hang::spread` of
+it, and kept out of the capsules too, so a knee doesn't come out between the chains. The pull back
+toward the animation's shape and the weave are springs met with the other constraints in each step
+(XPBD), and the points' speed is taken once all of them are met. Whatever a capsule meets is pushed
+back out the side it was on at the step's start, in a closed ring never out the side of a leg that
+faces the middle, and where it touches, friction holds it (`Hang::friction`). Past its leash a point
+goes no further from where the animation holds it and is reeled back in (`Hang::reel`), no longer
+held to the leash as a wall. A link may always turn as far as hanging straight down, whatever the
+bend. The points are drawn moved on at their speed for what's left of the frame, so they move alike
+at any frame rate. New tests: a knee pushed out between two chains of a ring staying inside the
+cloth between them, a ring's cloth pushed out of a capsule outward only, and a capsule holding a ring
+past its leash leaving it still; the leash test now has the chain go little past its leash and be
+reeled back in.
+
 ## Choosing the devices (audio 0.4.1)
 
 `output_devices` and `input_devices` list the host's devices, each an `AudioDevice` with an id that

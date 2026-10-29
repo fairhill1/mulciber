@@ -101,13 +101,16 @@ tails, hair. Each chain is a root and the line of single children under it. Ever
 the node matrices as the animation leaves them, with where the model is placed in the world, and
 moves the chains' points there as weights hung from their roots: falling, lagging as the model sets
 off or turns (damped against where the animation carries them, so they go along with it, not
-through the world), swinging and settling, drawn gently back to the animation's shape and kept
-within a leash of it (`Hang::leash`), lying on a ground if one's given, kept out of `Capsule`s
-carried by other nodes (a thigh, a shin, each end its own radius), neighbouring chains kept within a
-spread of how far apart they are at rest, and each link turned no further than a bend from the one
-above. It then turns the chains' nodes to point where their points went, so the palette carries the
-vertices weighted to them. The points move in fixed steps however long the frame, and a model put
-down somewhere new starts again from its pose. A long chain lightly damped (a rope) needs
+through the world), swinging and settling, drawn gently back to the animation's shape and reeled
+back within a leash of it (`Hang::leash`), lying on a ground if one's given, kept out of `Capsule`s
+carried by other nodes (a thigh, a shin, each end its own radius), pushed back out the side they
+came from and held there by friction, neighbouring chains woven together by springs across and
+corner to corner (`Hang::weave`), the cloth between them kept out of the capsules too so a knee
+doesn't come out between them, and each link turned no further than a bend from the one above, or
+than hanging straight down. It then turns the chains' nodes to point where their points went, so
+the palette carries the vertices weighted to them. The points move in steps of always the same
+length, what's left of a frame carried on to the next, so they move alike at any frame rate, and a
+model put down somewhere new starts again from its pose. A long chain lightly damped (a rope) needs
 `Hang::follow`, the follow-the-leader correction, or it swings on by itself. `Hanging::step_among`
 keeps them out of capsules in the world too, given each frame where they are (`Around`): someone
 walking into a rope hung from a ceiling.

@@ -2,6 +2,14 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Shared storage written once (graphics 0.18.2)
+
+Records whose `storage` is the very same slice (the same bytes in memory, as a frame's draws often
+share one) are given one offset in the frame's storage region, and those bytes are copied into it
+once rather than once per record. A slice with the same contents elsewhere in memory, or a shorter
+slice of the same bytes, is still its own. New test: shared, empty, copied and shorter slices each
+given their offsets.
+
 ## Cloth for skirts (model 0.8.0)
 
 Breaking: `Hang` gains `weave`, `friction` and `reel`, so one written out field by field without

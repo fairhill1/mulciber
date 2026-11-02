@@ -18,7 +18,7 @@ mod volumetric;
 
 use core::ffi::c_void;
 use core::{mem, ptr, slice};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::ops::Range;
 use std::time::Duration;
@@ -1488,7 +1488,7 @@ impl<'window> TexturedSession<'window> {
         self.ensure_uniform_capacity(uniform_slots)?;
         let uniform_base = self.uniform_base();
         write_material_uniforms(&self.uniform, uniform_base, records, overlay, shadow)?;
-        let (mut storage_offsets, storage_bytes) =
+        let (mut storage_offsets, storage_first, storage_bytes) =
             material_storage_offsets(records, overlay, shadow)?;
         self.ensure_storage_capacity(storage_bytes)?;
         // Shifted after the capacity call, because growing the buffer moves
@@ -1500,7 +1500,14 @@ impl<'window> TexturedSession<'window> {
                 .checked_add(storage_base)
                 .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
         }
-        write_material_storage(&self.storage, records, overlay, shadow, &storage_offsets)?;
+        write_material_storage(
+            &self.storage,
+            records,
+            overlay,
+            shadow,
+            &storage_offsets,
+            &storage_first,
+        )?;
         self.stage_transient_geometry(records, overlay)?;
         let (mut instance_offsets, instance_bytes) =
             record_instance_offsets(records, overlay, shadow)?;
@@ -4577,37 +4584,64 @@ fn write_material_uniforms(
 
 /// Per-record byte offsets into the frame's read-only storage region — scene records first,
 /// then overlay records, then shadow records, each aligned to [`STORAGE_OFFSET_ALIGNMENT`] —
-/// plus the total bytes the region needs. Records without a storage slot occupy no bytes and
-/// keep offset zero.
+/// whether each record is the first with its storage, and the total bytes the region needs.
+/// See [`shared_storage_offsets`].
 fn material_storage_offsets(
     records: &[MaterialRecord<'_>],
     overlay: &[MaterialRecord<'_>],
     shadow: Option<&ShadowPrepass<'_>>,
-) -> Result<(Vec<u32>, usize), GraphicsError> {
-    let lengths = records
-        .iter()
-        .chain(overlay)
-        .map(|record| record.storage.len())
-        .chain(
-            shadow
-                .into_iter()
-                .flat_map(|shadow| shadow.records().map(|record| record.storage.len())),
-        );
-    let mut offsets = Vec::with_capacity(
-        records.len() + overlay.len() + shadow.map_or(0, |shadow| shadow.records().count()),
-    );
+) -> Result<(Vec<u32>, Vec<bool>, usize), GraphicsError> {
+    shared_storage_offsets(
+        records
+            .iter()
+            .chain(overlay)
+            .map(|record| record.storage)
+            .chain(
+                shadow
+                    .into_iter()
+                    .flat_map(|shadow| shadow.records().map(|record| record.storage)),
+            ),
+    )
+}
+
+/// Byte offsets for each of `storages` in a storage region, each aligned to
+/// [`STORAGE_OFFSET_ALIGNMENT`]; whether each is the first of its bytes, the one to be written;
+/// and the total bytes the region needs. A storage that is the very slice an earlier one is (the
+/// same bytes in memory, as a frame's draws often share one) is given that one's offset and no
+/// bytes of its own, so it's written once: copied per record, a scene of a few hundred draws
+/// sharing tens of kilobytes copied megabytes a frame. An empty storage occupies no bytes.
+fn shared_storage_offsets<'a>(
+    storages: impl Iterator<Item = &'a [u8]>,
+) -> Result<(Vec<u32>, Vec<bool>, usize), GraphicsError> {
+    let mut offsets = Vec::new();
+    let mut first = Vec::new();
+    let mut placed: HashMap<(*const u8, usize), u32> = HashMap::new();
     let mut running = 0_usize;
-    for length in lengths {
-        offsets
-            .push(u32::try_from(running).map_err(|_| error("Vulkan storage offsets exceed u32"))?);
-        let aligned = length
+    for bytes in storages {
+        let key = (bytes.as_ptr(), bytes.len());
+        if !bytes.is_empty()
+            && let Some(&offset) = placed.get(&key)
+        {
+            offsets.push(offset);
+            first.push(false);
+            continue;
+        }
+        let offset =
+            u32::try_from(running).map_err(|_| error("Vulkan storage offsets exceed u32"))?;
+        offsets.push(offset);
+        first.push(true);
+        if !bytes.is_empty() {
+            placed.insert(key, offset);
+        }
+        let aligned = bytes
+            .len()
             .checked_next_multiple_of(STORAGE_OFFSET_ALIGNMENT)
             .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
         running = running
             .checked_add(aligned)
             .ok_or_else(|| error("Vulkan storage offsets overflow"))?;
     }
-    Ok((offsets, running))
+    Ok((offsets, first, running))
 }
 
 /// Uniform and storage dynamic offsets rearranged into ascending binding-number order, the order
@@ -4638,6 +4672,7 @@ fn write_material_storage(
     overlay: &[MaterialRecord<'_>],
     shadow: Option<&ShadowPrepass<'_>>,
     offsets: &[u32],
+    first: &[bool],
 ) -> Result<(), GraphicsError> {
     let contents = records
         .iter()
@@ -4658,7 +4693,11 @@ fn write_material_storage(
     }
     let mapped = persistent_mapping(buffer)?;
     unsafe {
-        for (bytes, &offset) in contents.zip(offsets) {
+        for ((bytes, &offset), _) in contents
+            .zip(offsets)
+            .zip(first)
+            .filter(|(_, first)| **first)
+        {
             debug_assert!(
                 offset as usize + bytes.len() <= usize::try_from(buffer.size).expect("size fits"),
                 "storage capacity was ensured before writing"
@@ -6622,9 +6661,26 @@ mod tests {
     use std::vec::Vec;
 
     use super::{
-        MeshIndexData, insert_free_range, plan_mesh_storage, take_free_range, timestamp_tick_delta,
-        vk,
+        MeshIndexData, STORAGE_OFFSET_ALIGNMENT, insert_free_range, plan_mesh_storage,
+        shared_storage_offsets, take_free_range, timestamp_tick_delta, vk,
     };
+
+    #[test]
+    fn records_sharing_a_storage_slice_share_one_written_offset() {
+        let world = [7_u8; 300];
+        let figure = [9_u8; 40];
+        // The same bytes as `world`, but another slice of them: not shared.
+        let copy = world;
+        let storages: [&[u8]; 6] = [&world, &figure, &world, &[], &copy, &world[..100]];
+        let (offsets, first, total) =
+            shared_storage_offsets(storages.into_iter()).expect("offsets fit");
+        let a = u32::try_from(STORAGE_OFFSET_ALIGNMENT).expect("alignment fits");
+        // world takes two aligned blocks, figure one; the second world shares the first's; the
+        // empty one takes nothing; the copy and the shorter slice of world are their own.
+        assert_eq!(offsets, [0, 2 * a, 0, 3 * a, 3 * a, 5 * a]);
+        assert_eq!(first, [true, true, false, true, true, true]);
+        assert_eq!(total, 6 * STORAGE_OFFSET_ALIGNMENT);
+    }
 
     #[test]
     fn timestamp_delta_handles_queue_counter_wraparound() {

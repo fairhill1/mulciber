@@ -72,7 +72,10 @@ language gaps.
    variables (VUID-StandaloneSpirv-OpEntryPoint-09658); with
    `ZeroInitializeWorkgroupMemoryMode::None` that duplicate disappears and the failure
    reduces to finding 2 (layout decorations on the workgroup mesh-output struct). No
-   upstream report was found for the duplicate-builtin defect. Task, mesh, and fragment
+   upstream report was found for the duplicate-builtin defect at evaluation time; it was
+   since fixed by [gfx-rs/wgpu#10497](https://github.com/gfx-rs/wgpu/pull/10497), merged
+   2026-10-18 and not yet in a Naga release as of 2026-11-03 (the latest is 30.0.1, from
+   2026-08-22). Mesh output stays invalid until finding 2 is also fixed. Task, mesh, and fragment
    stages otherwise parse, validate, and reach `MeshShadingEXT` SPIR-V.
 4. **Naga cannot emit true bindless (runtime-sized) descriptor arrays.** The SPIR-V back end
    has no `RuntimeDescriptorArray` path; an unsized `binding_array` compiles only when the

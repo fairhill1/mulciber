@@ -637,6 +637,11 @@ device-loss cause.
   Apple M2 tier.
 - [ ] Run `mulciber-render-texture` under Vulkan validation (Windows and Linux), both sample
   counts; the Vulkan path is compile- and lint-checked only.
+- [x] Single-sample render textures (`RenderTextureSamples::Single`, drawn into by
+  `SceneColor::HdrSingleSample` pipelines) and passes that keep their target's contents
+  (`OffscreenLoad::Keep`), graphics 0.22.0.
+- [ ] Run the probe's single-sample and kept-pass steps on a device under each backend's
+  validation; both paths are compile- and lint-checked only.
 
 ## Cube texture arrays (graphics 0.16.0, shader 0.5.5)
 

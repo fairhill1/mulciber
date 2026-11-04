@@ -228,11 +228,11 @@ while uploaded meshes keep their indirect-draw path; Vulkan binds the region as 
 and index buffer at the record's offsets and issues a direct indexed draw through the same
 scene pass.
 
-This checkpoint does not add general pass composition — the shadow pre-pass is one fixed
-depth-only recipe (singly or once per cascade layer), not an application-ordered graph — nor
-color render-to-texture beyond the postprocess recipe and offscreen passes into HDR
-[render textures](render-textures.md), load/store policy, compute, read-write
-or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
+This checkpoint does not add general pass composition — the shadow pre-pass is one fixed depth-only
+recipe (singly or once per cascade layer), not an application-ordered graph — nor color
+render-to-texture beyond the postprocess recipe and offscreen passes into HDR [render
+textures](render-textures.md) (whose passes clear or keep color), other load/store policy, compute,
+read-write or runtime-sized storage, persistent application-owned buffer handles, arbitrary blend
 equations beyond the fixed mode set, bind-group abstractions, sampled color formats beyond RGBA8
 sRGB and RGBA8 UNORM, packed vertex formats, native mip generation, per-cascade map resolutions,
 engine-side cascade selection or blending, or persistent updatable mesh handles beyond the

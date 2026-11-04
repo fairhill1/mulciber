@@ -96,7 +96,9 @@ application-authored composite shaders plus optional `BloomShaders` (prefilter, 
 optional upsample) and `VolumetricShaders`. Six bloom levels feed the final sRGB composite;
 foreground geometry participates in HDR and bloom, while HUD overlays remain sharp.
 `SceneColor::Surface` and `hdr: None` keep the surface-format path. HDR scene storage
-is independent of HDR monitor output.
+is independent of HDR monitor output. `SceneColor::HdrSingleSample` builds the same RGBA16Float
+pipeline at one sample per pixel, for offscreen passes into single-sample render textures only
+(see the [render texture contract](https://github.com/fairhill1/mulciber/blob/main/docs/render-textures.md)).
 
 Vulkan validates HDR format roles, sample counts and extent limits. Both native
 backends own bloom resources and their dependencies. Isle of Rán renders its HDR

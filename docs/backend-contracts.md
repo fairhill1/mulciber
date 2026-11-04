@@ -310,8 +310,12 @@ private texture; Vulkan records each as a dynamic-rendering scope between barrie
 after earlier sampling and leave the color in `SHADER_READ_ONLY_OPTIMAL` for later vertex and
 fragment reads. On an Apple M2 (macOS 15.8) the `mulciber-render-texture` probe matched four
 captures pixel by pixel under Metal API Validation at four samples and at one, after its
-refusals matched. The Vulkan path compiles and lints for Windows only. See the
-[contract](render-textures.md).
+refusals matched. The Vulkan path compiles and lints for Windows only. Single-sample render
+textures (`RenderTextureSamples::Single`, one-sample depth, no multisample color, drawn into by
+`SceneColor::HdrSingleSample` pipelines) and `OffscreenLoad::Keep` (Vulkan: the color moves from
+`SHADER_READ_ONLY_OPTIMAL` and loads with `VK_ATTACHMENT_LOAD_OP_LOAD`; Metal:
+`MTLLoadActionLoad`) compile and lint for Linux and aarch64-apple-darwin and have not run on a
+device. See the [contract](render-textures.md).
 
 ## Per-entry-point resource bindings (unreleased)
 

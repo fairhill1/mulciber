@@ -1,13 +1,14 @@
 //! Render textures: an `RGBA16Float` color image sampled like any upload, with depth and
 //! multisample images of its own, rendered by offscreen passes recorded after the shadow
 //! prepass and before the scene, each with explicit attachment-to-sampled-read transitions.
+//! A pass either clears the color, discarding what it held, or keeps it to draw over.
 use super::{
-    ClearColor, DEPTH_FORMAT, GraphicsError, Image, ResolvedMaterialDraw, ResourceId,
-    SampledTextureFormat, TextureResource, TexturedSession, bloom, check, color_subresource_range,
-    create_image, depth_subresource_range, destroy_image, destroy_image_device, error,
-    image_barrier, pipeline_barriers, ptr, vk,
+    DEPTH_FORMAT, GraphicsError, Image, ResolvedMaterialDraw, ResourceId, SampledTextureFormat,
+    TextureResource, TexturedSession, bloom, check, color_subresource_range, create_image,
+    depth_subresource_range, destroy_image, destroy_image_device, error, image_barrier,
+    pipeline_barriers, ptr, vk,
 };
-use crate::OffscreenPass;
+use crate::{OffscreenLoad, OffscreenPass};
 use std::vec;
 
 /// What a render texture owns beyond its sampled color.
@@ -15,8 +16,11 @@ pub(super) struct RenderAttachments {
     depth: Image,
     /// Multisample color resolved into the sampled color; absent at one sample.
     multisample: Option<Image>,
-    /// Samples per pixel the storage was built for; rendering at another count is refused.
+    /// Samples per pixel the storage was built for; rendering at another count is refused
+    /// unless the texture is single-sample.
     sample_count: vk::VkSampleCountFlagBits,
+    /// Built at one sample whatever the session's count.
+    single_sample: bool,
     /// Whether any offscreen pass has rendered into the texture; sampling before that is
     /// rejected.
     rendered: bool,
@@ -34,23 +38,29 @@ impl RenderAttachments {
 }
 
 /// One offscreen pass prepared for recording: its target's arena index, how many of the
-/// resolved offscreen draws are its own, and its clears.
+/// resolved offscreen draws are its own, how its color starts, and its depth clear.
 #[derive(Clone, Copy)]
 pub(super) struct PendingOffscreen {
     texture: usize,
     draws: usize,
-    clear: ClearColor,
+    load: OffscreenLoad,
     depth_clear: f32,
 }
 
 impl TexturedSession<'_> {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn create_render_texture(
         &mut self,
         width: u32,
         height: u32,
+        single_sample: bool,
     ) -> Result<ResourceId, GraphicsError> {
-        bloom::validate_format(&self.surface, self.sample_count, width, height)?;
-        let sample_count = self.sample_count;
+        let sample_count = if single_sample {
+            vk::VK_SAMPLE_COUNT_1_BIT
+        } else {
+            self.sample_count
+        };
+        bloom::validate_format(&self.surface, sample_count, width, height)?;
         let surface = &self.surface;
         let color = create_image(
             surface,
@@ -104,6 +114,7 @@ impl TexturedSession<'_> {
             depth,
             multisample,
             sample_count,
+            single_sample,
             rendered: false,
         };
         let sampler_info = vk::VkSamplerCreateInfo {
@@ -161,8 +172,10 @@ impl TexturedSession<'_> {
             .is_some_and(|render| render.rendered))
     }
 
-    /// Checks each pass's target against the session's sample count and queues the passes for
-    /// recording, in order, their draws being the resolved offscreen draws in the same order.
+    /// Checks each session-sampled pass target against the session's sample count and queues
+    /// the passes for recording, in order, their draws being the resolved offscreen draws in the
+    /// same order. Keeping a target's contents was validated against its samples and whether it
+    /// was rendered before.
     pub(super) fn queue_offscreen_passes(
         &mut self,
         offscreen: &[OffscreenPass<'_>],
@@ -175,11 +188,20 @@ impl TexturedSession<'_> {
                 .render
                 .as_ref()
                 .ok_or_else(|| error("offscreen pass target is not a render texture"))?;
-            self.check_sample_count(render.sample_count, "render texture")?;
+            if !render.single_sample {
+                self.check_sample_count(render.sample_count, "render texture")?;
+            }
+            if pass.load == OffscreenLoad::Keep
+                && (render.multisample.is_some() || !render.rendered)
+            {
+                return Err(error(
+                    "offscreen pass keeps a render texture that is multisampled or never rendered",
+                ));
+            }
             self.pending_offscreen.push(PendingOffscreen {
                 texture,
                 draws: pass.records.len(),
-                clear: pass.clear,
+                load: pass.load,
                 depth_clear,
             });
         }
@@ -207,9 +229,11 @@ impl TexturedSession<'_> {
             let sampling_stages = vk::VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT
                 | vk::VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
             // Earlier samplers and writers of the color, in this frame or one before it,
-            // finish before the pass clears it; its old contents are discarded.
-            let mut barriers = vec![
-                image_barrier(
+            // finish before the pass clears it, discarding its old contents, or loads it: a
+            // kept target was left sampled-read-only by the pass that last rendered it, whose
+            // writes that transition made available, and the load reads them.
+            let color_barrier = match pass.load {
+                OffscreenLoad::Clear(_) => image_barrier(
                     color.handle,
                     vk::VK_IMAGE_LAYOUT_UNDEFINED,
                     vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -219,6 +243,20 @@ impl TexturedSession<'_> {
                     vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     color_subresource_range(),
                 ),
+                OffscreenLoad::Keep => image_barrier(
+                    color.handle,
+                    vk::VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    vk::VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    sampling_stages | vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    vk::VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    vk::VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
+                        | vk::VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    color_subresource_range(),
+                ),
+            };
+            let mut barriers = vec![
+                color_barrier,
                 image_barrier(
                     render.depth.handle,
                     vk::VK_IMAGE_LAYOUT_UNDEFINED,
@@ -261,7 +299,12 @@ impl TexturedSession<'_> {
                 } else {
                     vk::VK_IMAGE_LAYOUT_UNDEFINED
                 },
-                loadOp: vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                // Only a single-sample target keeps its contents, so a load reads the sampled
+                // color itself.
+                loadOp: match pass.load {
+                    OffscreenLoad::Clear(_) => vk::VK_ATTACHMENT_LOAD_OP_CLEAR,
+                    OffscreenLoad::Keep => vk::VK_ATTACHMENT_LOAD_OP_LOAD,
+                },
                 // Multisample color lives only inside the pass; its resolve is what's kept.
                 storeOp: if render.multisample.is_some() {
                     vk::VK_ATTACHMENT_STORE_OP_DONT_CARE
@@ -270,7 +313,10 @@ impl TexturedSession<'_> {
                 },
                 clearValue: vk::VkClearValue {
                     color: vk::VkClearColorValue {
-                        float32: pass.clear.components(),
+                        float32: match pass.load {
+                            OffscreenLoad::Clear(clear) => clear.components(),
+                            OffscreenLoad::Keep => [0.0; 4],
+                        },
                     },
                 },
                 ..Default::default()

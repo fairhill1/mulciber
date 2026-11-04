@@ -263,6 +263,9 @@ struct PostprocessPipelineResource {
 struct MaterialPipelineResource {
     /// Samples per pixel the pipeline was built for; drawing at another count is refused.
     sample_count: usize,
+    /// Built at one sample for single-sample render textures, so the session's count changing
+    /// leaves it drawable.
+    single_sample: bool,
     pipeline: Object,
     /// Single-sample no-depth variant for the presentable overlay pass; null unless the
     /// pipeline declares [`DepthMode::Off`].
@@ -955,12 +958,17 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        config.validate_scene_depth_samples(self.sample_count > 1)?;
+        let sample_count = if config.single_sample {
+            1
+        } else {
+            self.sample_count
+        };
+        config.validate_scene_depth_samples(sample_count > 1)?;
         self.material_pipelines.insert(create_material_pipeline(
             self.surface.device,
             shader.payload(),
             config,
-            self.sample_count,
+            sample_count,
         )?)
     }
 
@@ -1416,7 +1424,9 @@ impl<'window> TexturedSession<'window> {
                 self.meshes.get(mesh.id())?;
             }
             let pipeline = self.material_pipelines.get(record.pipeline.id())?;
-            self.check_sample_count(pipeline.sample_count, "material pipeline")?;
+            if !pipeline.single_sample {
+                self.check_sample_count(pipeline.sample_count, "material pipeline")?;
+            }
             for texture in record.textures {
                 self.textures.get(texture.id())?;
             }
@@ -3350,6 +3360,7 @@ fn create_material_pipeline(
         }
         Ok(MaterialPipelineResource {
             sample_count,
+            single_sample: config.single_sample,
             pipeline,
             overlay_pipeline,
             depth_state,

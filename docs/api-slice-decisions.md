@@ -204,6 +204,16 @@ name before the frame token is consumed, as for shadow maps. Surface-format rend
 mip chains, load-preserving passes, readback, and engine-ordered pass graphs stay closed until
 a slice forces them. Recorded in the [render texture contract](render-textures.md).
 
+Revised 2026-11-04 to open load-preserving passes, because a game's terrain caches its normals in
+clipmap rings that redraw only the strip the camera moves onto each frame. `OffscreenPass.clear`
+became `load: OffscreenLoad`, `Clear(ClearColor)` or `Keep`. Keeping needs color that survives the
+pass, which multisample storage does not, so `Device::create_render_texture` adds single-sample
+render textures (`RenderTextureSamples::Single`), rendered at one sample whatever the session's
+count, drawn into by material pipelines built for `SceneColor::HdrSingleSample` and nothing else;
+`Keep` is refused on session-sampled textures and on ones no earlier submission rendered. Depth is
+still cleared every pass. Mip chains, readback, partial render areas and engine-ordered pass graphs
+stay closed.
+
 ## Render scale
 
 Decided as a property of postprocess targets rather than a per-frame toggle, reusing the

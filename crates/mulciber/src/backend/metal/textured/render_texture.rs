@@ -1,23 +1,27 @@
 //! Render textures: an `RGBA16Float` color texture sampled like any upload, with depth and
 //! multisample storage of its own, rendered by offscreen passes each in an encoder of its own on
-//! the frame's command buffer, after the shadow prepass and before the scene.
+//! the frame's command buffer, after the shadow prepass and before the scene. A pass either
+//! clears the color or loads it to draw over.
 use super::{
-    GraphicsError, LOAD_ACTION_CLEAR, Object, PIXEL_FORMAT_DEPTH32_FLOAT,
+    GraphicsError, LOAD_ACTION_CLEAR, LOAD_ACTION_LOAD, Object, PIXEL_FORMAT_DEPTH32_FLOAT,
     PIXEL_FORMAT_RGBA16_FLOAT, ResourceId, STORE_ACTION_DONT_CARE,
     STORE_ACTION_MULTISAMPLE_RESOLVE, STORE_ACTION_STORE, SampledTextureFormat,
     TEXTURE_USAGE_RENDER_TARGET, TEXTURE_USAGE_SHADER_READ, TextureResource, TexturedSession,
     create_target_texture, create_upload_sampler, material_instances_len, material_storage_len,
     objc, ptr, required, transient_geometry_len,
 };
-use crate::OffscreenPass;
+use crate::{OffscreenLoad, OffscreenPass};
 
 /// What a render texture owns beyond its sampled color.
 pub(super) struct RenderAttachments {
     depth: Object,
     /// Multisample color resolved into the sampled color; null at one sample.
     multisample: Object,
-    /// Samples per pixel the storage was built for; rendering at another count is refused.
+    /// Samples per pixel the storage was built for; rendering at another count is refused
+    /// unless the texture is single-sample.
     pub(super) sample_count: usize,
+    /// Built at one sample whatever the session's count.
+    pub(super) single_sample: bool,
     /// Whether any offscreen pass has rendered into the texture; sampling before that is
     /// rejected.
     pub(super) rendered: bool,
@@ -39,6 +43,7 @@ impl TexturedSession<'_> {
         &mut self,
         width: u32,
         height: u32,
+        single_sample: bool,
     ) -> Result<ResourceId, GraphicsError> {
         // The same exact-format request as RGBA16Float uploads: Metal 3 guarantees filtering.
         if !unsafe { objc::bool_usize(self.surface.device, c"supportsFamily:", 5001) } {
@@ -49,7 +54,7 @@ impl TexturedSession<'_> {
         }
         let (columns, rows) = (width as usize, height as usize);
         let device = self.surface.device;
-        let sample_count = self.sample_count;
+        let sample_count = if single_sample { 1 } else { self.sample_count };
         let mut owned: [Object; 4] = [ptr::null_mut(); 4];
         let release = |owned: &[Object]| {
             for &object in owned.iter().filter(|object| !object.is_null()) {
@@ -107,6 +112,7 @@ impl TexturedSession<'_> {
                     depth,
                     multisample,
                     sample_count,
+                    single_sample,
                     rendered: false,
                 }),
             })
@@ -123,7 +129,9 @@ impl TexturedSession<'_> {
             .is_some_and(|render| render.rendered))
     }
 
-    /// Checks each pass's target against the session's sample count, before anything is staged.
+    /// Checks each session-sampled pass target against the session's sample count, and that a
+    /// pass keeping its target's contents keeps a single-sample one already rendered, before
+    /// anything is staged.
     pub(super) fn check_offscreen_targets(
         &self,
         offscreen: &[OffscreenPass<'_>],
@@ -137,7 +145,16 @@ impl TexturedSession<'_> {
                 .ok_or_else(|| {
                     GraphicsError::new("offscreen pass target is not a render texture")
                 })?;
-            self.check_sample_count(render.sample_count, "render texture")?;
+            if !render.single_sample {
+                self.check_sample_count(render.sample_count, "render texture")?;
+            }
+            if pass.load == OffscreenLoad::Keep
+                && (!render.multisample.is_null() || !render.rendered)
+            {
+                return Err(GraphicsError::new(
+                    "offscreen pass keeps a render texture that is multisampled or never rendered",
+                ));
+            }
         }
         Ok(())
     }
@@ -156,8 +173,8 @@ impl TexturedSession<'_> {
         Ok(())
     }
 
-    /// Encodes each offscreen pass in its own encoder, clearing its target's color and depth,
-    /// resolving multisample color into the sampled texture. `base` holds the uniform slot and
+    /// Encodes each offscreen pass in its own encoder, clearing or loading its target's color
+    /// and clearing its depth, resolving multisample color into the sampled texture. `base` holds the uniform slot and
     /// the storage, transient-geometry and instance offsets of the first pass's first record;
     /// the passes' records were staged in pass order from there.
     pub(super) unsafe fn encode_offscreen_passes(
@@ -197,18 +214,28 @@ impl TexturedSession<'_> {
                     objc::void_object(color, c"setResolveTexture:", texture.texture);
                     objc::void_usize(color, c"setStoreAction:", STORE_ACTION_MULTISAMPLE_RESOLVE);
                 }
-                objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_CLEAR);
-                let [red, green, blue, alpha] = pass.clear.components();
-                objc::void_clear_color(
-                    color,
-                    c"setClearColor:",
-                    objc::ClearColor {
-                        red: f64::from(red),
-                        green: f64::from(green),
-                        blue: f64::from(blue),
-                        alpha: f64::from(alpha),
-                    },
-                );
+                match pass.load {
+                    OffscreenLoad::Clear(clear) => {
+                        objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_CLEAR);
+                        let [red, green, blue, alpha] = clear.components();
+                        objc::void_clear_color(
+                            color,
+                            c"setClearColor:",
+                            objc::ClearColor {
+                                red: f64::from(red),
+                                green: f64::from(green),
+                                blue: f64::from(blue),
+                                alpha: f64::from(alpha),
+                            },
+                        );
+                    }
+                    // Only a single-sample target keeps its contents, so the load reads the
+                    // sampled texture itself; Metal's hazard tracking orders it after the
+                    // encoders that last wrote or sampled it.
+                    OffscreenLoad::Keep => {
+                        objc::void_usize(color, c"setLoadAction:", LOAD_ACTION_LOAD);
+                    }
+                }
                 let depth = required(
                     objc::object(descriptor, c"depthAttachment"),
                     "offscreen depth attachment",

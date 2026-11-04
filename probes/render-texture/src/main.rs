@@ -3,14 +3,18 @@
 //! depth (a later full-cover record at equal depth must lose the test), sampled by the scene in
 //! the same frame, sampled again frames later without re-rendering, and re-rendered in a new
 //! pattern while earlier frames may still be sampling it, each checked in a captured frame.
+//! Then the same pattern into a single-sample render texture through single-sample pipelines,
+//! and a later pass that keeps its contents and redraws one quadrant while earlier frames may
+//! still be sampling it, the other three surviving in the capture.
 //! Pass `--force-one-sample` to render without the multisample resolve.
 use mulciber::{
     BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
     GeometrySource, HdrComposite, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, MeshIndices, OffscreenPass, OpenedGraphics, Postprocess, PostprocessPipeline,
-    PostprocessPipelineDescriptor, PostprocessTargets, RenderScale, RenderTexture, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
-    SurfaceInfo, TexelData, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    MaterialRecord, MeshIndices, OffscreenLoad, OffscreenPass, OpenedGraphics, Postprocess,
+    PostprocessPipeline, PostprocessPipelineDescriptor, PostprocessTargets, RenderScale,
+    RenderTexture, RenderTextureDescriptor, RenderTextureSamples, SampleCount, SamplerAddress,
+    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, SurfaceInfo,
+    TexelData, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -75,6 +79,10 @@ const ORANGE: [f32; 4] = [1.0, HALF_ENCODED, 0.0, 1.0];
 /// The render texture's quadrants, first pattern and the pattern it is re-rendered in.
 const FIRST: [[f32; 4]; 4] = [RED, GREEN, BLUE, ORANGE];
 const SECOND: [[f32; 4]; 4] = [GREEN, RED, ORANGE, BLUE];
+/// The colour a kept pass redraws the single-sample texture's top-left quadrant in, and the
+/// pattern that leaves.
+const CORNER: [f32; 4] = BLUE;
+const KEPT: [[f32; 4]; 4] = [CORNER, GREEN, BLUE, ORANGE];
 
 /// What one redraw does, in order.
 #[derive(Clone, Copy, Debug)]
@@ -93,9 +101,24 @@ enum Step {
     Reuse([[f32; 4]; 4]),
     /// Sample without capturing, keeping frames in flight that read the texture.
     Busy,
+    /// Keep the contents of the single-sample texture before anything has rendered it.
+    KeepUnrendered,
+    /// A session-sampled pipeline draws into the single-sample texture.
+    SessionPipelineIntoSingle,
+    /// A single-sample pipeline draws in the scene pass.
+    SingleSampleInScene,
+    /// Keep the contents of the session-sampled texture.
+    KeepSessionSampled,
+    /// Clear the single-sample texture, render the pattern into it and sample it; capture.
+    RenderSingle([[f32; 4]; 4]),
+    /// Sample the single-sample texture without capturing.
+    BusySingle,
+    /// Keep the single-sample texture's contents and redraw its top-left quadrant alone, then
+    /// sample the pattern that leaves; capture.
+    KeepSingle([[f32; 4]; 4]),
 }
 
-const STEPS: [Step; 11] = [
+const STEPS: [Step; 19] = [
     Step::SampleUnrendered,
     Step::SampleOwnTarget,
     Step::TargetTwice,
@@ -107,6 +130,14 @@ const STEPS: [Step; 11] = [
     Step::Render(SECOND),
     Step::Busy,
     Step::Reuse(SECOND),
+    Step::KeepUnrendered,
+    Step::SessionPipelineIntoSingle,
+    Step::SingleSampleInScene,
+    Step::KeepSessionSampled,
+    Step::RenderSingle(FIRST),
+    Step::BusySingle,
+    Step::BusySingle,
+    Step::KeepSingle(KEPT),
 ];
 
 impl Step {
@@ -117,15 +148,30 @@ impl Step {
             Self::SampleOwnTarget => Some("samples the render texture its pass renders into"),
             Self::TargetTwice => Some("target the same render texture"),
             Self::SurfaceFormatPipeline => Some("HDR formats disagree"),
+            Self::KeepUnrendered => Some("an earlier submission has rendered"),
+            Self::SessionPipelineIntoSingle => Some("single-sample render texture takes"),
+            Self::SingleSampleInScene => Some("scene records may not use"),
+            Self::KeepSessionSampled => Some("keeps no samples between passes"),
             _ => None,
         }
     }
 
     const fn captured(self) -> Option<[[f32; 4]; 4]> {
         match self {
-            Self::Render(pattern) | Self::Reuse(pattern) => Some(pattern),
+            Self::Render(pattern)
+            | Self::Reuse(pattern)
+            | Self::RenderSingle(pattern)
+            | Self::KeepSingle(pattern) => Some(pattern),
             _ => None,
         }
+    }
+
+    /// Whether the scene samples the single-sample texture rather than the session-sampled one.
+    const fn samples_single(self) -> bool {
+        matches!(
+            self,
+            Self::RenderSingle(_) | Self::BusySingle | Self::KeepSingle(_)
+        )
     }
 }
 
@@ -238,6 +284,8 @@ struct Pipelines {
     hud: MaterialPipeline,
     /// The same at the surface format, which offscreen passes must refuse.
     surface_hud: MaterialPipeline,
+    /// The same at one sample per pixel, for the single-sample texture.
+    single_hud: MaterialPipeline,
     /// HDR texel reads, for the scene.
     sample: MaterialPipeline,
     composite: PostprocessPipeline,
@@ -247,6 +295,8 @@ struct Pipelines {
 struct Supplies {
     pattern: (Vec<u8>, Vec<u16>),
     cover: (Vec<u8>, Vec<u16>),
+    /// The top-left quadrant alone in [`CORNER`].
+    corner: (Vec<u8>, Vec<u16>),
     quadrants: [(Vec<u8>, Vec<u16>); 4],
     requests: [Vec<u8>; 4],
 }
@@ -261,6 +311,7 @@ impl Supplies {
         Self {
             pattern: geometry(&rectangles),
             cover: geometry(&[([-1.0, -1.0, 1.0, 1.0], &[1.0; 4])]),
+            corner: geometry(&[(QUADRANTS[0], &CORNER[..])]),
             quadrants: QUADRANTS.map(|rectangle| geometry(&[(rectangle, &[])])),
             requests: CENTRES.map(|[u, v]| {
                 [u, v, 0.0, 1.0]
@@ -297,6 +348,7 @@ fn render(
     pipelines: &Pipelines,
     targets: &mut Option<PostprocessTargets>,
     render_texture: &RenderTexture,
+    single: &RenderTexture,
     frame: mulciber::Frame<'_>,
     step: Step,
 ) -> Result<FrameDisposition, mulciber::GraphicsError> {
@@ -309,17 +361,24 @@ fn render(
         )?);
     }
     let pattern = match step {
-        Step::Render(pattern) => pattern,
+        Step::Render(pattern) | Step::RenderSingle(pattern) => pattern,
         _ => SECOND,
     };
     let supplies = Supplies::new(pattern);
-    let sampled = [render_texture.texture()];
-    let scene: Vec<MaterialRecord<'_>> = supplies
+    let sampled = [if step.samples_single() {
+        single.texture()
+    } else {
+        render_texture.texture()
+    }];
+    let mut scene: Vec<MaterialRecord<'_>> = supplies
         .quadrants
         .iter()
         .zip(&supplies.requests)
         .map(|(quadrant, request)| record(&pipelines.sample, quadrant, &sampled, request))
         .collect();
+    if matches!(step, Step::SingleSampleInScene) {
+        scene.push(record(&pipelines.single_hud, &supplies.cover, &[], &[]));
+    }
     let hud = match step {
         Step::SurfaceFormatPipeline => &pipelines.surface_hud,
         _ => &pipelines.hud,
@@ -338,16 +397,38 @@ fn render(
             &supplies.requests[0],
         ),
     ];
-    let pass = |records| OffscreenPass {
-        target: render_texture,
+    // The same pattern and cover at one sample per pixel, and the kept pass's one quadrant.
+    let single_drawn = [
+        record(&pipelines.single_hud, &supplies.pattern, &[], &[]),
+        record(&pipelines.single_hud, &supplies.cover, &[], &[]),
+    ];
+    let corner = [record(&pipelines.single_hud, &supplies.corner, &[], &[])];
+    let pass = |target, records, load| OffscreenPass {
+        target,
         records,
-        clear: ClearColor::BLACK,
+        load,
     };
+    let clear = OffscreenLoad::Clear(ClearColor::BLACK);
+    let keep = OffscreenLoad::Keep;
     let passes: Vec<OffscreenPass<'_>> = match step {
-        Step::SampleUnrendered | Step::Reuse(_) | Step::Busy => Vec::new(),
-        Step::SampleOwnTarget => vec![pass(&own[..])],
-        Step::TargetTwice => vec![pass(&drawn[..]), pass(&drawn[..])],
-        Step::SurfaceFormatPipeline | Step::Render(_) => vec![pass(&drawn[..])],
+        Step::SampleUnrendered
+        | Step::Reuse(_)
+        | Step::Busy
+        | Step::BusySingle
+        | Step::SingleSampleInScene => Vec::new(),
+        Step::SampleOwnTarget => vec![pass(render_texture, &own[..], clear)],
+        Step::TargetTwice => vec![
+            pass(render_texture, &drawn[..], clear),
+            pass(render_texture, &drawn[..], clear),
+        ],
+        Step::SurfaceFormatPipeline | Step::Render(_) => {
+            vec![pass(render_texture, &drawn[..], clear)]
+        }
+        Step::KeepUnrendered => vec![pass(single, &single_drawn[..], keep)],
+        Step::SessionPipelineIntoSingle => vec![pass(single, &drawn[..], clear)],
+        Step::KeepSessionSampled => vec![pass(render_texture, &drawn[..], keep)],
+        Step::RenderSingle(_) => vec![pass(single, &single_drawn[..], clear)],
+        Step::KeepSingle(_) => vec![pass(single, &corner[..], keep)],
     };
     graphics.queue.render_and_present(
         frame,
@@ -413,6 +494,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         surface_hud: graphics
             .device
             .create_material_pipeline(hud(SceneColor::Surface)?)?,
+        single_hud: graphics
+            .device
+            .create_material_pipeline(hud(SceneColor::HdrSingleSample)?)?,
         sample: graphics
             .device
             .create_material_pipeline(MaterialPipelineDescriptor {
@@ -436,6 +520,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     // An odd extent, so a texture-coordinate slip shows as a wrong quadrant.
     let render_texture = graphics.device.create_hdr_render_texture(48, 40)?;
+    let single = graphics
+        .device
+        .create_render_texture(&RenderTextureDescriptor {
+            width: 48,
+            height: 40,
+            samples: RenderTextureSamples::Single,
+        })?;
     for (width, height) in [(0, 8), (8, mulciber::RENDER_TEXTURE_SIZE_LIMIT + 1)] {
         if graphics
             .device
@@ -482,6 +573,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &pipelines,
                 &mut targets,
                 &render_texture,
+                &single,
                 frame,
                 current,
             );
@@ -515,6 +607,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     graphics.device.destroy_render_texture(render_texture)?;
+    graphics.device.destroy_render_texture(single)?;
     graphics.shutdown()?;
     println!("render-texture: {captures} captures matched");
     Ok(())

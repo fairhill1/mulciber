@@ -2,6 +2,35 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Offscreen passes that keep their target, single-sample render textures (graphics 0.22.0, texture 0.11.0, text 0.5.0)
+
+An offscreen pass can now draw over what its render texture already holds instead of clearing it,
+so a cache such as a terrain normal clipmap redraws only the strip the camera moved onto.
+`OffscreenPass.clear` becomes `load: OffscreenLoad`, `Clear(ClearColor)` as before or `Keep`.
+Keeping needs color that survives the pass, which multisample storage does not, so
+`Device::create_render_texture(&RenderTextureDescriptor { width, height, samples })` adds
+`RenderTextureSamples::Single` render textures: still `RGBA16Float`, with one-sample depth and no
+multisample color, rendered at one sample per pixel whatever the session's count (so
+`Device::set_sample_count` leaves them usable). `create_hdr_render_texture(width, height)` stays,
+as `samples: RenderTextureSamples::Session`, and `RenderTexture::samples` reports which.
+`SceneColor::HdrSingleSample` builds material pipelines for `RGBA16Float` at one sample, for
+single-sample render textures only. Every offscreen record's pipeline must match its target
+(`Hdr` with session-sampled, `HdrSingleSample` with single-sample); `HdrSingleSample` pipelines are
+refused in scene, foreground and overlay records, may not sample scene depth, and cannot build
+postprocess targets; `Keep` is refused on a session-sampled target and on one no earlier submission
+rendered. All are `InvalidRequest`. Depth is still cleared every pass. Vulkan moves a kept target's
+color from `SHADER_READ_ONLY_OPTIMAL`, not `UNDEFINED`, behind a barrier whose first scope covers
+earlier sampling and color writes and whose second covers color-attachment reads and writes, and
+loads it with `VK_ATTACHMENT_LOAD_OP_LOAD`; Metal uses `MTLLoadActionLoad`. Breaking:
+`OffscreenPass` and `SceneColor` change, hence graphics 0.22.0 and texture 0.11.0 and text 0.5.0,
+which depend on it. New tests: render texture descriptors' extents, `Keep` refused on
+session-sampled and never-rendered targets, and pipelines refused on targets of other samples. The
+`mulciber-render-texture` probe gains the new refusals and two captures, a single-sample render and
+a kept pass redrawing one quadrant while the other three survive; the probe has not yet run on a
+device. Exercised under Vulkan on Linux through a game's ground-slope clipmap, nine rings in one
+single-sample atlas updated a strip at a time with `Keep`, which made its terrain cheaper; the
+Metal path is type- and lint-checked for aarch64-apple-darwin only.
+
 ## Roughness from disagreeing normals in normal mips (texture 0.10.0)
 
 `Chain::NormalRoughness` builds a normal-and-roughness texture's mips so that bumps too fine for

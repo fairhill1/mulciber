@@ -523,7 +523,7 @@ impl Device<'_> {
         &self,
         descriptor: MaterialPipelineDescriptor<'_>,
     ) -> Result<MaterialPipeline, GraphicsError> {
-        let hdr = descriptor.scene_color == SceneColor::Hdr;
+        let hdr = descriptor.scene_color != SceneColor::Surface;
         let (layout, instance_layout, declaration) = check_material_descriptor(descriptor)?;
         if declaration
             .texture_dimensions
@@ -533,6 +533,7 @@ impl Device<'_> {
         }
         let config = MaterialPipelineConfig {
             hdr,
+            single_sample: descriptor.scene_color == SceneColor::HdrSingleSample,
             vertex_entry: descriptor.vertex_entry,
             fragment_entry: descriptor.fragment_entry,
             stride: layout.stride,
@@ -557,6 +558,7 @@ impl Device<'_> {
         let id = session_mut(&self.shared)?.create_material_pipeline(descriptor.shader, &config)?;
         Ok(MaterialPipeline {
             hdr,
+            scene_color: descriptor.scene_color,
             lease: self.lease(id, ResourceKind::MaterialPipeline),
             layout,
             uniform_size: declaration.uniform.map_or(0, |(_, size)| size),
@@ -630,7 +632,27 @@ impl Device<'_> {
 
     /// Creates a linear `RGBA16Float` color texture for offscreen passes to render into, with
     /// depth and any multisample color storage of its own at the session's current sample
-    /// count.
+    /// count: [`Device::create_render_texture`] with [`RenderTextureSamples::Session`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Device::create_render_texture`].
+    pub fn create_hdr_render_texture(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<RenderTexture, GraphicsError> {
+        self.create_render_texture(&RenderTextureDescriptor {
+            width,
+            height,
+            samples: RenderTextureSamples::Session,
+        })
+    }
+
+    /// Creates a linear `RGBA16Float` color texture for offscreen passes to render into, with
+    /// depth of its own at the descriptor's samples: the session's current sample count, with
+    /// multisample color storage resolved into the texture when that is above one, or one
+    /// sample per pixel rendered straight into it.
     ///
     /// It cannot be sampled until an offscreen pass has rendered into it, and it is never
     /// updated from the CPU.
@@ -640,20 +662,21 @@ impl Device<'_> {
     /// Returns an error for a zero extent, an extent above [`RENDER_TEXTURE_SIZE_LIMIT`], an
     /// adapter that cannot render, blend and filter `RGBA16Float` at the sample count, or
     /// native image allocation failure.
-    pub fn create_hdr_render_texture(
+    pub fn create_render_texture(
         &self,
-        width: u32,
-        height: u32,
+        descriptor: &RenderTextureDescriptor,
     ) -> Result<RenderTexture, GraphicsError> {
-        for (axis, extent) in [("width", width), ("height", height)] {
-            if extent == 0 || extent > RENDER_TEXTURE_SIZE_LIMIT {
-                return Err(GraphicsError::invalid_request(format!(
-                    "render texture {axis} {extent} is outside the supported 1 through \
-                     {RENDER_TEXTURE_SIZE_LIMIT}"
-                )));
-            }
-        }
-        let id = session_mut(&self.shared)?.create_render_texture(width, height)?;
+        descriptor.validate()?;
+        let RenderTextureDescriptor {
+            width,
+            height,
+            samples,
+        } = *descriptor;
+        let id = session_mut(&self.shared)?.create_render_texture(
+            width,
+            height,
+            samples == RenderTextureSamples::Single,
+        )?;
         Ok(RenderTexture {
             texture: Texture {
                 lease: self.lease(id, ResourceKind::Texture),
@@ -665,6 +688,7 @@ impl Device<'_> {
             },
             width,
             height,
+            samples,
         })
     }
 
@@ -756,6 +780,12 @@ impl Device<'_> {
         scale: RenderScale,
         scene_color: SceneColor,
     ) -> Result<PostprocessTargets, GraphicsError> {
+        if scene_color == SceneColor::HdrSingleSample {
+            return Err(GraphicsError::invalid_request(
+                "postprocess targets hold the scene pass's color at the session's sample count; \
+                 SceneColor::HdrSingleSample is for single-sample render textures only",
+            ));
+        }
         let hdr = scene_color == SceneColor::Hdr;
         let id = session_mut(&self.shared)?.create_postprocess_targets(
             info,
@@ -1189,6 +1219,7 @@ impl Queue<'_> {
         }
         self.validate_targets(frame_session, frame_info, targets)?;
         for record in records {
+            refuse_single_sample_pipeline(record.pipeline, "scene")?;
             validate_hdr_pair(record.pipeline.hdr, targets.hdr())?;
         }
         self.validate_material_records(frame_session, records)
@@ -1203,6 +1234,7 @@ impl Queue<'_> {
     ) -> Result<(), GraphicsError> {
         self.validate_material_records(frame_session, overlay)?;
         for record in overlay {
+            refuse_single_sample_pipeline(record.pipeline, "overlay")?;
             validate_hdr_pair(record.pipeline.hdr, false)?;
             if record.pipeline.depth != DepthMode::Off {
                 return Err(GraphicsError::invalid_request(
@@ -1226,9 +1258,10 @@ impl Queue<'_> {
     }
 
     /// Validates the offscreen passes: each targets a distinct same-session render texture
-    /// with non-empty records whose HDR pipelines sample neither scene depth nor the pass's own
-    /// target, and any shadow map their records sample has been rendered. Returns each pass's
-    /// depth clear, in pass order.
+    /// with non-empty records whose pipelines are built for its samples and sample neither scene
+    /// depth nor the pass's own target, any shadow map their records sample has been rendered,
+    /// and a pass keeping its target's contents targets a single-sample texture rendered
+    /// before. Returns each pass's depth clear, in pass order.
     fn validate_offscreen_passes(
         &self,
         frame_session: u64,
@@ -1257,9 +1290,14 @@ impl Queue<'_> {
                     "offscreen pass must contain at least one record",
                 ));
             }
+            validate_offscreen_load(
+                pass.load,
+                pass.target.samples,
+                session_ref(&self.shared)?.render_texture_rendered(target.id())?,
+            )?;
             self.validate_material_records(frame_session, pass.records)?;
             for record in pass.records {
-                validate_hdr_pair(record.pipeline.hdr, true)?;
+                validate_render_texture_pipeline(pass.target.samples, record.pipeline.scene_color)?;
                 if record.pipeline.scene_depth {
                     return Err(GraphicsError::invalid_request(
                         "offscreen records may not sample scene depth",
@@ -2817,15 +2855,19 @@ impl Texture {
 /// A 2D linear `RGBA16Float` color texture that a scene submission's offscreen passes render
 /// into, then sampled through [`RenderTexture::texture`] like any uploaded 2D texture.
 ///
-/// It owns depth and, at a multisample count, multisample color storage of its own, built for
-/// the session's sample count when it was created; HDR material pipelines built for the same
-/// count draw into it. Its contents persist until the next offscreen pass into it, so one
-/// render can be sampled for many frames.
+/// It owns depth and, at a multisample count, multisample color storage of its own. A
+/// [`RenderTextureSamples::Session`] texture is built for the session's sample count when it
+/// was created and [`SceneColor::Hdr`] material pipelines built for the same count draw into
+/// it; a [`RenderTextureSamples::Single`] texture renders one sample per pixel whatever the
+/// session's count, and [`SceneColor::HdrSingleSample`] pipelines draw into it. Its contents
+/// persist until the next offscreen pass into it, so one render can be sampled for many frames,
+/// and a single-sample texture's pass may [`OffscreenLoad::Keep`] them to draw over.
 #[derive(Debug, Eq, PartialEq)]
 pub struct RenderTexture {
     texture: Texture,
     width: u32,
     height: u32,
+    samples: RenderTextureSamples,
 }
 
 impl RenderTexture {
@@ -2846,19 +2888,145 @@ impl RenderTexture {
     pub const fn height(&self) -> u32 {
         self.height
     }
+
+    /// Samples per pixel it renders at.
+    #[must_use]
+    pub const fn samples(&self) -> RenderTextureSamples {
+        self.samples
+    }
+}
+
+/// How many samples per pixel a [`RenderTexture`] renders at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderTextureSamples {
+    /// The session's sample count when the texture is created, resolved into the sampled color
+    /// at the end of each pass when that count is above one; drawn into by
+    /// [`SceneColor::Hdr`] pipelines.
+    Session,
+    /// One sample per pixel whatever the session's count, rendered straight into the sampled
+    /// color; drawn into by [`SceneColor::HdrSingleSample`] pipelines, and the only kind whose
+    /// passes may [`OffscreenLoad::Keep`] earlier contents.
+    Single,
+}
+
+/// What [`Device::create_render_texture`] creates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderTextureDescriptor {
+    /// Width in texels, 1 through [`RENDER_TEXTURE_SIZE_LIMIT`].
+    pub width: u32,
+    /// Height in texels, 1 through [`RENDER_TEXTURE_SIZE_LIMIT`].
+    pub height: u32,
+    /// Samples per pixel it renders at.
+    pub samples: RenderTextureSamples,
+}
+
+impl RenderTextureDescriptor {
+    /// Checks the extent exactly as [`Device::create_render_texture`] does, without a device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphicsErrorKind::InvalidRequest`] for a zero extent or one above
+    /// [`RENDER_TEXTURE_SIZE_LIMIT`].
+    pub fn validate(&self) -> Result<(), GraphicsError> {
+        for (axis, extent) in [("width", self.width), ("height", self.height)] {
+            if extent == 0 || extent > RENDER_TEXTURE_SIZE_LIMIT {
+                return Err(GraphicsError::invalid_request(format!(
+                    "render texture {axis} {extent} is outside the supported 1 through \
+                     {RENDER_TEXTURE_SIZE_LIMIT}"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One offscreen material pass of a [`SceneSubmission`]: records drawn into a
-/// [`RenderTexture`] with its own clear, after any shadow prepass and before the scene pass.
+/// [`RenderTexture`] over a cleared or kept color, after any shadow prepass and before the
+/// scene pass.
 #[derive(Clone, Copy)]
 pub struct OffscreenPass<'resources> {
     /// Destination; at most one pass per submission may target it.
     pub target: &'resources RenderTexture,
-    /// Non-empty records encoded in slice order. Their pipelines must be HDR material pipelines
-    /// and may not sample scene depth or the target itself.
+    /// Non-empty records encoded in slice order. Their pipelines must be built for the target's
+    /// samples ([`SceneColor::Hdr`] for a [`RenderTextureSamples::Session`] target,
+    /// [`SceneColor::HdrSingleSample`] for a [`RenderTextureSamples::Single`] one) and may not
+    /// sample scene depth or the target itself.
     pub records: &'resources [MaterialRecord<'resources>],
-    /// Linear color the target is cleared to before the first record.
-    pub clear: ClearColor,
+    /// What the target's color starts from before the first record. Its depth is cleared every
+    /// pass either way.
+    pub load: OffscreenLoad,
+}
+
+/// What an [`OffscreenPass`]'s target color starts from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OffscreenLoad {
+    /// Cleared to this linear color.
+    Clear(ClearColor),
+    /// Kept as the last pass into it left it, so the records draw over it: a pass that redraws
+    /// only part of the target leaves the rest as it was. Only a
+    /// [`RenderTextureSamples::Single`] target that an earlier submission has rendered may keep
+    /// its contents; a multisampled target keeps no samples between passes.
+    Keep,
+}
+
+/// Whether a render texture of these samples takes pipelines built for this scene color.
+fn validate_render_texture_pipeline(
+    samples: RenderTextureSamples,
+    scene_color: SceneColor,
+) -> Result<(), GraphicsError> {
+    match (samples, scene_color) {
+        (RenderTextureSamples::Session, SceneColor::Hdr)
+        | (RenderTextureSamples::Single, SceneColor::HdrSingleSample) => Ok(()),
+        (_, SceneColor::Surface) => validate_hdr_pair(false, true),
+        (RenderTextureSamples::Session, _) => Err(GraphicsError::invalid_request(
+            "a session-sampled render texture takes SceneColor::Hdr pipelines; a \
+             SceneColor::HdrSingleSample pipeline draws only into a RenderTextureSamples::Single \
+             render texture",
+        )),
+        (RenderTextureSamples::Single, _) => Err(GraphicsError::invalid_request(
+            "a single-sample render texture takes SceneColor::HdrSingleSample pipelines; a \
+             SceneColor::Hdr pipeline is built for the session's sample count",
+        )),
+    }
+}
+
+/// Refuses a single-sample pipeline in a pass other than an offscreen one.
+fn refuse_single_sample_pipeline(
+    pipeline: &MaterialPipeline,
+    pass: &str,
+) -> Result<(), GraphicsError> {
+    if pipeline.scene_color == SceneColor::HdrSingleSample {
+        return Err(GraphicsError::invalid_request(format!(
+            "{pass} records may not use a SceneColor::HdrSingleSample pipeline; it draws only \
+             into single-sample render textures"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether an offscreen pass into a render texture of these samples may load as asked, given
+/// whether anything has rendered the texture yet.
+fn validate_offscreen_load(
+    load: OffscreenLoad,
+    samples: RenderTextureSamples,
+    rendered: bool,
+) -> Result<(), GraphicsError> {
+    if load != OffscreenLoad::Keep {
+        return Ok(());
+    }
+    if samples != RenderTextureSamples::Single {
+        return Err(GraphicsError::invalid_request(
+            "OffscreenLoad::Keep needs a RenderTextureSamples::Single render texture; a \
+             session-sampled one keeps no samples between passes",
+        ));
+    }
+    if !rendered {
+        return Err(GraphicsError::invalid_request(
+            "OffscreenLoad::Keep needs a render texture an earlier submission has rendered; \
+             clear it with OffscreenLoad::Clear first",
+        ));
+    }
+    Ok(())
 }
 
 /// Single-sample fullscreen pipeline that samples resolved scene color and optionally consumes
@@ -3421,8 +3589,8 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub blend: BlendMode,
     /// How the pipeline interacts with the scene depth target.
     pub depth: DepthMode,
-    /// The scene color it renders into. Only an HDR pipeline may declare a
-    /// [`MaterialBinding::SceneDepth`] slot, and only an HDR pipeline draws into
+    /// The scene color it renders into. Only a [`SceneColor::Hdr`] pipeline may declare a
+    /// [`MaterialBinding::SceneDepth`] slot, and only the HDR colors draw into
     /// [`RenderTexture`]s.
     pub scene_color: SceneColor,
 }
@@ -3433,9 +3601,14 @@ pub struct MaterialPipelineDescriptor<'inputs> {
 pub enum SceneColor {
     /// The surface's own format, ready to present after a direct pass or a plain postprocess.
     Surface,
-    /// Linear `RGBA16Float`, for an HDR composite to tone-map, with storage for its bloom
-    /// levels in postprocess targets; also the format of every [`RenderTexture`].
+    /// Linear `RGBA16Float` at the session's sample count, for an HDR composite to tone-map,
+    /// with storage for its bloom levels in postprocess targets; also the format of every
+    /// [`RenderTexture`], and what [`RenderTextureSamples::Session`] ones take.
     Hdr,
+    /// Linear `RGBA16Float` at one sample per pixel, for material pipelines drawing into
+    /// [`RenderTextureSamples::Single`] render textures only: never the scene or overlay pass,
+    /// never postprocess targets, and never sampling scene depth.
+    HdrSingleSample,
 }
 
 impl MaterialPipelineDescriptor<'_> {
@@ -3466,7 +3639,7 @@ fn check_material_descriptor(
     ),
     GraphicsError,
 > {
-    let hdr = descriptor.scene_color == SceneColor::Hdr;
+    let scene_depth_allowed = descriptor.scene_color == SceneColor::Hdr;
     let layout = validate_vertex_layout(descriptor.vertex_layout)?;
     let instance_layout = descriptor
         .instance_layout
@@ -3492,14 +3665,14 @@ fn check_material_descriptor(
         &[vertex_entry, fragment_entry],
     )?;
     if declaration.scene_depth.is_some()
-        && (!hdr
+        && (!scene_depth_allowed
             || matches!(
                 descriptor.depth,
                 DepthMode::TestWrite | DepthMode::TestWriteGreater
             ))
     {
         return Err(GraphicsError::invalid_request(
-            "scene-depth materials require HDR and must not write depth",
+            "scene-depth materials require SceneColor::Hdr and must not write depth",
         ));
     }
     Ok((layout, instance_layout, declaration))
@@ -3510,6 +3683,9 @@ fn check_material_descriptor(
 pub struct MaterialPipeline {
     pub(crate) scene_depth: bool,
     hdr: bool,
+    /// The scene color it was built for; [`SceneColor::HdrSingleSample`] pipelines draw only
+    /// into single-sample render textures.
+    scene_color: SceneColor,
     lease: ResourceLease,
     layout: OwnedVertexLayout,
     /// Zero when no uniform slot is declared.
@@ -3820,6 +3996,9 @@ impl<'resources> ShadowPrepass<'resources> {
 /// Validated creation inputs handed to the native backends.
 pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) hdr: bool,
+    /// Built at one sample per pixel for single-sample render textures, whatever the session's
+    /// sample count; only with `hdr`.
+    pub(crate) single_sample: bool,
     pub(crate) vertex_entry: &'inputs str,
     pub(crate) fragment_entry: &'inputs str,
     pub(crate) stride: u32,
@@ -6265,5 +6444,122 @@ mod mesh_indices_tests {
         assert!(!MeshIndices::U32(&[5, 0, 4]).out_of_range(6));
         assert!(MeshIndices::U32(&[0, 1, 6]).out_of_range(6));
         assert!(MeshIndices::U32(&[u32::MAX, 0]).out_of_range(1 << 20));
+    }
+}
+
+#[cfg(test)]
+mod render_texture_tests {
+    use super::{
+        ClearColor, GraphicsErrorKind, OffscreenLoad, RENDER_TEXTURE_SIZE_LIMIT,
+        RenderTextureDescriptor, RenderTextureSamples, SceneColor, validate_offscreen_load,
+        validate_render_texture_pipeline,
+    };
+    use std::string::ToString;
+
+    #[test]
+    fn descriptors_take_extents_from_one_through_the_limit() {
+        for samples in [RenderTextureSamples::Session, RenderTextureSamples::Single] {
+            for (width, height) in [(1, 1), (48, 40), (RENDER_TEXTURE_SIZE_LIMIT, 1)] {
+                let descriptor = RenderTextureDescriptor {
+                    width,
+                    height,
+                    samples,
+                };
+                assert!(descriptor.validate().is_ok(), "{descriptor:?}");
+            }
+            for (width, height) in [(0, 8), (8, 0), (8, RENDER_TEXTURE_SIZE_LIMIT + 1)] {
+                let error = RenderTextureDescriptor {
+                    width,
+                    height,
+                    samples,
+                }
+                .validate()
+                .expect_err("extent outside the limit");
+                assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+                assert!(error.to_string().contains("render texture"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_needs_nothing_rendered_before() {
+        let clear = OffscreenLoad::Clear(ClearColor::BLACK);
+        for samples in [RenderTextureSamples::Session, RenderTextureSamples::Single] {
+            for rendered in [false, true] {
+                assert!(validate_offscreen_load(clear, samples, rendered).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn keeping_needs_a_single_sample_texture_rendered_before() {
+        assert!(
+            validate_offscreen_load(OffscreenLoad::Keep, RenderTextureSamples::Single, true)
+                .is_ok()
+        );
+        for (samples, rendered, wording) in [
+            (
+                RenderTextureSamples::Session,
+                true,
+                "keeps no samples between passes",
+            ),
+            (
+                RenderTextureSamples::Session,
+                false,
+                "keeps no samples between passes",
+            ),
+            (
+                RenderTextureSamples::Single,
+                false,
+                "an earlier submission has rendered",
+            ),
+        ] {
+            let error = validate_offscreen_load(OffscreenLoad::Keep, samples, rendered)
+                .expect_err("keep refused");
+            assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+            assert!(error.to_string().contains(wording), "{error}");
+        }
+    }
+
+    #[test]
+    fn render_textures_take_pipelines_built_for_their_samples() {
+        assert!(
+            validate_render_texture_pipeline(RenderTextureSamples::Session, SceneColor::Hdr)
+                .is_ok()
+        );
+        assert!(
+            validate_render_texture_pipeline(
+                RenderTextureSamples::Single,
+                SceneColor::HdrSingleSample
+            )
+            .is_ok()
+        );
+        for (samples, scene_color, wording) in [
+            (
+                RenderTextureSamples::Session,
+                SceneColor::HdrSingleSample,
+                "session-sampled render texture takes",
+            ),
+            (
+                RenderTextureSamples::Single,
+                SceneColor::Hdr,
+                "single-sample render texture takes",
+            ),
+            (
+                RenderTextureSamples::Session,
+                SceneColor::Surface,
+                "HDR formats disagree",
+            ),
+            (
+                RenderTextureSamples::Single,
+                SceneColor::Surface,
+                "HDR formats disagree",
+            ),
+        ] {
+            let error = validate_render_texture_pipeline(samples, scene_color)
+                .expect_err("mismatched pipeline refused");
+            assert_eq!(error.kind(), GraphicsErrorKind::InvalidRequest);
+            assert!(error.to_string().contains(wording), "{error}");
+        }
     }
 }

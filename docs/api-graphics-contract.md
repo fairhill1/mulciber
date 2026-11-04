@@ -226,13 +226,20 @@ without transfer-source swapchain usage answers `Unsupported`. See the
 
 ## Render textures
 
-`Device::create_hdr_render_texture(width, height)` creates a linear `RGBA16Float` color texture with
-depth and multisample storage of its own at the session's sample count. The `offscreen` passes of
-`SceneOutput::Postprocessed`, each a target, HDR material records and a clear, render into render
-textures after any shadow prepass and before the scene pass; `RenderTexture::texture()` then feeds
-any material record's texture slot, that frame or later. Sampling one nothing has rendered, an
-offscreen record sampling its own target, and two passes on one target are refused before the frame
-is consumed. See the [full contract](render-textures.md).
+`Device::create_render_texture(&RenderTextureDescriptor { width, height, samples })` creates a
+linear `RGBA16Float` color texture with depth of its own: `RenderTextureSamples::Session` builds
+depth and multisample storage at the session's sample count (`create_hdr_render_texture(width,
+height)` is this), `RenderTextureSamples::Single` one-sample depth alone. The `offscreen` passes of
+`SceneOutput::Postprocessed`, each a target, material records and an `OffscreenLoad`, render into
+render textures after any shadow prepass and before the scene pass; `RenderTexture::texture()` then
+feeds any material record's texture slot, that frame or later. Records into a session-sampled
+target use `SceneColor::Hdr` pipelines and records into a single-sample one
+`SceneColor::HdrSingleSample` pipelines, which nothing else may use. `OffscreenLoad::Clear(color)`
+clears the color; `OffscreenLoad::Keep` draws over the last render of a single-sample target an
+earlier submission rendered; depth is cleared every pass. Sampling one nothing has rendered, an
+offscreen record sampling its own target, two passes on one target, a pipeline that does not match
+its target's samples, and keeping a session-sampled or never-rendered target are refused before the
+frame is consumed. See the [full contract](render-textures.md).
 
 ## Sampled texture uploads
 

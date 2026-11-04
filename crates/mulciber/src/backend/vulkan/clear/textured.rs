@@ -224,6 +224,9 @@ struct PipelineResource {
 struct MaterialPipelineResource {
     /// Samples per pixel the pipeline was built for; drawing at another count is refused.
     sample_count: vk::VkSampleCountFlagBits,
+    /// Built at one sample for single-sample render textures, so the session's count changing
+    /// leaves it drawable.
+    single_sample: bool,
     set_layout: vk::VkDescriptorSetLayout,
     layout: vk::VkPipelineLayout,
     pipeline: vk::VkPipeline,
@@ -1010,17 +1013,22 @@ impl<'window> TexturedSession<'window> {
         shader: ShaderArtifact<'_>,
         config: &MaterialPipelineConfig<'_>,
     ) -> Result<ResourceId, GraphicsError> {
-        config.validate_scene_depth_samples(self.sample_count != vk::VK_SAMPLE_COUNT_1_BIT)?;
+        let sample_count = if config.single_sample {
+            vk::VK_SAMPLE_COUNT_1_BIT
+        } else {
+            self.sample_count
+        };
+        config.validate_scene_depth_samples(sample_count != vk::VK_SAMPLE_COUNT_1_BIT)?;
         if config.hdr {
-            bloom::validate_format(&self.surface, self.sample_count, 1, 1)?;
+            bloom::validate_format(&self.surface, sample_count, 1, 1)?;
         }
         validate_vertex_formats(
             &self.surface,
             config.attributes.iter().chain(config.instance_attributes),
         )?;
         let mut resource =
-            create_material_pipeline(&self.surface, shader.payload(), config, self.sample_count)?;
-        resource.sample_count = self.sample_count;
+            create_material_pipeline(&self.surface, shader.payload(), config, sample_count)?;
+        resource.sample_count = sample_count;
         self.material_pipelines.insert(resource)
     }
 
@@ -1690,10 +1698,12 @@ impl<'window> TexturedSession<'window> {
                 }
             };
             let pipeline = self.material_pipelines.index_of(record.pipeline.id())?;
-            self.check_sample_count(
-                self.material_pipelines[pipeline].sample_count,
-                "material pipeline",
-            )?;
+            if !self.material_pipelines[pipeline].single_sample {
+                self.check_sample_count(
+                    self.material_pipelines[pipeline].sample_count,
+                    "material pipeline",
+                )?;
+            }
             let in_overlay = (records.len()..records.len() + overlay_len).contains(&index);
             if in_overlay && self.material_pipelines[pipeline].overlay_pipeline.is_null() {
                 return Err(error(
@@ -5576,6 +5586,7 @@ fn create_material_pipeline(
     };
     let mut resource = MaterialPipelineResource {
         sample_count: vk::VK_SAMPLE_COUNT_1_BIT,
+        single_sample: config.single_sample,
         set_layout: ptr::null_mut(),
         layout: ptr::null_mut(),
         pipeline: ptr::null_mut(),

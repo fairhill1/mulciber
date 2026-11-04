@@ -96,6 +96,22 @@ at its basic quality, spread over the machine's threads. `ktx2_bytes(BlockCompre
 …)` writes the chain to KTX 2.0. There is no recipe or source image for light: the game computes it,
 so it calls these directly.
 
+## SVG sheets
+
+The `svg` feature (off by default) adds `SvgSheet`: one SVG of a HUD's pictures, each a group by id
+drawn about its own origin wherever the sheet places it, rasterised with resvg at the size it's
+shown, so the HUD is crisp at any window size and has no bake to keep in step with its source.
+`SvgSheet::read(path, required)` fails on loading if a picture the game needs is missing.
+`draw(ids, width, height, scale, under)` draws the pictures in order, their origin at the canvas's
+middle and `scale` pixels to a unit, over premultiplied RGBA or a clear canvas, and returns
+straight-alpha sRGB RGBA, ready for `mulciber_text::AtlasBuilder::image`. `gradient(id)` gives a
+linear gradient's stops, for shapes drawn in code to match the sheet. Text is not drawn: convert the
+sheet's type to paths.
+
+```toml
+mulciber-texture = { version = "0.6.2", default-features = false, features = ["svg"] }
+```
+
 ## Building
 
 The `encode` feature (default) links Intel's encoder, which carries a C++ object; the crate's build

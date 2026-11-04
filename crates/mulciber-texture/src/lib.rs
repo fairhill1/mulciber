@@ -16,6 +16,9 @@
 //! [`hdr_chain`] filters its mips in linear light, and with `encode` `encode_bc6h` encodes each
 //! level as BC6H, a byte a texel against `RGBA16Float`'s eight, for the game to keep where it
 //! keeps its light and to upload as `TexelData::BlockCompressed(BlockCompression::Bc6hUfloat, ..)`.
+//!
+//! With the `svg` feature, `SvgSheet` is a sheet of vector pictures, each a group by id drawn about
+//! its own origin and rasterised at the size it is shown, for a HUD crisp at any window size.
 
 mod chain;
 mod container;
@@ -24,6 +27,8 @@ mod encode;
 mod hdr;
 mod material;
 mod recipe;
+#[cfg(feature = "svg")]
+mod svg;
 
 pub use chain::{
     CUTOUT_THRESHOLD, Chain, Levels, chain_len, linear_to_srgb, mip_extent, srgb_to_linear,
@@ -40,6 +45,8 @@ pub use material::{
     OCCLUSION_SUFFIX, ROUGHNESS_SUFFIX, find_materials, is_albedo,
 };
 pub use recipe::{Channel, Fallback, Origin, Pixels, Prepared, Recipe, Stats};
+#[cfg(feature = "svg")]
+pub use svg::SvgSheet;
 
 use std::fmt;
 use std::path::Path;

@@ -2,6 +2,17 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## SVG sheets (texture 0.6.2)
+
+The `svg` feature (off by default) adds `SvgSheet`, Shiplike's HUD art loader made game-agnostic:
+an SVG of pictures, each a group by id drawn about its own origin wherever the sheet places it,
+rasterised with resvg at the size it's shown. `read` and `parse` take the ids the game needs and
+fail on loading if one is missing; `draw` draws pictures in order over premultiplied RGBA or a clear
+canvas of any width and height and returns straight-alpha sRGB RGBA; `gradient` gives a linear
+gradient's stops. New tests: pictures drawn about their own origin wherever the sheet places them, a
+wide canvas, drawing over what's under and unpremultiplying, a gradient's stops, and a sheet missing
+a required picture refused.
+
 ## Shared storage written once (graphics 0.18.2)
 
 Records whose `storage` is the very same slice (the same bytes in memory, as a frame's draws often

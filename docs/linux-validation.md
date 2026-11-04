@@ -1105,6 +1105,22 @@ was the probe's first Vulkan run. A software rasteriser is evidence that the Vul
 usage and samples what was uploaded, not that a GPU driver does; the probe has still not run on
 Windows or on a Linux GPU, and its BC6H cases not on Metal.
 
+## 2D texture arrays (graphics 0.19.0)
+
+Run `cargo run -p mulciber-texture-array` with the ordinary required Vulkan validation layer; all
+46 readback cases must pass and every refusal must fire without warning/error callbacks. On
+2026-11-04 it did, on CachyOS Linux with an NVIDIA GeForce RTX 3060 Ti (driver 615.78.08, Vulkan
+1.4.351). See the [contract](texture-arrays.md#evidence).
+
+## Anisotropic filtering (graphics 0.20.0)
+
+Run `cargo run -p mulciber-anisotropic-filter` with the ordinary required Vulkan validation layer;
+all twelve readback cases must meet the probe's checks and both refusals must fire without
+warning/error callbacks. On 2026-11-04 every case read exactly the specification's ideal level, on
+CachyOS Linux with an NVIDIA GeForce RTX 3060 Ti (driver 615.78.08, Vulkan 1.4.351). It is
+evidence of the mip level each filter chose, not a visual check. See the
+[contract](anisotropic-filtering.md#evidence).
+
 ## Typed text (platform 0.5.7)
 
 `InputEvent::Character` was tested on 2026-10-16 in a headless container with throwaway programs that

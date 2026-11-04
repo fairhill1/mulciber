@@ -126,3 +126,12 @@ spirv_validator = "SPIRV-Tools v2026.4"
 wgsl_sha256 = "05c623a0c5425f4ed720b36c22d07b55bcf29b0931edbe2109d71c01e914f12a"
 vulkan_artifact_sha256 = "ba066aa48780b52e416001593ec64552291fcb8584bf552502f556b1382faffa"
 # The Metal artifact is not generated yet; see docs/texture-arrays.md.
+
+[anisotropic_filter_sample_shader]
+compiler = "naga 30.0.1"
+target_environment = "vulkan1.3"
+# Validated with the locally installed SPIRV-Tools v2026.4; regenerate under the pin when available.
+spirv_validator = "SPIRV-Tools v2026.4"
+wgsl_sha256 = "836e45205b982d3ee2d8e78f1b9cf8ef8e9ff1a2dfeb0f8fcac9d883bd8a7fc0"
+vulkan_artifact_sha256 = "4af419383093688f2bdfeb325cce06ffa8a3010674bc0f2b4f9100eab07b7baf"
+# The Metal artifact is not generated yet; see docs/anisotropic-filtering.md.

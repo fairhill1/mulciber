@@ -272,6 +272,15 @@ is `InvalidRequest`, diagnostics name the layer, and more layers than the device
 `maxImageArrayLayers`, Metal's 2048) is `Unsupported`. A KTX 2.0 file with layers parses to such an
 array. See the [contract](texture-arrays.md).
 
+## Anisotropic filtering
+
+`SamplerFilter::Anisotropic { max }` on a material or shadow pipeline's sampler slot is linear
+filtering taking up to `max` samples along a receding surface, 1 to `SAMPLER_ANISOTROPY_LIMIT`
+(16); anything else is `InvalidRequest`. A device filtering fewer samples (Vulkan's
+`maxSamplerAnisotropy`) uses all it has, and one without Vulkan's `samplerAnisotropy` feature
+filters linearly. `SamplerFilter` is `#[non_exhaustive]`. See the
+[contract](anisotropic-filtering.md).
+
 ## Linear floating-point sampled uploads
 
 `Device::create_texture` with `TexelData::Rgba16Float(&[&[[f32; 4]]])` (or `Rgba16FloatBits` from

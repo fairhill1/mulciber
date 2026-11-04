@@ -2,6 +2,25 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Anisotropic filtering (graphics 0.20.0, texture 0.8.0, text 0.3.0)
+
+`SamplerFilter::Anisotropic { max }` is linear filtering taking up to `max` samples along a
+receding surface, so ground, floors and water stay sharp toward the horizon instead of blurring.
+`max` runs from 1 to the new `SAMPLER_ANISOTROPY_LIMIT` (16), anything else being `InvalidRequest`
+at pipeline creation and in `MaterialPipelineDescriptor::validate`. Vulkan enables
+`samplerAnisotropy` where the adapter reports it and clamps to `maxSamplerAnisotropy`, filtering
+linearly without it; Metal sets `maxAnisotropy`. Material and shadow pipelines both take it. The new
+variant breaks exhaustive matches on `SamplerFilter`, now `#[non_exhaustive]` so the next filter
+won't, hence graphics 0.20.0 and texture 0.8.0 and text 0.3.0, which depend on it. New tests: 1 to
+16 samples declared and 0, 17 and 255 refused on both sampler bindings, and the Vulkan sampler's
+anisotropy clamped to the adapter, off without the feature, and off for linear and nearest. The new
+`mulciber-anisotropic-filter` probe, reading back the mip level each sampler chooses, read exactly
+the ideal level in all twelve cases (16 samples read level 0 of a 1×8 footprint where trilinear
+reads level 3) and refused 0 and 17 samples, under Vulkan validation with no messages on an NVIDIA
+GeForce RTX 3060 Ti (driver 615.78.08, Vulkan 1.4.351) on Linux. The Metal path is type- and
+lint-checked for `aarch64-apple-darwin` only; it has not run and the probe's Metal artifact is not
+generated. See [anisotropic filtering](docs/anisotropic-filtering.md).
+
 ## Bool literals in host fields (shader 0.5.9)
 
 The host field translator now maps WGSL `true` and `false` literals, which it used to refuse. Naga

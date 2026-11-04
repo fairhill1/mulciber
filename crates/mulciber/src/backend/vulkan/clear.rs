@@ -1496,6 +1496,9 @@ struct Adapter {
     /// The most array layers an image may have (`maxImageArrayLayers`, at least 256), which
     /// bounds a 2D texture array's layer count.
     max_image_array_layers: u32,
+    /// The most samples an anisotropic sampler takes: `maxSamplerAnisotropy` where the adapter
+    /// reports the optional `samplerAnisotropy` feature, otherwise 1, filtering linearly.
+    max_sampler_anisotropy: f32,
 }
 
 struct DeviceFns {
@@ -1775,11 +1778,12 @@ impl Device {
         let extensions = enabled_device_extensions(&adapter);
         // Core features ride on `pEnabledFeatures`, which the specification allows beside
         // the versioned feature structs on `pNext` as long as no `VkPhysicalDeviceFeatures2`
-        // is chained. BC sampling and cube-array views are enabled only where the adapter
-        // reported them.
+        // is chained. BC sampling, cube-array views and anisotropic filtering are enabled only
+        // where the adapter reported them.
         let core_features = vk::VkPhysicalDeviceFeatures {
             textureCompressionBC: vk::VkBool32::from(adapter.texture_compression_bc),
             imageCubeArray: vk::VkBool32::from(adapter.image_cube_array),
+            samplerAnisotropy: vk::VkBool32::from(adapter.max_sampler_anisotropy > 1.0),
             ..Default::default()
         };
         let info = vk::VkDeviceCreateInfo {
@@ -2034,6 +2038,13 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                             == vk::VK_TRUE,
                         image_cube_array: features.features.imageCubeArray == vk::VK_TRUE,
                         max_image_array_layers: properties.limits.maxImageArrayLayers,
+                        max_sampler_anisotropy: if features.features.samplerAnisotropy
+                            == vk::VK_TRUE
+                        {
+                            properties.limits.maxSamplerAnisotropy.max(1.0)
+                        } else {
+                            1.0
+                        },
                     },
                 ));
                 break;

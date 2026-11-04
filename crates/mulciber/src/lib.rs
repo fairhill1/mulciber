@@ -50,12 +50,13 @@ pub use graphics::{
     MeshSource, MipChain, OffscreenPass, OpenedGraphics, POSTPROCESS_UNIFORM_SIZE_LIMIT,
     Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor, PostprocessTargets,
     PresentFeedback, PresentedFrame, Queue, RENDER_TEXTURE_SIZE_LIMIT, RenderScale, RenderTargets,
-    RenderTexture, SHADOW_MAP_LAYER_LIMIT, SHADOW_MAP_SIZE_LIMIT, SampleCount, SamplerAddress,
-    SamplerAddressPerAxis, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission,
-    ShadowMap, ShadowMapArray, ShadowPass, ShadowPipeline, ShadowPipelineDescriptor, ShadowPrepass,
-    ShadowRecord, ShadowSource, Surface, TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, Texture,
-    TextureDescriptor, TextureDimension, TextureShape, TransientGeometry, VertexAttribute,
-    VertexFormat, VertexLayout, VolumetricShaders, ktx2_vk_format, misread_block_mip,
+    RenderTexture, SAMPLER_ANISOTROPY_LIMIT, SHADOW_MAP_LAYER_LIMIT, SHADOW_MAP_SIZE_LIMIT,
+    SampleCount, SamplerAddress, SamplerAddressPerAxis, SamplerFilter, Scene, SceneColor,
+    SceneOutput, SceneSubmission, ShadowMap, ShadowMapArray, ShadowPass, ShadowPipeline,
+    ShadowPipelineDescriptor, ShadowPrepass, ShadowRecord, ShadowSource, Surface,
+    TRANSIENT_GEOMETRY_SIZE_LIMIT, TexelData, Texture, TextureDescriptor, TextureDimension,
+    TextureShape, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    VolumetricShaders, ktx2_vk_format, misread_block_mip,
 };
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use shader::{

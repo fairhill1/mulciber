@@ -3037,11 +3037,53 @@ pub const SHADOW_MAP_LAYER_LIMIT: u32 = 8;
 
 /// Minification and magnification filtering for one material sampler slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum SamplerFilter {
     /// Nearest-texel sampling, keeping texel edges crisp (pixel art, texture atlases).
     Nearest,
     /// Linear interpolation between adjacent texels and between mip levels.
     Linear,
+    /// [`SamplerFilter::Linear`] that, where a surface recedes from view, takes up to `max`
+    /// samples along the direction it recedes in and reads a sharper mip level accordingly, so
+    /// ground, floors and water stay sharp toward the horizon instead of blurring.
+    ///
+    /// `max` is from 1 (plain linear filtering) to [`SAMPLER_ANISOTROPY_LIMIT`]; anything else is
+    /// `InvalidRequest` when the pipeline is created. A device that filters fewer samples (Vulkan's
+    /// `maxSamplerAnisotropy`) uses as many as it can, and one without anisotropic filtering
+    /// (Vulkan's `samplerAnisotropy` feature) filters linearly.
+    Anisotropic {
+        /// Most samples along the receding direction, 1 to [`SAMPLER_ANISOTROPY_LIMIT`].
+        max: u8,
+    },
+}
+
+/// Largest [`SamplerFilter::Anisotropic`] sample count, the most either backend filters.
+pub const SAMPLER_ANISOTROPY_LIMIT: u8 = 16;
+
+impl SamplerFilter {
+    /// Whether texels and mip levels are interpolated rather than the nearest taken.
+    pub(crate) const fn is_linear(self) -> bool {
+        !matches!(self, Self::Nearest)
+    }
+
+    /// Most samples along a receding surface; 1 for no anisotropic filtering.
+    pub(crate) const fn max_anisotropy(self) -> u8 {
+        match self {
+            Self::Anisotropic { max } => max,
+            Self::Nearest | Self::Linear => 1,
+        }
+    }
+
+    fn validate(self) -> Result<(), GraphicsError> {
+        match self {
+            Self::Anisotropic { max } if max == 0 || max > SAMPLER_ANISOTROPY_LIMIT => {
+                Err(GraphicsError::invalid_request(format!(
+                    "anisotropic filtering takes 1 to {SAMPLER_ANISOTROPY_LIMIT} samples, not {max}"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Texture-coordinate addressing for one material sampler slot, applied on every axis by
@@ -4562,6 +4604,7 @@ fn validate_bindings_against_interface(
                 filter,
                 address,
             } => {
+                filter.validate()?;
                 declaration.sampler_bindings.push(SamplerSlot {
                     binding,
                     filter,
@@ -4574,6 +4617,7 @@ fn validate_bindings_against_interface(
                 filter,
                 address,
             } => {
+                filter.validate()?;
                 declaration.sampler_bindings.push(SamplerSlot {
                     binding,
                     filter,
@@ -5752,6 +5796,100 @@ mod packed_vertex_format_tests {
         ));
         let float3 = VertexFormat::Float32x3.interface_code();
         assert!(find_declared_attribute(&layout, None, input(5, float3), "skin").is_err());
+    }
+}
+
+#[cfg(test)]
+mod sampler_filter_tests {
+    use super::{
+        GraphicsErrorKind, MaterialBinding, SAMPLER_ANISOTROPY_LIMIT, SamplerAddress,
+        SamplerAddressPerAxis, SamplerFilter, validate_bindings_against_interface,
+    };
+    use std::{string::ToString, vec};
+
+    use crate::shader::{
+        INTERFACE_BINDING_SAMPLER, INTERFACE_STAGE_FRAGMENT, InterfaceBinding, InterfaceEntryPoint,
+        ShaderInterface,
+    };
+
+    fn interface() -> ShaderInterface {
+        ShaderInterface {
+            entry_points: vec![InterfaceEntryPoint {
+                stage: INTERFACE_STAGE_FRAGMENT,
+                name: "fragment".to_string(),
+                inputs: vec![],
+                used: vec![0, 1],
+            }],
+            bindings: vec![
+                InterfaceBinding {
+                    group: 0,
+                    binding: 0,
+                    kind: INTERFACE_BINDING_SAMPLER,
+                    size: 0,
+                },
+                InterfaceBinding {
+                    group: 0,
+                    binding: 1,
+                    kind: INTERFACE_BINDING_SAMPLER,
+                    size: 0,
+                },
+            ],
+        }
+    }
+
+    fn declare(max: u8) -> Result<SamplerFilter, super::GraphicsError> {
+        let filter = SamplerFilter::Anisotropic { max };
+        let bindings = [
+            MaterialBinding::Sampler {
+                binding: 0,
+                filter,
+                address: SamplerAddress::Repeat,
+            },
+            MaterialBinding::SamplerPerAxis {
+                binding: 1,
+                filter: SamplerFilter::Linear,
+                address: SamplerAddressPerAxis::all(SamplerAddress::ClampToEdge),
+            },
+        ];
+        let declaration = validate_bindings_against_interface(&bindings, &interface())?;
+        assert_eq!(declaration.sampler_bindings.len(), 2);
+        Ok(declaration.sampler_bindings[0].filter)
+    }
+
+    #[test]
+    fn anisotropy_takes_one_to_sixteen_samples() {
+        for max in [1, 2, 8, SAMPLER_ANISOTROPY_LIMIT] {
+            let filter = declare(max).expect("an anisotropy in range is declared");
+            assert_eq!(filter.max_anisotropy(), max);
+            assert!(filter.is_linear());
+        }
+        for max in [0, SAMPLER_ANISOTROPY_LIMIT + 1, u8::MAX] {
+            let refused = declare(max).expect_err("an anisotropy out of range is refused");
+            assert_eq!(refused.kind(), GraphicsErrorKind::InvalidRequest);
+            assert!(refused.to_string().contains("1 to 16 samples"), "{refused}");
+        }
+        assert_eq!(SamplerFilter::Linear.max_anisotropy(), 1);
+        assert!(!SamplerFilter::Nearest.is_linear());
+    }
+
+    #[test]
+    fn a_per_axis_sampler_refuses_an_anisotropy_out_of_range_too() {
+        let bindings = [
+            MaterialBinding::Sampler {
+                binding: 0,
+                filter: SamplerFilter::Linear,
+                address: SamplerAddress::Repeat,
+            },
+            MaterialBinding::SamplerPerAxis {
+                binding: 1,
+                filter: SamplerFilter::Anisotropic { max: 0 },
+                address: SamplerAddressPerAxis::all(SamplerAddress::Repeat),
+            },
+        ];
+        let refused = validate_bindings_against_interface(&bindings, &interface())
+            .err()
+            .expect("an anisotropy of zero is refused");
+        assert_eq!(refused.kind(), GraphicsErrorKind::InvalidRequest);
     }
 }
 

@@ -656,6 +656,16 @@ device-loss cause.
   lacks it.
 - [ ] Other formats (RGBA8, BC1-BC7) and single-level arrays wait for a consumer.
 
+## Anisotropic filtering (graphics 0.20.0)
+
+- [x] `SamplerFilter::Anisotropic { max }`, 1 to 16 samples, clamped to Vulkan's
+  `maxSamplerAnisotropy` and linear without `samplerAnisotropy`, on material and shadow sampler
+  slots ([contract](anisotropic-filtering.md)). `mulciber-anisotropic-filter` read the ideal mip
+  level in all twelve cases under Vulkan validation on an NVIDIA RTX 3060 Ti on Linux.
+- [ ] Generate the probe's Metal artifact and run it under API Validation on the Apple M2 tier; the
+  Metal path is type- and lint-checked only.
+- [ ] Run it on Windows, and reach the linear fallback on an adapter without `samplerAnisotropy`.
+
 ## 2D texture arrays (graphics 0.19.0, shader 0.5.9, texture 0.7.0)
 
 - [x] 2D texture arrays in every sampled format, single-level or with a supplied chain per layer,

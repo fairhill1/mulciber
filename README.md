@@ -156,8 +156,9 @@ For commands, prerequisites, measured results, and coverage limits, see the
   [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
   [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md),
-  [cube textures and cube texture arrays](docs/cube-textures.md), and
-  [2D texture arrays](docs/texture-arrays.md)
+  [cube textures and cube texture arrays](docs/cube-textures.md),
+  [2D texture arrays](docs/texture-arrays.md), and
+  [anisotropic filtering](docs/anisotropic-filtering.md)
 - [Frame pacing](docs/frame-pacing-controls.md) and
   [swapchain synchronization](docs/swapchain-synchronization.md)
 - [Packed vertex formats](docs/vertex-formats.md),

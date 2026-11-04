@@ -19,8 +19,7 @@ use std::ffi::CString;
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
-    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, TextureDimension,
-    mip_extent,
+    SampledTextureFormat, SamplerAddress, ShadowPipelineConfig, TextureDimension, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -3251,13 +3250,10 @@ fn create_material_pipeline(
         )?;
         let mut samplers = Vec::with_capacity(config.sampler_bindings.len());
         for slot in config.sampler_bindings {
-            let filter = match slot.filter {
-                SamplerFilter::Nearest => SAMPLER_FILTER_NEAREST,
-                SamplerFilter::Linear => SAMPLER_FILTER_LINEAR,
-            };
-            let mip_filter = match slot.filter {
-                SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
-                SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
+            let (filter, mip_filter) = if slot.filter.is_linear() {
+                (SAMPLER_FILTER_LINEAR, SAMPLER_MIP_FILTER_LINEAR)
+            } else {
+                (SAMPLER_FILTER_NEAREST, SAMPLER_MIP_FILTER_NEAREST)
             };
             let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
@@ -3270,6 +3266,12 @@ fn create_material_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
+            // Every Metal device filters up to 16 samples, the validated limit.
+            objc::void_usize(
+                sampler_descriptor,
+                c"setMaxAnisotropy:",
+                usize::from(slot.filter.max_anisotropy()),
+            );
             objc::void_usize(
                 sampler_descriptor,
                 c"setSAddressMode:",
@@ -3601,13 +3603,10 @@ fn create_shadow_pipeline(
         )?;
         let mut samplers = Vec::with_capacity(config.sampler_bindings.len());
         for slot in config.sampler_bindings {
-            let filter = match slot.filter {
-                SamplerFilter::Nearest => SAMPLER_FILTER_NEAREST,
-                SamplerFilter::Linear => SAMPLER_FILTER_LINEAR,
-            };
-            let mip_filter = match slot.filter {
-                SamplerFilter::Nearest => SAMPLER_MIP_FILTER_NEAREST,
-                SamplerFilter::Linear => SAMPLER_MIP_FILTER_LINEAR,
+            let (filter, mip_filter) = if slot.filter.is_linear() {
+                (SAMPLER_FILTER_LINEAR, SAMPLER_MIP_FILTER_LINEAR)
+            } else {
+                (SAMPLER_FILTER_NEAREST, SAMPLER_MIP_FILTER_NEAREST)
             };
             let address = |axis: SamplerAddress| match axis {
                 SamplerAddress::Repeat => SAMPLER_ADDRESS_REPEAT,
@@ -3620,6 +3619,12 @@ fn create_shadow_pipeline(
             objc::void_usize(sampler_descriptor, c"setMinFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMagFilter:", filter);
             objc::void_usize(sampler_descriptor, c"setMipFilter:", mip_filter);
+            // Every Metal device filters up to 16 samples, the validated limit.
+            objc::void_usize(
+                sampler_descriptor,
+                c"setMaxAnisotropy:",
+                usize::from(slot.filter.max_anisotropy()),
+            );
             objc::void_usize(
                 sampler_descriptor,
                 c"setSAddressMode:",

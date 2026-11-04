@@ -87,8 +87,9 @@ record. No persistent application-owned buffer handle is part of the vocabulary.
 `Scene { records, shadow, output }` carries `records`, a non-empty
 `&[MaterialRecord]`, each record selecting a material pipeline, a layout-matching mesh, one
 texture per declared texture slot in ascending binding order, and its uniform bytes. Each
-sampler slot declares its filter (`Nearest`/`Linear`) and address mode (`Repeat`/`ClampToEdge`);
-the pipeline owns one native sampler per declared slot.
+sampler slot declares its filter (`Nearest`, `Linear`, or `Anisotropic { max }` from graphics
+0.20.0, see [anisotropic filtering](anisotropic-filtering.md)) and address mode
+(`Repeat`/`ClampToEdge`); the pipeline owns one native sampler per declared slot.
 The descriptor also declares the pipeline's `BlendMode` — `Opaque`, alpha-to-coverage `Cutout`,
 or `PremultipliedTranslucent` source-over — and `DepthMode` (`TestWrite`, `TestOnly`,
 `TestWriteGreater`, `TestOnlyGreater`, `Off`), a fixed mode set baked into the native pipeline

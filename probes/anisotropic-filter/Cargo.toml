@@ -1,0 +1,15 @@
+[package]
+name = "mulciber-anisotropic-filter"
+description = "Native validation of anisotropic sampler filtering: the mip level each filter reads for an isotropic and a stretched footprint"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+
+[lints]
+workspace = true

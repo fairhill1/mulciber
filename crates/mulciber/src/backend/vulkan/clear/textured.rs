@@ -29,7 +29,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 use super::{ClearSurface, acquired_image_barrier, check, color_subresource_range, error, vk};
 use crate::graphics::{
     BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
-    SampledTextureFormat, SamplerAddress, SamplerFilter, ShadowPipelineConfig, mip_extent,
+    SampledTextureFormat, SamplerAddress, SamplerSlot, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
 use crate::{
@@ -5273,10 +5273,27 @@ fn create_material_descriptor_pool(
     )
 }
 
-const fn material_filter(filter: SamplerFilter) -> vk::VkFilter {
-    match filter {
-        SamplerFilter::Nearest => vk::VK_FILTER_NEAREST,
-        SamplerFilter::Linear => vk::VK_FILTER_LINEAR,
+/// The sampler a material or shadow pipeline's slot declares, its anisotropy clamped to the
+/// adapter's `most` (1 without the `samplerAnisotropy` feature, which then stays disabled).
+fn material_sampler_info(most: f32, slot: &SamplerSlot) -> vk::VkSamplerCreateInfo {
+    let (filter, mipmap_mode) = if slot.filter.is_linear() {
+        (vk::VK_FILTER_LINEAR, vk::VK_SAMPLER_MIPMAP_MODE_LINEAR)
+    } else {
+        (vk::VK_FILTER_NEAREST, vk::VK_SAMPLER_MIPMAP_MODE_NEAREST)
+    };
+    let anisotropy = f32::from(slot.filter.max_anisotropy()).min(most).max(1.0);
+    vk::VkSamplerCreateInfo {
+        sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        magFilter: filter,
+        minFilter: filter,
+        mipmapMode: mipmap_mode,
+        addressModeU: material_address(slot.address.u),
+        addressModeV: material_address(slot.address.v),
+        addressModeW: material_address(slot.address.w),
+        anisotropyEnable: vk::VkBool32::from(anisotropy > 1.0),
+        maxAnisotropy: anisotropy,
+        maxLod: LOD_CLAMP_NONE,
+        ..Default::default()
     }
 }
 
@@ -5704,23 +5721,7 @@ fn create_material_pipeline(
     result?;
     overlay_result?;
     for slot in config.sampler_bindings {
-        let filter = material_filter(slot.filter);
-        let mipmap_mode = match slot.filter {
-            SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
-            SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        };
-        let sampler_info = vk::VkSamplerCreateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            magFilter: filter,
-            minFilter: filter,
-            mipmapMode: mipmap_mode,
-            addressModeU: material_address(slot.address.u),
-            addressModeV: material_address(slot.address.v),
-            addressModeW: material_address(slot.address.w),
-            maxAnisotropy: 1.0,
-            maxLod: LOD_CLAMP_NONE,
-            ..Default::default()
-        };
+        let sampler_info = material_sampler_info(device.adapter.max_sampler_anisotropy, slot);
         let mut sampler = ptr::null_mut();
         check(
             unsafe {
@@ -6037,23 +6038,7 @@ fn create_shadow_pipeline(
     };
     result?;
     for slot in config.sampler_bindings {
-        let filter = material_filter(slot.filter);
-        let mipmap_mode = match slot.filter {
-            SamplerFilter::Nearest => vk::VK_SAMPLER_MIPMAP_MODE_NEAREST,
-            SamplerFilter::Linear => vk::VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        };
-        let sampler_info = vk::VkSamplerCreateInfo {
-            sType: vk::VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            magFilter: filter,
-            minFilter: filter,
-            mipmapMode: mipmap_mode,
-            addressModeU: material_address(slot.address.u),
-            addressModeV: material_address(slot.address.v),
-            addressModeW: material_address(slot.address.w),
-            maxAnisotropy: 1.0,
-            maxLod: LOD_CLAMP_NONE,
-            ..Default::default()
-        };
+        let sampler_info = material_sampler_info(device.adapter.max_sampler_anisotropy, slot);
         let mut sampler = ptr::null_mut();
         check(
             unsafe {
@@ -6698,9 +6683,48 @@ mod tests {
     use std::vec::Vec;
 
     use super::{
-        MeshIndexData, STORAGE_OFFSET_ALIGNMENT, insert_free_range, plan_mesh_storage,
-        shared_storage_offsets, take_free_range, timestamp_tick_delta, vk,
+        MeshIndexData, STORAGE_OFFSET_ALIGNMENT, SamplerSlot, insert_free_range,
+        material_sampler_info, plan_mesh_storage, shared_storage_offsets, take_free_range,
+        timestamp_tick_delta, vk,
     };
+    use crate::{SamplerAddress, SamplerAddressPerAxis, SamplerFilter};
+
+    #[test]
+    fn anisotropy_is_clamped_to_the_adapter_and_off_without_it() {
+        let info = |filter, most| {
+            let slot = SamplerSlot {
+                binding: 0,
+                filter,
+                address: SamplerAddressPerAxis::all(SamplerAddress::Repeat),
+            };
+            let info = material_sampler_info(most, &slot);
+            (
+                info.anisotropyEnable,
+                info.maxAnisotropy,
+                info.minFilter,
+                info.mipmapMode,
+            )
+        };
+        let linear = (vk::VK_FILTER_LINEAR, vk::VK_SAMPLER_MIPMAP_MODE_LINEAR);
+        let on = |samples| (vk::VK_TRUE, samples, linear.0, linear.1);
+        let off = (vk::VK_FALSE, 1.0, linear.0, linear.1);
+        assert_eq!(info(SamplerFilter::Anisotropic { max: 16 }, 16.0), on(16.0));
+        assert_eq!(info(SamplerFilter::Anisotropic { max: 4 }, 16.0), on(4.0));
+        // A device filtering fewer samples uses all it has; one without the feature, none.
+        assert_eq!(info(SamplerFilter::Anisotropic { max: 16 }, 8.0), on(8.0));
+        assert_eq!(info(SamplerFilter::Anisotropic { max: 16 }, 1.0), off);
+        assert_eq!(info(SamplerFilter::Anisotropic { max: 1 }, 16.0), off);
+        assert_eq!(info(SamplerFilter::Linear, 16.0), off);
+        assert_eq!(
+            info(SamplerFilter::Nearest, 16.0),
+            (
+                vk::VK_FALSE,
+                1.0,
+                vk::VK_FILTER_NEAREST,
+                vk::VK_SAMPLER_MIPMAP_MODE_NEAREST
+            )
+        );
+    }
 
     #[test]
     fn records_sharing_a_storage_slice_share_one_written_offset() {

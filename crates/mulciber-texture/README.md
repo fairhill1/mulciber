@@ -48,6 +48,7 @@ A `Recipe` is four `Channel`s (an image's red, green, blue, alpha or grey value,
 | `ColorFlatDistant` | `Color`, its last five levels pulled toward the average (tiled ground) | BC7 sRGB |
 | `Cutout` | `Color`, each level's alpha rescaled to keep the base level's covered fraction | BC7 sRGB |
 | `Normal` | RGB averaged as unit vectors and renormalised, alpha box filtered | BC7 UNORM |
+| `NormalRoughness` | `Normal`'s normals, with alpha as perceptual roughness widened by how much each level's base normals disagree (Toksvig, through a von Mises–Fisher fit), so distant bumps read rough rather than shiny | BC7 UNORM |
 | `Linear` | every channel box filtered | BC7 UNORM |
 
 Any size works, not only powers of two, but for a few just past one: each level halves both axes
@@ -72,7 +73,7 @@ beside its albedo image by suffix:
 | Texture | Sources | Channels | Chain | Bake |
 | --- | --- | --- | --- | --- |
 | albedo | `name.png` | sRGB colour, A = opacity | `Color` | `name.ktx2` |
-| normal + roughness | `name_normal.png`, `name_rough.png` | tangent-space normal (OpenGL, green up), A = perceptual roughness | `Normal` | `name_normal.ktx2` |
+| normal + roughness | `name_normal.png`, `name_rough.png` | tangent-space normal (OpenGL, green up), A = perceptual roughness | `NormalRoughness` | `name_normal.ktx2` |
 | metallic + occlusion | `name_metal.png`, `name_ao.png` | R = metallic, G = ambient occlusion, B = 0, A = 1 | `Linear` | `name_metal.ktx2` |
 
 The normal + roughness packing is Isle of Rán's. Sources may be `.png`, `.jpg` or `.jpeg`; the

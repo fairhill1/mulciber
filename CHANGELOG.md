@@ -2,6 +2,25 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Roughness from disagreeing normals in normal mips (texture 0.10.0)
+
+`Chain::NormalRoughness` builds a normal-and-roughness texture's mips so that bumps too fine for
+a level to show become the rougher surface they look like from afar. `Chain::Normal` averages a
+footprint's normals, renormalises them and box filters alpha, so a bumpy normal map's distant
+levels are flat and as smooth as the bumps themselves: ground seen into the sun shone like a
+polished version of itself. The new chain reduces each level from the one before in floats,
+keeping per texel the mean of every base normal under it (unnormalised, so it shortens as they
+disagree) and the mean squared GGX roughness (α², α the perceptual value squared); each level
+then stores the renormalised normal and α² plus the base normals' spread, read off the mean's
+length L through a von Mises–Fisher fit, κ ≈ (3L − L³)/(1 − L²) (Banerjee et al.), as 2/κ.
+Material normal-and-roughness bakes (`material.rs`) now use it; their source digest changes with
+the chain, so existing bakes rebuild. Breaking: `Chain` gains a variant, hence texture 0.10.0.
+New tests: normals 45° apart roughen their mip while agreeing ones keep their roughness, and the
+spread carries from the base through every level rather than resetting at each renormalised
+one. Exercised through a game's eight-layer ground array, re-baked and captured with
+`Surface::request_frame_capture` facing the sun at mid-morning on an NVIDIA GeForce RTX 3060 Ti
+under Vulkan on Linux: the distant ground's sheen went and its colour held to the hills.
+
 ## Named GPU timing spans (graphics 0.21.0, texture 0.9.0, text 0.4.0)
 
 A scene names spans of its own records for GPU timing, so a game can tell what inside the scene

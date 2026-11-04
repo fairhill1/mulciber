@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-texture"
-version = "0.9.0"
+version = "0.10.0"
 description = "Texture baking for Mulciber games: mip chains, channel packing, BC7 and KTX2, with a source fallback, and SVG sheets rasterised at the size shown"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"

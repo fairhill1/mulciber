@@ -50,6 +50,14 @@ pub enum Chain {
     /// perceptual roughness there): each 2×2 footprint is decoded, averaged as unit vectors and
     /// renormalised, and alpha is box filtered. Uploaded and sampled as stored.
     Normal,
+    /// A tangent-space normal in RGB with perceptual roughness in alpha (Isle of Rán's packing):
+    /// normals averaged as [`Chain::Normal`]'s, and roughness widened by how much they disagree,
+    /// so bumps too fine for a level to show turn into the rougher surface they look like from
+    /// afar instead of a smooth one that shines. Each level holds its footprint's mean squared
+    /// GGX roughness (α², α the perceptual value squared) plus the spread of its base normals,
+    /// read off the shortening of their mean (Toksvig's observation) through a von Mises–Fisher
+    /// fit. Uploaded and sampled as stored.
+    NormalRoughness,
     /// Four independent linear channels, each box filtered: masks and scalar maps such as
     /// metallic and ambient occlusion. Uploaded and sampled as stored.
     Linear,
@@ -80,6 +88,7 @@ impl Chain {
             Self::Cutout => 2,
             Self::Normal => 3,
             Self::Linear => 4,
+            Self::NormalRoughness => 5,
         }
     }
 
@@ -111,6 +120,7 @@ impl Chain {
                 levels
             }
             Self::Normal => chain(width, height, base, normal_texel),
+            Self::NormalRoughness => normal_roughness_chain(width, height, base),
             Self::Linear => chain(width, height, base, linear_texel),
         };
         Levels {
@@ -239,6 +249,84 @@ fn normal_texel(footprint: &[[u8; 4]; 4]) -> [u8; 4] {
     ]
 }
 
+/// [`Chain::NormalRoughness`]'s levels. Each is reduced from the one before in floats, so a
+/// texel's mean normal is the mean of every base normal under it and keeps the shortening a
+/// renormalised level would lose.
+fn normal_roughness_chain(width: u32, height: u32, base: Vec<u8>) -> Vec<Vec<u8>> {
+    // Per texel: the mean unit normal, then the mean α².
+    let mut moments: Vec<[f32; 4]> = base
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&texel| {
+            let [x, y, z] = normalize_or_z(decode_normal(texel));
+            let perceptual = f32::from(texel[3]) / 255.0;
+            [x, y, z, perceptual.powi(4)]
+        })
+        .collect();
+    let mut levels = vec![base];
+    let (mut w, mut h) = (width as usize, height as usize);
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let at = |x: usize, y: usize| moments[y.min(h - 1) * w + x.min(w - 1)];
+        let mut next = Vec::with_capacity(nw * nh);
+        for y in 0..nh {
+            for x in 0..nw {
+                let footprint = [
+                    at(x * 2, y * 2),
+                    at(x * 2 + 1, y * 2),
+                    at(x * 2, y * 2 + 1),
+                    at(x * 2 + 1, y * 2 + 1),
+                ];
+                let mut mean = [0.0_f32; 4];
+                for moment in footprint {
+                    for (sum, value) in mean.iter_mut().zip(moment) {
+                        *sum += value * 0.25;
+                    }
+                }
+                next.push(mean);
+            }
+        }
+        levels.push(
+            next.iter()
+                .flat_map(|&moment| normal_roughness_texel(moment))
+                .collect(),
+        );
+        moments = next;
+        (w, h) = (nw, nh);
+    }
+    levels
+}
+
+/// One [`Chain::NormalRoughness`] texel from its mean normal and mean α².
+fn normal_roughness_texel([x, y, z, alpha_squared]: [f32; 4]) -> [u8; 4] {
+    let length = (x * x + y * y + z * z).sqrt();
+    let n = normalize_or_z([x, y, z]);
+    let widened = (alpha_squared + normal_spread(length)).min(1.0);
+    [
+        round_byte((n[0] * 0.5 + 0.5) * 255.0),
+        round_byte((n[1] * 0.5 + 0.5) * 255.0),
+        round_byte((n[2] * 0.5 + 0.5) * 255.0),
+        round_byte(widened.sqrt().sqrt() * 255.0),
+    ]
+}
+
+/// The α² that normals whose unit vectors average to `length` add: a von Mises–Fisher spread
+/// of concentration κ ≈ (3L − L³) / (1 − L²) (Banerjee et al.) has a per-axis slope variance of
+/// about 1/κ, and GGX's α² is twice its slope variance.
+fn normal_spread(length: f32) -> f32 {
+    let l = length.clamp(0.0, 1.0);
+    let missing = 1.0 - l * l;
+    if missing <= 1e-6 {
+        return 0.0;
+    }
+    let kappa = (3.0 * l - l * l * l) / missing;
+    if kappa <= 1e-6 {
+        return 1.0;
+    }
+    (2.0 / kappa).min(1.0)
+}
+
 /// Pulls a chain's coarse tail toward its 1×1 average (see [`Chain::ColorFlatDistant`]).
 fn flatten_distant_mips(mut levels: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
     let average = levels.last().expect("the chain ends at 1x1").clone();
@@ -347,6 +435,60 @@ mod tests {
         assert!((i32::from(top[0]) - 128).abs() <= 1, "{top:?}");
         assert_eq!(top[2], 255, "renormalised to unit length: {top:?}");
         assert_eq!(top[3], 200, "alpha is a scalar, box filtered");
+    }
+
+    #[test]
+    fn disagreeing_normals_roughen_their_mip() {
+        let lean = |x: f32, roughness: u8| {
+            let z = (1.0 - x * x).sqrt();
+            [
+                round_byte((x * 0.5 + 0.5) * 255.0),
+                128,
+                round_byte((z * 0.5 + 0.5) * 255.0),
+                roughness,
+            ]
+        };
+        // Normals ±45° about Y: the mean points straight up and is far rougher.
+        let a = lean(std::f32::consts::FRAC_1_SQRT_2, 100);
+        let b = lean(-std::f32::consts::FRAC_1_SQRT_2, 100);
+        let bumpy = Chain::NormalRoughness.build(2, 2, [a, b, a, b].concat());
+        let top = &bumpy.levels[1];
+        assert!((i32::from(top[0]) - 128).abs() <= 1, "{top:?}");
+        assert_eq!(top[2], 255, "renormalised to unit length: {top:?}");
+        assert!(top[3] > 180, "45° of disagreement reads rough: {top:?}");
+        // Agreeing normals keep their roughness.
+        let flat = Chain::NormalRoughness.build(2, 2, [a, a, a, a].concat());
+        assert!(
+            (i32::from(flat.levels[1][3]) - 100).abs() <= 1,
+            "{:?}",
+            flat.levels[1]
+        );
+    }
+
+    #[test]
+    fn spread_accumulates_from_the_base_through_every_level() {
+        // A 4×4 checkerboard of slightly tilted normals: the 1×1 level sees the base's spread,
+        // not the zero spread between its already renormalised 2×2 parents.
+        let lean = |x: f32| {
+            let z = (1.0 - x * x).sqrt();
+            [
+                round_byte((x * 0.5 + 0.5) * 255.0),
+                128,
+                round_byte((z * 0.5 + 0.5) * 255.0),
+                0,
+            ]
+        };
+        let base: Vec<u8> = (0..16)
+            .flat_map(|i| lean(if (i + i / 4) % 2 == 0 { 0.3 } else { -0.3 }))
+            .collect();
+        let levels = Chain::NormalRoughness.build(4, 4, base);
+        let level_one = levels.levels[1][3];
+        let level_two = levels.levels[2][3];
+        assert!(level_one > 60, "{level_one}");
+        assert!(
+            (i32::from(level_two) - i32::from(level_one)).abs() <= 2,
+            "{level_one} {level_two}"
+        );
     }
 
     #[test]

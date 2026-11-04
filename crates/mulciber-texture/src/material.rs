@@ -3,7 +3,7 @@
 //! | Texture | Channels | Chain | Bake |
 //! | --- | --- | --- | --- |
 //! | albedo | sRGB colour, alpha = opacity | [`Chain::Color`] | `name.ktx2`, BC7 sRGB |
-//! | normal + roughness | tangent-space normal (OpenGL: +Y up, green up), alpha = perceptual roughness | [`Chain::Normal`] | `name_normal.ktx2`, BC7 |
+//! | normal + roughness | tangent-space normal (OpenGL: +Y up, green up), alpha = perceptual roughness | [`Chain::NormalRoughness`] | `name_normal.ktx2`, BC7 |
 //! | metallic + occlusion | R = metallic, G = ambient occlusion, B = 0, A = 1 | [`Chain::Linear`] | `name_metal.ktx2`, BC7 |
 //!
 //! The normal + roughness packing is Isle of Rán's. The sources sit beside the albedo image
@@ -146,7 +146,7 @@ impl MaterialMaps {
                 normal.map_or(Channel::Constant(nz), Channel::Blue),
                 roughness.map_or(Channel::Constant(rough), Channel::Grey),
             ],
-            chain: Chain::Normal,
+            chain: Chain::NormalRoughness,
             output: suffixed(&stem, NORMAL_SUFFIX, "ktx2"),
         });
         let metallic_occlusion = (metallic.is_some() || occlusion.is_some()).then(|| Recipe {

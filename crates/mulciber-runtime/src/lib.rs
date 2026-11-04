@@ -65,6 +65,8 @@ pub struct Runtime {
 /// Dropping a frame that schedules at least one fixed update clears pressed/released transitions
 /// and scroll samples while preserving held controls. A zero-update render frame retains those
 /// transients for the next simulation-bearing frame, so one-shot input cannot fall between ticks.
+/// Dropping any frame consumes the captured pointer's motion ([`InputSnapshot::pointer_delta`]),
+/// which a camera applies every rendered frame.
 #[derive(Debug)]
 #[must_use = "a runtime frame must be consumed by update/render work"]
 pub struct RuntimeFrame<'runtime> {
@@ -95,6 +97,7 @@ impl RuntimeFrame<'_> {
 
 impl Drop for RuntimeFrame<'_> {
     fn drop(&mut self) {
+        self.input.end_render_frame();
         if self.plan.fixed_steps() != 0 {
             self.input.end_frame();
         }
@@ -504,5 +507,29 @@ mod tests {
         drop(simulation_frame);
         assert!(!runtime.input().key_pressed(KeyCode::Space));
         assert!(runtime.input().key_held(KeyCode::Space));
+    }
+
+    #[test]
+    fn every_rendered_frame_consumes_the_pointer_delta() {
+        const DISPLAY_75_HZ_FRAME: Duration = Duration::from_nanos(13_333_333);
+
+        let started = Instant::now();
+        let mut runtime = Runtime::new(RuntimeConfig::fixed_hz(60).unwrap(), started);
+        let motion = |delta_x| InputEvent::PointerDelta {
+            delta_x,
+            delta_y: 0.0,
+            modifiers: Modifiers::default(),
+        };
+        runtime.handle_input(motion(5.0));
+        let render_only = runtime.begin_frame(started + DISPLAY_75_HZ_FRAME);
+        assert_eq!(render_only.plan().fixed_steps(), 0);
+        assert_eq!(render_only.input().pointer_delta(), [5.0, 0.0]);
+        drop(render_only);
+        assert_eq!(runtime.input().pointer_delta(), [0.0, 0.0]);
+
+        runtime.handle_input(motion(2.0));
+        let simulation_frame = runtime.begin_frame(started + DISPLAY_75_HZ_FRAME * 2);
+        assert_eq!(simulation_frame.plan().fixed_steps(), 1);
+        assert_eq!(simulation_frame.input().pointer_delta(), [2.0, 0.0]);
     }
 }

@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## The captured pointer's motion in the snapshot (runtime 0.6.2)
+
+`InputSnapshot::pointer_delta` sums a captured pointer's `InputEvent::PointerDelta` motion, which
+the snapshot used to drop, so a game reading only the snapshot had nothing to look or orbit with.
+Unlike transitions and scroll it isn't latched through render-only frames: dropping every
+`RuntimeFrame` consumes it, since a camera applies it each rendered frame and would otherwise apply
+the same motion twice. New tests: a frame's motion summed and consumed by a render-only frame, and
+the runtime consuming it with both a render-only and a simulation-bearing frame.
+
 ## SVG sheets (texture 0.6.2)
 
 The `svg` feature (off by default) adds `SvgSheet`, Shiplike's HUD art loader made game-agnostic:

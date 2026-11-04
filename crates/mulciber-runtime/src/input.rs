@@ -29,6 +29,7 @@ pub struct InputSnapshot {
     focused: bool,
     modifiers: Modifiers,
     pointer_position: Option<LogicalPosition>,
+    pointer_delta: [f64; 2],
     held_keys: Vec<KeyCode>,
     pressed_keys: Vec<KeyCode>,
     released_keys: Vec<KeyCode>,
@@ -45,6 +46,7 @@ impl Default for InputSnapshot {
             focused: true,
             modifiers: Modifiers::default(),
             pointer_position: None,
+            pointer_delta: [0.0; 2],
             held_keys: Vec::new(),
             pressed_keys: Vec::new(),
             released_keys: Vec::new(),
@@ -74,6 +76,17 @@ impl InputSnapshot {
     #[must_use]
     pub const fn pointer_position(&self) -> Option<LogicalPosition> {
         self.pointer_position
+    }
+
+    /// Returns how far a captured pointer moved since the last rendered frame: the sum of its
+    /// [`InputEvent::PointerDelta`] motion, in logical units with positive y down, for a camera
+    /// that looks or orbits each frame. Unlike transitions and scroll, it is not latched through
+    /// render-only frames: every rendered frame consumes it, so a frame never sees motion an earlier
+    /// one already applied. Zero while the pointer isn't captured, which reports
+    /// [`Self::pointer_position`] instead.
+    #[must_use]
+    pub const fn pointer_delta(&self) -> [f64; 2] {
+        self.pointer_delta
     }
 
     /// Returns whether `key` is currently held.
@@ -151,6 +164,15 @@ impl InputSnapshot {
                 self.pointer_position = Some(position);
                 self.modifiers = modifiers;
             }
+            InputEvent::PointerDelta {
+                delta_x,
+                delta_y,
+                modifiers,
+            } => {
+                self.pointer_delta[0] += delta_x;
+                self.pointer_delta[1] += delta_y;
+                self.modifiers = modifiers;
+            }
             InputEvent::PointerButton {
                 button,
                 state,
@@ -193,6 +215,12 @@ impl InputSnapshot {
         self.released_pointer_buttons
             .append(&mut self.held_pointer_buttons);
         self.modifiers = Modifiers::default();
+    }
+
+    /// Ends a rendered frame, whether or not it ran fixed updates: what it consumed whatever it
+    /// ran, the pointer's motion.
+    pub(crate) fn end_render_frame(&mut self) {
+        self.pointer_delta = [0.0; 2];
     }
 
     pub(crate) fn end_frame(&mut self) {
@@ -299,6 +327,39 @@ mod tests {
         assert_eq!(input.typed_text(), "h\u{e9} \u{1f600}");
         input.end_frame();
         assert_eq!(input.typed_text(), "");
+    }
+
+    fn pointer_delta(delta_x: f64, delta_y: f64) -> InputEvent {
+        InputEvent::PointerDelta {
+            delta_x,
+            delta_y,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn pointer_delta_sums_a_frames_motion_and_each_rendered_frame_consumes_it() {
+        let mut input = InputSnapshot::default();
+        assert_eq!(input.pointer_delta(), [0.0, 0.0]);
+        input.handle_event(pointer_delta(3.0, -1.5));
+        input.handle_event(pointer_delta(0.5, 4.0));
+        assert_eq!(input.pointer_delta(), [3.5, 2.5]);
+        assert_eq!(
+            input.pointer_position(),
+            None,
+            "capture reports no position"
+        );
+
+        input.end_render_frame();
+        assert_eq!(
+            input.pointer_delta(),
+            [0.0, 0.0],
+            "a render-only frame consumes it too"
+        );
+        input.handle_event(pointer_delta(-2.0, 1.0));
+        input.end_render_frame();
+        input.end_frame();
+        assert_eq!(input.pointer_delta(), [0.0, 0.0]);
     }
 
     #[test]

@@ -63,6 +63,10 @@ preserving held controls. Dropping a zero-update frame deliberately leaves them 
 a one-shot press from being lost when display cadence exceeds the fixed simulation rate, such as a
 75 Hz display driving a 60 Hz simulation.
 
+`pointer_delta` is the exception: the sum of a captured pointer's `InputEvent::PointerDelta` motion
+since the last rendered frame, consumed by dropping every `RuntimeFrame`, render-only ones included.
+A camera looks or orbits each rendered frame, so latching the motion would apply it twice.
+
 Focus loss synthesizes release membership for every held key and pointer button, clears held state,
 and clears modifiers. This prevents movement or dragging from sticking if a native backend cannot
 deliver the corresponding physical release while the window is unfocused.

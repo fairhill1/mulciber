@@ -29,6 +29,10 @@ samples and typed text remain latched through render-only frames and are
 consumed after a frame schedules fixed simulation work. This prevents one-shot input from being
 lost when the display rate exceeds the fixed simulation rate.
 
+`pointer_delta` sums a captured pointer's relative motion (`InputEvent::PointerDelta`) for a
+camera that looks or orbits each frame. Unlike the transients it is consumed by every rendered
+frame, render-only ones included, so no frame applies motion an earlier one already applied.
+
 Transitions belong to the whole simulation-bearing frame rather than individual catch-up ticks.
 Handle an edge-triggered action once before the fixed-update loop, guarded by
 `FramePlan::fixed_steps() != 0`; every fixed update may read the latest held state.

@@ -492,6 +492,35 @@ fn a_mesh_refuses_a_corner_it_was_not_given() {
 }
 
 #[test]
+fn a_turned_image_turns_about_its_middle() {
+    // Four wide and two high, red on the left and blue on the right.
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    let row = [red, red, blue, blue].concat();
+    let mut builder = AtlasBuilder::new(32).unwrap();
+    let picture = builder.image(4, 2, &row.repeat(2)).unwrap();
+    let atlas = builder.build();
+
+    // Unturned, it is the same image over the same box.
+    let mut level = Batch::new(&atlas, 16, 16);
+    level.image(picture, [4.0, 6.0, 12.0, 10.0], [1.0; 4]);
+    let mut unturned = Batch::new(&atlas, 16, 16);
+    unturned.image_turned(picture, [8.0, 8.0], [8.0, 4.0], 0.0, [1.0; 4]);
+    assert_eq!(level.vertices(), unturned.vertices());
+    assert_eq!(level.indices(), unturned.indices());
+
+    // A quarter clockwise stands it on end: its left at the top, and narrow where it was wide.
+    let mut turned = Batch::new(&atlas, 16, 16);
+    let quarter = std::f32::consts::FRAC_PI_2;
+    turned.image_turned(picture, [8.0, 8.0], [8.0, 4.0], quarter, [1.0; 4]);
+    let image = turned.rasterise([0.0, 0.0, 0.0, 1.0]);
+    let at = |x: usize, y: usize| image.as_chunks::<4>().0[y * 16 + x];
+    assert_eq!(at(8, 5), [255, 0, 0, 255], "the left is on top");
+    assert_eq!(at(8, 10), [0, 0, 255, 255], "the right is below");
+    assert_eq!(at(4, 8), [0, 0, 0, 255], "it no longer reaches the sides");
+    assert_eq!(at(11, 8), [0, 0, 0, 255], "it no longer reaches the sides");
+}
+
+#[test]
 fn turned_text_is_level_text_turned_about_its_middle() {
     let (atlas, text, _) = atlas();
     let style = Style {

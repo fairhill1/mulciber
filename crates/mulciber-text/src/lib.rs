@@ -17,7 +17,8 @@
 //!   tested or previewed with no GPU.
 //! - For what a game draws of its own: [`Font::rasterise`] gives a glyph's coverage to alter before
 //!   packing it as a mask, [`Batch::mesh`] adds triangles coloured at each corner, and
-//!   [`Batch::text_turned`] sets text turned about its middle.
+//!   [`Batch::text_turned`] and [`Batch::image_turned`] set text and images turned about their
+//!   middles.
 //!
 //! The shader is `mulciber-shader`'s `mulciber::overlay` WGSL module: a game's overlay shader
 //! declares the atlas texture and sampler and calls `overlay_raster` and `overlay_shade`.

@@ -1,6 +1,6 @@
 [package]
 name = "mulciber-text"
-version = "0.5.0"
+version = "0.5.1"
 description = "Text and flat shapes over a Mulciber scene: a glyph atlas from the game's fonts, measuring, wrapping and overlay geometry"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"

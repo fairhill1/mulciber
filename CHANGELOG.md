@@ -2,6 +2,13 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Turned images (text 0.5.1)
+
+`Batch::image_turned(region, centre, size, angle, color)` draws an atlas image turned about its
+middle, as `Batch::text_turned` does for text, so a game no longer packs a second, rotated copy of
+an image to show it on its side. New test: unturned it matches `Batch::image`, and a quarter turn
+clockwise rasterises with the image's left on top.
+
 ## Offscreen passes that keep their target, single-sample render textures (graphics 0.22.0, texture 0.11.0, text 0.5.0)
 
 An offscreen pass can now draw over what its render texture already holds instead of clearing it,

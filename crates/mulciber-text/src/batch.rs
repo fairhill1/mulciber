@@ -55,6 +55,13 @@ pub struct Batch<'a> {
     indices: Vec<u32>,
 }
 
+/// What turns a point about the origin `angle` radians clockwise on the screen and moves the
+/// origin to `centre`.
+fn turning(centre: [f32; 2], angle: f32) -> impl Fn([f32; 2]) -> [f32; 2] {
+    let (sin, cos) = angle.sin_cos();
+    move |[x, y]| [centre[0] + x * cos - y * sin, centre[1] + x * sin + y * cos]
+}
+
 impl<'a> Batch<'a> {
     /// An empty batch for a surface `width` × `height` pixels.
     #[must_use]
@@ -162,9 +169,7 @@ impl<'a> Batch<'a> {
         color: [f32; 4],
     ) {
         let style = style.into();
-        let (sin, cos) = angle.sin_cos();
-        let turn =
-            |[x, y]: [f32; 2]| [centre[0] + x * cos - y * sin, centre[1] + x * sin + y * cos];
+        let turn = turning(centre, angle);
         let middle = self.atlas.metrics(style.face).cap_height * style.scale * 0.5;
         let mut pen = -self.atlas.measure(style, text) * 0.5;
         let mut first = true;
@@ -206,6 +211,34 @@ impl<'a> Batch<'a> {
         self.quad(
             region,
             [[left, top], [right, top], [right, bottom], [left, bottom]],
+            color,
+        );
+    }
+
+    /// `region` of the atlas stretched to `size` (width, height), then turned `angle` radians
+    /// clockwise on the screen about `centre`, its middle, and tinted by `color`: an icon on its
+    /// side, a compass needle.
+    ///
+    /// Turned other than by quarters its edges land between pixels and aren't softened, as
+    /// [`polygon`](Self::polygon)'s are; a clear rim in the image and a linear sampler smooth them.
+    pub fn image_turned(
+        &mut self,
+        region: Region,
+        centre: [f32; 2],
+        [width, height]: [f32; 2],
+        angle: f32,
+        color: [f32; 4],
+    ) {
+        let turn = turning(centre, angle);
+        let (right, bottom) = (width * 0.5, height * 0.5);
+        self.quad(
+            region,
+            [
+                turn([-right, -bottom]),
+                turn([right, -bottom]),
+                turn([right, bottom]),
+                turn([-right, bottom]),
+            ],
             color,
         );
     }

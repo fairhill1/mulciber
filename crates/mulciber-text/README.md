@@ -30,7 +30,8 @@ draw it in software for tests. It holds no fonts of its own.
     with `AtlasBuilder::coverage`;
   - `Batch::mesh` adds triangles of the solid block, coloured at each corner: rings, arcs,
     gradients;
-  - `Batch::text_turned` sets text turned about its middle, as a stamp;
+  - `Batch::text_turned` sets text turned about its middle, as a stamp, and `Batch::image_turned`
+    does the same for an image, such as an icon on its side;
   - `Batch::into_parts` takes the vertices and indices out, to keep them past the atlas's borrow.
 
 ## Shader and pipeline

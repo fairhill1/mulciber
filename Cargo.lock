@@ -746,6 +746,7 @@ version = "0.20.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
+ "mulciber-shader",
 ]
 
 [[package]]

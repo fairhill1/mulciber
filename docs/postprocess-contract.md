@@ -57,9 +57,14 @@ uniform byte size at group 0, binding 0, capped at 512 bytes. The post pipeline 
 single-sampled, loads `post_vertex` and `post_fragment`, samples resolved scene color at group 0,
 binding 1, and uses its pipeline-owned sampler at group 0, binding 2. Pipeline creation checks the
 fixed entry points and resource kinds against the artifact's offline interface record; when a
-uniform is declared, its recorded kind and byte size must match exactly. The current artifact
-format records bindings module-wide rather than per entry point, so the no-uniform form cannot
-reject a binding 0 used only by a scene entry point in the same module.
+uniform is declared, its recorded kind and byte size must match exactly. When none is declared,
+`post_vertex` and `post_fragment` must use no binding 0, and a pipeline without an HDR composite
+must use nothing past binding 2, both refused as `InvalidRequest` from graphics 0.20.0; until
+then they passed and failed natively. Both look only at the bindings the two entry points use, so
+a module shared with scene entry points is held to its fullscreen pass alone.
+`PostprocessPipelineDescriptor::validate` runs these checks, and an HDR composite's bloom and
+volumetric shader checks, without a device, so a test can hold a composite's uniform size and
+bloom filters to the compiled shaders.
 
 Every postprocessed submission carries a borrowed `uniform: &[u8]` in its `Postprocess`, which
 `SceneOutput::Postprocessed` holds. Its length must exactly equal the pipeline declaration. A no-uniform

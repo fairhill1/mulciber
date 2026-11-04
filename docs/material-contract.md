@@ -29,7 +29,8 @@ stay readable without layouts, and `MULSHDR2` ones with every binding attributed
 point). `ShaderArtifact::reflect` returns that record as a public `ShaderReflection`, and
 `MaterialPipelineDescriptor::validate` runs pipeline creation's declaration checks, including
 those its `scene_color` implies, without a device, so an application's tests can hold its
-uniform packing, vertex layouts and binding lists to the compiled shader. A pipeline declares the bindings its own vertex and fragment entry points use, so one
+uniform packing, vertex layouts and binding lists to the compiled shader;
+`ShadowPipelineDescriptor::validate` does the same for a shadow pipeline (graphics 0.20.0). A pipeline declares the bindings its own vertex and fragment entry points use, so one
 module can serve pipelines with different resources; see [per-entry-point
 bindings](per-entry-point-bindings.md).
 `texture_depth_2d` and `sampler_comparison` bindings record as their own kinds inside the same

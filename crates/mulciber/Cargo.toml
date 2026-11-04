@@ -11,12 +11,17 @@ repository = "https://github.com/fairhill1/mulciber"
 rust-version.workspace = true
 categories = ["game-development", "graphics", "rendering"]
 publish = ["crates-io"]
+# The device-free validation tests compile WGSL with mulciber-shader, which is not packaged.
+exclude = ["tests"]
 
 [features]
 # Development only: require Khronos validation and fail on warning/error callbacks.
 vulkan-validation = []
 # Repository probes only; not a supported application readback API.
 native-validation = ["vulkan-validation"]
+
+[dev-dependencies]
+mulciber-shader = { version = "0.5.9", path = "../mulciber-shader" }
 
 [lints]
 workspace = true

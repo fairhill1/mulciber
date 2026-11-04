@@ -476,42 +476,7 @@ impl Device<'_> {
         descriptor: impl Into<PostprocessPipelineDescriptor<'inputs>>,
     ) -> Result<PostprocessPipeline, GraphicsError> {
         let descriptor = descriptor.into();
-        validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
-        let (bloom, volume) = match descriptor.hdr {
-            None => (None, None),
-            Some(HdrComposite { bloom, volume }) => {
-                hdr::validate_optional_bloom_interface(
-                    descriptor.shader,
-                    descriptor.uniform_size,
-                    bloom.map(|filters| filters.upsample.is_some()),
-                )?;
-                if let Some(filters) = bloom {
-                    for shader in [filters.prefilter, filters.downsample]
-                        .into_iter()
-                        .chain(filters.upsample)
-                    {
-                        validate_postprocess_interface(shader, None)?;
-                        validate_bloom_filter_interface(shader)?;
-                    }
-                }
-                if let Some(volume) = volume {
-                    for (shader, msaa, composite) in [
-                        (volume.scatter, false, false),
-                        (volume.scatter_msaa, true, false),
-                        (volume.composite, false, true),
-                        (volume.composite_msaa, true, true),
-                    ] {
-                        hdr::validate_volume_interface(
-                            shader,
-                            descriptor.uniform_size,
-                            msaa,
-                            composite,
-                        )?;
-                    }
-                }
-                (bloom, volume)
-            }
-        };
+        let (bloom, volume) = check_postprocess_descriptor(&descriptor)?;
         let uniform_size = descriptor.uniform_size.unwrap_or(0);
         let config = PostprocessPipelineConfig {
             volume,
@@ -714,66 +679,13 @@ impl Device<'_> {
         &self,
         descriptor: ShadowPipelineDescriptor<'_>,
     ) -> Result<ShadowPipeline, GraphicsError> {
-        let layout = validate_vertex_layout(descriptor.vertex_layout)?;
-        let instance_layout = descriptor
-            .instance_layout
-            .map(|instance| validate_instance_layout(&layout, instance))
-            .transpose()?;
-        let interface = descriptor.shader.parse_interface();
-        let vertex_entry = find_entry_point(
-            &interface,
-            descriptor.vertex_entry,
-            shader::INTERFACE_STAGE_VERTEX,
-            "vertex",
-        )?;
-        let fragment_entry = descriptor
-            .fragment_entry
-            .map(|fragment_entry| {
-                find_entry_point(
-                    &interface,
-                    fragment_entry,
-                    shader::INTERFACE_STAGE_FRAGMENT,
-                    "fragment",
-                )
-            })
-            .transpose()?;
-        let (consumed, consumed_instance) =
-            validate_layouts_cover_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
-        let entries: Vec<_> = core::iter::once(vertex_entry)
-            .chain(fragment_entry)
-            .collect();
-        let declaration = validate_entry_point_bindings(descriptor.bindings, &interface, &entries)?;
-        if declaration.scene_depth.is_some()
-            || declaration.depth_texture.is_some()
-            || declaration.depth_texture_array.is_some()
-            || declaration.comparison_sampler.is_some()
-        {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                "shadow pipelines do not sample depth resources",
-            ));
-        }
-        if declaration
-            .texture_dimensions
-            .iter()
-            .any(|&dimension| dimension != TextureDimension::D2)
-        {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                "shadow pipelines sample 2D textures only, not 2D texture arrays, cube textures \
-                 or cube texture arrays",
-            ));
-        }
-        if descriptor.fragment_entry.is_none()
-            && (!declaration.texture_bindings.is_empty()
-                || !declaration.sampler_bindings.is_empty())
-        {
-            return Err(GraphicsError::with_kind(
-                GraphicsErrorKind::Unsupported,
-                "shadow pipelines support texture and sampler bindings only with a declared \
-                 fragment entry point",
-            ));
-        }
+        let CheckedShadow {
+            layout,
+            instance_layout,
+            consumed,
+            consumed_instance,
+            declaration,
+        } = check_shadow_descriptor(descriptor)?;
         let config = ShadowPipelineConfig {
             vertex_entry: descriptor.vertex_entry,
             fragment_entry: descriptor.fragment_entry,
@@ -2939,6 +2851,86 @@ pub struct PostprocessPipelineDescriptor<'inputs> {
     pub hdr: Option<HdrComposite<'inputs>>,
 }
 
+impl PostprocessPipelineDescriptor<'_> {
+    /// Checks the shader, and an HDR composite's bloom and volumetric shaders, against their
+    /// recorded interfaces exactly as [`Device::create_postprocess_pipeline`] does, without a
+    /// device.
+    ///
+    /// A test can hold an application's composite, bloom filters and uniform size to the compiled
+    /// shaders this way. Passing does not promise native creation succeeds: the device can still
+    /// refuse a module or run out of memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_postprocess_pipeline`] reports.
+    pub fn validate(&self) -> Result<(), GraphicsError> {
+        check_postprocess_descriptor(self).map(drop)
+    }
+}
+
+/// The device-independent half of postprocess pipeline creation: the shader and each HDR effect's
+/// shaders checked against their recorded interfaces.
+fn check_postprocess_descriptor<'inputs>(
+    descriptor: &PostprocessPipelineDescriptor<'inputs>,
+) -> Result<
+    (
+        Option<BloomShaders<'inputs>>,
+        Option<VolumetricShaders<'inputs>>,
+    ),
+    GraphicsError,
+> {
+    validate_postprocess_interface(descriptor.shader, descriptor.uniform_size)?;
+    let checked = match descriptor.hdr {
+        None => {
+            let interface = descriptor.shader.parse_interface();
+            if let Some(extra) = postprocess_bindings(&interface)?
+                .into_iter()
+                .find(|slot| slot.group != 0 || slot.binding > 2)
+            {
+                return Err(GraphicsError::invalid_request(format!(
+                    "a postprocess pipeline without an HDR composite accepts only bindings 0, 1 \
+                     and 2 of group 0, but the shader artifact records group {}, binding {}",
+                    extra.group, extra.binding
+                )));
+            }
+            (None, None)
+        }
+        Some(HdrComposite { bloom, volume }) => {
+            hdr::validate_optional_bloom_interface(
+                descriptor.shader,
+                descriptor.uniform_size,
+                bloom.map(|filters| filters.upsample.is_some()),
+            )?;
+            if let Some(filters) = bloom {
+                for shader in [filters.prefilter, filters.downsample]
+                    .into_iter()
+                    .chain(filters.upsample)
+                {
+                    validate_postprocess_interface(shader, None)?;
+                    validate_bloom_filter_interface(shader)?;
+                }
+            }
+            if let Some(volume) = volume {
+                for (shader, msaa, composite) in [
+                    (volume.scatter, false, false),
+                    (volume.scatter_msaa, true, false),
+                    (volume.composite, false, true),
+                    (volume.composite_msaa, true, true),
+                ] {
+                    hdr::validate_volume_interface(
+                        shader,
+                        descriptor.uniform_size,
+                        msaa,
+                        composite,
+                    )?;
+                }
+            }
+            (bloom, volume)
+        }
+    };
+    Ok(checked)
+}
+
 impl<'inputs> From<ShaderArtifact<'inputs>> for PostprocessPipelineDescriptor<'inputs> {
     fn from(shader: ShaderArtifact<'inputs>) -> Self {
         Self {
@@ -3590,6 +3582,103 @@ pub struct ShadowPipelineDescriptor<'inputs> {
     /// read-only storage slot, plus texture and sampler slots when a fragment entry point is
     /// declared. The module must record no other bindings.
     pub bindings: &'inputs [MaterialBinding],
+}
+
+impl ShadowPipelineDescriptor<'_> {
+    /// Checks the declaration against the artifact's recorded interface exactly as
+    /// [`Device::create_shadow_pipeline`] does, without a device.
+    ///
+    /// Passing does not promise native creation succeeds: the device can still refuse the module
+    /// or run out of memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the declaration errors [`Device::create_shadow_pipeline`] reports.
+    pub fn validate(&self) -> Result<(), GraphicsError> {
+        check_shadow_descriptor(*self).map(drop)
+    }
+}
+
+/// What [`check_shadow_descriptor`] establishes for creating a shadow pipeline.
+struct CheckedShadow {
+    layout: OwnedVertexLayout,
+    instance_layout: Option<OwnedVertexLayout>,
+    consumed: Vec<VertexAttribute>,
+    consumed_instance: Vec<VertexAttribute>,
+    declaration: BindingDeclaration,
+}
+
+/// The device-independent half of shadow pipeline creation: the layouts and declaration checked
+/// against the artifact's recorded interface.
+fn check_shadow_descriptor(
+    descriptor: ShadowPipelineDescriptor<'_>,
+) -> Result<CheckedShadow, GraphicsError> {
+    let layout = validate_vertex_layout(descriptor.vertex_layout)?;
+    let instance_layout = descriptor
+        .instance_layout
+        .map(|instance| validate_instance_layout(&layout, instance))
+        .transpose()?;
+    let interface = descriptor.shader.parse_interface();
+    let vertex_entry = find_entry_point(
+        &interface,
+        descriptor.vertex_entry,
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    let fragment_entry = descriptor
+        .fragment_entry
+        .map(|fragment_entry| {
+            find_entry_point(
+                &interface,
+                fragment_entry,
+                shader::INTERFACE_STAGE_FRAGMENT,
+                "fragment",
+            )
+        })
+        .transpose()?;
+    let (consumed, consumed_instance) =
+        validate_layouts_cover_entry(&layout, instance_layout.as_ref(), vertex_entry)?;
+    let entries: Vec<_> = core::iter::once(vertex_entry)
+        .chain(fragment_entry)
+        .collect();
+    let declaration = validate_entry_point_bindings(descriptor.bindings, &interface, &entries)?;
+    if declaration.scene_depth.is_some()
+        || declaration.depth_texture.is_some()
+        || declaration.depth_texture_array.is_some()
+        || declaration.comparison_sampler.is_some()
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "shadow pipelines do not sample depth resources",
+        ));
+    }
+    if declaration
+        .texture_dimensions
+        .iter()
+        .any(|&dimension| dimension != TextureDimension::D2)
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "shadow pipelines sample 2D textures only, not 2D texture arrays, cube textures \
+             or cube texture arrays",
+        ));
+    }
+    if descriptor.fragment_entry.is_none()
+        && (!declaration.texture_bindings.is_empty() || !declaration.sampler_bindings.is_empty())
+    {
+        return Err(GraphicsError::with_kind(
+            GraphicsErrorKind::Unsupported,
+            "shadow pipelines support texture and sampler bindings only with a declared \
+             fragment entry point",
+        ));
+    }
+    Ok(CheckedShadow {
+        layout,
+        instance_layout,
+        consumed,
+        consumed_instance,
+        declaration,
+    })
 }
 
 /// Application-authored depth-only pipeline drawn by a shadow pass.
@@ -4810,23 +4899,38 @@ fn validate_record_textures(
 /// postprocess, composite, bloom and volume recipes still check the whole module (and `MULSHDR2`
 /// artifacts carry no per-entry record), so an absent postprocess uniform cannot reject a
 /// module-level binding 0 that is consumed only by a scene entry point in the same module.
+/// The bindings `post_vertex` and `post_fragment` use, so a module shared with scene entry
+/// points is held only to its fullscreen pass's resources.
+fn postprocess_bindings(
+    interface: &shader::ShaderInterface,
+) -> Result<Vec<&shader::InterfaceBinding>, GraphicsError> {
+    let vertex = find_entry_point(
+        interface,
+        "post_vertex",
+        shader::INTERFACE_STAGE_VERTEX,
+        "vertex",
+    )?;
+    let fragment = find_entry_point(
+        interface,
+        "post_fragment",
+        shader::INTERFACE_STAGE_FRAGMENT,
+        "fragment",
+    )?;
+    let mut used: Vec<usize> = vertex.used.iter().chain(&fragment.used).copied().collect();
+    used.sort_unstable();
+    used.dedup();
+    Ok(used
+        .into_iter()
+        .filter_map(|index| interface.bindings.get(index))
+        .collect())
+}
+
 fn validate_postprocess_interface(
     shader: ShaderArtifact<'_>,
     uniform_size: Option<u32>,
 ) -> Result<(), GraphicsError> {
     let interface = shader.parse_interface();
-    find_entry_point(
-        &interface,
-        "post_vertex",
-        shader::INTERFACE_STAGE_VERTEX,
-        "vertex",
-    )?;
-    find_entry_point(
-        &interface,
-        "post_fragment",
-        shader::INTERFACE_STAGE_FRAGMENT,
-        "fragment",
-    )?;
+    let used = postprocess_bindings(&interface)?;
 
     let validate_fixed = |binding: u32, kind: u8, label: &str| {
         let recorded = interface
@@ -4874,6 +4978,15 @@ fn validate_postprocess_interface(
                 recorded.size
             )));
         }
+    } else if let Some(recorded) = used
+        .iter()
+        .find(|recorded| recorded.group == 0 && recorded.binding == 0)
+    {
+        return Err(GraphicsError::invalid_request(format!(
+            "the shader artifact records {} at group 0, binding 0, but the postprocess pipeline \
+             declares no uniform; set uniform_size to its size",
+            interface_binding_label(recorded.kind)
+        )));
     }
     Ok(())
 }

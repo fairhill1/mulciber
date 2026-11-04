@@ -2,6 +2,21 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Device-free postprocess and shadow validation (graphics 0.20.0)
+
+`PostprocessPipelineDescriptor::validate` and `ShadowPipelineDescriptor::validate` run their
+pipeline creation's declaration checks without a device, as `MaterialPipelineDescriptor::validate`
+does, so a game's tests catch a composite, bloom or shadow binding mistake rather than its
+startup. Creation and `validate` share one check each, so the two can't drift apart. Postprocess
+creation now also refuses, as `InvalidRequest`, a fullscreen pass that uses a binding 0 while
+declaring no uniform, and one without an HDR composite that uses a binding past 2; both used to
+pass and fail natively. Only the bindings `post_vertex` and `post_fragment` use count, so a module
+shared with scene entry points is unaffected. Every postprocess artifact in the repository still
+passes. New tests: composite uniform sizes, an undeclared uniform with and without an HDR
+composite, bloom without the composite's bloom bindings, a non-HDR binding 3 refused, a module
+shared with a scene entry point accepted, and a cutout shadow caster's uniform size, fragment entry
+and sampler checked.
+
 ## Anisotropic filtering (graphics 0.20.0, texture 0.8.0, text 0.3.0)
 
 `SamplerFilter::Anisotropic { max }` is linear filtering taking up to `max` samples along a

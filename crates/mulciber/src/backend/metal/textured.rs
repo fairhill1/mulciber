@@ -546,6 +546,12 @@ impl<'window> TexturedSession<'window> {
         }
     }
 
+    /// Never: counters are sampled only at stage boundaries, never between two draws.
+    #[allow(clippy::unused_self)]
+    pub(crate) const fn gpu_timing_marks(&self) -> bool {
+        false
+    }
+
     pub(crate) fn set_gpu_timing_enabled(&mut self, enabled: bool) -> Result<(), GraphicsError> {
         if self.surface.gpu_timing_enabled != enabled {
             self.surface.finish_all_frames()?;
@@ -1269,12 +1275,16 @@ impl<'window> TexturedSession<'window> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_material_scene_and_present(
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         targets: ResourceId,
+        // Apple GPUs sample counters only at stage boundaries, so a span between two draws of
+        // one pass cannot be timed; `gpu_timing_marks` reports that and the marks are ignored.
+        _timing_marks: &[crate::GpuTimingMark],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
@@ -1317,6 +1327,8 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         uniform: &[u8],
+        // Ignored, as for a direct scene.
+        _timing_marks: &[crate::GpuTimingMark],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {

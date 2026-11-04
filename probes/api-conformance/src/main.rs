@@ -775,6 +775,7 @@ impl<'window> Cases<'window> {
                     frame,
                     SceneSubmission {
                         scene: Scene {
+                            timing_marks: &[],
                             records: &cube_records(&draws),
                             shadow: None,
                             output: SceneOutput::Postprocessed {
@@ -826,6 +827,7 @@ impl<'window> Cases<'window> {
                     frame,
                     SceneSubmission {
                         scene: Scene {
+                            timing_marks: &[],
                             records: &records,
                             shadow: None,
                             output: SceneOutput::Direct(
@@ -864,6 +866,7 @@ impl<'window> Cases<'window> {
                     frame,
                     SceneSubmission {
                         scene: Scene {
+                            timing_marks: &[],
                             records: &records,
                             shadow: None,
                             output: SceneOutput::Postprocessed {
@@ -1569,6 +1572,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &records,
                                     shadow: None,
                                     output: SceneOutput::Postprocessed {
@@ -1741,6 +1745,7 @@ impl<'window> Cases<'window> {
                     frame,
                     SceneSubmission {
                         scene: Scene {
+                            timing_marks: &[],
                             records: &records,
                             shadow: None,
                             output: SceneOutput::Postprocessed {
@@ -3105,6 +3110,7 @@ impl<'window> Cases<'window> {
                     frame,
                     SceneSubmission {
                         scene: Scene {
+                            timing_marks: &[],
                             records: &cube_records(&[CubeDraw::new(
                                 self.mesh.as_ref().expect("mesh exists"),
                                 self.texture.as_ref().expect("texture exists"),
@@ -3150,6 +3156,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &cube_records(&[CubeDraw::new(
                                         self.mesh.as_ref().expect("mesh exists"),
                                         self.texture.as_ref().expect("texture exists"),
@@ -3204,6 +3211,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &cube_records(&draws),
                                     shadow: None,
                                     output: SceneOutput::Postprocessed {
@@ -3254,6 +3262,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &cube_records(&draws),
                                     shadow: None,
                                     output: SceneOutput::Postprocessed {
@@ -3299,6 +3308,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &cube_records(&[CubeDraw::new(
                                         self.mesh.as_ref().expect("mesh exists"),
                                         self.texture.as_ref().expect("texture exists"),
@@ -3529,6 +3539,7 @@ impl<'window> Cases<'window> {
                             frame,
                             SceneSubmission {
                                 scene: Scene {
+                                    timing_marks: &[],
                                     records: &cube_records(&draws),
                                     shadow: None,
                                     output: SceneOutput::Postprocessed {
@@ -3912,6 +3923,7 @@ fn direct_material_scene<'resources>(
 ) -> SceneSubmission<'resources> {
     SceneSubmission {
         scene: Scene {
+            timing_marks: &[],
             records,
             shadow,
             output: SceneOutput::Direct(targets),

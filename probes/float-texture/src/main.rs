@@ -203,6 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let uniform: Vec<u8> = [query[0], query[1], query[2], f32::from(fragment)].iter().flat_map(|v| v.to_ne_bytes()).collect();
             graphics.queue.render_and_present(frame, SceneSubmission {
                 scene: Scene {
+                    timing_marks: &[],
                     records: &[MaterialRecord {
                         pipeline: &pipeline, geometry: GeometrySource::Mesh(&mesh),
                         textures: &[&textures[usize::from(mips)]], shadow_map: None, uniform: &uniform,

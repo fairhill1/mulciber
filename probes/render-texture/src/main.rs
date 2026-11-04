@@ -353,6 +353,7 @@ fn render(
         frame,
         SceneSubmission {
             scene: Scene {
+                timing_marks: &[],
                 records: &scene,
                 shadow: None,
                 output: SceneOutput::Postprocessed {

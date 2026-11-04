@@ -110,6 +110,7 @@ pub struct DeviceSelection {
     backend: &'static str,
     sample_count: SampleCount,
     gpu_timing: GpuTimingSupport,
+    gpu_timing_marks: bool,
 }
 
 impl DeviceSelection {
@@ -132,6 +133,14 @@ impl DeviceSelection {
     #[must_use]
     pub const fn gpu_timing_support(&self) -> GpuTimingSupport {
         self.gpu_timing
+    }
+
+    /// Whether the selected queue times a [`Scene`]'s [`GpuTimingMark`] spans. Vulkan writes a
+    /// timestamp between draws where the queue has timestamps at all; Apple GPUs sample counters
+    /// only at a pass's stage boundaries, so Metal reports no spans and ignores the marks.
+    #[must_use]
+    pub const fn gpu_timing_marks(&self) -> bool {
+        self.gpu_timing_marks
     }
 }
 
@@ -183,6 +192,7 @@ impl<'window> OpenedGraphics<'window> {
         }
         let (session, sample_count) = backend::TexturedSession::new(target, metrics, request)?;
         let gpu_timing = session.gpu_timing_support();
+        let gpu_timing_marks = session.gpu_timing_marks();
         let shared = Shared {
             id,
             inner: Rc::new(RefCell::new(Some(session))),
@@ -200,6 +210,7 @@ impl<'window> OpenedGraphics<'window> {
                 backend: backend::BACKEND_NAME,
                 sample_count,
                 gpu_timing,
+                gpu_timing_marks,
             },
         })
     }
@@ -939,6 +950,7 @@ impl Queue<'_> {
                 scene.records,
                 scene.shadow,
                 targets,
+                scene.timing_marks,
                 clear,
             ),
             SceneOutput::Postprocessed {
@@ -981,6 +993,7 @@ impl Queue<'_> {
         records: &[MaterialRecord<'_>],
         shadow: Option<ShadowPrepass<'_>>,
         targets: &RenderTargets,
+        timing_marks: &[GpuTimingMark],
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         self.validate_material_scene(frame.shared.id, frame.info, records, targets)?;
@@ -996,6 +1009,7 @@ impl Queue<'_> {
             records,
             shadow.as_ref(),
             targets.lease.id,
+            timing_marks,
             clear,
             depth_clear,
         )
@@ -1014,7 +1028,10 @@ impl Queue<'_> {
         clear: ClearColor,
     ) -> Result<FrameDisposition, GraphicsError> {
         let Scene {
-            records, shadow, ..
+            records,
+            shadow,
+            timing_marks,
+            ..
         } = *material;
         let PostprocessedMaterialPasses {
             foreground_start,
@@ -1047,6 +1064,7 @@ impl Queue<'_> {
             postprocess.pipeline.lease.id,
             postprocess.targets.lease.id,
             postprocess.uniform,
+            timing_marks,
             clear,
             depth_clear,
         )
@@ -1705,6 +1723,31 @@ pub enum GpuTimingScope {
     Scene,
     /// Fullscreen post-processing and any overlay encoded into that pass.
     Postprocess,
+    /// Offscreen passes into render textures, recorded after any shadow work and before the
+    /// scene. Vulkan only; on Metal this work is in no region.
+    Offscreen,
+    /// The scene records from a [`GpuTimingMark`] to the next mark or the scene's end, named by
+    /// the mark's label. Reported only where [`DeviceSelection::gpu_timing_marks`] is true.
+    Named(&'static str),
+}
+
+/// The most [`GpuTimingMark`]s one [`Scene`] may carry.
+pub const GPU_TIMING_MARK_LIMIT: usize = 16;
+
+/// Starts a named span of a scene's records for GPU timing: the records from `first_record` up
+/// to the next mark's, or to the end of the scene, are timed together and reported as
+/// [`GpuTimingScope::Named`] with `label`.
+///
+/// A span's duration is the time it added to the frame, measured from the work before it
+/// finishing to its own finishing, as the fixed regions are, so a scene's spans add up rather
+/// than overlap. Records before the first mark are in no span. A span may cross the foreground
+/// split or a scene-depth snapshot; that work is then part of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuTimingMark {
+    /// Name the span is reported under.
+    pub label: &'static str,
+    /// Index into [`Scene::records`] of the span's first record.
+    pub first_record: usize,
 }
 
 /// Duration of one GPU diagnostic region.
@@ -4023,6 +4066,9 @@ pub struct Scene<'resources> {
     pub shadow: Option<ShadowPrepass<'resources>>,
     /// Direct or postprocessed destination, and the passes postprocessing makes available.
     pub output: SceneOutput<'resources>,
+    /// Named spans of `records` timed on the GPU while timing is enabled, in increasing
+    /// `first_record` order, at most [`GPU_TIMING_MARK_LIMIT`]; empty for none.
+    pub timing_marks: &'resources [GpuTimingMark],
 }
 
 /// Destination of a [`Scene`].
@@ -5076,6 +5122,7 @@ fn validate_material_scene_recipe(material: &Scene<'_>) -> Result<(), GraphicsEr
     if let Some(start) = foreground {
         validate_foreground_start(material.records.len(), start)?;
     }
+    validate_timing_marks(material.records.len(), material.timing_marks)?;
     validate_scene_depth_order(
         material
             .records
@@ -5084,6 +5131,37 @@ fn validate_material_scene_recipe(material: &Scene<'_>) -> Result<(), GraphicsEr
         foreground,
         hdr_postprocessed,
     )
+}
+
+/// Checks a scene's timing marks: within the limit, each starting at a record, in strictly
+/// increasing order.
+fn validate_timing_marks(
+    record_count: usize,
+    marks: &[GpuTimingMark],
+) -> Result<(), GraphicsError> {
+    if marks.len() > GPU_TIMING_MARK_LIMIT {
+        return Err(GraphicsError::invalid_request(format!(
+            "scene carries {} GPU timing marks; at most {GPU_TIMING_MARK_LIMIT} are supported",
+            marks.len()
+        )));
+    }
+    let mut previous = None;
+    for mark in marks {
+        if mark.first_record >= record_count {
+            return Err(GraphicsError::invalid_request(format!(
+                "GPU timing mark \"{}\" starts at record {} of a scene with {record_count}",
+                mark.label, mark.first_record
+            )));
+        }
+        if previous.is_some_and(|previous| mark.first_record <= previous) {
+            return Err(GraphicsError::invalid_request(format!(
+                "GPU timing mark \"{}\" does not start after the mark before it",
+                mark.label
+            )));
+        }
+        previous = Some(mark.first_record);
+    }
+    Ok(())
 }
 
 fn validate_foreground_start(
@@ -5126,6 +5204,43 @@ mod foreground_tests {
         for (count, split) in [(0, 0), (1, 0), (1, 1), (3, 0), (3, 3), (3, usize::MAX)] {
             assert!(validate_foreground_start(count, split).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod timing_mark_tests {
+    use super::{GPU_TIMING_MARK_LIMIT, GpuTimingMark, validate_timing_marks};
+    use std::vec::Vec;
+
+    const fn mark(label: &'static str, first_record: usize) -> GpuTimingMark {
+        GpuTimingMark {
+            label,
+            first_record,
+        }
+    }
+
+    #[test]
+    fn marks_start_at_records_in_increasing_order() {
+        assert!(validate_timing_marks(1, &[]).is_ok());
+        assert!(validate_timing_marks(3, &[mark("sky", 0), mark("terrain", 1)]).is_ok());
+        assert!(validate_timing_marks(3, &[mark("last", 2)]).is_ok());
+        for marks in [
+            &[mark("past the end", 3)][..],
+            &[mark("terrain", 1), mark("sky", 0)],
+            &[mark("terrain", 1), mark("again", 1)],
+        ] {
+            assert!(validate_timing_marks(3, marks).is_err(), "{marks:?}");
+        }
+    }
+
+    #[test]
+    fn marks_are_limited() {
+        let marks: Vec<_> = (0..=GPU_TIMING_MARK_LIMIT)
+            .map(|i| mark("span", i))
+            .collect();
+        let records = marks.len();
+        assert!(validate_timing_marks(records, &marks[..GPU_TIMING_MARK_LIMIT]).is_ok());
+        assert!(validate_timing_marks(records, &marks).is_err());
     }
 }
 

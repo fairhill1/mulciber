@@ -504,6 +504,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 frame,
                 SceneSubmission {
                     scene: Scene {
+                        timing_marks: &[],
                         records: &[MaterialRecord {
                             pipeline: &pipeline,
                             geometry: GeometrySource::Mesh(&mesh),

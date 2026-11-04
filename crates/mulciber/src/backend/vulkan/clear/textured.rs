@@ -47,11 +47,19 @@ const DRAW_UNIFORM_STRIDE: usize = crate::MATERIAL_UNIFORM_SIZE_LIMIT as usize;
 /// Alignment for per-record offsets into the frame's read-only storage region: the
 /// specification's cap on `minStorageBufferOffsetAlignment`, valid on every implementation.
 const STORAGE_OFFSET_ALIGNMENT: usize = 256;
-const GPU_QUERY_COUNT: u32 = 8;
 const FRAME_QUERY_START: u32 = 0;
 const SHADOW_QUERY_START: u32 = 2;
 const SCENE_QUERY_START: u32 = 4;
 const POSTPROCESS_QUERY_START: u32 = 6;
+const OFFSCREEN_QUERY_START: u32 = 8;
+/// The fixed regions' queries, every one written each frame (an absent region as an empty
+/// pair), so they are read back in one call.
+const FIXED_QUERY_COUNT: u32 = 10;
+/// One query per timing mark, written only for the marks a frame carries, so read separately.
+const MARK_QUERY_START: u32 = FIXED_QUERY_COUNT;
+const MARK_QUERY_COUNT: u32 = 16;
+const _: () = assert!(MARK_QUERY_COUNT as usize == crate::GPU_TIMING_MARK_LIMIT);
+const GPU_QUERY_COUNT: u32 = FIXED_QUERY_COUNT + MARK_QUERY_COUNT;
 const GPU_TIMING_FEEDBACK_CAP: usize = 1024;
 const MESH_BUFFER_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 const MESH_ALLOCATION_ALIGNMENT: u64 = 16;
@@ -61,6 +69,10 @@ struct PendingGpuTiming {
     frame_index: u64,
     has_shadow: bool,
     has_postprocess: bool,
+    has_offscreen: bool,
+    /// The labels of the frame's timing marks, in order; `mark_count` of them are written.
+    marks: [&'static str; crate::GPU_TIMING_MARK_LIMIT],
+    mark_count: usize,
 }
 
 struct GpuTimingState {
@@ -402,6 +414,9 @@ pub(crate) struct TexturedSession<'window> {
     /// Target of the prepared frame's depth-only pre-pass.
     pending_shadow_target: Option<PendingShadowTarget>,
     recorded_has_shadow: bool,
+    recorded_has_offscreen: bool,
+    /// The scene's timing marks for the frame being prepared and recorded.
+    timing_marks: Vec<crate::GpuTimingMark>,
     mesh_buffers: MeshBufferArena,
     meshes: Arena<MeshResource>,
     textures: Arena<TextureResource>,
@@ -530,6 +545,8 @@ impl<'window> TexturedSession<'window> {
                 resolved_shadow_cascades: Vec::new(),
                 pending_shadow_target: None,
                 recorded_has_shadow: false,
+                recorded_has_offscreen: false,
+                timing_marks: Vec::new(),
                 mesh_buffers: MeshBufferArena::new(),
                 meshes: Arena::new("mesh"),
                 textures: Arena::new("texture"),
@@ -558,6 +575,11 @@ impl<'window> TexturedSession<'window> {
         } else {
             GpuTimingSupport::Regions
         }
+    }
+
+    /// Wherever the queue has timestamps: a mark is one more written between two draws.
+    pub(crate) fn gpu_timing_marks(&self) -> bool {
+        self.surface.device().adapter.timestamp_valid_bits != 0
     }
 
     pub(crate) fn take_gpu_timings(&mut self) -> GpuTimingFeedback {
@@ -1368,15 +1390,19 @@ impl<'window> TexturedSession<'window> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_material_scene_and_present(
         &mut self,
         token: TexturedFrameToken,
         records: &[MaterialRecord<'_>],
         shadow: Option<&ShadowPrepass<'_>>,
         targets: ResourceId,
+        timing_marks: &[crate::GpuTimingMark],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
+        self.timing_marks.clear();
+        self.timing_marks.extend_from_slice(timing_marks);
         let target_index = self.targets.index_of(targets)?;
         self.check_sample_count(self.targets[target_index].sample_count, "render targets")?;
         if self.targets[target_index].info != token.info {
@@ -1403,9 +1429,12 @@ impl<'window> TexturedSession<'window> {
         postprocess_pipeline: ResourceId,
         targets: ResourceId,
         uniform: &[u8],
+        timing_marks: &[crate::GpuTimingMark],
         clear: ClearColor,
         depth_clear: f32,
     ) -> Result<FrameDisposition, GraphicsError> {
+        self.timing_marks.clear();
+        self.timing_marks.extend_from_slice(timing_marks);
         let postprocess_pipeline_index =
             self.postprocess_pipelines.index_of(postprocess_pipeline)?;
         let target_index = self.postprocess_targets.index_of(targets)?;
@@ -2659,25 +2688,14 @@ impl<'window> TexturedSession<'window> {
         // the results are complete without a wait here.
         let base = u32::try_from(slot).expect("frame slot fits u32") * GPU_QUERY_COUNT;
         let mut values = [0_u64; GPU_QUERY_COUNT as usize];
-        let device = self.surface.device();
-        check(
-            unsafe {
-                device
-                    .functions
-                    .get_query_pool_results
-                    .expect("loaded function")(
-                    device.handle,
-                    self.gpu_timing.query_pool,
-                    base,
-                    GPU_QUERY_COUNT,
-                    mem::size_of_val(&values),
-                    values.as_mut_ptr().cast(),
-                    u64::try_from(mem::size_of::<u64>()).expect("u64 size fits VkDeviceSize"),
-                    vk::VK_QUERY_RESULT_64_BIT.cast_unsigned(),
-                )
-            },
-            "vkGetQueryPoolResults for GPU frame diagnostics",
-        )?;
+        // The fixed regions, all written; then only the marks this frame wrote, since a
+        // query never written would not be available.
+        let mark_count = u32::try_from(pending.mark_count).expect("marks fit u32");
+        self.read_gpu_queries(base, &mut values[..FIXED_QUERY_COUNT as usize])?;
+        if mark_count != 0 {
+            let marks = MARK_QUERY_START as usize..(MARK_QUERY_START + mark_count) as usize;
+            self.read_gpu_queries(base + MARK_QUERY_START, &mut values[marks])?;
+        }
         let frame_time = self
             .gpu_scope_timing(
                 GpuTimingScope::Frame,
@@ -2714,6 +2732,25 @@ impl<'window> TexturedSession<'window> {
                 values[POSTPROCESS_QUERY_START as usize + 1],
             ));
         }
+        if pending.has_offscreen {
+            scopes.push(self.gpu_scope_timing(
+                GpuTimingScope::Offscreen,
+                values[OFFSCREEN_QUERY_START as usize],
+                values[OFFSCREEN_QUERY_START as usize + 1],
+            ));
+        }
+        // Each span runs from its mark to the next, the last to the scene's end; both ends are
+        // bottom-of-pipe, so a span is the time it added to the scene.
+        let scene_end = values[SCENE_QUERY_START as usize + 1];
+        for (index, &label) in pending.marks[..pending.mark_count].iter().enumerate() {
+            let start = values[MARK_QUERY_START as usize + index];
+            let end = if index + 1 < pending.mark_count {
+                values[MARK_QUERY_START as usize + index + 1]
+            } else {
+                scene_end
+            };
+            scopes.push(self.gpu_scope_timing(GpuTimingScope::Named(label), start, end));
+        }
         if self.gpu_timing.completed.len() >= GPU_TIMING_FEEDBACK_CAP {
             self.gpu_timing.completed.pop_front();
         }
@@ -2721,6 +2758,30 @@ impl<'window> TexturedSession<'window> {
             .completed
             .push_back(GpuFrameTiming::new(pending.frame_index, scopes));
         Ok(())
+    }
+
+    /// Reads `values.len()` completed timestamps of the query pool from `first`, without waiting:
+    /// the frame that wrote them has already been waited on.
+    fn read_gpu_queries(&self, first: u32, values: &mut [u64]) -> Result<(), GraphicsError> {
+        let device = self.surface.device();
+        check(
+            unsafe {
+                device
+                    .functions
+                    .get_query_pool_results
+                    .expect("loaded function")(
+                    device.handle,
+                    self.gpu_timing.query_pool,
+                    first,
+                    u32::try_from(values.len()).expect("query count fits u32"),
+                    mem::size_of_val(values),
+                    values.as_mut_ptr().cast(),
+                    u64::try_from(mem::size_of::<u64>()).expect("u64 size fits VkDeviceSize"),
+                    vk::VK_QUERY_RESULT_64_BIT.cast_unsigned(),
+                )
+            },
+            "vkGetQueryPoolResults for GPU frame diagnostics",
+        )
     }
 
     #[allow(clippy::cast_precision_loss)]
@@ -2872,10 +2933,21 @@ impl<'window> TexturedSession<'window> {
         }
         let disposition = disposition?;
         if self.gpu_timing.enabled && !self.gpu_timing.query_pool.is_null() {
+            let mut marks = [""; crate::GPU_TIMING_MARK_LIMIT];
+            for (label, mark) in marks.iter_mut().zip(&self.timing_marks) {
+                *label = mark.label;
+            }
             self.gpu_timing.pending[slot] = Some(PendingGpuTiming {
                 frame_index,
                 has_shadow: self.recorded_has_shadow,
                 has_postprocess,
+                has_offscreen: self.recorded_has_offscreen,
+                marks,
+                mark_count: if self.marks_timed() {
+                    self.timing_marks.len()
+                } else {
+                    0
+                },
             });
         }
         Ok(disposition)
@@ -3289,6 +3361,8 @@ impl<'window> TexturedSession<'window> {
         }
         self.end_gpu_region(SCENE_QUERY_START + 1);
         self.write_empty_gpu_region(POSTPROCESS_QUERY_START);
+        self.recorded_has_offscreen = false;
+        self.write_empty_gpu_region(OFFSCREEN_QUERY_START);
         self.record_present_transition(image);
         self.end_gpu_region(FRAME_QUERY_START + 1);
         check(
@@ -3395,7 +3469,14 @@ impl<'window> TexturedSession<'window> {
         } else {
             self.write_empty_gpu_region(SHADOW_QUERY_START);
         }
-        self.record_offscreen_passes();
+        self.recorded_has_offscreen = !self.pending_offscreen.is_empty();
+        if self.recorded_has_offscreen {
+            self.begin_gpu_region(c"offscreen", [0.85, 0.35, 0.55, 1.0], OFFSCREEN_QUERY_START);
+            self.record_offscreen_passes();
+            self.end_gpu_region(OFFSCREEN_QUERY_START + 1);
+        } else {
+            self.write_empty_gpu_region(OFFSCREEN_QUERY_START);
+        }
         let device = self.surface.device();
         let swapchain_barrier = acquired_image_barrier(image, old_layout);
         let scene_barrier = image_barrier(
@@ -3555,7 +3636,7 @@ impl<'window> TexturedSession<'window> {
                 &raw const scene_area,
             );
             if let Some(start) = snapshot_start {
-                self.record_material_draws(&self.resolved_material_draws[..start], false);
+                self.record_scene_draws(0..start);
             } else {
                 self.record_world(foreground_start);
             }
@@ -3587,7 +3668,7 @@ impl<'window> TexturedSession<'window> {
                     self.surface.frame_command_buffer(),
                     &raw const rendering,
                 );
-                self.record_material_draws(&self.resolved_material_draws[start..world_end], false);
+                self.record_scene_draws(start..world_end);
                 device.functions.cmd_end_rendering.expect("loaded function")(
                     self.surface.frame_command_buffer(),
                 );
@@ -3661,7 +3742,7 @@ impl<'window> TexturedSession<'window> {
                     self.surface.frame_command_buffer(),
                     &raw const foreground_rendering,
                 );
-                self.record_material_draws(&self.resolved_material_draws[start..], false);
+                self.record_scene_draws(start..self.resolved_material_draws.len());
                 functions.cmd_end_rendering.expect("loaded function")(
                     self.surface.frame_command_buffer(),
                 );
@@ -3869,7 +3950,67 @@ impl<'window> TexturedSession<'window> {
     /// Records the world's material records: every record before the foreground, if any.
     unsafe fn record_world(&self, foreground_start: Option<usize>) {
         let world_end = foreground_start.unwrap_or(self.resolved_material_draws.len());
-        unsafe { self.record_material_draws(&self.resolved_material_draws[..world_end], false) };
+        unsafe { self.record_scene_draws(0..world_end) };
+    }
+
+    /// Records the scene's resolved draws in `range` on the active rendering, writing each
+    /// timing mark that starts within it just before its first record, while timing is on.
+    unsafe fn record_scene_draws(&self, range: core::ops::Range<usize>) {
+        let mut start = range.start;
+        // Timing off, the marks cost nothing: the draws are recorded as one list, as without
+        // them.
+        let marks = if self.marks_timed() {
+            &self.timing_marks[..]
+        } else {
+            &[]
+        };
+        for (index, mark) in marks.iter().enumerate() {
+            if !range.contains(&mark.first_record) {
+                continue;
+            }
+            unsafe {
+                self.record_material_draws(
+                    &self.resolved_material_draws[start..mark.first_record],
+                    false,
+                );
+            }
+            self.write_mark_timestamp(index);
+            start = mark.first_record;
+        }
+        unsafe {
+            self.record_material_draws(&self.resolved_material_draws[start..range.end], false);
+        }
+    }
+
+    /// Whether this frame's timing marks are written: only when the application asked for
+    /// timings, not when presentation pacing alone keeps the frame region on.
+    fn marks_timed(&self) -> bool {
+        self.gpu_timing.requested
+            && self.gpu_timing.enabled
+            && !self.gpu_timing.query_pool.is_null()
+    }
+
+    /// The mark's one timestamp, when everything before it has finished: the end of the span
+    /// before and the start of its own.
+    fn write_mark_timestamp(&self, mark: usize) {
+        if !self.marks_timed() {
+            return;
+        }
+        let query = self.gpu_query_base()
+            + MARK_QUERY_START
+            + u32::try_from(mark).expect("marks are within GPU_TIMING_MARK_LIMIT");
+        unsafe {
+            self.surface
+                .device()
+                .functions
+                .cmd_write_timestamp2
+                .expect("loaded function")(
+                self.surface.frame_command_buffer(),
+                vk::VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                self.gpu_timing.query_pool,
+                query,
+            );
+        }
     }
 
     fn destroy_resources(&mut self) {

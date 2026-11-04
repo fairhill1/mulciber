@@ -117,6 +117,7 @@ impl Resources {
             frame,
             SceneSubmission {
                 scene: Scene {
+                    timing_marks: &[],
                     records: &records,
                     shadow: None,
                     output: SceneOutput::Postprocessed {

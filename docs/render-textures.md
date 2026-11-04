@@ -45,7 +45,7 @@ let output = SceneOutput::Postprocessed {
     offscreen: &passes,
     overlay: &[],
 };
-let scene = Scene { records: &world, shadow: None, output };
+let scene = Scene { records: &world, shadow: None, output, timing_marks: &[] };
 queue.render_and_present(frame, SceneSubmission { scene, clear })?;
 // That frame and every later one, until the head changes:
 let hud = MaterialRecord { textures: &[portrait.texture()], /* ... */ };

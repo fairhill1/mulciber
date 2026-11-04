@@ -85,7 +85,8 @@ outgrow the 512-byte uniform stride. Shadow pipelines accept the same slot
 (`ShadowRecord.storage`), so a skinned caster shadows with the same palette as its material
 record. No persistent application-owned buffer handle is part of the vocabulary.
 
-`Scene { records, shadow, output }` carries `records`, a non-empty
+`Scene { records, shadow, output, timing_marks }` carries `timing_marks`, named spans of the
+records for GPU timing (see the [graphics contract](api-graphics-contract.md)), and `records`, a non-empty
 `&[MaterialRecord]`, each record selecting a material pipeline, a layout-matching mesh, one
 texture per declared texture slot in ascending binding order, and its uniform bytes. Each
 sampler slot declares its filter (`Nearest`, `Linear`, or `Anisotropic { max }` from graphics

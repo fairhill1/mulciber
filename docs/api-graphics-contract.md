@@ -102,6 +102,19 @@ Physical evidence lives in the [Linux runbook](linux-validation.md).
 
 ### GPU duration feedback is opt-in, correlated, and backend-honest
 
+From graphics 0.21.0 a `Scene` names spans of its own records for timing: `Scene::timing_marks`,
+at most `GPU_TIMING_MARK_LIMIT` (16) `GpuTimingMark { label, first_record }` in increasing record
+order, each span running to the next mark or the scene's end and reported as
+`GpuTimingScope::Named(label)`, so a game can tell its terrain from its sky inside the scene
+region. Vulkan writes one bottom-of-pipe timestamp at each mark, between two draws of the same
+rendering, and ends the last span at the scene region's own end, so a span is the time it added
+and a scene's spans add up. Marks are written only while the application has asked for timings
+(not when strict or adaptive pacing alone keeps the frame region on), and with timing off the
+draws record exactly as without marks. Apple GPUs sample counters only at stage boundaries, so
+Metal ignores the marks and `DeviceSelection::gpu_timing_marks` reports false there. Offscreen
+passes into render textures are their own `GpuTimingScope::Offscreen` region on Vulkan; on Metal
+they belong to no region.
+
 `DeviceSelection::gpu_timing_support` reports whether the selected queue exposes no usable timing,
 whole-frame timing, or fixed-region timing. `Queue::set_gpu_timing_enabled` controls collection
 without changing `DeviceRequest` or imposing timestamp writes on an uninstrumented game.
@@ -110,9 +123,9 @@ the zero-based session index used by `PresentedFrame::index`, so CPU-side frame 
 duration data to presentation feedback without comparing unrelated clock epochs. Disabled and
 unsupported states remain distinct.
 
-The Vulkan implementation lazily creates a per-slot eight-entry timestamp query block on a capable graphics
-queue, labels and measures the complete frame plus the fixed shadow, scene, and postprocess regions,
-masks counter wraparound to `timestampValidBits`, converts through `timestampPeriod`, and reads only
+The Vulkan implementation lazily creates a per-slot timestamp query block on a capable graphics
+queue, labels and measures the complete frame plus the fixed shadow, offscreen, scene, and
+postprocess regions, masks counter wraparound to `timestampValidBits`, converts through `timestampPeriod`, and reads only
 after the corresponding frame-slot fence has completed. The Metal implementation reports completed
 command-buffer `GPUStartTime`/`GPUEndTime` from its three-slot ring in submission order. Devices
 supporting stage-boundary timestamp counters additionally expose shadow, scene and postprocess

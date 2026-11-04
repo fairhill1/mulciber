@@ -249,6 +249,7 @@ fn render(
             frame,
             SceneSubmission {
                 scene: Scene {
+                    timing_marks: &[],
                     records: &[record(&pipelines.direct, &vertices, &indices)],
                     shadow: None,
                     output: SceneOutput::Direct(targets.direct.as_ref().expect("created")),
@@ -273,6 +274,7 @@ fn render(
             frame,
             SceneSubmission {
                 scene: Scene {
+                    timing_marks: &[],
                     records: &[record(&pipelines.hdr, &vertices, &indices)],
                     shadow: None,
                     output: SceneOutput::Postprocessed {

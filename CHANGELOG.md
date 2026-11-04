@@ -2,6 +2,29 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Named GPU timing spans (graphics 0.21.0, texture 0.9.0, text 0.4.0)
+
+A scene names spans of its own records for GPU timing, so a game can tell what inside the scene
+region costs what: `Scene::timing_marks`, at most `GPU_TIMING_MARK_LIMIT` (16)
+`GpuTimingMark { label, first_record }` in increasing record order, each span running from its
+first record to the next mark or the scene's end, and reported as `GpuTimingScope::Named(label)`.
+Vulkan writes one bottom-of-pipe timestamp at each mark, between two draws of the same rendering,
+and ends the last span at the scene region's own end, so a span is the time it added and a
+scene's spans add up. Marks are written only while the application has asked for timings, not
+when strict or adaptive pacing alone keeps the frame region on, and with timing off the draws
+record exactly as without them, so an uninstrumented frame costs nothing more. Offscreen passes
+into render textures are now their own `GpuTimingScope::Offscreen` region on Vulkan rather than
+falling between regions. Apple GPUs sample counters only at stage boundaries, so Metal ignores the
+marks and the new `DeviceSelection::gpu_timing_marks` is false there; Metal reports no offscreen
+region either. Marks past the scene's records, out of order or over the limit are
+`InvalidRequest`. Breaking: `Scene` gains `timing_marks` (`&[]` for none), hence graphics 0.21.0
+and texture 0.9.0 and text 0.4.0, which depend on it. New tests: marks within the records, in
+increasing order and within the limit. Exercised through a game marking its sky, terrain and
+character records on an NVIDIA GeForce RTX 3060 Ti under Vulkan on Linux: the three spans and the
+offscreen region were reported each frame and placed nearly all of a 20 ms scene in the terrain.
+No probe covers the spans yet, the validation layers' output for that run was not inspected, and
+the Metal path is type- and lint-checked for aarch64-apple-darwin only.
+
 ## A field named like an imported item, explained (shader 0.5.10)
 
 `naga_oil` renames every spelling of an item imported by name (`#import game::terrain::height`

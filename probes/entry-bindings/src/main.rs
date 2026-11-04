@@ -274,6 +274,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 frame,
                 SceneSubmission {
                     scene: Scene {
+                        timing_marks: &[],
                         records: &[record],
                         shadow: None,
                         output: SceneOutput::Postprocessed {

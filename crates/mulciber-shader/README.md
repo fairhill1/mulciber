@@ -359,6 +359,12 @@ PBR Neutral's inverse.
   with "required import 'game' not found" and a hint naming the clash. Import the items
   (`#import game::shadow::{shadow_factor}`) or use `as` instead, and give modules last segments
   that are unlikely local names: Mulciber's are `colorspace`, `photometry`, `pbr` and `tonemap`.
+- An item imported by name (`#import game::terrain::height` or `#import game::terrain::{height}`)
+  is renamed everywhere it is spelled in that file, a struct member access included, so
+  `ground.height` fails with "invalid field accessor `height`" and a hint naming the import.
+  Declaring a field or a parameter of that name is fine; reading the field is not. Rename the
+  field, or `#import game::terrain` and call `game::terrain::height`. The renaming is the
+  composer's (`naga_oil` 0.23), not Mulciber's.
 - Entry points come from the top-level shader only; entry points inside imported modules become
   ordinary functions. The shader's own names, entry points included, are kept, so pipelines name
   entry points as before. Items from imported modules are renamed with an encoded module path

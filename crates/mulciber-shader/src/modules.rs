@@ -671,7 +671,40 @@ impl WgslShader<'_> {
                 );
             }
         }
+        if let Some(field) = message
+            .split_once("invalid field accessor `")
+            .and_then(|(_, rest)| rest.split_once('`'))
+            .map(|(field, _)| field.to_owned())
+        {
+            self.explain_field_clash(&mut message, &field);
+        }
         ShaderBuildError(message.trim_end().to_owned())
+    }
+
+    /// `naga_oil` renames every use of an item imported by name (`#import path::item` or
+    /// `#import path::{item}`) in the importing file, a struct member access spelled the same
+    /// included, which then reads as an invalid field accessor.
+    fn explain_field_clash(&self, message: &mut String, field: &str) {
+        let sources = core::iter::once((self.label.as_str(), self.source.as_str())).chain(
+            self.modules
+                .modules
+                .values()
+                .map(|module| (module.label.as_str(), module.source.as_str())),
+        );
+        for (label, source) in sources {
+            for import in get_preprocessor_data(source).1 {
+                if import.items.iter().any(|item| item == field) {
+                    let path = import.import;
+                    let _ = write!(
+                        message,
+                        "\n{label} imports `{field}` by name from {path}, and the composer renames \
+                         every `{field}` there to that item, the field access `.{field}` marked \
+                         above included; rename the field, or `#import {path}` and call \
+                         `{path}::{field}`"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -856,6 +889,49 @@ struct Surface {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    /// A struct field named like an item imported by name, which the composer's renaming of that
+    /// item breaks; importing the module and calling the item by its path composes.
+    #[test]
+    fn a_field_named_like_an_item_imported_by_name_is_explained() {
+        const TERRAIN: &str = "#define_import_path game::terrain
+
+fn height(x: f32) -> f32 { return x * 2.0; }
+";
+        const BODY: &str = "
+struct Ground { height: f32, other: f32 }
+@group(0) @binding(0) var<uniform> ground: Ground;
+
+@fragment fn ground_fragment() -> @location(0) vec4<f32> {
+    return vec4<f32>(HEIGHT(ground.height), ground.other, 0.0, 1.0);
+}
+";
+        let mut modules = ShaderModules::new();
+        modules.add_source("shaders/terrain.wgsl", TERRAIN).unwrap();
+        for import in [
+            "#import game::terrain::height",
+            "#import game::terrain::{height}",
+        ] {
+            let source = format!("{import}\n{}", BODY.replace("HEIGHT", "height"));
+            let error = compose_error(&modules.shader_source("shaders/ground.wgsl", &source));
+            assert!(
+                error.contains(
+                    "shaders/ground.wgsl imports `height` by name from game::terrain, and the \
+                     composer renames every `height` there"
+                ),
+                "{error}"
+            );
+            assert!(
+                error.contains("`#import game::terrain` and call `game::terrain::height`"),
+                "{error}"
+            );
+        }
+        let source = format!(
+            "#import game::terrain\n{}",
+            BODY.replace("HEIGHT", "game::terrain::height")
+        );
+        compose(&modules.shader_source("shaders/ground.wgsl", &source));
     }
 
     #[test]

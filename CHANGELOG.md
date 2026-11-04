@@ -2,6 +2,16 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## A field named like an imported item, explained (shader 0.5.10)
+
+`naga_oil` renames every spelling of an item imported by name (`#import game::terrain::height`
+or `::{height}`) in the importing file, a struct member access such as `ground.height` included,
+which then fails to compose as "invalid field accessor `height`" with no hint of why. The error
+now names the file and import that clash and says to rename the field or import the module and
+call `game::terrain::height`; the shader README's composition rules describe it. Declaring such a
+field or a parameter was already fine; only reading the field fails. New test: the clash explained
+for both spellings, and the qualified call composing.
+
 ## Device-free postprocess and shadow validation (graphics 0.20.0)
 
 `PostprocessPipelineDescriptor::validate` and `ShadowPipelineDescriptor::validate` run their

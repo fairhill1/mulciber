@@ -2,6 +2,13 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Bool literals in host fields (shader 0.5.9)
+
+The host field translator now maps WGSL `true` and `false` literals, which it used to refuse. Naga
+lowers `a && b` and `a || b` to a branch that stores one, so any shared function using either
+operator failed to generate a host evaluator. New test: `&&` and `||` generate with their right
+side evaluated only when the left calls for it.
+
 ## 2D texture arrays (graphics 0.19.0, shader 0.5.9, texture 0.7.0, text 0.2.0)
 
 `TextureShape::D2Array { width, height, layers }` uploads several images of one extent, format and

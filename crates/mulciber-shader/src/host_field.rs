@@ -1191,6 +1191,7 @@ fn literal_value(literal: Literal) -> Result<String, ShaderBuildError> {
         Literal::I32(value) => Ok(format!("{value}i32")),
         Literal::U32(value) => Ok(format!("{value}u32")),
         Literal::AbstractInt(value) => Ok(format!("{value}i32")),
+        Literal::Bool(value) => Ok(value.to_string()),
         _ => Err(fail("this WGSL literal has no proven host mapping")),
     }
 }
@@ -1357,6 +1358,27 @@ mod tests {
         // WGSL sign(0.0) is 0.0, which Rust's signum does not answer.
         assert!(generated.contains("__mulciber_sign_f32"));
         assert!(!generated.contains(".signum()"));
+    }
+
+    #[test]
+    fn short_circuit_logic_generates_through_its_bool_literals() {
+        // Naga lowers `a && b` and `a || b` to branches that store a `false` or `true` literal.
+        let source = "
+            fn inside(x: f32, low: f32, high: f32) -> bool {
+                return x >= low && x <= high;
+            }
+            fn outside(x: f32, low: f32, high: f32) -> bool {
+                return x < low || x > high;
+            }
+        ";
+        let generated =
+            emit(source, &["inside", "outside"]).expect("short-circuit logic generates");
+        // `&&` evaluates its right side only when the left holds, and is otherwise false.
+        assert!(generated.contains("if __e3 {\n        let __e6 = (x <= high);"));
+        assert!(generated.contains("} else {\n        __l0 = false;\n    }"));
+        // `||` evaluates its right side only when the left fails, and is otherwise true.
+        assert!(generated.contains("let __e4 = (!__e3);\n    if __e4 {"));
+        assert!(generated.contains("} else {\n        __l0 = true;\n    }"));
     }
 
     #[test]

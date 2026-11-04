@@ -12,6 +12,11 @@
 //! [`MaterialMaps`] is a physically based material as three such textures found beside its
 //! albedo image by name: albedo, normal + roughness, metallic + occlusion.
 //!
+//! An [`ArrayRecipe`] is several recipes of one chain and extent baked as the layers of one 2D
+//! texture array (`bake_array` with `encode`), for a shader to sample them all through one
+//! [`mulciber::MaterialBinding::TextureArray`] slot; [`ArrayRecipe::prepare`] reads the bake or
+//! builds every layer's chain from the sources, and [`PreparedArray::upload`] uploads either.
+//!
 //! High dynamic range light (a sky, a lightmap, a reflection probe) takes another road:
 //! [`hdr_chain`] filters its mips in linear light, and with `encode` `encode_bc6h` encodes each
 //! level as BC6H, a byte a texel against `RGBA16Float`'s eight, for the game to keep where it
@@ -20,6 +25,7 @@
 //! With the `svg` feature, `SvgSheet` is a sheet of vector pictures, each a group by id drawn about
 //! its own origin and rasterised at the size it is shown, for a HUD crisp at any window size.
 
+mod array;
 mod chain;
 mod container;
 #[cfg(feature = "encode")]
@@ -30,15 +36,16 @@ mod recipe;
 #[cfg(feature = "svg")]
 mod svg;
 
+pub use array::{ArrayPixels, ArrayRecipe, PreparedArray, array_stat_entries};
 pub use chain::{
     CUTOUT_THRESHOLD, Chain, Levels, chain_len, linear_to_srgb, mip_extent, srgb_to_linear,
 };
 pub use container::{
-    MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_bytes, level_bytes, refuse_misread_chain,
-    write_ktx2,
+    MEAN_KEY, MIN_ALPHA_KEY, SOURCE_DIGEST_KEY, ktx2_array_bytes, ktx2_bytes, level_bytes,
+    refuse_misread_chain, write_ktx2, write_ktx2_array,
 };
 #[cfg(feature = "encode")]
-pub use encode::{BakeMode, Baked, bake, bake_materials, encode_bc6h, encode_bc7, run};
+pub use encode::{BakeMode, Baked, bake, bake_array, bake_materials, encode_bc6h, encode_bc7, run};
 pub use hdr::{HDR_MAX, hdr_chain};
 pub use material::{
     IMAGE_EXTENSIONS, MAP_SUFFIXES, METALLIC_SUFFIX, MaterialDefaults, MaterialMaps, NORMAL_SUFFIX,

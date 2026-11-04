@@ -1,13 +1,14 @@
-//! KTX 2.0 containers of block-compressed 2D textures, parsed in place.
+//! KTX 2.0 containers of block-compressed 2D textures and 2D texture arrays, parsed in place.
 //!
 //! The [`ktx2`] crate parses the container (Khronos' KTX 2.0: header, level index, data format
 //! descriptor, key/value data) and checks every section's bounds. On top of that, Mulciber accepts
-//! only what the GPU samples directly: one 2D image, not supercompressed, in one of the
-//! [`BlockCompression`] encodings, holding its base level alone or the complete chain to 1×1,
-//! every level exactly its extent in blocks. Everything else is refused by name rather than
-//! transcoded.
+//! only what the GPU samples directly: one 2D image or a 2D array of them, not supercompressed, in
+//! one of the [`BlockCompression`] encodings, holding its base level alone or the complete chain
+//! to 1×1, every level exactly its extent in blocks for every layer. Everything else is refused by
+//! name rather than transcoded.
 
 use std::format;
+use std::string::String;
 use std::vec::Vec;
 
 use super::{
@@ -48,7 +49,8 @@ const fn compression_of(vk_format: u32) -> Option<BlockCompression> {
     })
 }
 
-/// A KTX 2.0 file holding a block-compressed 2D texture, validated and borrowed in place.
+/// A KTX 2.0 file holding a block-compressed 2D texture or 2D texture array, validated and
+/// borrowed in place.
 ///
 /// [`parse`](Self::parse) checks the container, every level's byte count against its extent in
 /// blocks, and the shape, so [`Device::create_texture`](super::Device::create_texture) uploads
@@ -59,7 +61,11 @@ pub struct Ktx2Texture<'a> {
     width: u32,
     height: u32,
     level_count: u32,
+    /// The header's layer count: 0 for a single image, the number of images for an array.
+    layer_count: u32,
     levels: Vec<&'a [u8]>,
+    /// Every layer's levels, layer after layer, as [`TextureDescriptor`] orders them.
+    images: Vec<&'a [u8]>,
     key_values: &'a [u8],
 }
 
@@ -70,6 +76,7 @@ impl core::fmt::Debug for Ktx2Texture<'_> {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("level_count", &self.level_count)
+            .field("layer_count", &self.layer_count)
             .finish_non_exhaustive()
     }
 }
@@ -91,7 +98,8 @@ impl<'a> Ktx2Texture<'a> {
     /// identifier, section and level bounds, the data format descriptor), a level whose byte count
     /// does not match its extent in blocks, or a level count that is neither one nor the complete
     /// chain to 1×1. `Unsupported` for well-formed files Mulciber does not upload: formats other
-    /// than [`BlockCompression`]'s, 1D, 3D, array or cube textures, and supercompression.
+    /// than [`BlockCompression`]'s, 1D, 3D or cube textures, and supercompression. A file with
+    /// a layer count is a 2D texture array.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, GraphicsError> {
         let reader = ktx2::Reader::new(bytes).map_err(|error| match error {
             ktx2::ParseError::BadMagic => malformed("not a KTX 2.0 file"),
@@ -106,12 +114,13 @@ impl<'a> Ktx2Texture<'a> {
         })?;
         let (width, height) = (header.pixel_width, header.pixel_height);
         let (depth, layers, faces) = (header.pixel_depth, header.layer_count, header.face_count);
-        if height == 0 || depth != 0 || layers != 0 || faces != 1 {
+        if height == 0 || depth != 0 || faces != 1 {
             return Err(unsupported(&format!(
-                "only single 2D images upload; this is {width}x{height}x{depth} with {layers} \
-                 layers and {faces} faces"
+                "only 2D images and 2D arrays upload; this is {width}x{height}x{depth} with \
+                 {layers} layers and {faces} faces"
             )));
         }
+        let images_per_level = layers.max(1) as usize;
         if let Some(scheme) = header.supercompression_scheme {
             return Err(unsupported(&format!(
                 "supercompressed level data ({scheme:?}) does not upload"
@@ -137,12 +146,18 @@ impl<'a> Ktx2Texture<'a> {
             let (w, h) = (mip_extent(width, level), mip_extent(height, level));
             let expected = format
                 .level_bytes(w, h)
+                .and_then(|image| image.checked_mul(images_per_level))
                 .ok_or_else(|| malformed("the texture's dimensions overflow"))?;
             let length = stored.data.len();
             if length != expected {
+                let of = if layers == 0 {
+                    String::new()
+                } else {
+                    format!(" for {layers} layers")
+                };
                 return Err(malformed(&format!(
                     "level {level} ({w}x{h}) holds {length} bytes; {compression:?} needs \
-                     {expected}"
+                     {expected}{of}"
                 )));
             }
             if stored.uncompressed_byte_length != length as u64 {
@@ -154,6 +169,16 @@ impl<'a> Ktx2Texture<'a> {
             let start = stored.data.as_ptr().addr() - bytes.as_ptr().addr();
             levels.push(&bytes[start..start + length]);
         }
+        // A level stores every layer's image of it in turn; a texture upload wants every layer's
+        // chain in turn.
+        let images = (0..images_per_level)
+            .flat_map(|layer| {
+                levels.iter().map(move |level| {
+                    let image = level.len() / images_per_level;
+                    &level[layer * image..(layer + 1) * image]
+                })
+            })
+            .collect();
         let start = header.index.kvd_byte_offset as usize;
         let key_values = &bytes[start..start + header.index.kvd_byte_length as usize];
         Ok(Self {
@@ -161,7 +186,9 @@ impl<'a> Ktx2Texture<'a> {
             width,
             height,
             level_count,
+            layer_count: layers,
             levels,
+            images,
             key_values,
         })
     }
@@ -190,34 +217,63 @@ impl<'a> Ktx2Texture<'a> {
         self.level_count
     }
 
-    /// Level `level`'s tightly packed blocks, base level 0, or `None` past the last level.
+    /// Images in the 2D array, or `None` for a single 2D image.
+    #[must_use]
+    pub const fn layer_count(&self) -> Option<u32> {
+        if self.layer_count == 0 {
+            None
+        } else {
+            Some(self.layer_count)
+        }
+    }
+
+    /// Layer `layer`'s blocks at `level` (layer 0 of a single image), or `None` past the last
+    /// layer or level.
+    #[must_use]
+    pub fn image(&self, layer: u32, level: u32) -> Option<&'a [u8]> {
+        if level >= self.level_count || layer >= self.layer_count.max(1) {
+            return None;
+        }
+        self.images
+            .get((layer * self.level_count + level) as usize)
+            .copied()
+    }
+
+    /// Level `level`'s tightly packed blocks, every layer's in turn for an array, base level 0,
+    /// or `None` past the last level.
     #[must_use]
     pub fn level(&self, level: u32) -> Option<&'a [u8]> {
         self.levels.get(level as usize).copied()
     }
 
-    /// Every level's blocks, base level first.
+    /// Every level's blocks, base level first, each level every layer's in turn for an array.
     #[must_use]
     pub fn levels(&self) -> &[&'a [u8]] {
         &self.levels
     }
 
     /// The upload [`Device::create_texture`](super::Device::create_texture) takes for this file:
-    /// a 2D texture of its base level alone, or of the complete chain it stores. The blocks go
-    /// to the GPU as they are stored; nothing is decoded or transcoded.
+    /// a 2D texture or a 2D texture array of its base level alone, or of the complete chain it
+    /// stores. The blocks go to the GPU as they are stored; nothing is decoded or transcoded.
     #[must_use]
     pub fn descriptor(&self) -> TextureDescriptor<'_> {
+        let (width, height) = (self.width, self.height);
         TextureDescriptor {
-            shape: TextureShape::D2 {
-                width: self.width,
-                height: self.height,
+            shape: if self.layer_count == 0 {
+                TextureShape::D2 { width, height }
+            } else {
+                TextureShape::D2Array {
+                    width,
+                    height,
+                    layers: self.layer_count,
+                }
             },
             mips: if self.levels.len() == 1 {
                 MipChain::Single
             } else {
                 MipChain::Supplied
             },
-            data: TexelData::BlockCompressed(self.compression, &self.levels),
+            data: TexelData::BlockCompressed(self.compression, &self.images),
         }
     }
 
@@ -386,6 +442,50 @@ mod tests {
     }
 
     #[test]
+    fn an_array_parses_into_each_layers_chain() {
+        use super::super::{MipChain, TexelData, TextureShape};
+        let (first, second) = (
+            chain(),
+            chain()
+                .into_iter()
+                .map(|l| l.iter().map(|b| !b).collect())
+                .collect::<Vec<Vec<u8>>>(),
+        );
+        // Each level stores layer 0's blocks of it, then layer 1's.
+        let levels: Vec<Vec<u8>> = first
+            .iter()
+            .zip(&second)
+            .map(|(a, b)| [a.as_slice(), b.as_slice()].concat())
+            .collect();
+        let mut bytes = file(BlockCompression::Bc7Srgb, 12, 8, &levels, &[]);
+        set_u32(&mut bytes, 32, 2);
+        let texture = Ktx2Texture::parse(&bytes).unwrap();
+        assert_eq!(texture.layer_count(), Some(2));
+        assert_eq!(texture.image(1, 2), Some(&second[2][..]));
+        assert_eq!(texture.image(0, 3), Some(&first[3][..]));
+        assert_eq!(texture.image(2, 0), None);
+        assert_eq!(texture.levels()[0], &levels[0][..]);
+        let descriptor = texture.descriptor();
+        assert_eq!(
+            descriptor.shape,
+            TextureShape::D2Array {
+                width: 12,
+                height: 8,
+                layers: 2
+            }
+        );
+        assert_eq!(descriptor.mips, MipChain::Supplied);
+        let TexelData::BlockCompressed(_, images) = descriptor.data else {
+            panic!("block-compressed");
+        };
+        let expected: Vec<&[u8]> = first.iter().chain(&second).map(Vec::as_slice).collect();
+        assert_eq!(images, &expected[..]);
+        // A single image has no layer count.
+        let single = file(BlockCompression::Bc7Srgb, 12, 8, &first, &[]);
+        assert_eq!(Ktx2Texture::parse(&single).unwrap().layer_count(), None);
+    }
+
+    #[test]
     fn malformed_and_unsupported_files_are_refused_by_what_is_wrong() {
         let good = file(BlockCompression::Bc7Srgb, 12, 8, &chain(), &[("K", "V")]);
         let refuse = |bytes: &[u8], kind: GraphicsErrorKind, says: &str| {
@@ -427,9 +527,10 @@ mod tests {
         let mut cube = good.clone();
         set_u32(&mut cube, 36, 6);
         refuse(&cube, GraphicsErrorKind::Unsupported, "6 faces");
+        // The single image's levels do not hold two layers' blocks.
         let mut array = good.clone();
         set_u32(&mut array, 32, 2);
-        refuse(&array, GraphicsErrorKind::Unsupported, "2 layers");
+        refuse(&array, GraphicsErrorKind::InvalidRequest, "for 2 layers");
         let mut volume = good.clone();
         set_u32(&mut volume, 28, 4);
         refuse(&volume, GraphicsErrorKind::Unsupported, "12x8x4");

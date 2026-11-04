@@ -101,6 +101,63 @@ pub fn ktx2_bytes(
     levels: &[Vec<u8>],
     entries: &[(&str, &str)],
 ) -> Result<Vec<u8>, TextureError> {
+    check_chain(compression, width, height, levels)?;
+    layered_bytes(compression, width, height, 0, levels, entries)
+}
+
+/// A KTX 2.0 file of a block-compressed 2D texture array: `layers` images of one extent, each its
+/// base level alone or its complete chain to 1×1 as [`ktx2_bytes`] takes one, every layer the
+/// same length. Each level stores every layer's blocks of it in layer order, as the specification
+/// lays an array out, and [`mulciber::Ktx2Texture::descriptor`] uploads it as a
+/// [`mulciber::TextureShape::D2Array`].
+///
+/// # Errors
+///
+/// As [`ktx2_bytes`] for any layer, naming it; for no layers, or layers of different lengths.
+pub fn ktx2_array_bytes(
+    compression: BlockCompression,
+    width: u32,
+    height: u32,
+    layers: &[Vec<Vec<u8>>],
+    entries: &[(&str, &str)],
+) -> Result<Vec<u8>, TextureError> {
+    let Some(first) = layers.first() else {
+        return Err(TextureError::new(
+            "a texture array bake needs at least one layer",
+        ));
+    };
+    for (index, layer) in layers.iter().enumerate() {
+        if layer.len() != first.len() {
+            return Err(TextureError::new(format!(
+                "layer {index} holds {} levels but layer 0 holds {}",
+                layer.len(),
+                first.len()
+            )));
+        }
+        check_chain(compression, width, height, layer)
+            .map_err(|error| TextureError::new(format!("layer {index}: {}", error.message())))?;
+    }
+    let levels: Vec<Vec<u8>> = (0..first.len())
+        .map(|level| {
+            layers
+                .iter()
+                .flat_map(|layer| &layer[level])
+                .copied()
+                .collect()
+        })
+        .collect();
+    let count = u32::try_from(layers.len()).map_err(|_| TextureError::new("too many layers"))?;
+    layered_bytes(compression, width, height, count, &levels, entries)
+}
+
+/// Requires one image's levels to be its base alone or its complete chain, each level
+/// [`level_bytes`] long, and a complete chain at an extent Apple GPUs sample right.
+fn check_chain(
+    compression: BlockCompression,
+    width: u32,
+    height: u32,
+    levels: &[Vec<u8>],
+) -> Result<(), TextureError> {
     let level_count = levels.len();
     if width == 0 || height == 0 || (level_count != 1 && level_count != chain_len(width, height)) {
         return Err(TextureError::new(format!(
@@ -124,6 +181,20 @@ pub fn ktx2_bytes(
             )));
         }
     }
+    Ok(())
+}
+
+/// Lays out a checked chain, `layer_count` 0 for a single image and each level every layer's
+/// blocks in turn otherwise.
+fn layered_bytes(
+    compression: BlockCompression,
+    width: u32,
+    height: u32,
+    layer_count: u32,
+    levels: &[Vec<u8>],
+    entries: &[(&str, &str)],
+) -> Result<Vec<u8>, TextureError> {
+    let level_count = levels.len();
     let format = ktx2::Format::new(ktx2_vk_format(compression))
         .ok_or_else(|| TextureError::new(format!("no VkFormat for {compression:?}")))?;
     let word = |value: usize| u32::try_from(value).map_err(|_| TextureError::new("bake too large"));
@@ -150,7 +221,7 @@ pub fn ktx2_bytes(
         pixel_width: width,
         pixel_height: height,
         pixel_depth: 0,
-        layer_count: 0,
+        layer_count,
         face_count: 1,
         level_count: word(level_count)?,
         supercompression_scheme: None,
@@ -180,6 +251,25 @@ pub fn ktx2_bytes(
         file.extend_from_slice(&levels[level]);
     }
     Ok(file)
+}
+
+/// Writes [`ktx2_array_bytes`] to `path`.
+///
+/// # Errors
+///
+/// Those of [`ktx2_array_bytes`], and a failed write, naming the path.
+pub fn write_ktx2_array(
+    path: &Path,
+    compression: BlockCompression,
+    width: u32,
+    height: u32,
+    layers: &[Vec<Vec<u8>>],
+    entries: &[(&str, &str)],
+) -> Result<(), TextureError> {
+    let bytes = ktx2_array_bytes(compression, width, height, layers, entries)
+        .map_err(|error| error.at(path))?;
+    std::fs::write(path, bytes)
+        .map_err(|error| TextureError::new(format!("write {}: {error}", path.display())))
 }
 
 /// Writes [`ktx2_bytes`] to `path`.
@@ -258,6 +348,42 @@ mod tests {
                 assert_eq!(offset % 16, 0);
             }
         }
+    }
+
+    #[test]
+    fn an_array_bake_reads_back_as_each_layers_chain() {
+        let layer = |seed: u8| -> Vec<Vec<u8>> {
+            [64, 16, 16, 16]
+                .iter()
+                .map(|&len| (0..len).map(|i| seed.wrapping_add(i)).collect())
+                .collect()
+        };
+        let layers = [layer(0), layer(100), layer(200)];
+        let bytes =
+            ktx2_array_bytes(BlockCompression::Bc7Srgb, 8, 8, &layers, &[("K", "V")]).unwrap();
+        let read = Ktx2Texture::parse(&bytes).unwrap();
+        assert_eq!(read.layer_count(), Some(3));
+        assert_eq!(read.level_count(), 4);
+        for (index, layer) in (0_u32..).zip(&layers) {
+            for (level, blocks) in (0_u32..).zip(layer) {
+                assert_eq!(read.image(index, level), Some(&blocks[..]));
+            }
+        }
+        assert_eq!(read.value("K"), Some(&b"V"[..]));
+        let error = ktx2_array_bytes(
+            BlockCompression::Bc7Srgb,
+            8,
+            8,
+            &[layer(0), vec![vec![0; 64]]],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error.message().contains("layer 1 holds 1 levels"),
+            "{}",
+            error.message()
+        );
+        assert!(ktx2_array_bytes(BlockCompression::Bc7Srgb, 8, 8, &[], &[]).is_err());
     }
 
     #[test]

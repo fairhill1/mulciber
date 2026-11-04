@@ -40,7 +40,7 @@ const HEADER_LENGTH: usize = 20;
 
 const STAGE_LIMIT: u8 = 2;
 const VERTEX_FORMAT_LIMIT: u8 = 11;
-const BINDING_KIND_LIMIT: u8 = 9;
+const BINDING_KIND_LIMIT: u8 = 10;
 
 /// Target-selected native shader code produced from one WGSL module by
 /// `mulciber-shader`.
@@ -431,6 +431,8 @@ pub enum ShaderBindingKind {
     CubeTexture,
     /// `texture_cube_array<f32>`.
     CubeTextureArray,
+    /// `texture_2d_array<f32>`.
+    TextureArray,
     /// `sampler`.
     Sampler,
     /// `sampler_comparison`.
@@ -455,7 +457,8 @@ impl ShaderBindingKind {
             INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY => Self::DepthTextureArray,
             INTERFACE_BINDING_MULTISAMPLED_DEPTH => Self::MultisampledDepthTexture,
             INTERFACE_BINDING_CUBE_TEXTURE => Self::CubeTexture,
-            _ => Self::CubeTextureArray,
+            INTERFACE_BINDING_CUBE_TEXTURE_ARRAY => Self::CubeTextureArray,
+            _ => Self::TextureArray,
         }
     }
 }
@@ -578,6 +581,7 @@ pub(crate) const INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 pub(crate) const INTERFACE_BINDING_MULTISAMPLED_DEPTH: u8 = 7;
 pub(crate) const INTERFACE_BINDING_CUBE_TEXTURE: u8 = 8;
 pub(crate) const INTERFACE_BINDING_CUBE_TEXTURE_ARRAY: u8 = 9;
+pub(crate) const INTERFACE_BINDING_TEXTURE_ARRAY: u8 = 10;
 
 /// The compiler-recorded interface of one shader module.
 pub(crate) struct ShaderInterface {
@@ -841,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_cube_texture_and_cube_array_bindings_and_rejects_unknown_kinds() {
+    fn reads_cube_and_array_texture_bindings_and_rejects_unknown_kinds() {
         // A payload the host target accepts, so this runs on every target.
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         let (kind, payload) = (VULKAN_KIND, 0x0723_0203_u32.to_le_bytes().to_vec());
@@ -865,16 +869,20 @@ mod tests {
                 super::INTERFACE_BINDING_CUBE_TEXTURE_ARRAY,
                 super::ShaderBindingKind::CubeTextureArray,
             ),
+            (
+                super::INTERFACE_BINDING_TEXTURE_ARRAY,
+                super::ShaderBindingKind::TextureArray,
+            ),
         ] {
             let bytes = artifact(kind, &payload, &interface(code));
-            let parsed = ShaderArtifact::new(&bytes).expect("cube binding kinds are known");
+            let parsed = ShaderArtifact::new(&bytes).expect("layered binding kinds are known");
             let bindings = parsed.parse_interface().bindings;
             assert_eq!(bindings.len(), 1);
             assert_eq!(bindings[0].binding, 5);
             assert_eq!(bindings[0].kind, code);
             assert_eq!(super::ShaderBindingKind::from_code(code), reflected);
         }
-        let unknown = artifact(kind, &payload, &interface(10));
+        let unknown = artifact(kind, &payload, &interface(11));
         assert!(ShaderArtifact::new(&unknown).is_err());
     }
 

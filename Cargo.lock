@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.18.2"
+version = "0.19.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-shader"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "naga",
  "naga_oil",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-text"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fontdue",
  "mulciber",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-texture"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "bcdec_rs",
  "image",
@@ -957,6 +957,16 @@ dependencies = [
  "ktx2",
  "mulciber",
  "resvg",
+]
+
+[[package]]
+name = "mulciber-texture-array"
+version = "0.0.0"
+dependencies = [
+ "bcdec_rs",
+ "mulciber",
+ "mulciber-platform",
+ "mulciber-texture",
 ]
 
 [[package]]

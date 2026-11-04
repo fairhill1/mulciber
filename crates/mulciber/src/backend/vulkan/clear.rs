@@ -1493,6 +1493,9 @@ struct Adapter {
     /// adapter without it is still selected and refuses only cube texture arrays and pipelines
     /// declaring them.
     image_cube_array: bool,
+    /// The most array layers an image may have (`maxImageArrayLayers`, at least 256), which
+    /// bounds a 2D texture array's layer count.
+    max_image_array_layers: u32,
 }
 
 struct DeviceFns {
@@ -2030,6 +2033,7 @@ fn choose_adapter(instance: &Instance) -> Result<Adapter, GraphicsError> {
                         texture_compression_bc: features.features.textureCompressionBC
                             == vk::VK_TRUE,
                         image_cube_array: features.features.imageCubeArray == vk::VK_TRUE,
+                        max_image_array_layers: properties.limits.maxImageArrayLayers,
                     },
                 ));
                 break;

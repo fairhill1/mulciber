@@ -666,6 +666,35 @@ impl<'window> TexturedSession<'window> {
         self.create_sampled_texture(size, size, faces, format, TextureDimension::Cube, false)
     }
 
+    /// Uploads validated 2D images of one extent and chain length into one
+    /// `MTLTextureType2DArray` texture, a slice per image.
+    pub(crate) fn create_texture_array(
+        &mut self,
+        width: u32,
+        height: u32,
+        layers: &[&[&[u8]]],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        if layers.len() > TEXTURE_ARRAY_SLICE_LIMIT {
+            return Err(GraphicsError::with_kind(
+                crate::GraphicsErrorKind::Unsupported,
+                format!(
+                    "a Metal 2D texture array holds at most {TEXTURE_ARRAY_SLICE_LIMIT} layers, \
+                     not {}",
+                    layers.len()
+                ),
+            ));
+        }
+        self.create_sampled_texture(
+            width,
+            height,
+            layers,
+            format,
+            TextureDimension::D2Array,
+            false,
+        )
+    }
+
     /// Refuses cube texture arrays on a device outside the Metal 3 family. Cube arrays are a
     /// Mac2 and Apple4+ capability, which every Metal 3 device has; Mulciber gates on the family
     /// it already requires for `RGBA16Float` sampling instead of a separate per-family table.
@@ -710,8 +739,8 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
-    /// Uploads one sampled texture: a single 2D slice, the six slices of a cube, or six slices
-    /// per cube of a cube array. Every slice carries the same mip chain, already validated; with
+    /// Uploads one sampled texture: a single 2D slice, a slice per image of a 2D array, the six
+    /// slices of a cube, or six slices per cube of a cube array. Every slice carries the same mip chain, already validated; with
     /// `generate_mips` each carries level 0 alone and a blit encoder fills the rest of the full
     /// chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
@@ -785,6 +814,11 @@ impl<'window> TexturedSession<'window> {
             )?;
             match dimension {
                 TextureDimension::D2 => {}
+                // A 2D array's `arrayLength` counts its slices, one per image.
+                TextureDimension::D2Array => {
+                    objc::void_usize(descriptor, c"setTextureType:", TEXTURE_TYPE_2D_ARRAY);
+                    objc::void_usize(descriptor, c"setArrayLength:", slices.len());
+                }
                 // A square 2D descriptor already counts the full chain; the cube type keeps
                 // `arrayLength` at one and gives the texture six slices.
                 TextureDimension::Cube => {

@@ -263,6 +263,15 @@ layers is `InvalidRequest`. Creating the texture or a pipeline declaring the slo
 without Vulkan's `imageCubeArray` feature or Metal's Metal 3 family. See the
 [contract](cube-textures.md#cube-texture-arrays).
 
+`TextureShape::D2Array { width, height, layers }` uploads one or more `width`×`height` images,
+layer after layer, in any `TexelData` format, with `MipChain::Single` or `MipChain::Supplied` (a
+complete chain per layer); `MipChain::Generated` is `Unsupported`. The result is a `Texture` with
+`dimension() == TextureDimension::D2Array`, which binds only through `MaterialBinding::TextureArray`
+and WGSL `texture_2d_array<f32>`, sampled with `textureSample(map, sampler, uv, layer)`. No layers
+is `InvalidRequest`, diagnostics name the layer, and more layers than the device holds (Vulkan's
+`maxImageArrayLayers`, Metal's 2048) is `Unsupported`. A KTX 2.0 file with layers parses to such an
+array. See the [contract](texture-arrays.md).
+
 ## Linear floating-point sampled uploads
 
 `Device::create_texture` with `TexelData::Rgba16Float(&[&[[f32; 4]]])` (or `Rgba16FloatBits` from

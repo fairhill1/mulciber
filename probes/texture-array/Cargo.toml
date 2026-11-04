@@ -1,0 +1,17 @@
+[package]
+name = "mulciber-texture-array"
+description = "Native validation of sampled 2D texture arrays: layer and level selection, orientation, RGBA16Float, RGBA8 and a BC7 KTX2 array bake"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+mulciber = { path = "../../crates/mulciber", features = ["native-validation"] }
+mulciber-platform = { path = "../../crates/mulciber-platform" }
+mulciber-texture = { path = "../../crates/mulciber-texture" }
+bcdec_rs = "0.2.0"
+
+[lints]
+workspace = true

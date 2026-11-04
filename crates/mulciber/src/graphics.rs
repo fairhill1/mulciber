@@ -280,25 +280,27 @@ impl Device<'_> {
         })
     }
 
-    /// Uploads a sampled texture: a 2D image, a cube or a cube array, in any [`TexelData`]
-    /// format, with one level, an application-supplied mip chain, or a chain the GPU generates
-    /// from the base level. [`TextureDescriptor`] describes the layout of the data.
+    /// Uploads a sampled texture: a 2D image, a 2D array, a cube or a cube array, in any
+    /// [`TexelData`] format, with one level, an application-supplied mip chain, or a chain the
+    /// GPU generates from the base level. [`TextureDescriptor`] describes the layout of the data.
     ///
     /// The texture binds through [`MaterialBinding::Texture`] (WGSL `texture_2d<f32>`),
+    /// [`MaterialBinding::TextureArray`] (`texture_2d_array<f32>`),
     /// [`MaterialBinding::CubeTexture`] (`texture_cube<f32>`) or
     /// [`MaterialBinding::CubeTextureArray`] (`texture_cube_array<f32>`) by its shape.
     ///
     /// # Errors
     ///
-    /// Returns `InvalidRequest` for a zero extent or no cube array layers, an image count that
+    /// Returns `InvalidRequest` for a zero extent or no array layers, an image count that
     /// does not match the shape and mips, a level whose size does not match its extent or float
     /// components outside binary16's finite range (each naming the layer, face and level), a
     /// block-compressed texture asking for generated mips, a block-compressed chain at an extent
     /// Apple GPUs misread ([`misread_block_mip`], refused on every backend), or overflow. Returns `Unsupported`
     /// when the device cannot sample the format, the cube array, or linearly filterable
     /// `RGBA16Float`, cannot blit the format with linear filtering for generated mips, or for
-    /// combinations not implemented: generated mips are 2D only, and a cube array takes
-    /// `RGBA16Float` data with a supplied chain.
+    /// combinations not implemented: generated mips are for single 2D images only, and a cube
+    /// array takes `RGBA16Float` data with a supplied chain. A 2D array of more layers than the
+    /// device holds (at least 256 on Vulkan, 2048 on Metal) is `Unsupported`.
     pub fn create_texture(
         &self,
         descriptor: &TextureDescriptor<'_>,
@@ -323,6 +325,17 @@ impl Device<'_> {
                 } else {
                     session.create_texture(width, height, &bytes, format)?
                 }
+            }
+            TextureShape::D2Array { width, height, .. } => {
+                let layers: Vec<&[&[u8]]> = bytes.chunks_exact(levels).collect();
+                for (layer, chain) in layers.iter().enumerate() {
+                    for (level, texels) in (0_u32..).zip(chain.iter()) {
+                        validate_mip_level(format, width, height, level, texels)
+                            .map_err(|error| name_array_layer(layer, &error))?;
+                    }
+                }
+                sampled_texture::checked_staging_size(bytes.iter().map(|texels| texels.len()))?;
+                session_mut(&self.shared)?.create_texture_array(width, height, &layers, format)?
             }
             TextureShape::Cube { size } => {
                 let faces = split_faces(&bytes, levels);
@@ -747,8 +760,8 @@ impl Device<'_> {
         {
             return Err(GraphicsError::with_kind(
                 GraphicsErrorKind::Unsupported,
-                "shadow pipelines sample 2D textures only, not cube textures or cube texture \
-                 arrays",
+                "shadow pipelines sample 2D textures only, not 2D texture arrays, cube textures \
+                 or cube texture arrays",
             ));
         }
         if descriptor.fragment_entry.is_none()
@@ -2393,6 +2406,17 @@ pub enum TextureShape {
         /// Base level height in texels.
         height: u32,
     },
+    /// `layers` `width`×`height` images of one format and chain, the shader choosing one by its
+    /// array index, as in `textureSample(map, sampler, uv, layer)`: a set of terrain materials,
+    /// say, bound through one slot.
+    D2Array {
+        /// Base level width in texels.
+        width: u32,
+        /// Base level height in texels.
+        height: u32,
+        /// Number of images, at least one.
+        layers: u32,
+    },
     /// Six square `size`×`size` faces.
     Cube {
         /// Base level face extent in texels.
@@ -2414,6 +2438,7 @@ impl TextureShape {
     pub const fn dimension(self) -> TextureDimension {
         match self {
             Self::D2 { .. } => TextureDimension::D2,
+            Self::D2Array { .. } => TextureDimension::D2Array,
             Self::Cube { .. } => TextureDimension::Cube,
             Self::CubeArray { .. } => TextureDimension::CubeArray,
         }
@@ -2421,15 +2446,16 @@ impl TextureShape {
 
     const fn extent(self) -> (u32, u32) {
         match self {
-            Self::D2 { width, height } => (width, height),
+            Self::D2 { width, height } | Self::D2Array { width, height, .. } => (width, height),
             Self::Cube { size } | Self::CubeArray { size, .. } => (size, size),
         }
     }
 
-    /// Images at each level: one, six faces, or six faces per layer.
+    /// Images at each level: one, one per layer, six faces, or six faces per layer.
     fn images(self) -> usize {
         match self {
             Self::D2 { .. } => 1,
+            Self::D2Array { layers, .. } => layers as usize,
             Self::Cube { .. } => 6,
             Self::CubeArray { layers, .. } => 6 * layers as usize,
         }
@@ -2567,6 +2593,11 @@ fn validate_texture_request(descriptor: &TextureDescriptor<'_>) -> Result<usize,
     if let TextureShape::CubeArray { size, layers } = shape {
         cube_texture::require_layers(size, layers as usize)?;
     }
+    if let TextureShape::D2Array { layers: 0, .. } = shape {
+        return Err(GraphicsError::invalid_request(
+            "2D texture array needs at least one layer",
+        ));
+    }
     if mips == MipChain::Generated && data.is_block_compressed() {
         return Err(GraphicsError::invalid_request(
             "a block-compressed texture cannot generate mips, because a block is not filtered \
@@ -2576,7 +2607,7 @@ fn validate_texture_request(descriptor: &TextureDescriptor<'_>) -> Result<usize,
     if mips == MipChain::Generated && shape.dimension() != TextureDimension::D2 {
         return Err(GraphicsError::with_kind(
             GraphicsErrorKind::Unsupported,
-            format!("generated mips are 2D only; supply the {label}'s chain"),
+            format!("generated mips are for single 2D images only; supply the {label}'s chain"),
         ));
     }
     if matches!(shape, TextureShape::CubeArray { .. })
@@ -2632,12 +2663,21 @@ fn pack_images<T>(
     for (index, chain) in images.chunks_exact(per_image).enumerate() {
         let levels = pack(chain).map_err(|error| match shape {
             TextureShape::D2 { .. } => error,
+            TextureShape::D2Array { .. } => name_array_layer(index, &error),
             TextureShape::Cube { .. } => cube_texture::name_image(false, index, &error),
             TextureShape::CubeArray { .. } => cube_texture::name_image(true, index, &error),
         })?;
         packed.extend(levels);
     }
     Ok(packed)
+}
+
+/// Prefixes a diagnostic for a 2D texture array's `layer` with that layer, keeping its kind.
+fn name_array_layer(layer: usize, error: &GraphicsError) -> GraphicsError {
+    GraphicsError::with_kind(
+        error.kind(),
+        format!("2D array layer {layer}: {}", error.message()),
+    )
 }
 
 /// Splits one cube's images, face after face, into each face's `levels`-long chain.
@@ -2647,13 +2687,17 @@ fn split_faces<T>(cube: &[T], levels: usize) -> [&[T]; 6] {
 
 /// The shape of an uploaded [`Texture`], which decides the material slot it can feed.
 ///
-/// A 2D texture feeds a [`MaterialBinding::Texture`] slot (WGSL `texture_2d<f32>`); a cube texture feeds a [`MaterialBinding::CubeTexture`] slot (WGSL
-/// `texture_cube<f32>`) and a cube texture array a [`MaterialBinding::CubeTextureArray`] slot
-/// (WGSL `texture_cube_array<f32>`), and nothing else.
+/// A 2D texture feeds a [`MaterialBinding::Texture`] slot (WGSL `texture_2d<f32>`); a 2D texture
+/// array a [`MaterialBinding::TextureArray`] slot (WGSL `texture_2d_array<f32>`); a cube texture
+/// a [`MaterialBinding::CubeTexture`] slot (WGSL `texture_cube<f32>`) and a cube texture array a
+/// [`MaterialBinding::CubeTextureArray`] slot (WGSL `texture_cube_array<f32>`), and nothing else.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TextureDimension {
     /// One 2D image with its mip chain.
     D2,
+    /// One or more 2D images of one extent, each with its mip chain, the shader choosing an image
+    /// by its array index.
+    D2Array,
     /// Six square faces of one extent, each with its mip chain, in the layer order +X, -X, +Y,
     /// -Y, +Z, -Z.
     Cube,
@@ -2666,6 +2710,7 @@ impl TextureDimension {
     const fn label(self) -> &'static str {
         match self {
             Self::D2 => "2D texture",
+            Self::D2Array => "2D texture array",
             Self::Cube => "cube texture",
             Self::CubeArray => "cube texture array",
         }
@@ -3147,6 +3192,20 @@ pub enum MaterialBinding {
         /// WGSL binding number.
         binding: u32,
     },
+    /// One sampled 2D texture array (WGSL `texture_2d_array<f32>`) supplied with each draw record
+    /// from a [`Texture`] whose [`Texture::dimension`] is [`TextureDimension::D2Array`], such as
+    /// every terrain material's albedo bound through one slot.
+    ///
+    /// It shares the texture slots, [`MATERIAL_TEXTURE_COUNT_LIMIT`] and the record's `textures`
+    /// list with the other texture slots; a texture of another dimension in this slot, or a 2D
+    /// array in another slot, is rejected at submission. Sample it through an ordinary
+    /// [`MaterialBinding::Sampler`] with `textureSample(map, sampler, uv, layer)`; an
+    /// out-of-range layer reads undefined values on both backends. Shadow pipelines do not accept
+    /// it.
+    TextureArray {
+        /// WGSL binding number.
+        binding: u32,
+    },
     /// One sampled cube texture (WGSL `texture_cube<f32>`) supplied with each draw record from a
     /// [`Texture`] whose [`Texture::dimension`] is [`TextureDimension::Cube`].
     ///
@@ -3245,6 +3304,7 @@ impl MaterialBinding {
             Self::Uniform { binding, .. }
             | Self::Storage { binding, .. }
             | Self::Texture { binding }
+            | Self::TextureArray { binding }
             | Self::CubeTexture { binding }
             | Self::CubeTextureArray { binding }
             | Self::Sampler { binding, .. }
@@ -4330,6 +4390,7 @@ const fn interface_binding_label(kind: u8) -> &'static str {
         shader::INTERFACE_BINDING_DEPTH_TEXTURE_ARRAY => "a depth texture array",
         shader::INTERFACE_BINDING_CUBE_TEXTURE => "a cube texture",
         shader::INTERFACE_BINDING_CUBE_TEXTURE_ARRAY => "a cube texture array",
+        shader::INTERFACE_BINDING_TEXTURE_ARRAY => "a 2D texture array",
         _ => "an unsupported resource",
     }
 }
@@ -4483,6 +4544,10 @@ fn validate_bindings_against_interface(
             MaterialBinding::Texture { binding } => {
                 declaration.texture_bindings.push(binding);
                 (binding, shader::INTERFACE_BINDING_SAMPLED_TEXTURE, 0)
+            }
+            MaterialBinding::TextureArray { binding } => {
+                declaration.texture_bindings.push(binding);
+                (binding, shader::INTERFACE_BINDING_TEXTURE_ARRAY, 0)
             }
             MaterialBinding::CubeTexture { binding } => {
                 declaration.texture_bindings.push(binding);
@@ -4660,6 +4725,7 @@ fn validate_bindings_against_interface(
             {
                 Some(shader::INTERFACE_BINDING_CUBE_TEXTURE) => TextureDimension::Cube,
                 Some(shader::INTERFACE_BINDING_CUBE_TEXTURE_ARRAY) => TextureDimension::CubeArray,
+                Some(shader::INTERFACE_BINDING_TEXTURE_ARRAY) => TextureDimension::D2Array,
                 _ => TextureDimension::D2,
             }
         })
@@ -5231,8 +5297,8 @@ mod cube_texture_slot_tests {
     use crate::resource::{Arena, DropQueue, ResourceKind, ResourceLease};
     use crate::shader::{
         INTERFACE_BINDING_CUBE_TEXTURE, INTERFACE_BINDING_CUBE_TEXTURE_ARRAY,
-        INTERFACE_BINDING_SAMPLED_TEXTURE, INTERFACE_BINDING_SAMPLER, InterfaceBinding,
-        ShaderInterface,
+        INTERFACE_BINDING_SAMPLED_TEXTURE, INTERFACE_BINDING_SAMPLER,
+        INTERFACE_BINDING_TEXTURE_ARRAY, InterfaceBinding, ShaderInterface,
     };
 
     fn interface(bindings: &[(u32, u8)]) -> ShaderInterface {
@@ -5458,6 +5524,140 @@ mod cube_texture_slot_tests {
         ));
         assert!(validate_record_textures(&[&cube, &flat], &slots).is_err());
         assert_eq!(probes.dimension(), TextureDimension::CubeArray);
+    }
+
+    #[test]
+    fn a_texture_array_slot_matches_only_a_recorded_texture_array() {
+        let declaration = validate_bindings_against_interface(
+            &[
+                MaterialBinding::TextureArray { binding: 9 },
+                MaterialBinding::Texture { binding: 2 },
+            ],
+            &interface(&[
+                (2, INTERFACE_BINDING_SAMPLED_TEXTURE),
+                (9, INTERFACE_BINDING_TEXTURE_ARRAY),
+            ]),
+        )
+        .expect("2D and 2D-array slots declared as recorded");
+        assert_eq!(declaration.texture_bindings, [2, 9]);
+        assert_eq!(
+            declaration.texture_dimensions,
+            [TextureDimension::D2, TextureDimension::D2Array]
+        );
+        for (declared, recorded, message) in [
+            (
+                MaterialBinding::Texture { binding: 0 },
+                INTERFACE_BINDING_TEXTURE_ARRAY,
+                "as a sampled texture but the shader artifact records a 2D texture array",
+            ),
+            (
+                MaterialBinding::TextureArray { binding: 0 },
+                INTERFACE_BINDING_SAMPLED_TEXTURE,
+                "as a 2D texture array but the shader artifact records a sampled texture",
+            ),
+            (
+                MaterialBinding::TextureArray { binding: 0 },
+                INTERFACE_BINDING_CUBE_TEXTURE_ARRAY,
+                "as a 2D texture array but the shader artifact records a cube texture array",
+            ),
+        ] {
+            let error =
+                validate_bindings_against_interface(&[declared], &interface(&[(0, recorded)]))
+                    .err()
+                    .expect("a declaration of another texture kind is rejected");
+            assert!(error.message().contains(message), "{}", error.message());
+        }
+        let most = MATERIAL_TEXTURE_COUNT_LIMIT;
+        let declare = |count: u32| {
+            (0..count)
+                .map(|binding| MaterialBinding::TextureArray { binding })
+                .collect::<vec::Vec<_>>()
+        };
+        let record = |count: u32| {
+            interface(
+                &(0..count)
+                    .map(|binding| (binding, INTERFACE_BINDING_TEXTURE_ARRAY))
+                    .collect::<vec::Vec<_>>(),
+            )
+        };
+        assert!(validate_bindings_against_interface(&declare(most), &record(most)).is_ok());
+        assert!(
+            validate_bindings_against_interface(&declare(most + 1), &record(most + 1)).is_err()
+        );
+    }
+
+    #[test]
+    fn records_supply_a_texture_array_slot_only_a_texture_array() {
+        let mut arena = Arena::new("texture");
+        let flat = texture(&mut arena, TextureDimension::D2);
+        let ground = texture(&mut arena, TextureDimension::D2Array);
+        let probes = texture(&mut arena, TextureDimension::CubeArray);
+        let slots = [TextureDimension::D2, TextureDimension::D2Array];
+        assert!(validate_record_textures(&[&flat, &ground], &slots).is_ok());
+        let error = validate_record_textures(&[&flat, &flat], &slots)
+            .expect_err("a 2D texture in a 2D-array slot is rejected");
+        assert!(error.message().contains(
+            "supplies a 2D texture for texture 1, but that slot samples a 2D texture array"
+        ));
+        let error = validate_record_textures(&[&ground, &ground], &slots)
+            .expect_err("a 2D array in a 2D slot is rejected");
+        assert!(error.message().contains(
+            "supplies a 2D texture array for texture 0, but that slot samples a 2D texture"
+        ));
+        assert!(validate_record_textures(&[&flat, &probes], &slots).is_err());
+    }
+
+    #[test]
+    fn a_texture_array_request_takes_every_layers_chain() {
+        use super::{
+            BlockCompression, GraphicsErrorKind, TexelData, TextureDescriptor, TextureShape,
+            validate_texture_request,
+        };
+        // Two 8x4 BC7 layers, each its complete chain: 8x4, 4x2, 2x1, 1x1 are one block each.
+        let block = [0_u8; 16];
+        let chain = [&block[..]; 8];
+        let shape = TextureShape::D2Array {
+            width: 8,
+            height: 4,
+            layers: 2,
+        };
+        let request = |shape, mips, images: &[&[u8]]| {
+            validate_texture_request(&TextureDescriptor {
+                shape,
+                mips,
+                data: TexelData::BlockCompressed(BlockCompression::Bc7Srgb, images),
+            })
+        };
+        // 8x4 is two blocks wide at the base: one 32-byte level and three of a block.
+        let base = [0_u8; 32];
+        let layer = [&base[..], &block, &block, &block];
+        let both: vec::Vec<&[u8]> = layer.iter().chain(&layer).copied().collect();
+        assert_eq!(request(shape, MipChain::Supplied, &both).unwrap(), 4);
+        let error = request(shape, MipChain::Supplied, &chain[..4]).unwrap_err();
+        assert!(
+            error.message().contains("takes 8 images"),
+            "{}",
+            error.message()
+        );
+        let none = TextureShape::D2Array {
+            width: 8,
+            height: 4,
+            layers: 0,
+        };
+        let error = request(none, MipChain::Supplied, &[]).unwrap_err();
+        assert!(error.message().contains("at least one layer"));
+        let generated = validate_texture_request(&TextureDescriptor {
+            shape,
+            mips: MipChain::Generated,
+            data: TexelData::Rgba8Srgb(&[&[0_u8; 128], &[0_u8; 128]]),
+        })
+        .unwrap_err();
+        assert_eq!(generated.kind(), GraphicsErrorKind::Unsupported);
+        assert!(
+            generated
+                .message()
+                .contains("supply the 2D texture array's chain")
+        );
     }
 }
 

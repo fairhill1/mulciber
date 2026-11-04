@@ -723,6 +723,38 @@ impl<'window> TexturedSession<'window> {
         self.create_sampled_texture(size, size, faces, format, ImageShape::Cube, false)
     }
 
+    /// Uploads validated 2D images of one extent and chain length into one image with a layer
+    /// per image, behind a 2D-array view.
+    pub(crate) fn create_texture_array(
+        &mut self,
+        width: u32,
+        height: u32,
+        layers: &[&[&[u8]]],
+        format: SampledTextureFormat,
+    ) -> Result<ResourceId, GraphicsError> {
+        let most = self.surface.device().adapter.max_image_array_layers;
+        let count = u32::try_from(layers.len())
+            .ok()
+            .filter(|&count| count <= most)
+            .ok_or_else(|| {
+                GraphicsError::with_kind(
+                    crate::GraphicsErrorKind::Unsupported,
+                    format!(
+                        "this adapter's images hold at most {most} array layers, not {}",
+                        layers.len()
+                    ),
+                )
+            })?;
+        self.create_sampled_texture(
+            width,
+            height,
+            layers,
+            format,
+            ImageShape::Array(count),
+            false,
+        )
+    }
+
     /// Refuses cube texture arrays on an adapter without the `imageCubeArray` feature, which the
     /// device enables wherever the adapter offers it.
     pub(crate) fn require_cube_arrays(&self) -> Result<(), GraphicsError> {
@@ -764,7 +796,8 @@ impl<'window> TexturedSession<'window> {
         )
     }
 
-    /// Uploads one sampled image: a single 2D layer, or six cube faces per cube in +X, -X, +Y,
+    /// Uploads one sampled image: a single 2D layer, a layer per 2D array image, or six cube
+    /// faces per cube in +X, -X, +Y,
     /// -Y, +Z, -Z layer order. Every layer carries the same mip chain, already validated; with
     /// `generate_mips` each carries level 0 alone and blits fill the rest of the full chain.
     #[allow(clippy::too_many_lines)] // Keep native allocation and failure cleanup together.
@@ -4879,6 +4912,8 @@ fn write_postprocess_uniform(
 pub(super) enum ImageShape {
     /// One layer behind a 2D view.
     Single,
+    /// This many layers, nonzero, behind one 2D-array view.
+    Array(u32),
     /// Six square layers in +X, -X, +Y, -Y, +Z, -Z order behind a cube view.
     Cube,
     /// This many cubes, six square layers each in the cube order, cube by cube, behind one
@@ -4890,6 +4925,7 @@ impl ImageShape {
     pub(super) const fn layers(self) -> u32 {
         match self {
             Self::Single => 1,
+            Self::Array(layers) => layers,
             Self::Cube => 6,
             Self::CubeArray(cubes) => cubes * 6,
         }
@@ -4897,7 +4933,7 @@ impl ImageShape {
 
     pub(super) const fn create_flags(self) -> vk::VkImageCreateFlags {
         match self {
-            Self::Single => 0,
+            Self::Single | Self::Array(_) => 0,
             Self::Cube | Self::CubeArray(_) => {
                 vk::VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT.cast_unsigned()
             }
@@ -4907,6 +4943,7 @@ impl ImageShape {
     const fn view_type(self) -> vk::VkImageViewType {
         match self {
             Self::Single => vk::VK_IMAGE_VIEW_TYPE_2D,
+            Self::Array(_) => vk::VK_IMAGE_VIEW_TYPE_2D_ARRAY,
             Self::Cube => vk::VK_IMAGE_VIEW_TYPE_CUBE,
             Self::CubeArray(_) => vk::VK_IMAGE_VIEW_TYPE_CUBE_ARRAY,
         }

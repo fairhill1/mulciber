@@ -2,6 +2,31 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## 2D texture arrays (graphics 0.19.0, shader 0.5.9, texture 0.7.0, text 0.2.0)
+
+`TextureShape::D2Array { width, height, layers }` uploads several images of one extent, format and
+chain as one `Texture` of `TextureDimension::D2Array`, single-level or with a supplied chain per
+layer, in every sampled format. It binds through the new `MaterialBinding::TextureArray`, WGSL
+`texture_2d_array<f32>`, which `mulciber-shader` records as its own binding kind, so a slot per
+terrain material or decal no longer runs into the sixteen-texture limit. Generated mips are
+`Unsupported`, no layers is `InvalidRequest`, a level's diagnostic names its layer, and more layers
+than the device holds (Vulkan's `maxImageArrayLayers`, Metal's 2048) is `Unsupported`.
+`Ktx2Texture` reads a KTX 2.0 file with layers (`layer_count`, `image(layer, level)`, a
+`D2Array` descriptor). In `mulciber-texture`, `ArrayRecipe` bakes several recipes as one BC7 array
+(`bake_array`), `prepare` falls back to every layer's RGBA8 chain built on the CPU, and
+`ktx2_array_bytes`/`write_ktx2_array` write one. Adding variants to `TextureShape` and
+`TextureDimension` breaks exhaustive matches, hence graphics 0.19.0, texture 0.7.0 and text 0.2.0.
+New tests: an array slot matched only by a recorded array, records supplying it only an array, an
+array request taking every layer's chain, the shader recording the array kind and its Metal texture
+slot, an unknown binding kind refused, a KTX 2.0 array parsed into each layer's chain, and an array
+bake read back as each layer's chain with its per-layer stats. The new `mulciber-texture-array`
+probe passed 46 sampled cases (an `RGBA16Float` array of five layers and three levels, an
+`RGBA8Unorm` array's orientation, a BC7 array baked into one KTX 2.0 file checked against `bcdec`,
+and the level and layer counts) and every refusal under Vulkan validation with no messages, on an
+NVIDIA GeForce RTX 3060 Ti (driver 615.78.08, Vulkan 1.4.351) on Linux. The Metal path is type- and
+lint-checked for `aarch64-apple-darwin` only; it has not run and the probe's Metal artifact is not
+generated. See [2D texture arrays](docs/texture-arrays.md).
+
 ## The captured pointer's motion in the snapshot (runtime 0.6.2)
 
 `InputSnapshot::pointer_delta` sums a captured pointer's `InputEvent::PointerDelta` motion, which

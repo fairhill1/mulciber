@@ -28,6 +28,7 @@ members = [
     "probes/entry-bindings",
     "probes/frame-capture",
     "probes/render-texture",
+    "probes/texture-array",
     "probes/api-cube",
     "probes/vulkan-info",
     "probes/vulkan-triangle",

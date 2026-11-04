@@ -60,6 +60,7 @@ const BINDING_DEPTH_TEXTURE_ARRAY: u8 = 6;
 const BINDING_MULTISAMPLED_DEPTH: u8 = 7;
 const BINDING_CUBE_TEXTURE: u8 = 8;
 const BINDING_CUBE_TEXTURE_ARRAY: u8 = 9;
+const BINDING_TEXTURE_ARRAY: u8 = 10;
 
 /// The Naga capabilities beyond the empty set the compiler validates with: arrayed cube textures,
 /// which WebGPU's core profile includes. Each native output has a proven mapping for them
@@ -330,6 +331,11 @@ type RecordedBinding = (u32, u32, u8, u32);
 
 /// Classifies every bound global, sorted by group and binding, keeping its handle so entry-point
 /// usage can be looked up.
+/// The binding kind of a texture declared `arrayed` or not.
+const fn layered(arrayed: bool, single: u8, array: u8) -> u8 {
+    if arrayed { array } else { single }
+}
+
 fn module_bindings(
     module: &naga::Module,
 ) -> Result<Vec<(RecordedBinding, Handle<naga::GlobalVariable>)>, ShaderBuildError> {
@@ -362,14 +368,17 @@ fn module_bindings(
                 AddressSpace::Handle,
                 TypeInner::Image {
                     dim: naga::ImageDimension::D2,
-                    arrayed: false,
+                    arrayed,
                     class:
                         naga::ImageClass::Sampled {
                             kind: ScalarKind::Float,
                             multi: false,
                         },
                 },
-            ) => (BINDING_SAMPLED_TEXTURE, 0),
+            ) => (
+                layered(*arrayed, BINDING_SAMPLED_TEXTURE, BINDING_TEXTURE_ARRAY),
+                0,
+            ),
             (
                 AddressSpace::Handle,
                 TypeInner::Image {
@@ -382,11 +391,7 @@ fn module_bindings(
                         },
                 },
             ) => (
-                if *arrayed {
-                    BINDING_CUBE_TEXTURE_ARRAY
-                } else {
-                    BINDING_CUBE_TEXTURE
-                },
+                layered(*arrayed, BINDING_CUBE_TEXTURE, BINDING_CUBE_TEXTURE_ARRAY),
                 0,
             ),
             (
@@ -397,11 +402,7 @@ fn module_bindings(
                     class: naga::ImageClass::Depth { multi: false },
                 },
             ) => (
-                if *arrayed {
-                    BINDING_DEPTH_TEXTURE_ARRAY
-                } else {
-                    BINDING_DEPTH_TEXTURE
-                },
+                layered(*arrayed, BINDING_DEPTH_TEXTURE, BINDING_DEPTH_TEXTURE_ARRAY),
                 0,
             ),
             (
@@ -1069,6 +1070,58 @@ mod tests {
         )
         .expect("cube array sampling emits MSL");
         assert!(msl.contains("texturecube_array<float"));
+    }
+
+    #[test]
+    fn texture_array_records_its_own_kind_and_metal_texture_slot() {
+        let source = "
+            @group(0) @binding(7) var ground: texture_2d_array<f32>;
+            @group(0) @binding(3) var ground_sampler: sampler;
+            @fragment fn ground_fragment() -> @location(0) vec4<f32> {
+                let layers = f32(textureNumLayers(ground));
+                return textureSample(ground, ground_sampler, vec2<f32>(0.5, 0.5), 2) * layers;
+            }
+        ";
+        let module = naga::front::wgsl::parse_str(source).expect("2D array WGSL parses");
+        // 2D arrays are core WGSL: no capability beyond the empty set.
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module)
+            .expect("2D array WGSL validates without capabilities");
+        let interface = shader_interface(&module, &info).expect("2D array interface");
+        // The sampler at 3 (kind 2), then the array at 7 (kind 10), each with a zero byte size.
+        let records = &interface[interface.len() - 26..];
+        assert_eq!(records[4..8], 3_u32.to_le_bytes());
+        assert_eq!(records[8], super::BINDING_SAMPLER);
+        assert_eq!(records[17..21], 7_u32.to_le_bytes());
+        assert_eq!(records[21], super::BINDING_TEXTURE_ARRAY);
+        let resources = metal_resources(&module).expect("Metal mapping");
+        assert!(
+            resources
+                .values()
+                .any(|target| target.texture == Some(7) && target.sampler.is_none())
+        );
+        let words = naga::back::spv::write_vec(
+            &module,
+            &info,
+            &naga::back::spv::Options {
+                lang_version: (1, 4),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("2D array sampling emits SPIR-V");
+        assert_eq!(words.first().copied(), Some(0x0723_0203));
+        let (msl, _) = naga::back::msl::write_string(
+            &module,
+            &info,
+            &naga::back::msl::Options {
+                lang_version: (3, 1),
+                ..Default::default()
+            },
+            &naga::back::msl::PipelineOptions::default(),
+        )
+        .expect("2D array sampling emits MSL");
+        assert!(msl.contains("texture2d_array<float"));
     }
 
     #[test]

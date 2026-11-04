@@ -83,6 +83,24 @@ not baked at all: the game binds a 1×1 texture of `normal_roughness_texel()` or
 `find_materials(dir)` lists every albedo image under a directory, which is every image whose stem
 does not end in a map suffix.
 
+## Texture arrays
+
+`ArrayRecipe::new(layers, output)` takes several recipes of one `Chain` and bakes them as the layers
+of one 2D texture array in one `.ktx2`, for a shader to sample them all through one
+`MaterialBinding::TextureArray` slot (a terrain's ground materials, say). `bake_array(&array, mode)`
+builds each layer's chain, refuses layers of different extents, encodes every level as BC7 and
+writes the file with a digest over every layer's sources. `ArrayRecipe::prepare` reads the bake
+while it is current and otherwise builds every layer's whole chain from its sources in RGBA8 on the
+CPU, since the GPU does not generate an array's mips; `PreparedArray::upload` uploads either. The
+bake's `MulciberMean` holds four numbers per layer and `MulciberMinAlpha` one per layer, read back
+as `PreparedArray`'s `stats`, one per layer. `ktx2_array_bytes` and `write_ktx2_array` write a chain
+per layer the game encoded itself. See [2D texture arrays](../../docs/texture-arrays.md).
+
+```rust
+let ground = ArrayRecipe::new(vec![grass, dirt, rock], "assets/ground.ktx2")?;
+let texture = ground.prepare()?.upload(&device)?;
+```
+
 ## Light
 
 Light the game bakes itself (a sky, a lightmap, a reflection probe) is linear RGB in floats above

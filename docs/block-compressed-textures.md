@@ -6,7 +6,8 @@ encoded BC1, BC2, BC3, BC5, BC6H or BC7 image and returns the existing owning `T
 through the existing material texture/sampler bindings and WGSL `texture_2d<f32>` in either stage,
 exactly as an RGBA8 upload does; nothing in a shader changes when a texture moves from RGBA8 to
 BC7. The same data uploads a cube with `TextureShape::Cube` (see [cube textures](cube-textures.md));
-a cube array takes `RGBA16Float` or BC6H.
+a cube array takes `RGBA16Float` or BC6H. A 2D texture array (`TextureShape::D2Array`) takes it
+too, from the game's own layers or one KTX 2.0 array file (see [2D texture arrays](texture-arrays.md)).
 
 ## What Mulciber does and does not do
 
@@ -71,8 +72,10 @@ refuses the rest by name:
 - `InvalidRequest`: not KTX 2.0, truncated, a level whose byte count is not its extent in blocks, a
   level count that is neither one nor the complete chain to 1×1 (0, "generate mips", included), or
   a level whose uncompressed length differs from its stored one.
-- `Unsupported`: a `VkFormat` outside `BlockCompression`'s ten, 1D, 3D, array and cube textures,
-  and any supercompression (Basis, Zstandard, zlib).
+- `Unsupported`: a `VkFormat` outside `BlockCompression`'s ten, 1D, 3D and cube textures, and any
+  supercompression (Basis, Zstandard, zlib). A file with layers is a 2D texture array (graphics
+  0.19.0): `layer_count()`, `image(layer, level)`, and a `descriptor()` of
+  `TextureShape::D2Array`.
 
 `width()`, `height()`, `compression()`, `level_count()`, `level(n)` and `levels()` describe what was
 parsed; `value(key)` and `key_values()` read the key/value data, values without their trailing NUL.

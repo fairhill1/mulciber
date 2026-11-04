@@ -155,8 +155,9 @@ For commands, prerequisites, measured results, and coverage limits, see the
 - [Materials](docs/material-contract.md), [HDR and bloom](docs/hdr-bloom-contract.md),
   [volumetrics](docs/volumetric-contract.md), and [scene depth](docs/scene-depth-contract.md)
 - [Floating-point textures and queue-ordered updates](docs/float-texture-uploads.md),
-  [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md), and
-  [cube textures and cube texture arrays](docs/cube-textures.md)
+  [block-compressed textures and KTX 2.0](docs/block-compressed-textures.md),
+  [cube textures and cube texture arrays](docs/cube-textures.md), and
+  [2D texture arrays](docs/texture-arrays.md)
 - [Frame pacing](docs/frame-pacing-controls.md) and
   [swapchain synchronization](docs/swapchain-synchronization.md)
 - [Packed vertex formats](docs/vertex-formats.md),

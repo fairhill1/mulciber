@@ -117,3 +117,12 @@ container = "MULSHDR3"
 wgsl_sha256 = "752f699b40b05d8c7856ec018731805b1c4cd32e4c8bfa465330baaeb889b6e4"
 vulkan_artifact_sha256 = "6f54b19db7eeafded2098c9d99c2fd15130316a7a758aad055af0f8b72f6f318"
 # The Metal artifact is not generated yet; see docs/per-entry-point-bindings.md.
+
+[texture_array_sample_shader]
+compiler = "naga 30.0.1"
+target_environment = "vulkan1.3"
+# Validated with the locally installed SPIRV-Tools v2026.4; regenerate under the pin when available.
+spirv_validator = "SPIRV-Tools v2026.4"
+wgsl_sha256 = "05c623a0c5425f4ed720b36c22d07b55bcf29b0931edbe2109d71c01e914f12a"
+vulkan_artifact_sha256 = "ba066aa48780b52e416001593ec64552291fcb8584bf552502f556b1382faffa"
+# The Metal artifact is not generated yet; see docs/texture-arrays.md.

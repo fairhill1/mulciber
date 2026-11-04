@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use intel_tex_2::{RgbaSurface, bc6h, bc7};
 
 use crate::TextureError;
+use crate::array::{ArrayRecipe, array_stat_entries};
 use crate::chain::{Levels, mip_extent};
-use crate::container::{SOURCE_DIGEST_KEY, refuse_misread_chain, write_ktx2};
+use crate::container::{SOURCE_DIGEST_KEY, refuse_misread_chain, write_ktx2, write_ktx2_array};
 use crate::hdr::unsigned_halves;
 use crate::material::{MaterialDefaults, MaterialMaps, find_materials, is_albedo};
 use crate::recipe::{Recipe, Stats};
@@ -179,6 +180,47 @@ pub fn bake(recipe: &Recipe, mode: BakeMode) -> Result<Baked, TextureError> {
         levels.width,
         levels.height,
         &blocks,
+        &entries,
+    )?;
+    Ok(Baked::Built)
+}
+
+/// Bakes `array` to its output as one KTX 2.0 2D texture array, every layer's chain encoded as
+/// [`bake`] encodes a texture's, unless `mode` is [`BakeMode::IfStale`] and the bake there is
+/// already current.
+///
+/// # Errors
+///
+/// When a source cannot be read or decoded, the layers differ in size, or the bake cannot be
+/// written, naming the file.
+pub fn bake_array(array: &ArrayRecipe, mode: BakeMode) -> Result<Baked, TextureError> {
+    if mode == BakeMode::IfStale && array.is_current()? {
+        return Ok(Baked::Current);
+    }
+    let digest = array.digest()?;
+    let built = array.build()?;
+    let (width, height) = (built[0].width, built[0].height);
+    refuse_misread_chain(width, height).map_err(|error| error.at(array.output()))?;
+    let srgb = array.chain().is_srgb();
+    let stats: Vec<Stats> = built
+        .iter()
+        .map(|l| Stats::of(&l.levels[0], srgb))
+        .collect();
+    let layers: Vec<Vec<Vec<u8>>> = built.iter().map(encode_bc7).collect();
+    let digest = format!("{digest:016x}");
+    let stat_entries = array_stat_entries(&stats);
+    let mut entries = vec![(SOURCE_DIGEST_KEY, digest.as_str())];
+    entries.extend(
+        stat_entries
+            .iter()
+            .map(|(key, value)| (*key, value.as_str())),
+    );
+    write_ktx2_array(
+        array.output(),
+        array.chain().compression(),
+        width,
+        height,
+        &layers,
         &entries,
     )?;
     Ok(Baked::Built)

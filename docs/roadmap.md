@@ -656,6 +656,18 @@ device-loss cause.
   lacks it.
 - [ ] Other formats (RGBA8, BC1-BC7) and single-level arrays wait for a consumer.
 
+## 2D texture arrays (graphics 0.19.0, shader 0.5.9, texture 0.7.0)
+
+- [x] 2D texture arrays in every sampled format, single-level or with a supplied chain per layer,
+  bound through `MaterialBinding::TextureArray` and WGSL `texture_2d_array<f32>`, read from KTX 2.0
+  array files and baked by `mulciber-texture`'s `ArrayRecipe` ([contract](texture-arrays.md)).
+  `mulciber-texture-array` passed 46 sampled cases and its refusals under Vulkan validation on an
+  NVIDIA RTX 3060 Ti on Linux.
+- [ ] Generate the probe's Metal artifact and run it under API Validation on the Apple M2 tier; the
+  Metal path is type- and lint-checked only.
+- [ ] Run it on Windows, and reach the layer-limit refusal on some device.
+- [ ] Generated mips for arrays wait for a consumer.
+
 ## BC6H light (graphics 0.18.0, texture 0.6.0)
 
 - [x] `BlockCompression::Bc6hUfloat` for 2D textures, cubes and cube arrays, through KTX 2.0 as

@@ -2,6 +2,15 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## BC5 on Metal (graphics 0.22.1)
+
+A `Bc5Unorm` texture no longer aborts on Metal: the backend gave it pixel format 144, a number
+Metal doesn't have, where `MTLPixelFormatBC5_RGUnorm` is 142, so Metal's validation failed the
+assertion `pixelFormat (144) is not a valid MTLPixelFormat` when the texture was made. It had been
+wrong since BC5 uploads arrived (0.13.15), unnoticed until texture 0.12.0 baked normals as BC5 and
+a game loaded them on a Mac. New test: every pixel format the Metal backend uses has the value in
+the macOS SDK's `MTLPixelFormat.h`.
+
 ## BC5 normals, roughness in the surface texture (texture 0.12.0)
 
 A material's normal now has a texture of its own, baked as BC5, and its roughness moves to the blue

@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ktx2",
  "mulciber-platform",

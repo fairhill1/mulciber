@@ -37,7 +37,7 @@ const PIXEL_FORMAT_BC2_RGBA: usize = 132;
 const PIXEL_FORMAT_BC2_RGBA_SRGB: usize = 133;
 const PIXEL_FORMAT_BC3_RGBA: usize = 134;
 const PIXEL_FORMAT_BC3_RGBA_SRGB: usize = 135;
-const PIXEL_FORMAT_BC5_RG_UNORM: usize = 144;
+const PIXEL_FORMAT_BC5_RG_UNORM: usize = 142;
 const PIXEL_FORMAT_BC6H_RGB_UFLOAT: usize = 151;
 const PIXEL_FORMAT_BC7_RGBA_UNORM: usize = 152;
 const PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB: usize = 153;
@@ -4036,5 +4036,85 @@ mod tests {
         assert_eq!(packed.len(), 80);
         assert!(parts.iter().all(|part| part.index_offset % 4 == 0));
         assert!(parts.iter().all(|part| part.indirect_offset % 4 == 0));
+    }
+
+    /// Every pixel format the backend hands Metal has the value Apple's SDK gives it. Metal takes
+    /// any number, so a wrong one only shows when a texture of that format is first made, as
+    /// BC5's 144 for 142 did.
+    #[test]
+    fn pixel_formats_match_the_sdk() {
+        let sdk = std::process::Command::new("xcrun")
+            .arg("--show-sdk-path")
+            .output()
+            .expect("xcrun finds the macOS SDK");
+        let header = std::path::Path::new(std::str::from_utf8(&sdk.stdout).unwrap().trim())
+            .join("System/Library/Frameworks/Metal.framework/Headers/MTLPixelFormat.h");
+        let header = std::fs::read_to_string(&header)
+            .unwrap_or_else(|error| panic!("{}: {error}", header.display()));
+        let sdk_value = |name: &str| -> usize {
+            let line = header
+                .lines()
+                .find(|line| line.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("{name} is not in MTLPixelFormat.h"));
+            let value = line.rsplit('=').next().unwrap();
+            value.trim().trim_end_matches(',').parse().unwrap()
+        };
+        for (ours, name) in [
+            (
+                super::PIXEL_FORMAT_RGBA16_FLOAT,
+                "MTLPixelFormatRGBA16Float",
+            ),
+            (super::PIXEL_FORMAT_BC1_RGBA, "MTLPixelFormatBC1_RGBA"),
+            (
+                super::PIXEL_FORMAT_BC1_RGBA_SRGB,
+                "MTLPixelFormatBC1_RGBA_sRGB",
+            ),
+            (super::PIXEL_FORMAT_BC2_RGBA, "MTLPixelFormatBC2_RGBA"),
+            (
+                super::PIXEL_FORMAT_BC2_RGBA_SRGB,
+                "MTLPixelFormatBC2_RGBA_sRGB",
+            ),
+            (super::PIXEL_FORMAT_BC3_RGBA, "MTLPixelFormatBC3_RGBA"),
+            (
+                super::PIXEL_FORMAT_BC3_RGBA_SRGB,
+                "MTLPixelFormatBC3_RGBA_sRGB",
+            ),
+            (
+                super::PIXEL_FORMAT_BC5_RG_UNORM,
+                "MTLPixelFormatBC5_RGUnorm",
+            ),
+            (
+                super::PIXEL_FORMAT_BC6H_RGB_UFLOAT,
+                "MTLPixelFormatBC6H_RGBUfloat",
+            ),
+            (
+                super::PIXEL_FORMAT_BC7_RGBA_UNORM,
+                "MTLPixelFormatBC7_RGBAUnorm",
+            ),
+            (
+                super::PIXEL_FORMAT_BC7_RGBA_UNORM_SRGB,
+                "MTLPixelFormatBC7_RGBAUnorm_sRGB",
+            ),
+            (
+                super::PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+                "MTLPixelFormatBGRA8Unorm_sRGB",
+            ),
+            (
+                super::super::PIXEL_FORMAT_BGRA8_UNORM_SRGB,
+                "MTLPixelFormatBGRA8Unorm_sRGB",
+            ),
+            (super::PIXEL_FORMAT_RGBA8_UNORM, "MTLPixelFormatRGBA8Unorm"),
+            (
+                super::PIXEL_FORMAT_RGBA8_UNORM_SRGB,
+                "MTLPixelFormatRGBA8Unorm_sRGB",
+            ),
+            (
+                super::PIXEL_FORMAT_DEPTH32_FLOAT,
+                "MTLPixelFormatDepth32Float",
+            ),
+            (super::PIXEL_FORMAT_INVALID, "MTLPixelFormatInvalid"),
+        ] {
+            assert_eq!(ours, sdk_value(name), "{name}");
+        }
     }
 }

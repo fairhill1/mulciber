@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use mulciber::{BlockCompression, Ktx2Texture};
 use mulciber_texture::{
     BakeMode, Baked, Chain, Channel, Fallback, MaterialDefaults, MaterialMaps, Origin, Pixels,
-    Recipe, SOURCE_DIGEST_KEY, bake, bake_materials, encode_bc7, find_materials, mip_extent, run,
+    Recipe, SOURCE_DIGEST_KEY, bake, bake_materials, encode_bc5, encode_bc7, find_materials,
+    mip_extent, run,
 };
 
 /// A fresh directory under the system temp dir, removed when dropped.
@@ -79,6 +80,28 @@ fn decode_bc7(blocks: &[u8], width: u32, height: u32) -> Vec<u8> {
     texels
 }
 
+/// BC5 blocks decoded to tight red-green pairs.
+fn decode_bc5(blocks: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let (bw, bh) = (width.div_ceil(4) as usize, height.div_ceil(4) as usize);
+    let mut texels = vec![0_u8; width as usize * height as usize * 2];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let mut block = [0_u8; 32];
+            bcdec_rs::bc5(&blocks[(by * bw + bx) * 16..][..16], &mut block, 8, false);
+            for y in 0..4 {
+                for x in 0..4 {
+                    let (tx, ty) = (bx * 4 + x, by * 4 + y);
+                    if tx < width as usize && ty < height as usize {
+                        let at = (ty * width as usize + tx) * 2;
+                        texels[at..at + 2].copy_from_slice(&block[(y * 4 + x) * 2..][..2]);
+                    }
+                }
+            }
+        }
+    }
+    texels
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn psnr(a: &[u8], b: &[u8]) -> f64 {
     let mse = a
@@ -106,6 +129,7 @@ fn channels_pack_from_images_and_constants() {
             Channel::Grey(rough.clone()),
         ],
         chain: Chain::Normal,
+        normals: None,
         output: scratch.path("n.ktx2"),
     };
     assert_eq!(recipe.sources(), vec![normal.as_path(), rough.as_path()]);
@@ -121,6 +145,7 @@ fn channels_pack_from_images_and_constants() {
             Channel::Constant(255),
         ],
         chain: Chain::Linear,
+        normals: None,
         output: scratch.path("m.ktx2"),
     };
     assert_eq!(
@@ -191,6 +216,105 @@ fn bc7_keeps_a_smooth_image_and_pads_partial_blocks() {
         let quality = psnr(&decoded, texels);
         assert!(quality > 35.0, "level {level} ({w}x{h}): {quality:.1} dB");
     }
+}
+
+#[test]
+fn bc5_keeps_red_and_green_and_pads_partial_blocks() {
+    // 6x5 is not a whole number of blocks, at the base or below it.
+    let base: Vec<u8> = (0..5_u8)
+        .flat_map(|y| (0..6_u8).map(move |x| (x, y)))
+        .flat_map(|(x, y)| [40 + x * 30, 60 + y * 25, 255, 255])
+        .collect();
+    let levels = Chain::TangentNormal.build(6, 5, base);
+    let blocks = encode_bc5(&levels);
+    assert_eq!(blocks.len(), levels.levels.len());
+    for (level, (encoded, texels)) in (0_u32..).zip(blocks.iter().zip(&levels.levels)) {
+        let (width, height) = (mip_extent(6, level), mip_extent(5, level));
+        assert_eq!(
+            encoded.len(),
+            width.div_ceil(4) as usize * height.div_ceil(4) as usize * 16
+        );
+        let decoded = decode_bc5(encoded, width, height);
+        let wanted: Vec<u8> = texels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|texel| [texel[0], texel[1]])
+            .collect();
+        assert!(
+            psnr(&decoded, &wanted) > 40.0,
+            "level {level}: {}",
+            psnr(&decoded, &wanted)
+        );
+    }
+}
+
+#[test]
+fn a_material_bakes_its_normal_as_bc5_and_its_widened_roughness_as_bc7() {
+    let scratch = Scratch::new("surface");
+    let albedo = scratch.path("tile.png");
+    save_rgba(&albedo, 8, 8, gradient);
+    let bumps = |x: u32, _: u32| {
+        if x.is_multiple_of(2) {
+            [200, 128, 200, 255]
+        } else {
+            [55, 128, 200, 255]
+        }
+    };
+    let normal_map = scratch.path("tile_normal.png");
+    save_rgba(&normal_map, 8, 8, bumps);
+    save_grey(&scratch.path("tile_rough.png"), 8, 8, |_, _| 60);
+    let maps = MaterialMaps::beside(&albedo, &MaterialDefaults::default());
+    let (normal, surface) = (maps.normal.unwrap(), maps.surface.unwrap());
+
+    assert_eq!(surface.normals.as_deref(), Some(normal_map.as_path()));
+    let levels = surface.build().unwrap();
+    assert_eq!(
+        levels.levels[0][2], 60,
+        "the base's roughness is as authored"
+    );
+    assert!(levels.levels[1][2] > 100, "{}", levels.levels[1][2]);
+
+    assert_eq!(bake(&normal, BakeMode::IfStale).unwrap(), Baked::Built);
+    assert_eq!(bake(&surface, BakeMode::IfStale).unwrap(), Baked::Built);
+    let compression = |recipe: &Recipe| {
+        let prepared = recipe.prepare().unwrap();
+        assert_eq!(prepared.origin, Origin::Bake);
+        let Pixels::Ktx2(bytes) = &prepared.pixels else {
+            panic!("{:?}", prepared.origin)
+        };
+        Ktx2Texture::parse(bytes).unwrap().compression()
+    };
+    assert_eq!(compression(&normal), BlockCompression::Bc5Unorm);
+    assert_eq!(compression(&surface), BlockCompression::Bc7Unorm);
+
+    // The normal map is a source of the surface though no channel reads it: changing it stales
+    // the bake, and the fallback is a full chain of the same layout.
+    assert!(surface.is_current().unwrap());
+    save_rgba(&normal_map, 8, 8, |_, _| [128, 128, 255, 255]);
+    assert!(!surface.is_current().unwrap());
+    let fallback = surface.prepare().unwrap();
+    assert_eq!(fallback.origin, Origin::Sources(Fallback::Stale));
+    let Pixels::Rgba8 { levels, .. } = &fallback.pixels else {
+        panic!("{:?}", fallback.origin)
+    };
+    assert_eq!(levels[1][2], 60);
+}
+
+#[test]
+fn a_bake_beside_a_material_with_sources_is_not_read_as_shipped() {
+    let scratch = Scratch::new("orphan");
+    let albedo = scratch.path("wall.png");
+    save_rgba(&albedo, 4, 4, gradient);
+    save_grey(&scratch.path("wall_rough.png"), 4, 4, |_, _| 90);
+    // A bake left by an older layout, whose map is gone: the material has no normal any more.
+    std::fs::write(scratch.path("wall_normal.ktx2"), b"stale").unwrap();
+    let maps = MaterialMaps::beside(&albedo, &MaterialDefaults::default());
+    assert!(maps.normal.is_none());
+    assert_eq!(
+        &maps.surface.unwrap().build().unwrap().levels[0][..4],
+        &[0, 255, 90, 255]
+    );
 }
 
 #[test]
@@ -276,18 +400,18 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
     );
     let defaults = MaterialDefaults::default();
     let maps = MaterialMaps::beside(&carpet, &defaults);
-    let normal = maps.normal_roughness.as_ref().unwrap();
+    let normal = maps.normal.as_ref().unwrap();
     assert_eq!(normal.output, dir.join("carpet_normal.ktx2"));
-    let metal = maps.metallic_occlusion.as_ref().unwrap();
+    let metal = maps.surface.as_ref().unwrap();
     assert_eq!(metal.output, dir.join("carpet_metal.ktx2"));
     assert_eq!(metal.channels[0], Channel::Constant(0), "no metal map");
-    assert_eq!(&metal.build().unwrap().levels[0][..4], &[0, 200, 0, 255]);
+    assert_eq!(&metal.build().unwrap().levels[0][..4], &[0, 200, 230, 255]);
     assert_eq!(
         &normal.build().unwrap().levels[0][..4],
-        &[128, 128, 255, 230]
+        &[128, 128, 255, 255]
     );
     let bare = MaterialMaps::beside(&plain, &defaults);
-    assert!(bare.normal_roughness.is_none() && bare.metallic_occlusion.is_none());
+    assert!(bare.normal.is_none() && bare.surface.is_none());
 
     let baked = bake_materials(
         std::slice::from_ref(&scratch.0),
@@ -346,7 +470,7 @@ fn a_material_finds_its_maps_by_suffix_and_bakes_only_what_exists() {
     }
     assert_eq!(shipped.recipes().count(), 3);
     let bare = MaterialMaps::beside(&plain, &defaults);
-    assert!(bare.normal_roughness.is_none() && bare.metallic_occlusion.is_none());
+    assert!(bare.normal.is_none() && bare.surface.is_none());
     assert_eq!(bare.albedo.prepare().unwrap().origin, Origin::Bake);
 }
 
@@ -360,7 +484,7 @@ fn a_failed_texture_is_reported_beside_the_others_baked() {
     save_rgba(&dir.join("brick_normal.png"), 8, 8, |_, _| {
         [128, 128, 255, 255]
     });
-    // A roughness map that is not an image fails the normal + roughness bake alone.
+    // A roughness map that is not an image fails the surface's bake alone.
     std::fs::write(dir.join("brick_rough.png"), b"not a png").unwrap();
     save_grey(&dir.join("brick_ao.png"), 8, 8, |_, _| 200);
     save_rgba(&dir.join("plaster.png"), 4, 4, gradient);
@@ -378,7 +502,7 @@ fn a_failed_texture_is_reported_beside_the_others_baked() {
         ]
     );
     for (path, result) in &results {
-        if path.ends_with("brick_normal.ktx2") {
+        if path.ends_with("brick_metal.ktx2") {
             let error = result.as_ref().unwrap_err().to_string();
             assert!(error.contains("brick_rough.png"), "{error}");
             assert!(!path.exists());
@@ -414,5 +538,5 @@ fn a_failed_texture_is_reported_beside_the_others_baked() {
     // Once the map is fixed, `--force` rebakes everything.
     save_grey(&dir.join("brick_rough.png"), 8, 8, |_, _| 230);
     run([args[0].clone(), args[1].clone(), "--force".to_owned()]).unwrap();
-    assert!(dir.join("brick_normal.ktx2").exists());
+    assert!(dir.join("brick_metal.ktx2").exists());
 }

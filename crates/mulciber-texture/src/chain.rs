@@ -61,6 +61,19 @@ pub enum Chain {
     /// Four independent linear channels, each box filtered: masks and scalar maps such as
     /// metallic and ambient occlusion. Uploaded and sampled as stored.
     Linear,
+    /// A tangent-space normal alone, baked as BC5: each level the mean of the base normals under
+    /// it, renormalised, the base normalised too, because BC5 keeps only X and Y and the shader
+    /// rebuilds Z as `sqrt(1 - x² - y²)`. Built from sources it uploads as RGBA8 with Z in blue;
+    /// a shader reads red and green alone, so a bake and its fallback read the same.
+    TangentNormal,
+    /// A physically based surface's scalars: R = metallic, G = ambient occlusion, B = perceptual
+    /// roughness, A kept. Red, green and alpha are box filtered. Blue is
+    /// [`Chain::NormalRoughness`]'s roughness, its mean α² widened by how much the base normals
+    /// under each texel disagree: bumps too fine for a level to show turn into the rougher
+    /// surface they look like from afar. The normals are the recipe's
+    /// [`normals`](crate::Recipe::normals), given to [`Chain::build_widened`]; [`Chain::build`]
+    /// takes them as flat, widening nothing. Uploaded and sampled as stored.
+    Surface,
 }
 
 impl Chain {
@@ -70,10 +83,13 @@ impl Chain {
         matches!(self, Self::Color | Self::ColorFlatDistant | Self::Cutout)
     }
 
-    /// The block compression a bake of this chain is encoded as: BC7, sRGB or not.
+    /// The block compression a bake of this chain is encoded as: BC5 for
+    /// [`Chain::TangentNormal`], BC7 otherwise, sRGB or not.
     #[must_use]
     pub const fn compression(self) -> BlockCompression {
-        if self.is_srgb() {
+        if matches!(self, Self::TangentNormal) {
+            BlockCompression::Bc5Unorm
+        } else if self.is_srgb() {
             BlockCompression::Bc7Srgb
         } else {
             BlockCompression::Bc7Unorm
@@ -89,6 +105,8 @@ impl Chain {
             Self::Normal => 3,
             Self::Linear => 4,
             Self::NormalRoughness => 5,
+            Self::TangentNormal => 6,
+            Self::Surface => 7,
         }
     }
 
@@ -99,12 +117,36 @@ impl Chain {
     /// If the base is empty or its byte count is not `width × height × 4`.
     #[must_use]
     pub fn build(self, width: u32, height: u32, base: Vec<u8>) -> Levels {
+        self.build_widened(width, height, base, None)
+    }
+
+    /// [`build`](Self::build), with the tightly packed RGBA8 tangent-space normals of the same
+    /// extent that widen a [`Chain::Surface`]'s roughness. Other chains ignore them.
+    ///
+    /// # Panics
+    ///
+    /// If the base is empty, or it or the normals are not `width × height × 4` bytes.
+    #[must_use]
+    pub fn build_widened(
+        self,
+        width: u32,
+        height: u32,
+        base: Vec<u8>,
+        normals: Option<&[u8]>,
+    ) -> Levels {
         assert!(width > 0 && height > 0, "a texture needs texels");
         assert_eq!(
             base.len(),
             width as usize * height as usize * 4,
             "the base level is not {width}x{height} RGBA8"
         );
+        if let Some(normals) = normals {
+            assert_eq!(
+                normals.len(),
+                base.len(),
+                "the normals are not {width}x{height} RGBA8"
+            );
+        }
         let levels = match self {
             Self::Color => chain(width, height, base, color_texel),
             Self::ColorFlatDistant => flatten_distant_mips(chain(width, height, base, color_texel)),
@@ -122,6 +164,8 @@ impl Chain {
             Self::Normal => chain(width, height, base, normal_texel),
             Self::NormalRoughness => normal_roughness_chain(width, height, base),
             Self::Linear => chain(width, height, base, linear_texel),
+            Self::TangentNormal => tangent_normal_chain(width, height, &base),
+            Self::Surface => surface_chain(width, height, base, normals),
         };
         Levels {
             width,
@@ -249,22 +293,15 @@ fn normal_texel(footprint: &[[u8; 4]; 4]) -> [u8; 4] {
     ]
 }
 
-/// [`Chain::NormalRoughness`]'s levels. Each is reduced from the one before in floats, so a
-/// texel's mean normal is the mean of every base normal under it and keeps the shortening a
-/// renormalised level would lose.
-fn normal_roughness_chain(width: u32, height: u32, base: Vec<u8>) -> Vec<Vec<u8>> {
-    // Per texel: the mean unit normal, then the mean α².
-    let mut moments: Vec<[f32; 4]> = base
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|&texel| {
-            let [x, y, z] = normalize_or_z(decode_normal(texel));
-            let perceptual = f32::from(texel[3]) / 255.0;
-            [x, y, z, perceptual.powi(4)]
-        })
-        .collect();
-    let mut levels = vec![base];
+/// Reduces per-texel moments level by level in floats, calling `each` with every level below the
+/// base, so a texel's mean normal is the mean of every base normal under it and keeps the
+/// shortening a renormalised level would lose.
+fn reduce_moments(
+    width: u32,
+    height: u32,
+    mut moments: Vec<[f32; 4]>,
+    mut each: impl FnMut(&[[f32; 4]]),
+) {
     let (mut w, mut h) = (width as usize, height as usize);
     while w > 1 || h > 1 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
@@ -287,28 +324,100 @@ fn normal_roughness_chain(width: u32, height: u32, base: Vec<u8>) -> Vec<Vec<u8>
                 next.push(mean);
             }
         }
-        levels.push(
-            next.iter()
-                .flat_map(|&moment| normal_roughness_texel(moment))
-                .collect(),
-        );
+        each(&next);
         moments = next;
         (w, h) = (nw, nh);
     }
+}
+
+/// A texel's moments: its unit normal, then its α² from `perceptual` roughness (0..=255).
+fn moment(normal: [u8; 4], perceptual: u8) -> [f32; 4] {
+    let [x, y, z] = normalize_or_z(decode_normal(normal));
+    [x, y, z, (f32::from(perceptual) / 255.0).powi(4)]
+}
+
+/// [`Chain::NormalRoughness`]'s levels.
+fn normal_roughness_chain(width: u32, height: u32, base: Vec<u8>) -> Vec<Vec<u8>> {
+    let moments = base
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&texel| moment(texel, texel[3]))
+        .collect();
+    let mut levels = vec![base];
+    reduce_moments(width, height, moments, |level| {
+        levels.push(
+            level
+                .iter()
+                .flat_map(|&moment| {
+                    let [x, y, z] = encode_normal(moment);
+                    [x, y, z, widened_roughness(moment)]
+                })
+                .collect(),
+        );
+    });
     levels
 }
 
-/// One [`Chain::NormalRoughness`] texel from its mean normal and mean α².
-fn normal_roughness_texel([x, y, z, alpha_squared]: [f32; 4]) -> [u8; 4] {
+/// [`Chain::TangentNormal`]'s levels. Alpha is opaque throughout.
+fn tangent_normal_chain(width: u32, height: u32, base: &[u8]) -> Vec<Vec<u8>> {
+    let moments: Vec<[f32; 4]> = base
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&texel| moment(texel, 0))
+        .collect();
+    let encoded = |level: &[[f32; 4]]| -> Vec<u8> {
+        level
+            .iter()
+            .flat_map(|&moment| {
+                let [x, y, z] = encode_normal(moment);
+                [x, y, z, 255]
+            })
+            .collect()
+    };
+    let mut levels = vec![encoded(&moments)];
+    reduce_moments(width, height, moments, |level| levels.push(encoded(level)));
+    levels
+}
+
+/// [`Chain::Surface`]'s levels: box filtered, then blue replaced below the base by the roughness
+/// widened by `normals`, flat when there are none.
+fn surface_chain(width: u32, height: u32, base: Vec<u8>, normals: Option<&[u8]>) -> Vec<Vec<u8>> {
+    const FLAT: [u8; 4] = [128, 128, 255, 255];
+    let texels = base.as_chunks::<4>().0;
+    let moments: Vec<[f32; 4]> = match normals {
+        Some(normals) => normals
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(texels)
+            .map(|(&normal, texel)| moment(normal, texel[2]))
+            .collect(),
+        None => texels.iter().map(|texel| moment(FLAT, texel[2])).collect(),
+    };
+    let mut levels = chain(width, height, base, linear_texel);
+    let mut below = levels.iter_mut().skip(1);
+    reduce_moments(width, height, moments, |level| {
+        let out = below.next().expect("both chains halve alike");
+        for (texel, &moment) in out.as_chunks_mut::<4>().0.iter_mut().zip(level) {
+            texel[2] = widened_roughness(moment);
+        }
+    });
+    levels
+}
+
+/// A mean normal's direction as RGB bytes.
+fn encode_normal([x, y, z, _]: [f32; 4]) -> [u8; 3] {
+    normalize_or_z([x, y, z]).map(|c| round_byte((c * 0.5 + 0.5) * 255.0))
+}
+
+/// The perceptual roughness of a texel's mean normal and mean α²: α² widened by the normal's
+/// spread.
+fn widened_roughness([x, y, z, alpha_squared]: [f32; 4]) -> u8 {
     let length = (x * x + y * y + z * z).sqrt();
-    let n = normalize_or_z([x, y, z]);
     let widened = (alpha_squared + normal_spread(length)).min(1.0);
-    [
-        round_byte((n[0] * 0.5 + 0.5) * 255.0),
-        round_byte((n[1] * 0.5 + 0.5) * 255.0),
-        round_byte((n[2] * 0.5 + 0.5) * 255.0),
-        round_byte(widened.sqrt().sqrt() * 255.0),
-    ]
+    round_byte(widened.sqrt().sqrt() * 255.0)
 }
 
 /// The α² that normals whose unit vectors average to `length` add: a von Mises–Fisher spread
@@ -489,6 +598,57 @@ mod tests {
             (i32::from(level_two) - i32::from(level_one)).abs() <= 2,
             "{level_one} {level_two}"
         );
+    }
+
+    #[test]
+    fn tangent_normals_stay_unit_and_opaque_for_z_to_be_rebuilt() {
+        // A long normal is shortened to unit length at the base, so x and y alone still say it.
+        let long = [255, 128, 255, 7];
+        let levels = Chain::TangentNormal.build(2, 2, [long, long, long, long].concat());
+        let base = decode_normal(levels.levels[0][..4].try_into().unwrap());
+        assert!(
+            (base[0] - base[2]).abs() < 0.02 && base[0] < 0.72,
+            "{base:?}"
+        );
+        assert_eq!(levels.levels[0][3], 255);
+        // Two opposed tilts average to straight up.
+        let (a, b) = ([200, 128, 200, 255], [55, 128, 200, 255]);
+        let top = Chain::TangentNormal.build(2, 2, [a, b, a, b].concat());
+        assert_eq!(top.levels[1], vec![128, 128, 255, 255]);
+    }
+
+    #[test]
+    fn a_surface_box_filters_all_but_its_widened_roughness() {
+        let (a, b) = ([200, 128, 200, 255], [55, 128, 200, 255]);
+        let bumpy = [a, b, a, b].concat();
+        let flat = [[128, 128, 255, 255]; 4].concat();
+        let base = [
+            [0, 200, 60, 255],
+            [100, 100, 60, 255],
+            [0, 200, 60, 255],
+            [100, 100, 60, 255],
+        ]
+        .concat();
+        let widened = Chain::Surface.build_widened(2, 2, base.clone(), Some(&bumpy));
+        assert_eq!(widened.levels[0], base, "the base is as authored");
+        let top = &widened.levels[1];
+        assert_eq!((top[0], top[1], top[3]), (50, 150, 255), "box filtered");
+        assert!(top[2] > 100, "disagreeing normals roughen it: {}", top[2]);
+        // The roughness of one chain is the other's, however it's packed.
+        let packed: Vec<u8> = bumpy
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|t| [t[0], t[1], t[2], 60])
+            .collect();
+        assert_eq!(
+            Chain::NormalRoughness.build(2, 2, packed).levels[1][3],
+            top[2]
+        );
+        // Flat normals widen nothing, and neither does building it with none.
+        let still = Chain::Surface.build_widened(2, 2, base.clone(), Some(&flat));
+        assert_eq!(still.levels[1][2], 60);
+        assert_eq!(Chain::Surface.build(2, 2, base).levels[1][2], 60);
     }
 
     #[test]

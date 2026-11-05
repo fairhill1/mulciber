@@ -1,7 +1,7 @@
 [package]
 name = "mulciber-texture"
-version = "0.11.0"
-description = "Texture baking for Mulciber games: mip chains, channel packing, BC7 and KTX2, with a source fallback, and SVG sheets rasterised at the size shown"
+version = "0.12.0"
+description = "Texture baking for Mulciber games: mip chains, channel packing, BC7, BC5 and KTX2, with a source fallback, and SVG sheets rasterised at the size shown"
 edition.workspace = true
 homepage = "https://github.com/fairhill1/mulciber"
 keywords = ["gamedev", "textures", "bc7", "ktx2", "mipmaps"]
@@ -14,7 +14,7 @@ publish = ["crates-io"]
 
 [features]
 default = ["encode"]
-# Intel's ISPC BC7 encoder, the `bake` functions and the `mulciber-texture` CLI. A game's runtime
+# Intel's ISPC BC7 and BC5 encoders, the `bake` functions and the `mulciber-texture` CLI. A game's runtime
 # only reads bakes and builds fallbacks, and leaves this off.
 encode = ["dep:intel_tex_2"]
 # SVG sheets of pictures drawn by id at the size shown (resvg), for a game's HUD.

@@ -2,15 +2,15 @@
 //!
 //! A [`Recipe`] names a texture's sources, how they pack into RGBA ([`Channel`]), the [`Chain`]
 //! its mips are filtered with, and the `.ktx2` its bake goes to. The `encode` feature (on by
-//! default) bakes it: the chain is built in RGBA8, every level is encoded as BC7 by Intel's ISPC
-//! encoder, and the levels are written as KTX 2.0 with the digest of the sources they came from.
+//! default) bakes it: the chain is built in RGBA8, every level is encoded as BC7, or BC5 for a
+//! normal alone, by Intel's ISPC encoder, and the levels are written as KTX 2.0 with the digest of the sources they came from.
 //! At run time [`Recipe::prepare`] reads the bake when it is current and otherwise builds the same
 //! chain from the sources in RGBA8, so a texture edited since its bake still shows, and
 //! [`Prepared::upload`] hands either to the device. A game's runtime depends on this crate with
 //! `default-features = false` and never links the encoder.
 //!
 //! [`MaterialMaps`] is a physically based material as three such textures found beside its
-//! albedo image by name: albedo, normal + roughness, metallic + occlusion.
+//! albedo image by name: albedo, normal, and a surface of metallic, occlusion and roughness.
 //!
 //! An [`ArrayRecipe`] is several recipes of one chain and extent baked as the layers of one 2D
 //! texture array (`bake_array` with `encode`), for a shader to sample them all through one
@@ -45,7 +45,9 @@ pub use container::{
     refuse_misread_chain, write_ktx2, write_ktx2_array,
 };
 #[cfg(feature = "encode")]
-pub use encode::{BakeMode, Baked, bake, bake_array, bake_materials, encode_bc6h, encode_bc7, run};
+pub use encode::{
+    BakeMode, Baked, bake, bake_array, bake_materials, encode_bc5, encode_bc6h, encode_bc7, run,
+};
 pub use hdr::{HDR_MAX, hdr_chain};
 pub use material::{
     IMAGE_EXTENSIONS, MAP_SUFFIXES, METALLIC_SUFFIX, MaterialDefaults, MaterialMaps, NORMAL_SUFFIX,

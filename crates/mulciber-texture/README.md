@@ -73,14 +73,14 @@ beside its albedo image by suffix:
 | Texture | Sources | Channels | Chain | Bake |
 | --- | --- | --- | --- | --- |
 | albedo | `name.png` | sRGB colour, A = opacity | `Color` | `name.ktx2` |
-| normal + roughness | `name_normal.png`, `name_rough.png` | tangent-space normal (OpenGL, green up), A = perceptual roughness | `NormalRoughness` | `name_normal.ktx2` |
-| metallic + occlusion | `name_metal.png`, `name_ao.png` | R = metallic, G = ambient occlusion, B = 0, A = 1 | `Linear` | `name_metal.ktx2` |
+| normal | `name_normal.png` | tangent-space normal (OpenGL, green up); a shader reads X and Y and rebuilds Z | `TangentNormal` | `name_normal.ktx2`, BC5 |
+| surface | `name_metal.png`, `name_ao.png`, `name_rough.png`, widened by `name_normal.png` | R = metallic, G = ambient occlusion, B = perceptual roughness, A = 1 | `Surface` | `name_metal.ktx2` |
 
-The normal + roughness packing is Isle of Rán's. Sources may be `.png`, `.jpg` or `.jpeg`; the
-roughness, metallic and occlusion maps are grey. A missing map is filled from `MaterialDefaults`
-(roughness 0.8, not metal, unoccluded, by default; a flat normal). A texture with none of its maps is
-not baked at all: the game binds a 1×1 texture of `normal_roughness_texel()` or
-`metallic_occlusion_texel()` instead, so a material that is only an albedo image costs nothing more.
+Sources may be `.png`, `.jpg` or `.jpeg`, all of one size; the roughness, metallic and occlusion
+maps are grey. A missing map is filled from `MaterialDefaults` (roughness 0.8, not metal, unoccluded,
+by default; a flat normal). A material with no normal map has no normal texture and one with none of
+the four maps no surface: the game binds a 1×1 texture of `normal_texel()` or `surface_texel()`
+instead, so a material that is only an albedo image costs nothing more.
 `find_materials(dir)` lists every albedo image under a directory, which is every image whose stem
 does not end in a map suffix.
 

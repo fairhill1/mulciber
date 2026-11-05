@@ -1,10 +1,12 @@
-//! BC7 encoding with Intel's ISPC texture compressor, and the bakes it writes.
+//! BC7 and BC5 encoding with Intel's ISPC texture compressor, and the bakes it writes.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use intel_tex_2::{RgbaSurface, bc6h, bc7};
+use intel_tex_2::{RgSurface, RgbaSurface, bc5, bc6h, bc7};
+use mulciber::BlockCompression;
 
 use crate::TextureError;
 use crate::array::{ArrayRecipe, array_stat_entries};
@@ -51,38 +53,71 @@ pub fn encode_bc7(levels: &Levels) -> Vec<Vec<u8>> {
     (0_u32..)
         .zip(&levels.levels)
         .map(|(level, texels)| {
-            let (width, height) = (
-                mip_extent(levels.width, level),
-                mip_extent(levels.height, level),
-            );
-            let (padded_width, padded_height) =
-                (width.next_multiple_of(4), height.next_multiple_of(4));
-            let padded;
-            let data = if (padded_width, padded_height) == (width, height) {
-                texels.as_slice()
-            } else {
-                let (w, pw) = (width as usize, padded_width as usize);
-                let mut rows = Vec::with_capacity(pw * padded_height as usize * 4);
-                for y in 0..padded_height as usize {
-                    let row = &texels[y.min(height as usize - 1) * w * 4..][..w * 4];
-                    for x in 0..pw {
-                        rows.extend_from_slice(&row[x.min(w - 1) * 4..][..4]);
-                    }
-                }
-                padded = rows;
-                padded.as_slice()
-            };
+            let (data, width, height) = whole_blocks(levels, level, texels);
             bc7::compress_blocks(
                 &settings,
                 &RgbaSurface {
-                    data,
-                    width: padded_width,
-                    height: padded_height,
-                    stride: padded_width * 4,
+                    data: &data,
+                    width,
+                    height,
+                    stride: width * 4,
                 },
             )
         })
         .collect()
+}
+
+/// Encodes the red and green of every level of an RGBA8 chain as BC5, each channel in a block of
+/// its own, padded as [`encode_bc7`] pads.
+#[must_use]
+pub fn encode_bc5(levels: &Levels) -> Vec<Vec<u8>> {
+    (0_u32..)
+        .zip(&levels.levels)
+        .map(|(level, texels)| {
+            let (data, width, height) = whole_blocks(levels, level, texels);
+            let rg: Vec<u8> = data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|texel| [texel[0], texel[1]])
+                .collect();
+            bc5::compress_blocks(&RgSurface {
+                data: &rg,
+                width,
+                height,
+                stride: width * 2,
+            })
+        })
+        .collect()
+}
+
+/// Encodes a chain as `compression`, the BC7 or BC5 a [`Chain`](crate::Chain) bakes to.
+fn encode(compression: BlockCompression, levels: &Levels) -> Vec<Vec<u8>> {
+    match compression {
+        BlockCompression::Bc5Unorm => encode_bc5(levels),
+        _ => encode_bc7(levels),
+    }
+}
+
+/// A level of a chain in whole 4×4 blocks: its texels, and its padded width and height.
+fn whole_blocks<'a>(levels: &Levels, level: u32, texels: &'a [u8]) -> (Cow<'a, [u8]>, u32, u32) {
+    let (width, height) = (
+        mip_extent(levels.width, level),
+        mip_extent(levels.height, level),
+    );
+    let (padded_width, padded_height) = (width.next_multiple_of(4), height.next_multiple_of(4));
+    if (padded_width, padded_height) == (width, height) {
+        return (Cow::Borrowed(texels), width, height);
+    }
+    let (w, pw) = (width as usize, padded_width as usize);
+    let mut rows = Vec::with_capacity(pw * padded_height as usize * 4);
+    for y in 0..padded_height as usize {
+        let row = &texels[y.min(height as usize - 1) * w * 4..][..w * 4];
+        for x in 0..pw {
+            rows.extend_from_slice(&row[x.min(w - 1) * 4..][..4]);
+        }
+    }
+    (Cow::Owned(rows), padded_width, padded_height)
 }
 
 /// Encodes one level of linear RGB light as BC6H unsigned half floats
@@ -165,7 +200,7 @@ pub fn bake(recipe: &Recipe, mode: BakeMode) -> Result<Baked, TextureError> {
     // Before the encoder's minutes, not after.
     refuse_misread_chain(levels.width, levels.height).map_err(|error| error.at(&recipe.output))?;
     let stats = Stats::of(&levels.levels[0], recipe.chain.is_srgb());
-    let blocks = encode_bc7(&levels);
+    let blocks = encode(recipe.chain.compression(), &levels);
     let digest = format!("{digest:016x}");
     let stat_entries = stats.entries();
     let mut entries = vec![(SOURCE_DIGEST_KEY, digest.as_str())];
@@ -206,7 +241,8 @@ pub fn bake_array(array: &ArrayRecipe, mode: BakeMode) -> Result<Baked, TextureE
         .iter()
         .map(|l| Stats::of(&l.levels[0], srgb))
         .collect();
-    let layers: Vec<Vec<Vec<u8>>> = built.iter().map(encode_bc7).collect();
+    let compression = array.chain().compression();
+    let layers: Vec<Vec<Vec<u8>>> = built.iter().map(|l| encode(compression, l)).collect();
     let digest = format!("{digest:016x}");
     let stat_entries = array_stat_entries(&stats);
     let mut entries = vec![(SOURCE_DIGEST_KEY, digest.as_str())];
@@ -217,7 +253,7 @@ pub fn bake_array(array: &ArrayRecipe, mode: BakeMode) -> Result<Baked, TextureE
     );
     write_ktx2_array(
         array.output(),
-        array.chain().compression(),
+        compression,
         width,
         height,
         &layers,

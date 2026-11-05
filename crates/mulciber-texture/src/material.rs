@@ -3,16 +3,18 @@
 //! | Texture | Channels | Chain | Bake |
 //! | --- | --- | --- | --- |
 //! | albedo | sRGB colour, alpha = opacity | [`Chain::Color`] | `name.ktx2`, BC7 sRGB |
-//! | normal + roughness | tangent-space normal (OpenGL: +Y up, green up), alpha = perceptual roughness | [`Chain::NormalRoughness`] | `name_normal.ktx2`, BC7 |
-//! | metallic + occlusion | R = metallic, G = ambient occlusion, B = 0, A = 1 | [`Chain::Linear`] | `name_metal.ktx2`, BC7 |
+//! | normal | tangent-space normal (OpenGL: +Y up, green up); a shader reads X and Y and rebuilds Z | [`Chain::TangentNormal`] | `name_normal.ktx2`, BC5 |
+//! | surface | R = metallic, G = ambient occlusion, B = perceptual roughness, A = 1 | [`Chain::Surface`] | `name_metal.ktx2`, BC7 |
 //!
-//! The normal + roughness packing is Isle of Rán's. The sources sit beside the albedo image
-//! (`name.png`): `name_normal`, `name_rough`, `name_metal` and `name_ao`, each `.png`, `.jpg` or
-//! `.jpeg`. The roughness, metallic and occlusion maps are grey. Any of the four may be missing and
-//! is filled from [`MaterialDefaults`]; a texture none of whose sources exist is not baked at all,
-//! and the game binds a 1×1 texture of the defaults ([`MaterialDefaults::normal_roughness_texel`],
-//! [`MaterialDefaults::metallic_occlusion_texel`]) in its place, unless its bake is there without
-//! them: a game shipped without its sources still has its maps, each read from its bake as it is.
+//! The normal has its block to itself, which BC5 spends on nothing else, and roughness rides in
+//! the surface's otherwise empty blue channel, its mips still widened by the normals
+//! ([`Recipe::normals`]). The sources sit beside the albedo image (`name.png`): `name_normal`,
+//! `name_rough`, `name_metal` and `name_ao`, each `.png`, `.jpg` or `.jpeg`, all of one size. The
+//! roughness, metallic and occlusion maps are grey. Any of the four may be missing and is filled
+//! from [`MaterialDefaults`]; a material with no normal map has no normal texture and one with
+//! none of the four no surface, and the game binds a 1×1 texture of the defaults
+//! ([`MaterialDefaults::normal_texel`], [`MaterialDefaults::surface_texel`]) in its place, unless
+//! a game shipped without its sources has the bake: then each map is read from its bake as it is.
 
 use std::path::{Path, PathBuf};
 
@@ -69,18 +71,22 @@ fn unit_byte(value: f32) -> u8 {
 const FLAT_NORMAL: [u8; 3] = [128, 128, 255];
 
 impl MaterialDefaults {
-    /// The normal + roughness texel of a material without either map: a flat normal and the
-    /// default roughness.
+    /// The normal texel of a material without a normal map: flat.
     #[must_use]
-    pub fn normal_roughness_texel(&self) -> [u8; 4] {
+    pub const fn normal_texel(&self) -> [u8; 4] {
         let [x, y, z] = FLAT_NORMAL;
-        [x, y, z, unit_byte(self.roughness)]
+        [x, y, z, 255]
     }
 
-    /// The metallic + occlusion texel of a material without either map.
+    /// The surface texel of a material with none of its maps: metallic, occlusion, roughness.
     #[must_use]
-    pub fn metallic_occlusion_texel(&self) -> [u8; 4] {
-        [unit_byte(self.metallic), unit_byte(self.occlusion), 0, 255]
+    pub fn surface_texel(&self) -> [u8; 4] {
+        [
+            unit_byte(self.metallic),
+            unit_byte(self.occlusion),
+            unit_byte(self.roughness),
+            255,
+        ]
     }
 }
 
@@ -89,10 +95,10 @@ impl MaterialDefaults {
 pub struct MaterialMaps {
     /// Albedo and opacity.
     pub albedo: Recipe,
-    /// Normal and roughness, or `None` when neither map exists.
-    pub normal_roughness: Option<Recipe>,
-    /// Metallic and occlusion, or `None` when neither map exists.
-    pub metallic_occlusion: Option<Recipe>,
+    /// The normal, or `None` when there is no normal map.
+    pub normal: Option<Recipe>,
+    /// Metallic, occlusion and roughness, or `None` when none of the four maps exists.
+    pub surface: Option<Recipe>,
 }
 
 /// `stem` + `suffix` with the first image extension that exists, if any.
@@ -117,52 +123,54 @@ fn suffixed(stem: &Path, suffix: &str, extension: &str) -> PathBuf {
 
 impl MaterialMaps {
     /// The material whose albedo image is `albedo`, with its maps found beside it by suffix: by
-    /// their sources, or by their bakes where none of a texture's sources are there (a game shipped
+    /// their sources, or by their bakes where none of the material's maps are there (a game shipped
     /// without them), when its recipe names the first source it would have, missing, so that
     /// [`Recipe::prepare`] reads the bake as it is.
     #[must_use]
     pub fn beside(albedo: &Path, defaults: &MaterialDefaults) -> Self {
         let stem = albedo.with_extension("");
-        let shipped = |suffix: &str, found: [&Option<PathBuf>; 2]| {
-            (found.iter().all(|f| f.is_none()) && suffixed(&stem, suffix, "ktx2").exists())
+        let normal = find_map(&stem, NORMAL_SUFFIX);
+        let roughness = find_map(&stem, ROUGHNESS_SUFFIX);
+        let metallic = find_map(&stem, METALLIC_SUFFIX);
+        let occlusion = find_map(&stem, OCCLUSION_SUFFIX);
+        let authored =
+            normal.is_some() || roughness.is_some() || metallic.is_some() || occlusion.is_some();
+        let shipped = |suffix: &str| {
+            (!authored && suffixed(&stem, suffix, "ktx2").exists())
                 .then(|| suffixed(&stem, suffix, IMAGE_EXTENSIONS[0]))
         };
-        let roughness = find_map(&stem, ROUGHNESS_SUFFIX);
-        let normal = find_map(&stem, NORMAL_SUFFIX);
-        let normal = normal
-            .clone()
-            .or_else(|| shipped(NORMAL_SUFFIX, [&normal, &roughness]));
-        let occlusion = find_map(&stem, OCCLUSION_SUFFIX);
-        let metallic = find_map(&stem, METALLIC_SUFFIX);
-        let metallic = metallic
-            .clone()
-            .or_else(|| shipped(METALLIC_SUFFIX, [&metallic, &occlusion]));
-        let [nx, ny, nz, rough] = defaults.normal_roughness_texel();
-        let [metal, ao, ..] = defaults.metallic_occlusion_texel();
-        let normal_roughness = (normal.is_some() || roughness.is_some()).then(|| Recipe {
+        let opaque = defaults.normal_texel()[3];
+        let [metal, ao, rough, _] = defaults.surface_texel();
+        let surface = (authored || shipped(METALLIC_SUFFIX).is_some()).then(|| Recipe {
             channels: [
-                normal.clone().map_or(Channel::Constant(nx), Channel::Red),
-                normal.clone().map_or(Channel::Constant(ny), Channel::Green),
-                normal.map_or(Channel::Constant(nz), Channel::Blue),
-                roughness.map_or(Channel::Constant(rough), Channel::Grey),
-            ],
-            chain: Chain::NormalRoughness,
-            output: suffixed(&stem, NORMAL_SUFFIX, "ktx2"),
-        });
-        let metallic_occlusion = (metallic.is_some() || occlusion.is_some()).then(|| Recipe {
-            channels: [
-                metallic.map_or(Channel::Constant(metal), Channel::Grey),
+                metallic
+                    .or_else(|| shipped(METALLIC_SUFFIX))
+                    .map_or(Channel::Constant(metal), Channel::Grey),
                 occlusion.map_or(Channel::Constant(ao), Channel::Grey),
-                Channel::Constant(0),
-                Channel::Constant(255),
+                roughness.map_or(Channel::Constant(rough), Channel::Grey),
+                Channel::Constant(opaque),
             ],
-            chain: Chain::Linear,
+            chain: Chain::Surface,
+            normals: normal.clone(),
             output: suffixed(&stem, METALLIC_SUFFIX, "ktx2"),
         });
+        let normal = normal
+            .or_else(|| shipped(NORMAL_SUFFIX))
+            .map(|normal| Recipe {
+                channels: [
+                    Channel::Red(normal.clone()),
+                    Channel::Green(normal.clone()),
+                    Channel::Blue(normal),
+                    Channel::Constant(opaque),
+                ],
+                chain: Chain::TangentNormal,
+                normals: None,
+                output: suffixed(&stem, NORMAL_SUFFIX, "ktx2"),
+            });
         Self {
             albedo: Recipe::image(albedo, Chain::Color, stem.with_extension("ktx2")),
-            normal_roughness,
-            metallic_occlusion,
+            normal,
+            surface,
         }
     }
 
@@ -170,8 +178,8 @@ impl MaterialMaps {
     pub fn recipes(&self) -> impl Iterator<Item = &Recipe> {
         [
             Some(&self.albedo),
-            self.normal_roughness.as_ref(),
-            self.metallic_occlusion.as_ref(),
+            self.normal.as_ref(),
+            self.surface.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -243,7 +251,7 @@ mod tests {
     #[test]
     fn defaults_pack_a_flat_rough_dielectric() {
         let defaults = MaterialDefaults::default();
-        assert_eq!(defaults.normal_roughness_texel(), [128, 128, 255, 204]);
-        assert_eq!(defaults.metallic_occlusion_texel(), [0, 255, 0, 255]);
+        assert_eq!(defaults.normal_texel(), [128, 128, 255, 255]);
+        assert_eq!(defaults.surface_texel(), [0, 255, 204, 255]);
     }
 }

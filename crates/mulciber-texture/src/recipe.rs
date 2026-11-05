@@ -77,7 +77,7 @@ impl Channel {
 }
 
 /// One texture: four channels packed from images or constants, the [`Chain`] its mips are built
-/// with, and the `.ktx2` its BC7 bake is written to. The recipe is the one place the packing and
+/// with, and the `.ktx2` its bake is written to. The recipe is the one place the packing and
 /// filter are written down, so a bake and the fallback built from the sources when there is no
 /// bake cannot differ.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +86,10 @@ pub struct Recipe {
     pub channels: [Channel; 4],
     /// How the mips are filtered, which also decides sRGB or linear.
     pub chain: Chain,
+    /// The tangent-space normal map whose disagreement widens a [`Chain::Surface`]'s roughness,
+    /// the same size as the channels' images, which it stays out of: its bytes are a source of
+    /// the texture all the same. `None` widens nothing.
+    pub normals: Option<PathBuf>,
     /// The bake's path.
     pub output: PathBuf,
 }
@@ -117,6 +121,14 @@ fn fnv1a(bytes: &[u8], seed: u64) -> u64 {
     })
 }
 
+/// A recipe's base level, and the sources decoded for it.
+struct Packed<'a> {
+    width: u32,
+    height: u32,
+    base: Vec<u8>,
+    images: BTreeMap<&'a Path, Image>,
+}
+
 impl Recipe {
     /// An image's own RGBA, as authored, filtered by `chain`.
     #[must_use]
@@ -130,15 +142,17 @@ impl Recipe {
                 Channel::Alpha(source),
             ],
             chain,
+            normals: None,
             output: output.into(),
         }
     }
 
-    /// Every image the recipe reads, each once, in channel order.
+    /// Every image the recipe reads, each once, in channel order, its normals last.
     #[must_use]
     pub fn sources(&self) -> Vec<&Path> {
         let mut sources: Vec<&Path> = Vec::new();
-        for path in self.channels.iter().filter_map(Channel::source) {
+        let channels = self.channels.iter().filter_map(Channel::source);
+        for path in channels.chain(self.normals.as_deref()) {
             if !sources.contains(&path) {
                 sources.push(path);
             }
@@ -173,6 +187,13 @@ impl Recipe {
             };
             hash = fnv1a(&[channel.tag(), detail], hash);
         }
+        // Only where there are normals, so that a recipe without any keeps the digest, and the bake,
+        // it had before recipes could name them.
+        if let Some(normals) = self.normals.as_deref() {
+            let index = sources.iter().position(|s| *s == normals);
+            let index = index.and_then(|index| u8::try_from(index).ok());
+            hash = fnv1a(&[index.unwrap_or(u8::MAX)], hash);
+        }
         for source in sources {
             let bytes = std::fs::read(source).map_err(|error| {
                 TextureError::new(format!("read {}: {error}", source.display()))
@@ -189,8 +210,14 @@ impl Recipe {
     ///
     /// When a source cannot be read or decoded, or two sources differ in size, naming them.
     pub fn build(&self) -> Result<Levels, TextureError> {
-        let (width, height, base) = self.base()?;
-        Ok(self.chain.build(width, height, base))
+        let packed = self.pack()?;
+        let normals = self
+            .normals
+            .as_deref()
+            .map(|path| packed.images[path].rgba.as_slice());
+        Ok(self
+            .chain
+            .build_widened(packed.width, packed.height, packed.base, normals))
     }
 
     /// Decodes the sources and packs them into the RGBA8 base level: its width, height and texels.
@@ -199,6 +226,12 @@ impl Recipe {
     ///
     /// As [`build`](Self::build).
     pub fn base(&self) -> Result<(u32, u32, Vec<u8>), TextureError> {
+        let packed = self.pack()?;
+        Ok((packed.width, packed.height, packed.base))
+    }
+
+    /// [`base`](Self::base), and the decoded sources.
+    fn pack(&self) -> Result<Packed<'_>, TextureError> {
         let mut images: BTreeMap<&Path, Image> = BTreeMap::new();
         for source in self.sources() {
             images.insert(source, decode(source)?);
@@ -230,7 +263,12 @@ impl Recipe {
                 out[index] = channel.pick(source.map_or([0; 4], |texels| texels[texel]));
             }
         }
-        Ok((width, height, base))
+        Ok(Packed {
+            width,
+            height,
+            base,
+            images,
+        })
     }
 
     /// Whether the bake on disk was built from the sources as they are now, with this recipe.
@@ -415,7 +453,7 @@ pub enum Fallback {
 /// Where a [`Prepared`] texture came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// Its bake, uploaded as BC7 blocks.
+    /// Its bake, uploaded as its blocks.
     Bake,
     /// Its sources, uploaded as RGBA8.
     Sources(Fallback),
@@ -424,7 +462,7 @@ pub enum Origin {
 /// A texture's levels, as stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pixels {
-    /// A bake: a KTX 2.0 file of BC7 levels, uploaded as stored.
+    /// A bake: a KTX 2.0 file of BC7 or BC5 levels, uploaded as stored.
     Ktx2(Vec<u8>),
     /// An RGBA8 base level built from the sources, its chain left to the GPU: [`Chain::Color`]
     /// and [`Chain::Linear`], whose box filters the GPU's mip generation matches (for an extent

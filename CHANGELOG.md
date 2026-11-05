@@ -2,6 +2,21 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## BC5 normals, roughness in the surface texture (texture 0.12.0)
+
+A material's normal now has a texture of its own, baked as BC5, and its roughness moves to the blue
+channel of the metallic + occlusion texture, which BC7 no longer has to share with a normal's
+detail. `MaterialMaps.normal_roughness` and `metallic_occlusion` become `normal` and `surface`, and
+`MaterialDefaults::normal_roughness_texel` and `metallic_occlusion_texel` become `normal_texel` and
+`surface_texel`. `Chain::TangentNormal` keeps the base and levels unit length for a shader to
+rebuild Z, and bakes as BC5; `Chain::Surface` box filters R, G and A and widens B as
+`Chain::NormalRoughness` does, from the normal map a `Recipe` now names in `normals` (its bytes are
+part of the digest), given to `Chain::build_widened`. `encode_bc5` encodes red and green as BC5, and
+a bake picks its encoder from `Chain::compression`. A material gets a surface when any of its four
+maps exists, a normal only when a normal map does; a bake is read without sources only when none of
+the material's maps are there. The new chains' tags stale a material's old normal and metallic
+bakes; every other recipe keeps its digest, so albedo bakes stay current, byte for byte.
+
 ## Turned images (text 0.5.1)
 
 `Batch::image_turned(region, centre, size, angle, color)` draws an atlas image turned about its

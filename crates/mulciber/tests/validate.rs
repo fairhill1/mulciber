@@ -1,6 +1,7 @@
 //! Postprocess and shadow pipeline declarations checked against compiled shaders without a
 //! device, as `Device::create_postprocess_pipeline` and `Device::create_shadow_pipeline` check
-//! them. Compiling needs `spirv-val` on PATH.
+//! them. The shaders compile for the host's backend, which needs `spirv-val` on PATH for Vulkan
+//! and Xcode's `metal` and `metallib` for Metal.
 
 use mulciber::{
     BloomShaders, CullMode, GraphicsErrorKind, HdrComposite, MaterialBinding,
@@ -61,14 +62,20 @@ const LAYOUT: VertexLayout<'static> = VertexLayout {
 };
 
 fn compile(name: &str, source: &str) -> Vec<u8> {
-    let directory = std::env::temp_dir().join(format!("mulciber-validate-{}", std::process::id()));
+    // One directory per shader: the Metal compiler leaves fixed-name intermediates beside the
+    // artifact, which tests compiling in parallel would otherwise overwrite in each other's.
+    let directory =
+        std::env::temp_dir().join(format!("mulciber-validate-{}-{name}", std::process::id()));
     let artifact = directory.join(format!("{name}.shaderbin"));
     ShaderModules::new()
         .shader_source(format!("{name}.wgsl"), source)
-        .compile_wgsl(&artifact, ShaderTarget::Vulkan)
-        .expect("the shader compiles (needs spirv-val on PATH)");
+        .compile_wgsl(
+            &artifact,
+            ShaderTarget::for_os(std::env::consts::OS).expect("a shader target"),
+        )
+        .expect("the shader compiles (needs spirv-val, or Xcode's Metal tools on macOS)");
     let bytes = std::fs::read(&artifact).unwrap();
-    let _ = std::fs::remove_file(&artifact);
+    let _ = std::fs::remove_dir_all(&directory);
     bytes
 }
 

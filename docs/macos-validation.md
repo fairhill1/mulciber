@@ -1,5 +1,22 @@
 # macOS AppKit/Metal validation runbook
 
+## macOS test and conformance repair
+
+On 2026-11-06, after `acd599b`, two failures the cull-mode checkpoint recorded were traced and
+fixed on the Apple M2. `mulciber`'s `validate` tests and `mulciber-text`'s `pipeline` test always
+compiled Vulkan artifacts, which a macOS build refuses; they now compile for the host's backend,
+and `validate` compiles each shader in its own temporary directory, because the Metal compiler's
+fixed-name intermediates collided between tests running in parallel (five consecutive parallel
+runs passed). `mulciber-api-conformance` stopped after 11 cases because its postprocess artifacts
+were `MULSHDR2`, which attributes the scene's binding-0 uniform to `post_vertex` and
+`post_fragment`, so the uniform refusal added in `c9db0b7` rejected the fullscreen pipeline that
+declares none. Both artifacts were regenerated from the unchanged WGSL by `mulciber-shader` 0.5.10
+(naga 30.0.1, SPIRV-Tools v2026.2) as `MULSHDR4`, and their lock hashes updated. With
+`MTL_DEBUG_LAYER=1`, `mulciber-api-conformance` then passed all 100 Metal cases, exiting zero with
+no output beyond the validation banner and the adaptive-presentation line. The Vulkan artifact had
+the same attribution, so Linux and Windows conformance presumably stopped at the same case since
+`c9db0b7`; the regenerated Vulkan artifact has not run on a device.
+
 ## Cull modes checkpoint
 
 On 2026-11-06, on an uncommitted working tree based on `3c118fa`, material and shadow pipelines'

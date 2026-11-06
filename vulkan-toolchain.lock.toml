@@ -39,8 +39,8 @@ compiler = "naga 30.0.1"
 target_environment = "vulkan1.3"
 spirv_validator = "SPIRV-Tools v2026.2"
 wgsl_sha256 = "d34a0524ac63b107d5db5ef1485f408cfcacb08f3cdc30dc292027b5120c0666"
-vulkan_artifact_sha256 = "ac9efc0e14ab02006bd00afd8ad980352d3e130dd1cd1f38b941285ecb9ad230"
-metal_artifact_sha256 = "55783ff83368f3c858e7c5055ad229786b4ad8e2fdad698259033b7b6d31c42c"
+vulkan_artifact_sha256 = "f84a50b5fd59d9fc455cf6aa6b29fbfbbf405eb9e71db0d2840dafdab74e6926"
+metal_artifact_sha256 = "992c345b9446866f15f2e8f563aeaac0ec3ca188e177ced88c1adff20ed1a187"
 
 [instanced_shader]
 compiler = "naga 30.0.1"

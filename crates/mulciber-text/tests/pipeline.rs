@@ -34,8 +34,11 @@ fn the_readme_overlay_shader_matches_its_pipeline_declaration() {
     let artifact = directory.join("overlay.shaderbin");
     ShaderModules::new()
         .shader_source("overlay.wgsl", OVERLAY_WGSL)
-        .compile_wgsl(&artifact, ShaderTarget::Vulkan)
-        .expect("the overlay shader compiles (needs spirv-val on PATH)");
+        .compile_wgsl(
+            &artifact,
+            ShaderTarget::for_os(std::env::consts::OS).expect("a shader target"),
+        )
+        .expect("the overlay shader compiles (needs spirv-val, or Xcode's Metal tools on macOS)");
     let bytes = std::fs::read(&artifact).unwrap();
     let _ = std::fs::remove_dir_all(&directory);
     let descriptor = MaterialPipelineDescriptor {

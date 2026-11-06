@@ -6,7 +6,7 @@
 //! read a sharper level through the anisotropic samplers than through the trilinear one, sharper
 //! still with more samples. Out-of-range sample counts must be refused.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
     GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord,
     MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
     PostprocessPipelineDescriptor, RenderScale, SAMPLER_ANISOTROPY_LIMIT, SampleCount,
@@ -137,6 +137,7 @@ fn descriptor<'a>(
         bindings,
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
+        cull: CullMode::Back,
         instance_layout: None,
         scene_color: SceneColor::Hdr,
     }

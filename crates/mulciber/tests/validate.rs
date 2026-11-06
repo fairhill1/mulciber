@@ -3,9 +3,9 @@
 //! them. Compiling needs `spirv-val` on PATH.
 
 use mulciber::{
-    BloomShaders, GraphicsErrorKind, HdrComposite, MaterialBinding, PostprocessPipelineDescriptor,
-    SamplerAddress, SamplerFilter, ShaderArtifact, ShadowPipelineDescriptor, VertexAttribute,
-    VertexFormat, VertexLayout,
+    BloomShaders, CullMode, GraphicsErrorKind, HdrComposite, MaterialBinding,
+    PostprocessPipelineDescriptor, SamplerAddress, SamplerFilter, ShaderArtifact,
+    ShadowPipelineDescriptor, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_shader::{ShaderModules, ShaderTarget};
 
@@ -197,6 +197,7 @@ fn a_shadow_declaration_is_checked_without_a_device() {
         vertex_layout: LAYOUT,
         instance_layout: None,
         bindings,
+        cull: CullMode::Back,
     };
     declare(&bindings, Some("shadow_fragment"))
         .validate()

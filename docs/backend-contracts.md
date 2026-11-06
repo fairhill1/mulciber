@@ -367,6 +367,22 @@ the first time. Vulkan compiles and passes Clippy for Windows and Linux but has 
 backend's `Unsupported` refusal has been physically reached. No viability gate is advanced. See the
 [contract](cube-textures.md#cube-texture-arrays).
 
+## Cull modes (graphics 0.23.0)
+
+**Metal native evidence, Vulkan unexercised:** material and shadow pipelines each declare a
+`CullMode` (`Back`, `Front`, `Off`) over counter-clockwise front faces. The backends hold it
+differently. Vulkan bakes it into the pipeline's `VkPipelineRasterizationStateCreateInfo.cullMode`
+(`VK_CULL_MODE_BACK_BIT`, `VK_CULL_MODE_FRONT_BIT`, `VK_CULL_MODE_NONE`), shared by a material
+pipeline's overlay variant. Metal has no pipeline cull state: each material and shadow encoder
+gets `MTLWindingCounterClockwise`, and `setCullMode:` runs for a record whose pipeline's mode
+differs from the one last set in that encoder (Metal's default culls nothing, so the first record
+always sets it). A unit test holds the Metal winding and cull values to the macOS SDK's
+`MTLRenderCommandEncoder.h`. On 2026-11-06 the `mulciber-material-scene` probe's single-faced leaf
+cards, drawn and shadowed with `Off` beside `Back` crystals, ran under Metal API Validation on an
+Apple M2 at four samples with no validation output. `Front` has not run on a device. Vulkan
+compiles and passes Clippy for Linux but has not run. No viability gate is advanced. See the
+[material contract](material-contract.md).
+
 ## Growable Vulkan descriptor pools (0.13.14)
 
 **Vulkan-only correctness fix:** every textured, instanced, material, shadow and postprocess

@@ -29,9 +29,12 @@ fn sprout_vertex(input: SproutVertex) -> SproutRaster {
     return output;
 }
 
+// The pipeline culls nothing, so each card's one face is drawn from both sides; the underside
+// reads paler and yellower, as a leaf's does.
 @fragment
-fn sprout_fragment(input: SproutRaster) -> @location(0) vec4<f32> {
+fn sprout_fragment(input: SproutRaster, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let sample = textureSample(leaf_texture, leaf_sampler, input.uv);
-    let shaded = sample.rgb * (0.35 + 0.65 * input.uv.y);
+    let underside = mix(sample.rgb, vec3<f32>(0.75, 0.8, 0.35), 0.55);
+    let shaded = select(underside, sample.rgb, front) * (0.35 + 0.65 * input.uv.y);
     return vec4<f32>(shaded, sample.a);
 }

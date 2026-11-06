@@ -2,7 +2,7 @@
 //! as `Device::create_material_pipeline` checks them, without a device.
 
 use mulciber::{
-    BlendMode, DepthMode, MaterialBinding, MaterialPipelineDescriptor, SamplerAddress,
+    BlendMode, CullMode, DepthMode, MaterialBinding, MaterialPipelineDescriptor, SamplerAddress,
     SamplerFilter, SceneColor, ShaderArtifact,
 };
 use mulciber_shader::{ShaderModules, ShaderTarget};
@@ -54,6 +54,7 @@ fn the_readme_overlay_shader_matches_its_pipeline_declaration() {
         ],
         blend: BlendMode::PremultipliedTranslucent,
         depth: DepthMode::Off,
+        cull: CullMode::Back,
         scene_color: SceneColor::Surface,
     };
     descriptor

@@ -134,6 +134,16 @@ each material scene derives 0.0 or 1.0 from its records' declared modes, and mix
 directions against one depth target is rejected by name. The reversed-Z projection matrix itself
 stays application-owned, and shadow passes keep their conventional less-compare recipe.
 
+Revised 2026-11-06 to open a `CullMode` (`Back`, `Front`, `Off`) on material and shadow pipeline
+descriptors, because back-face culling fixed in every pipeline had made a game supply each open
+surface twice: clothing hems lined with inward-facing faces, and leaf cards (already doubled in
+the material-scene probe and by `mulciber-model`'s `duplicate_double_sided`) about to multiply
+with its trees. The two descriptors take the mode separately so a caster can draw culled and
+shadow unculled, or shadow its far side with `Front`. Front-face winding stays fixed at
+counter-clockwise, as glTF's is, and `Model::transform` already restores it under mirroring
+transforms, so no winding axis opened. The mode is pipeline state; Metal, which keeps it on the
+encoder, sets it per record when it changes.
+
 ## Texture mip chains
 
 Decided as an application-supplied chain, not native generation.

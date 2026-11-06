@@ -76,6 +76,7 @@ let pipeline = device.create_material_pipeline(MaterialPipelineDescriptor {
     ],
     blend: BlendMode::PremultipliedTranslucent,
     depth: DepthMode::Off,
+    cull: CullMode::Back,
     scene_color: SceneColor::Surface,
 })?;
 ```

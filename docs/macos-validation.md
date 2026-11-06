@@ -1,5 +1,35 @@
 # macOS AppKit/Metal validation runbook
 
+## Cull modes checkpoint
+
+On 2026-11-06, on an uncommitted working tree based on `3c118fa`, material and shadow pipelines'
+`CullMode` (see the [material contract](material-contract.md)) ran on the Apple M2 / 8 GiB
+MacBook Air under macOS 15.8. Only the `mulciber-material-scene` leaf shader changed: its fragment
+stage reads `@builtin(front_facing)` and paints a card's back paler. `mulciber-shader` 0.5.10
+regenerated both of its artifacts on this host, the Vulkan one passing `spirv-val`, and the
+emitted MSL carries `[[front_facing]]`. SHA-256: `sprout.metal.shaderbin`
+`e2167e70db136fc9f22355df7f359e5f308249c440f1242d7e91ceac5f23a135`, `sprout.vulkan.shaderbin`
+`5a6e85cc69f71f9d1228608f99c61098ffd73727e7e409dbad31872b18729802`. The leaf shadow shader is
+unchanged.
+
+The structural preflight (fmt, workspace check, Clippy `-D warnings`, `git diff --check`) passed
+natively, and Clippy `-D warnings` passed for the `mulciber` crate's targets on
+`x86_64-unknown-linux-gnu` from this host. Workspace tests passed except five that already fail on
+`3c118fa` on this host, in `mulciber`'s `validate` and `mulciber-text`'s `pipeline` suites: they
+compile Vulkan artifacts, which a macOS build refuses as containing no Metal code. The new
+`rasterizer_state_matches_the_sdk` test passed against the SDK's `MTLRenderCommandEncoder.h`.
+`MTL_DEBUG_LAYER=1 mulciber-api-conformance` stopped after the same 11 cases as on `3c118fa`, at a
+postprocess pipeline refusing an artifact that records a uniform the probe does not declare, so
+this run adds no conformance evidence.
+
+`mulciber-material-scene`, its leaf cards now single-faced (12 indices, not 24) and drawn and
+shadowed with `CullMode::Off` while the crystals, floor and kelp keep `CullMode::Back`, ran under
+`MTL_DEBUG_LAYER=1`, selected Metal and four samples, rendered roughly ten seconds of frames, and
+closed through an agent-scripted PID-targeted titlebar click, exiting zero with no output beyond
+the validation-enabled banner. An agent window capture showed cards from both sides, fronts green
+and backs pale, with cutout shadows, and solid crystals; this is not an operator's visual check.
+`CullMode::Front` was not exercised, and nothing ran under Vulkan.
+
 ## Metal frames in flight
 
 On 2026-09-05, a development tree based on `aa9c2b4` implemented three frame slots in the

@@ -18,7 +18,7 @@ use std::ffi::CString;
 
 use super::{ClearSurface, MetalFrameToken, objc, required};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
+    BlendMode, CullMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
     SampledTextureFormat, SamplerAddress, ShadowPipelineConfig, TextureDimension, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
@@ -76,6 +76,8 @@ const STORE_ACTION_DONT_CARE: usize = 0;
 const STORE_ACTION_MULTISAMPLE_RESOLVE: usize = 2;
 const PRIMITIVE_TYPE_TRIANGLE: usize = 3;
 const WINDING_COUNTER_CLOCKWISE: usize = 1;
+const CULL_MODE_NONE: usize = 0;
+const CULL_MODE_FRONT: usize = 1;
 const CULL_MODE_BACK: usize = 2;
 const INDEX_TYPE_UINT16: usize = 0;
 const INDEX_TYPE_UINT32: usize = 1;
@@ -288,6 +290,8 @@ struct MaterialPipelineResource {
     comparison_sampler: Option<(u32, Object)>,
     /// Declared per-instance stride in bytes; zero when no instance layout is declared.
     instance_stride: usize,
+    /// The `MTLCullMode` its records set on the encoder.
+    cull_mode: usize,
 }
 
 struct ShadowMapResource {
@@ -319,6 +323,8 @@ struct ShadowPipelineResource {
     samplers: Vec<(u32, Object)>,
     /// Declared per-instance stride in bytes; zero when no instance layout is declared.
     instance_stride: usize,
+    /// The `MTLCullMode` its records set on the encoder.
+    cull_mode: usize,
 }
 
 struct TargetResource {
@@ -1817,7 +1823,8 @@ impl<'window> TexturedSession<'window> {
                 objc::object_object(command, c"renderCommandEncoderWithDescriptor:", pass),
                 "Metal shadow render encoder",
             )?;
-            cull_back_faces(encoder);
+            set_front_winding(encoder);
+            let mut cull = None;
             for record in records {
                 let pipeline =
                     &self.shadow_pipelines[self.shadow_pipelines.index_of(record.pipeline.id())?];
@@ -1826,6 +1833,7 @@ impl<'window> TexturedSession<'window> {
                     .expect("validated mesh part index fits usize")];
                 objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                 objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
+                set_cull_mode(encoder, pipeline.cull_mode, &mut cull);
                 if let Some((binding, _)) = pipeline.uniform {
                     let slot = usize::try_from(binding).expect("validated slot fits usize");
                     objc::void_object_two_usizes(
@@ -2458,10 +2466,7 @@ impl<'window> TexturedSession<'window> {
         scene: PreparedScene<'_>,
     ) -> Result<(), GraphicsError> {
         let world = &scene.records[..scene.foreground_start.unwrap_or(scene.records.len())];
-        unsafe {
-            cull_back_faces(encoder);
-            self.encode_material_records(encoder, world, 0, 0, 0, 0, false, ptr::null_mut())
-        }
+        unsafe { self.encode_material_records(encoder, world, 0, 0, 0, 0, false, ptr::null_mut()) }
     }
 
     /// Encodes one non-empty material record sequence on an active render encoder.
@@ -2484,7 +2489,8 @@ impl<'window> TexturedSession<'window> {
         snapshot: Object,
     ) -> Result<(), GraphicsError> {
         unsafe {
-            cull_back_faces(encoder);
+            set_front_winding(encoder);
+            let mut cull = None;
             let mut storage_offset = storage_base;
             let mut transient_offset = transient_base;
             let mut instance_offset = instance_base;
@@ -2538,6 +2544,7 @@ impl<'window> TexturedSession<'window> {
                     objc::void_object(encoder, c"setRenderPipelineState:", pipeline.pipeline);
                     objc::void_object(encoder, c"setDepthStencilState:", pipeline.depth_state);
                 }
+                set_cull_mode(encoder, pipeline.cull_mode, &mut cull);
                 if let Some((binding, _)) = pipeline.uniform {
                     let slot = usize::try_from(binding).expect("validated slot fits usize");
                     objc::void_object_two_usizes(
@@ -2786,18 +2793,37 @@ impl<'window> TexturedSession<'window> {
     }
 }
 
-/// Counter-clockwise front faces with back faces culled, the rasterizer state
-/// every Vulkan scene, material and shadow pipeline bakes in. Metal holds it on
-/// the encoder rather than the pipeline and defaults to culling nothing, so an
-/// encoder that is not told draws both sides of every triangle.
-unsafe fn cull_back_faces(encoder: Object) {
+/// Counter-clockwise front faces, the winding every Vulkan material and shadow
+/// pipeline bakes in. Metal holds winding and culling on the encoder rather than
+/// the pipeline, so each encoder that draws material or shadow records is told.
+unsafe fn set_front_winding(encoder: Object) {
     unsafe {
         objc::void_usize(
             encoder,
             c"setFrontFacingWinding:",
             WINDING_COUNTER_CLOCKWISE,
         );
-        objc::void_usize(encoder, c"setCullMode:", CULL_MODE_BACK);
+    }
+}
+
+/// Sets a record's pipeline's cull mode on the encoder when it differs from the
+/// mode `current` last set; `None` means the encoder has not been told yet (Metal's
+/// default culls nothing), so the first record always sets it.
+unsafe fn set_cull_mode(encoder: Object, mode: usize, current: &mut Option<usize>) {
+    if *current != Some(mode) {
+        unsafe {
+            objc::void_usize(encoder, c"setCullMode:", mode);
+        }
+        *current = Some(mode);
+    }
+}
+
+/// The `MTLCullMode` for a declared [`CullMode`].
+const fn metal_cull_mode(cull: CullMode) -> usize {
+    match cull {
+        CullMode::Back => CULL_MODE_BACK,
+        CullMode::Front => CULL_MODE_FRONT,
+        CullMode::Off => CULL_MODE_NONE,
     }
 }
 
@@ -2898,6 +2924,7 @@ fn release_shadow_pipeline(pipeline: ShadowPipelineResource) {
         texture_bindings: _,
         samplers,
         instance_stride: _,
+        cull_mode: _,
     } = pipeline;
     unsafe {
         for (_, sampler) in samplers {
@@ -3374,6 +3401,7 @@ fn create_material_pipeline(
             comparison_sampler,
             instance_stride: usize::try_from(config.instance_stride)
                 .expect("validated stride fits usize"),
+            cull_mode: metal_cull_mode(config.cull),
         })
     }
 }
@@ -3689,6 +3717,7 @@ fn create_shadow_pipeline(
             samplers,
             instance_stride: usize::try_from(config.instance_stride)
                 .expect("validated stride fits usize"),
+            cull_mode: metal_cull_mode(config.cull),
         })
     }
 }
@@ -4043,22 +4072,7 @@ mod tests {
     /// BC5's 144 for 142 did.
     #[test]
     fn pixel_formats_match_the_sdk() {
-        let sdk = std::process::Command::new("xcrun")
-            .arg("--show-sdk-path")
-            .output()
-            .expect("xcrun finds the macOS SDK");
-        let header = std::path::Path::new(std::str::from_utf8(&sdk.stdout).unwrap().trim())
-            .join("System/Library/Frameworks/Metal.framework/Headers/MTLPixelFormat.h");
-        let header = std::fs::read_to_string(&header)
-            .unwrap_or_else(|error| panic!("{}: {error}", header.display()));
-        let sdk_value = |name: &str| -> usize {
-            let line = header
-                .lines()
-                .find(|line| line.split_whitespace().next() == Some(name))
-                .unwrap_or_else(|| panic!("{name} is not in MTLPixelFormat.h"));
-            let value = line.rsplit('=').next().unwrap();
-            value.trim().trim_end_matches(',').parse().unwrap()
-        };
+        let sdk_value = sdk_enum("MTLPixelFormat.h");
         for (ours, name) in [
             (
                 super::PIXEL_FORMAT_RGBA16_FLOAT,
@@ -4115,6 +4129,47 @@ mod tests {
             (super::PIXEL_FORMAT_INVALID, "MTLPixelFormatInvalid"),
         ] {
             assert_eq!(ours, sdk_value(name), "{name}");
+        }
+    }
+
+    /// The winding and cull modes the backend sets on render encoders have the values Apple's
+    /// SDK gives them, and each declared [`CullMode`](crate::graphics::CullMode) maps to its own.
+    #[test]
+    fn rasterizer_state_matches_the_sdk() {
+        use crate::graphics::CullMode;
+
+        let sdk_value = sdk_enum("MTLRenderCommandEncoder.h");
+        assert_eq!(
+            super::WINDING_COUNTER_CLOCKWISE,
+            sdk_value("MTLWindingCounterClockwise")
+        );
+        for (cull, name) in [
+            (CullMode::Back, "MTLCullModeBack"),
+            (CullMode::Front, "MTLCullModeFront"),
+            (CullMode::Off, "MTLCullModeNone"),
+        ] {
+            assert_eq!(super::metal_cull_mode(cull), sdk_value(name), "{name}");
+        }
+    }
+
+    /// Reads `NAME = value,` enumerators from a Metal framework header in the macOS SDK.
+    fn sdk_enum(header_name: &str) -> impl Fn(&str) -> usize + '_ {
+        let sdk = std::process::Command::new("xcrun")
+            .arg("--show-sdk-path")
+            .output()
+            .expect("xcrun finds the macOS SDK");
+        let header = std::path::Path::new(std::str::from_utf8(&sdk.stdout).unwrap().trim())
+            .join("System/Library/Frameworks/Metal.framework/Headers")
+            .join(header_name);
+        let header = std::fs::read_to_string(&header)
+            .unwrap_or_else(|error| panic!("{}: {error}", header.display()));
+        move |name| {
+            let line = header
+                .lines()
+                .find(|line| line.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("{name} is not in {header_name}"));
+            let value = line.rsplit('=').next().unwrap();
+            value.trim().trim_end_matches(',').parse().unwrap()
         }
     }
 }

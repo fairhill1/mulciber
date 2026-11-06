@@ -1,10 +1,11 @@
 //! Native numerical evidence for `RGBA16Float` uploads through public material bindings.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
-    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor, MeshIndices,
-    MipChain, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount,
-    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
-    TexelData, TextureDescriptor, TextureShape, VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
+    HdrComposite, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor,
+    MeshIndices, MipChain, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
+    SampleCount, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexelData, TextureDescriptor, TextureShape, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -145,6 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &BINDINGS,
             blend: BlendMode::Opaque,
             depth: DepthMode::Off,
+            cull: CullMode::Back,
             instance_layout: None,
             scene_color: SceneColor::Hdr,
         })?;

@@ -512,7 +512,8 @@ impl Device<'_> {
     ///
     /// The declaration is validated against the interface `mulciber-shader` recorded in the
     /// artifact; a mismatch names the offending attribute or slot. The pipeline uses the
-    /// session's selected sample count plus the declared [`BlendMode`] and [`DepthMode`].
+    /// session's selected sample count plus the declared [`BlendMode`], [`DepthMode`] and
+    /// [`CullMode`].
     ///
     /// # Errors
     ///
@@ -554,6 +555,7 @@ impl Device<'_> {
             comparison_sampler_binding: declaration.comparison_sampler,
             blend: descriptor.blend,
             depth: descriptor.depth,
+            cull: descriptor.cull,
         };
         let id = session_mut(&self.shared)?.create_material_pipeline(descriptor.shader, &config)?;
         Ok(MaterialPipeline {
@@ -696,9 +698,9 @@ impl Device<'_> {
     /// passes.
     ///
     /// The pipeline runs the named vertex entry point into a [`ShadowMap`]'s depth target,
-    /// testing and writing depth. Shadow pipelines support at most one uniform binding and one
-    /// read-only storage binding (so skinned casters shadow with the same bone palette as
-    /// their material records). A caster that must carve fragments out of the depth result —
+    /// testing and writing depth for the faces its [`CullMode`] keeps. Shadow pipelines support
+    /// at most one uniform binding and one read-only storage binding (so skinned casters shadow
+    /// with the same bone palette as their material records). A caster that must carve fragments out of the depth result —
     /// typically a foliage cutout alpha test — additionally names a fragment entry point,
     /// which unlocks texture and sampler bindings for the test; without a fragment entry the
     /// pipeline runs no fragment stage and the module must record no other bindings. An
@@ -734,6 +736,7 @@ impl Device<'_> {
             storage: declaration.storage,
             texture_bindings: &declaration.texture_bindings,
             sampler_bindings: &declaration.sampler_bindings,
+            cull: descriptor.cull,
         };
         let id = session_mut(&self.shared)?.create_shadow_pipeline(descriptor.shader, &config)?;
         Ok(ShadowPipeline {
@@ -3398,6 +3401,27 @@ impl DepthMode {
     }
 }
 
+/// Which faces a material or shadow pipeline discards before rasterizing.
+///
+/// A triangle whose corners turn counter-clockwise on screen faces the viewer; that winding is
+/// fixed, as glTF's is. [`Back`](Self::Back) suits closed meshes; [`Off`](Self::Off) draws both
+/// sides of open geometry such as leaf cards, banners and cloth from one set of triangles, and the
+/// fragment shader tells the sides apart through WGSL's `@builtin(front_facing)`, flipping its
+/// normal on the back. [`Front`](Self::Front) is mostly for shadow casters, which then write the
+/// depth of their far side and acne less on their lit faces.
+///
+/// Vulkan builds the mode into the pipeline. Metal keeps it on the render encoder, so the Metal
+/// backend sets it whenever a record's pipeline wants a different mode from the record before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CullMode {
+    /// Discard triangles facing away from the viewer.
+    Back,
+    /// Discard triangles facing the viewer.
+    Front,
+    /// Discard neither; draw every triangle whichever way it faces.
+    Off,
+}
+
 /// One declared sampler slot handed to the native backends.
 #[derive(Clone, Copy)]
 pub(crate) struct SamplerSlot {
@@ -3589,6 +3613,8 @@ pub struct MaterialPipelineDescriptor<'inputs> {
     pub blend: BlendMode,
     /// How the pipeline interacts with the scene depth target.
     pub depth: DepthMode,
+    /// Which faces it discards; [`CullMode::Back`] for closed meshes.
+    pub cull: CullMode,
     /// The scene color it renders into. Only a [`SceneColor::Hdr`] pipeline may declare a
     /// [`MaterialBinding::SceneDepth`] slot, and only the HDR colors draw into
     /// [`RenderTexture`]s.
@@ -3801,6 +3827,10 @@ pub struct ShadowPipelineDescriptor<'inputs> {
     /// read-only storage slot, plus texture and sampler slots when a fragment entry point is
     /// declared. The module must record no other bindings.
     pub bindings: &'inputs [MaterialBinding],
+    /// Which faces it discards, independently of the caster's material pipeline:
+    /// [`CullMode::Off`] for open casters such as leaf cards, whose back faces must still
+    /// shadow, and [`CullMode::Front`] for closed casters that should write their far side.
+    pub cull: CullMode,
 }
 
 impl ShadowPipelineDescriptor<'_> {
@@ -4025,6 +4055,7 @@ pub(crate) struct MaterialPipelineConfig<'inputs> {
     pub(crate) comparison_sampler_binding: Option<u32>,
     pub(crate) blend: BlendMode,
     pub(crate) depth: DepthMode,
+    pub(crate) cull: CullMode,
 }
 
 /// Validated shadow pipeline creation inputs handed to the native backends.
@@ -4046,6 +4077,7 @@ pub(crate) struct ShadowPipelineConfig<'inputs> {
     pub(crate) texture_bindings: &'inputs [u32],
     /// Declared sampler slots with their filter and address modes.
     pub(crate) sampler_bindings: &'inputs [SamplerSlot],
+    pub(crate) cull: CullMode,
 }
 
 /// Extent- and generation-dependent color/depth targets.

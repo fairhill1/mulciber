@@ -8,13 +8,14 @@
 //! still be sampling it, the other three surviving in the capture.
 //! Pass `--force-one-sample` to render without the multisample resolve.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, HdrComposite, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, MeshIndices, OffscreenLoad, OffscreenPass, OpenedGraphics, Postprocess,
-    PostprocessPipeline, PostprocessPipelineDescriptor, PostprocessTargets, RenderScale,
-    RenderTexture, RenderTextureDescriptor, RenderTextureSamples, SampleCount, SamplerAddress,
-    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, SurfaceInfo,
-    TexelData, TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, FrameCapture,
+    FrameDisposition, GeometrySource, HdrComposite, MaterialBinding, MaterialPipeline,
+    MaterialPipelineDescriptor, MaterialRecord, MeshIndices, OffscreenLoad, OffscreenPass,
+    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor,
+    PostprocessTargets, RenderScale, RenderTexture, RenderTextureDescriptor, RenderTextureSamples,
+    SampleCount, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission,
+    ShaderArtifact, SurfaceInfo, TexelData, TransientGeometry, VertexAttribute, VertexFormat,
+    VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -483,6 +484,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            cull: CullMode::Back,
             instance_layout: None,
             scene_color,
         })
@@ -507,6 +509,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 bindings: &SAMPLE_BINDINGS,
                 blend: BlendMode::Opaque,
                 depth: DepthMode::Off,
+                cull: CullMode::Back,
                 instance_layout: None,
                 scene_color: SceneColor::Hdr,
             })?,

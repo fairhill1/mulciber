@@ -10,11 +10,11 @@ use std::error::Error;
 use std::time::Instant;
 
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, Device, DeviceRequest, FrameAcquire, GeometrySource,
-    GraphicsError, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
-    MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, SampleCount, SamplerAddress,
-    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
-    TextureDescriptor, TextureShape,
+    BlendMode, ClearColor, CullMode, DepthMode, Device, DeviceRequest, FrameAcquire,
+    GeometrySource, GraphicsError, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, SampleCount,
+    SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact,
+    TexelData, TextureDescriptor, TextureShape,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 
@@ -136,6 +136,7 @@ fn cube_pipeline(device: &Device<'_>) -> Result<MaterialPipeline, GraphicsError>
         ],
         blend: BlendMode::Opaque,
         depth: DepthMode::TestWrite,
+        cull: CullMode::Back,
         scene_color: SceneColor::Surface,
     })
 }

@@ -661,6 +661,17 @@ device-loss cause.
   lacks it.
 - [ ] Other formats (RGBA8, BC1-BC7) and single-level arrays wait for a consumer.
 
+## Cull modes (graphics 0.23.0)
+
+- [x] `CullMode` (`Back`, `Front`, `Off`) on material and shadow pipeline descriptors, set
+  separately, so open geometry draws and shadows both sides from one set of triangles
+  ([material contract](material-contract.md)). The `mulciber-material-scene` probe's single-faced
+  leaf cards (`Off`, backs told apart by `@builtin(front_facing)`) ran under Metal API Validation
+  on the Apple M2 tier.
+- [ ] Run `mulciber-material-scene` under Vulkan validation (Linux and Windows); the Vulkan path is
+  compile- and lint-checked only.
+- [ ] Exercise `CullMode::Front` on a device; no probe or consumer uses it yet.
+
 ## Anisotropic filtering (graphics 0.20.0)
 
 - [x] `SamplerFilter::Anisotropic { max }`, 1 to 16 samples, clamped to Vulkan's

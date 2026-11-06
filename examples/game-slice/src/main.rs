@@ -10,12 +10,12 @@ use std::time::Instant;
 
 use game::Game;
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, Device, DeviceRequest, Frame, FrameAcquire, GeometrySource,
-    GpuTimingFeedback, MaterialBinding, MaterialPipeline, MaterialPipelineDescriptor,
-    MaterialRecord, Mesh, MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
-    PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue, RenderScale, SamplerAddress,
-    SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
-    Texture, TextureDescriptor, TextureShape,
+    BlendMode, ClearColor, CullMode, DepthMode, Device, DeviceRequest, Frame, FrameAcquire,
+    GeometrySource, GpuTimingFeedback, MaterialBinding, MaterialPipeline,
+    MaterialPipelineDescriptor, MaterialRecord, Mesh, MeshDescriptor, MeshIndices, MipChain,
+    OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessTargets, PresentFeedback, Queue,
+    RenderScale, SamplerAddress, SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission,
+    ShaderArtifact, TexelData, Texture, TextureDescriptor, TextureShape,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use mulciber_runtime::{Runtime, RuntimeConfig};
@@ -266,6 +266,7 @@ fn forge_pipeline(device: &Device<'_>) -> Result<MaterialPipeline, Box<dyn Error
         ],
         blend: BlendMode::Opaque,
         depth: DepthMode::TestWrite,
+        cull: CullMode::Back,
         scene_color: SceneColor::Surface,
     })?)
 }

@@ -3,12 +3,12 @@
 //! overlaid frames, checked pixel by pixel against the four-quadrant scene that was drawn.
 //! Pass `--force-one-sample` to render the direct path without a multisample resolve.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, FrameCapture, FrameDisposition,
-    GeometrySource, HdrComposite, MaterialPipeline, MaterialPipelineDescriptor, MaterialRecord,
-    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline, PostprocessPipelineDescriptor,
-    PostprocessTargets, RenderScale, RenderTargets, SampleCount, Scene, SceneColor, SceneOutput,
-    SceneSubmission, ShaderArtifact, SurfaceInfo, TransientGeometry, VertexAttribute, VertexFormat,
-    VertexLayout,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, FrameCapture,
+    FrameDisposition, GeometrySource, HdrComposite, MaterialPipeline, MaterialPipelineDescriptor,
+    MaterialRecord, MeshIndices, OpenedGraphics, Postprocess, PostprocessPipeline,
+    PostprocessPipelineDescriptor, PostprocessTargets, RenderScale, RenderTargets, SampleCount,
+    Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, SurfaceInfo,
+    TransientGeometry, VertexAttribute, VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -331,6 +331,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[],
             blend: BlendMode::Opaque,
             depth: DepthMode::Off,
+            cull: CullMode::Back,
             instance_layout: None,
             scene_color,
         })

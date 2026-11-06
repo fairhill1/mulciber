@@ -2,6 +2,25 @@
 
 Release notes moved from the README. This is a partial history of changes.
 
+## Cull modes (graphics 0.23.0, texture 0.13.0, text 0.6.0)
+
+Material and shadow pipelines choose which faces they discard: `MaterialPipelineDescriptor.cull`
+and `ShadowPipelineDescriptor.cull` take a `CullMode`, `Back` (what every pipeline did before),
+`Front` or `Off`, set independently, so open geometry such as leaf cards, banners and cloth draws
+and shadows both sides from one set of triangles instead of a second copy wound the other way. A
+fragment shader tells the sides apart through WGSL's `@builtin(front_facing)`, which
+`mulciber-shader` already compiled to SPIR-V and MSL. Front faces stay counter-clockwise. Vulkan
+builds the mode into each pipeline's rasterization state (an overlay variant shares it). Metal
+keeps culling on the render encoder, so the backend now sets it per record whenever the record's
+pipeline wants a different mode from the record before, where it used to set back-face culling
+once per encoder. Breaking: both descriptors gain a field, hence graphics 0.23.0 and texture
+0.13.0 and text 0.6.0, which depend on it. New test: the winding and every cull mode the Metal
+backend sets match the macOS SDK's `MTLRenderCommandEncoder.h`. The `mulciber-material-scene`
+probe's leaf cards lose their flipped-winding copies (24 indices become 12) and draw and cast
+shadows with `CullMode::Off`, their backs painted paler through `front_facing`; it ran under Metal
+API Validation on an Apple M2. `Front` has not run on a device, and the Vulkan path is lint-checked
+for Linux only.
+
 ## BC5 on Metal (graphics 0.22.1)
 
 A `Bc5Unorm` texture no longer aborts on Metal: the backend gave it pixel format 144, a number

@@ -260,9 +260,9 @@ pub(crate) fn floor_vertices() -> Vec<u8> {
     bytes
 }
 
-/// Two crossed unit-square leaf cards. The material and shadow pipelines cull back faces, so
-/// each card appears twice with flipped winding; the cutout texture carves the leaf shape out
-/// of both the color pass and the depth-only shadow pass.
+/// Two crossed unit-square leaf cards, one face each. The material and shadow pipelines cull
+/// nothing, so each card draws and shadows from both sides; the cutout texture carves the leaf
+/// shape out of both the color pass and the depth-only shadow pass.
 pub(crate) fn sprout_vertices() -> Vec<u8> {
     let cards: [[[f32; 3]; 4]; 2] = [
         [
@@ -289,10 +289,9 @@ pub(crate) fn sprout_vertices() -> Vec<u8> {
     bytes
 }
 
-/// Front and flipped-winding triangles for both cards, so the cutout reads from either side.
-pub(crate) const SPROUT_INDICES: [u16; 24] = [
-    0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 4, 6, 5, 4, 7, 6,
-];
+/// Two counter-clockwise triangles per card, wound once: culling is off, so the back of each
+/// card is the same triangles seen from behind.
+pub(crate) const SPROUT_INDICES: [u16; 12] = [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
 /// A leaf silhouette whose alpha carves the card: opaque along a central stem and three
 /// fronds, transparent elsewhere.

@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber"
-version = "0.22.1"
+version = "0.23.0"
 dependencies = [
  "ktx2",
  "mulciber-platform",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-text"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "fontdue",
  "mulciber",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "mulciber-texture"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bcdec_rs",
  "image",

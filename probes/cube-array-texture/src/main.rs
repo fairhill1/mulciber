@@ -4,7 +4,7 @@
 //! and read back from an HDR target. A BC6H cube array of light past 1.0, encoded by
 //! `mulciber-texture`, must sample as an independent decoder (`bcdec`) decodes its blocks.
 use mulciber::{
-    BlendMode, BlockCompression, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
+    BlendMode, BlockCompression, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, GraphicsErrorKind, HdrComposite, MaterialBinding, MaterialPipelineDescriptor,
     MaterialRecord, MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, Postprocess,
     PostprocessPipelineDescriptor, RenderScale, SampleCount, SamplerAddress, SamplerFilter, Scene,
@@ -422,6 +422,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bindings,
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
+        cull: CullMode::Back,
         instance_layout: None,
         scene_color: SceneColor::Hdr,
     };

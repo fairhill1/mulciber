@@ -81,7 +81,8 @@ The examples are ordinary interactive programs; Mulciber prefers 4x MSAA and rep
 Every frame is a `Scene` of material records submitted through `Queue::render_and_present`; the
 cube is the smallest whole program on that path. The probes under `probes/` exercise the rest of
 the API, `mulciber-material-scene` among them (several vertex layouts, two-texture materials,
-cascaded shadows, skinning, instancing and a frame-transient HUD overlay).
+cascaded shadows, skinning, instanced two-sided leaf cards drawn without culling and a
+frame-transient HUD overlay).
 
 ### Writing your own program
 

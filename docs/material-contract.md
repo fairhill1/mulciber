@@ -184,11 +184,22 @@ and draws through the existing indirect encoder path. Both backends bake the dec
 depth modes into native creation-time state: Vulkan through the pipeline's color-blend,
 multisample (alpha-to-coverage), and depth-stencil create info; Metal through pipeline-descriptor
 blending and alpha-to-coverage plus the pipeline-owned depth-stencil state.
-Material and shadow draws cull back faces with counter-clockwise front faces on both
-backends: Vulkan in each pipeline's rasterization state, Metal on every render encoder that
-records them, because Metal keeps culling on the encoder and otherwise culls nothing. Postprocess,
-bloom and volumetric passes cull nothing on either. A material that wants both sides of a surface
-supplies both windings.
+Material and shadow pipelines each declare a `CullMode` (`Back`, `Front` or `Off`, chosen
+separately for a caster's material and shadow pipelines) over counter-clockwise front faces on
+both backends: Vulkan in each pipeline's rasterization state, which its overlay variant shares;
+Metal on the render encoder, because Metal keeps culling there and otherwise culls nothing. The
+Metal backend sets the counter-clockwise winding on every encoder that records material or shadow
+draws and sets a record's cull mode whenever it differs from the mode the previous record in that
+encoder set. Postprocess, bloom and volumetric passes cull nothing on either. A material that
+wants both sides of a surface declares `CullMode::Off` and, if it is lit, flips its normal where
+WGSL's `@builtin(front_facing)` is false; supplying both windings under `Back` still works.
+
+Metal evidence (2026-11-06, Apple M2, macOS): the `mulciber-material-scene` probe's single-faced
+leaf cards, drawn and shadowed with `CullMode::Off` and their backs painted through
+`front_facing`, ran under Metal API Validation at four samples and closed cleanly through a
+scripted titlebar click. The agent's capture showed both sides of the cards and their cutout
+shadows; no operator has checked it. `CullMode::Front` has not run on a device. The Vulkan path
+compiles and lints for Linux and has not run on a device.
 
 For a multi-part mesh, Vulkan stores the shared vertices and aligned index regions in one arena
 suballocation; Metal stores the same regions plus one indirect argument per part in one

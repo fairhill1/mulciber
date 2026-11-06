@@ -44,8 +44,8 @@ pub const VERTEX_LAYOUT: VertexLayout<'static> = VertexLayout {
 /// Everything samples the one atlas, so one material record draws it all: glyphs and coverage
 /// masks white in the colour given, images in their own colour tinted by it, flat shapes from the
 /// atlas's solid block. Colours are linear with straight alpha; the overlay shader premultiplies.
-/// Triangles turn counter-clockwise on screen, as Mulciber's pipelines cull back faces, and are
-/// drawn in the order added: later over earlier.
+/// Triangles turn counter-clockwise on screen, so a pipeline declaring `CullMode::Back` keeps
+/// them, and are drawn in the order added: later over earlier.
 #[derive(Debug)]
 pub struct Batch<'a> {
     atlas: &'a Atlas,

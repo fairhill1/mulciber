@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use glam::Vec3;
 use mulciber::{
-    BlendMode, CascadedShadowPass, ClearColor, DepthMode, DeviceRequest, FrameAcquire,
+    BlendMode, CascadedShadowPass, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire,
     GeometrySource, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor,
     MeshIndices, MeshSource, MipChain, OpenedGraphics, SampleCount, SamplerAddress, SamplerFilter,
     Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, ShadowPipelineDescriptor,
@@ -125,6 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ],
                 blend: BlendMode::Opaque,
                 depth: DepthMode::TestWrite,
+                cull: CullMode::Back,
                 scene_color: SceneColor::Surface,
                 instance_layout: None,
             })?;
@@ -155,6 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            cull: CullMode::Back,
             scene_color: SceneColor::Surface,
             instance_layout: None,
         })?;
@@ -168,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             bindings: &[],
             blend: BlendMode::PremultipliedTranslucent,
             depth: DepthMode::Off,
+            cull: CullMode::Back,
             scene_color: SceneColor::Surface,
             instance_layout: None,
         })?;
@@ -183,6 +186,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }],
             fragment_entry: None,
             instance_layout: None,
+            cull: CullMode::Back,
         })?;
     let kelp_mesh = graphics.device.create_mesh(&MeshDescriptor {
         layout: scene::SKINNED_LAYOUT,
@@ -209,6 +213,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ],
                 blend: BlendMode::Opaque,
                 depth: DepthMode::TestWrite,
+                cull: CullMode::Back,
                 scene_color: SceneColor::Surface,
                 instance_layout: None,
             })?;
@@ -231,6 +236,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ],
                 fragment_entry: None,
                 instance_layout: None,
+                cull: CullMode::Back,
             })?;
     let sprout_mesh = graphics.device.create_mesh(&MeshDescriptor {
         layout: scene::SPROUT_LAYOUT,
@@ -247,6 +253,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     // One instanced record scatters every sprout: the pipeline declares an instance layout,
     // the record supplies packed model matrices, and the cutout blend carves the leaf shape.
+    // Culling is off, so each single-faced card shows both sides; the shader paints its back
+    // paler through `front_facing`.
     let sprout_pipeline = graphics
         .device
         .create_material_pipeline(MaterialPipelineDescriptor {
@@ -269,10 +277,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Cutout,
             depth: DepthMode::TestWrite,
+            cull: CullMode::Off,
             scene_color: SceneColor::Surface,
         })?;
     // The sprouts' shadow caster runs a declared fragment stage that alpha-tests the same
-    // leaf texture, carving the cutout into the depth-only cascade instead of a solid card.
+    // leaf texture, carving the cutout into the depth-only cascade instead of a solid card,
+    // with culling off so a card shadows whichever side faces the light.
     let sprout_shadow_pipeline =
         graphics
             .device
@@ -294,6 +304,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         address: SamplerAddress::ClampToEdge,
                     },
                 ],
+                cull: CullMode::Off,
             })?;
     #[allow(clippy::cast_possible_truncation)]
     let shadow_map = graphics

@@ -7,7 +7,7 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
     GpuTimingFeedback, GpuTimingScope, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord,
     MeshDescriptor, MeshIndices, MipChain, OpenedGraphics, PresentFeedback, SamplerAddress,
     SamplerFilter, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, TexelData,
@@ -87,6 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            cull: CullMode::Back,
             scene_color: SceneColor::Surface,
         })?;
     let mut targets = graphics

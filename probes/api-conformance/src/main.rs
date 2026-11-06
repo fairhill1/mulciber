@@ -954,6 +954,7 @@ impl<'window> Cases<'window> {
                                 ],
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                cull: mulciber::CullMode::Back,
                                 instance_layout: None,
                             })
                             .map(|_| ()),
@@ -973,6 +974,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS,
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                cull: mulciber::CullMode::Back,
                                 instance_layout: None,
                             })
                             .map(|_| ()),
@@ -995,6 +997,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS,
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                cull: mulciber::CullMode::Back,
                                 instance_layout: None,
                             })
                             .map(|_| ()),
@@ -1014,6 +1017,7 @@ impl<'window> Cases<'window> {
                                 bindings: &MATERIAL_BINDINGS[..3],
                                 blend: BlendMode::Opaque,
                                 depth: DepthMode::TestWrite,
+                                cull: mulciber::CullMode::Back,
                                 instance_layout: None,
                             })
                             .map(|_| ()),
@@ -1069,6 +1073,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -1082,6 +1087,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -1251,6 +1257,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1264,6 +1271,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Cutout,
                             depth: DepthMode::Off,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1277,6 +1285,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::TestOnly,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1376,6 +1385,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWriteGreater,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1389,6 +1399,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::TestOnlyGreater,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1402,6 +1413,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::Off,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?;
@@ -1486,6 +1498,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWriteGreater,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?
@@ -1707,6 +1720,7 @@ impl<'window> Cases<'window> {
                             bindings: &MATERIAL_BINDINGS,
                             blend: BlendMode::PremultipliedTranslucent,
                             depth: DepthMode::Off,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         },
                     )?
@@ -1803,6 +1817,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -1845,6 +1860,7 @@ impl<'window> Cases<'window> {
                             bindings: &LAVA_BINDINGS,
                             fragment_entry: None,
                             instance_layout: None,
+                            cull: mulciber::CullMode::Back,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
@@ -1864,6 +1880,7 @@ impl<'window> Cases<'window> {
                         }],
                         fragment_entry: None,
                         instance_layout: None,
+                        cull: mulciber::CullMode::Back,
                     },
                 )?);
                 self.shadowed_pipeline = Some(graphics.device.create_material_pipeline(
@@ -1876,6 +1893,7 @@ impl<'window> Cases<'window> {
                         bindings: &LAVA_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -1894,6 +1912,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -2240,6 +2259,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         })
                         .map(|_| ()),
@@ -2268,6 +2288,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         })
                         .map(|_| ()),
@@ -2296,6 +2317,7 @@ impl<'window> Cases<'window> {
                             ],
                             blend: BlendMode::Opaque,
                             depth: DepthMode::TestWrite,
+                            cull: mulciber::CullMode::Back,
                             instance_layout: None,
                         })
                         .map(|_| ()),
@@ -2313,6 +2335,7 @@ impl<'window> Cases<'window> {
                         bindings: &SKINNED_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -2324,6 +2347,7 @@ impl<'window> Cases<'window> {
                         bindings: &SKINNED_BINDINGS,
                         fragment_entry: None,
                         instance_layout: None,
+                        cull: mulciber::CullMode::Back,
                     },
                 )?);
                 self.skinned_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
@@ -2886,6 +2910,7 @@ impl<'window> Cases<'window> {
                             vertex_layout: SPROUT_LAYOUT,
                             instance_layout: Some(SPROUT_INSTANCE_LAYOUT),
                             bindings: &SPROUT_BINDINGS,
+                            cull: mulciber::CullMode::Back,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::Unsupported,
@@ -2908,6 +2933,7 @@ impl<'window> Cases<'window> {
                             bindings: &SPROUT_BINDINGS,
                             blend: BlendMode::Cutout,
                             depth: DepthMode::TestWrite,
+                            cull: mulciber::CullMode::Back,
                         })
                         .map(|_| ()),
                     GraphicsErrorKind::InvalidRequest,
@@ -2927,6 +2953,7 @@ impl<'window> Cases<'window> {
                         bindings: &SPROUT_BINDINGS,
                         blend: BlendMode::Cutout,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                     },
                 )?);
                 self.sprout_shadow_pipeline = Some(graphics.device.create_shadow_pipeline(
@@ -2937,6 +2964,7 @@ impl<'window> Cases<'window> {
                         vertex_layout: SPROUT_LAYOUT,
                         instance_layout: Some(SPROUT_INSTANCE_LAYOUT),
                         bindings: &SPROUT_BINDINGS,
+                        cull: mulciber::CullMode::Back,
                     },
                 )?);
                 self.sprout_mesh = Some(graphics.device.create_mesh(&MeshDescriptor {
@@ -3389,6 +3417,7 @@ impl<'window> Cases<'window> {
                         bindings: &MATERIAL_BINDINGS,
                         blend: BlendMode::Opaque,
                         depth: DepthMode::TestWrite,
+                        cull: mulciber::CullMode::Back,
                         instance_layout: None,
                     },
                 )?);
@@ -3868,6 +3897,7 @@ fn cube_pipeline(device: &mulciber::Device) -> Result<mulciber::MaterialPipeline
             bindings: &CUBE_BINDINGS,
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            cull: mulciber::CullMode::Back,
             instance_layout: None,
         })?,
     )
@@ -3888,6 +3918,7 @@ fn instanced_pipeline(
             bindings: &CUBE_BINDINGS[1..],
             blend: BlendMode::Opaque,
             depth: DepthMode::TestWrite,
+            cull: mulciber::CullMode::Back,
             instance_layout: Some(INSTANCE_LAYOUT),
         })?,
     )

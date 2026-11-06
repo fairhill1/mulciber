@@ -3,11 +3,11 @@
 //! created from it, the plain one declaring no storage slot and the skinned one declaring the bone
 //! palette it reads. Each draw is read back from an HDR target.
 use mulciber::{
-    BlendMode, ClearColor, DepthMode, DeviceRequest, FrameAcquire, GeometrySource, HdrComposite,
-    MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor, MeshIndices,
-    OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale, SampleCount, Scene,
-    SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, VertexAttribute, VertexFormat,
-    VertexLayout,
+    BlendMode, ClearColor, CullMode, DepthMode, DeviceRequest, FrameAcquire, GeometrySource,
+    HdrComposite, MaterialBinding, MaterialPipelineDescriptor, MaterialRecord, MeshDescriptor,
+    MeshIndices, OpenedGraphics, Postprocess, PostprocessPipelineDescriptor, RenderScale,
+    SampleCount, Scene, SceneColor, SceneOutput, SceneSubmission, ShaderArtifact, VertexAttribute,
+    VertexFormat, VertexLayout,
 };
 use mulciber_platform::{Application, LogicalSize, PumpStatus, WindowDescriptor, WindowEvent};
 use std::{error::Error, time::Instant};
@@ -170,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         bindings,
         blend: BlendMode::Opaque,
         depth: DepthMode::Off,
+        cull: CullMode::Back,
         instance_layout: None,
         scene_color: SceneColor::Hdr,
     };

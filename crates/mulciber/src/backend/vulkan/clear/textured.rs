@@ -28,7 +28,7 @@ use mulciber_platform::{SurfaceTarget, WindowMetrics};
 
 use super::{ClearSurface, acquired_image_barrier, check, color_subresource_range, error, vk};
 use crate::graphics::{
-    BlendMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
+    BlendMode, CullMode, DepthMode, MaterialPipelineConfig, MeshIndices, PostprocessPipelineConfig,
     SampledTextureFormat, SamplerAddress, SamplerSlot, ShadowPipelineConfig, mip_extent,
 };
 use crate::resource::{Arena, DestroyRequest, ResourceId, ResourceKind};
@@ -5511,6 +5511,15 @@ fn validate_vertex_formats<'a>(
     Ok(())
 }
 
+/// The rasterizer's cull flags for a declared [`CullMode`]; front faces are counter-clockwise.
+const fn cull_mode(cull: CullMode) -> vk::VkCullModeFlags {
+    match cull {
+        CullMode::Back => vk::VK_CULL_MODE_BACK_BIT as vk::VkCullModeFlags,
+        CullMode::Front => vk::VK_CULL_MODE_FRONT_BIT as vk::VkCullModeFlags,
+        CullMode::Off => vk::VK_CULL_MODE_NONE as vk::VkCullModeFlags,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn create_material_pipeline(
     surface: &ClearSurface<'_>,
@@ -5721,7 +5730,7 @@ fn create_material_pipeline(
     let raster = vk::VkPipelineRasterizationStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         polygonMode: vk::VK_POLYGON_MODE_FILL,
-        cullMode: vk::VK_CULL_MODE_BACK_BIT as u32,
+        cullMode: cull_mode(config.cull),
         frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
         lineWidth: 1.0,
         ..Default::default()
@@ -6114,7 +6123,7 @@ fn create_shadow_pipeline(
     let raster = vk::VkPipelineRasterizationStateCreateInfo {
         sType: vk::VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         polygonMode: vk::VK_POLYGON_MODE_FILL,
-        cullMode: vk::VK_CULL_MODE_BACK_BIT as u32,
+        cullMode: cull_mode(config.cull),
         frontFace: vk::VK_FRONT_FACE_COUNTER_CLOCKWISE,
         lineWidth: 1.0,
         ..Default::default()
